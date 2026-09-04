@@ -213,6 +213,18 @@ namespace RigiCompiler.Middleware.Layout
                 var plan = Resolve(local, symbols, table, visiting, null)!;
                 return new FieldTypeInfo(plan.Size, plan.Alignment, false, plan);
             }
+            // G1：构造值类型字段（var w: Wrap<i32>）——按具化计划内联嵌入
+            //（与模板布局同构；FindType 不带构造 canonical，走 FindTypeByRef）
+            if (ConstructedTypeCollector.IsConstructed(type.Canonical)
+                && symbols.FindTypeByRef(type.Canonical) is { IsExternal: false } constructedTemplate
+                && constructedTemplate.Declaration.Kind is BilTypeKind.Struct
+                    or BilTypeKind.EnumStruct
+                && ConstructedLayout.ResolveConstructed(type.Canonical, symbols, table,
+                    visiting, null) is { } constructedPlan)
+            {
+                return new FieldTypeInfo(constructedPlan.Size, constructedPlan.Alignment,
+                    false, constructedPlan);
+            }
             return new FieldTypeInfo(ReferenceSlotSize, ReferenceSlotSize, true, null);
         }
 

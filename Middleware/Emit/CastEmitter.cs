@@ -35,7 +35,11 @@ namespace RigiCompiler.Middleware.Emit
             // 标量/String 装入 T?（含占位 Nullable\<T\>）：走装箱包装，不是 try_cast。
             // String 16B 超 InlineLimit，必须 WrapFromSlot（tag1 堆盒），
             // 不可走 CastEmitter.WrapScalar 的 tag0 截 8B（否则 Mix.s 往返丢串）。
-            if (MirBuilder.IsScalarOrString(sourceType) && TypeLayout.IsNullable(resultType))
+            // indirect 形态目标类型运行期才知，不得吃此静态捷径（VM
+            // TryCast 按运行期 typeid 走数值转换/可空解包，统一归
+            // EmitDynamic 的 rigi_try_cast）
+            if (!inst.IsIndirect && MirBuilder.IsScalarOrString(sourceType)
+                && TypeLayout.IsNullable(resultType))
             {
                 var wrapped = sourceType.IsString
                     ? NullableEmitter.WrapFromSlot(session, builder, slots[source.Name].Slot,

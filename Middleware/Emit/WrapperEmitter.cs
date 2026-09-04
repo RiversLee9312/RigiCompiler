@@ -153,7 +153,7 @@ namespace RigiCompiler.Middleware.Emit
                     userArgs[i] = CallEmitter.MarshalArg(session, builder, slots, inst.Args[i],
                         aliasThis: false, temps);
                 }
-                NewEmitter.EmitInitValueOnSlot(session, builder, pointer, inst.WrapperType,
+                NewEmitter.EmitInitValueOnSlot(session, builder, slots, pointer, inst.WrapperType,
                     inst.InitWrapper, inst.Init, userArgs);
                 WriteHostBackref(session, builder, slots, inst.Host, hostType, inst.WrapperType,
                     pointer);

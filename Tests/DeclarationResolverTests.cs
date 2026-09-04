@@ -1867,6 +1867,33 @@ namespace RigiCompiler.Tests
                 "class LocalMark { }\n");
             CheckNoErrors("core.serialization 内部应用 SerializationBase 合法", okInternalCore);
 
+            // @SerializationBase 隐含 @Serializable：base-only 宿主走同一字段闸门
+            var (okBaseOnly, _) = ResolveUnitWithStdlib(
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "class BaseOk { pub var n: i32\n    pub var s: String }\n");
+            CheckNoErrors("@SerializationBase 标量字段合法（隐含 Serializable）", okBaseOnly);
+            TestHarness.CheckTrue("base-only 宿主已隐含 Serializable",
+                okBaseOnly.Symbols.GlobalNamespace.ChildNamespaces
+                    .First(n => n.Name == "core").ChildNamespaces
+                    .First(n => n.Name == "serialization").Types
+                    .First(t => t.Name == "BaseOk").AppliedWrappers
+                    .Any(w => w.WrapperDefinition.Name == "Serializable"));
+            TestHarness.CheckTrue("i32 未隐含 Serializable（§20.2.3 防线）",
+                !okBaseOnly.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "Serializable"));
+            TestHarness.CheckTrue("Parcel 豁免未隐含 Serializable",
+                !SerializationFacts.FindParcel(okBaseOnly.Symbols)!.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "Serializable"));
+
+            var (badBaseField, _) = ResolveUnitWithStdlib(
+                "namespace core.serialization\n" +
+                "class Plain { pub init() }\n" +
+                "@SerializationBase\n" +
+                "class BaseBox { pub var x: Plain }\n");
+            CheckP2Error("@SerializationBase 隐含字段检查", badBaseField,
+                "可序列化类型 'BaseBox' 的字段 'x' 不可序列化");
+
             var (badInternalExt, _) = ResolveUnitWithStdlib(
                 "import core.serialization.SerializationBase\n" +
                 "@SerializationBase\n" +

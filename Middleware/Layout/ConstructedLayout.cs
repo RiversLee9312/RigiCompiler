@@ -81,6 +81,24 @@ namespace RigiCompiler.Middleware.Layout
             if (templatePlan.Kind != TypeLayoutKind.Class)
             {
                 visiting.Remove(canonical);
+                // G1 泛型值类型具化：字段/vtable 槽 0/refMap/enum 判别复用
+                // 模板计划（占位字段恒 16B 胖值槽，构造与模板布局同构）；
+                // 无对象头隐藏 typeid 槽、无 iMap（值类型不参与虚/接口
+                // 派发）；ifaceClosure 按构造 canonical 重生（type.is 用）
+                if (templatePlan.Kind is TypeLayoutKind.Struct or TypeLayoutKind.Enum)
+                {
+                    var constructedValue = new MwTypeSymbol(canonical, template);
+                    var valuePlan = new TypeLayoutPlan(constructedValue,
+                        templatePlan.Kind, templatePlan.Size, templatePlan.Alignment,
+                        templatePlan.TypeFlags, templatePlan.Fields,
+                        templatePlan.VTableSlots,
+                        System.Array.Empty<(string, int)>(), templatePlan.RefMap,
+                        templatePlan.EnumCases, null,
+                        ifaceClosure: VTablePlanner.CollectIfaceClosure(
+                            canonical, constructedValue, symbols));
+                    table.Add(valuePlan);
+                    return valuePlan;
+                }
                 return null;
             }
             TypeLayoutPlan? basePlan = templatePlan.BasePlan;

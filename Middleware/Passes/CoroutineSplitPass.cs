@@ -41,13 +41,36 @@ namespace RigiCompiler.Middleware.Passes
     ///    字段（Task&lt;T&gt;）→ complete() → publishAll → noteTerminal
     ///    → MirCoroutineDone → ret DONE」。
     /// ⑤ 冷 Task 构造重写（棒5a，§18.4）：`new Task(body)`（body 静态
-    ///    类型是具体闭包类）改写为 $mw.coldtask.* 工厂调用——工厂预建
-    ///    body 的 $$call frame + cohandle 存 coldHandle（构造不继承
-    ///    CoroutineLocal；继承在 spawnIntoLocked 启动时）。不透明
-    ///    AsyncAction/AsyncFunc 槽跳过工厂，启动时 bindColdBody 经
-    ///    type.is 链调 $mw.bindcold.* 动态 spawn-into。
-    /// ⑥ 自检：split 后无残留 MirAwait/MirYieldBare/MirYieldAlarm；每
-    ///    挂起点恰一恢复 state；frame 字段与保存槽集合一致。
+    /// 类型是具体闭包类）改写为 $mw.coldtask.* 工厂调用——工厂预建
+    /// body 的 $$call frame + cohandle 存 coldHandle（构造不继承
+    /// CoroutineLocal；继承在 spawnIntoLocked 启动时）。不透明
+    /// AsyncAction/AsyncFunc 槽跳过工厂，启动时 bindColdBody 经
+    /// type.is 链调 $mw.bindcold.* 动态 spawn-into。
+    /// ⑥ B-1 栈式跨界（SYNTAX §11，语义对齐 VM 帧栈模型）：非 async
+    ///    fn 的挂起点经 taint 分析沿直调图反向传染调用方；tainted
+    ///    普通 fn 状态机化（裸 frame 模式：无 spawn stub/Task 包装，
+    ///    frame 带 $mw.result 结果槽，所有权归调用方；resume fn
+    ///    IsPlainResume，传播垫尾 release + ret FAILED 沿链上传）；
+    ///    tainted→tainted 直调改写为「建 callee frame + 落参 +
+    ///    MirResumeCall 下钻 + 四码分流（SUSPENDED/YIELDED 上传 /
+    ///    DONE 读 $mw.result 续行 / FAILED 重抛 pending）」，调用点
+    ///    本身是调用方的挂起点（state 恢复块重取 callee frame 再下
+    ///    钻）。tainted main 走 Task 包装 split（spawn stub 保留原
+    ///    符号，ret 热 Task）+ $mw.main.settle 合成，rigi_entry 改
+    ///   「调 stub 发布主协程 → drain → settle 取结果/重抛失败」
+    ///   （对齐 VM BilVm.Run：main 作为协程发布进 Dispatcher）。
+    ///    B-2 全组合收口：传染边全集 = 直调/super/值类型运算符/
+    ///    虚·interface·class 运算符派发（闭包内任一实现 tainted
+    ///    整点升级）/new init；虚派发挂起点 = 全闭包类臂动态分流
+    ///   （最深派生优先 type.is 链，tainted 臂走协议、其余落原调
+    ///    用，EmitVirtualCallSplit）；init = 空 init 分配 + init
+    ///    frame 下钻（EmitInitSplit）；§7.2 类级 typeid 落参合成
+    ///   （PlanArgDrops）；plain fn 内 yield Alarm 放开（EmitPoll-
+    ///    Gate plain 失败尾）。保留边界：泛型宿主虚派发/$$call·间
+    ///    接·proxy 链/new.indirect 同模块 init 受控拒绝。
+    /// ⑦ 自检：split 后无残留 MirAwait/MirYieldBare/MirYieldAlarm
+    ///    与未改写 tainted 调用；每挂起点恰一恢复 state；frame 字段
+    ///    与保存槽集合一致。
     /// split 在 RcInjection 之前：生成的全部代码由 RcInjection 统一 ARC
     /// 配平，本 pass 不插 acquire/release。读：Mir + Layout + Symbols；
     /// 写：替换 stub、追加 resume/init/工厂合成 fn、注册 frame 类型。
@@ -71,7 +94,9 @@ namespace RigiCompiler.Middleware.Passes
         // probe fn 虚派发目标（VM VmPolling.IsReadySymbol 同拼写）
         public const string PollProbeIsReadyCanonical =
             "core.coroutine::PollingAlarm$isReady()@.bool";
-        // EventAlarm 时钟底座句柄字段（yield EventAlarm 分流读取）
+        // EventAlarm 时钟底座句柄字段（VM TryAwaitTimer 读取/懒建回写；
+        // L8 起 native yield 分流改经 ensureHandle 调用，本常量保留供
+        // VM 镜像拼写与测试钉住）
         public const string EventAlarmHandleField =
             "core.coroutine::EventAlarm#handle@.i64";
         public const string DispatcherCanonical = "core.coroutine::Dispatcher";
@@ -83,6 +108,14 @@ namespace RigiCompiler.Middleware.Passes
         private const int ResumeSuspended = 0;
         private const int ResumeYielded = 1;
         private const int ResumeDone = 2;
+        // B-1：FAILED 只用于 plain resume（tainted 普通 fn）的链式上传
+        // ——pending 已置位，调用方调用点 FAILED 臂 MirTakePending 重抛；
+        // Task 包装 resume 的失败恒吸收进 Task FAILED（ret DONE），
+        // workerLoop 只消费 0/1/2，3 不出现在协程句柄 resume 面
+        public const int PlainResumeFailedCode = 3;
+
+        // plain tainted fn frame 的结果字段槽名（调用方 DONE 臂读取）
+        public const string ResultSlotName = "$mw.result";
 
         // Task.registerWaiter 决策码（stdlib coroutine.rg 契约）：
         // 0=已登记（挂起）/1=已成功/2=已失败/3=已取消
@@ -219,6 +252,18 @@ namespace RigiCompiler.Middleware.Passes
                     "stdlib 缺少 Task 通道: " + prefix + "$" + name);
         }
 
+        // EventAlarm 成员通道符号（L8：ensureHandle 懒建默认底座——
+        // 用户直继子类 handle==0 时补手动事件粘滞形态，§19.3）
+        internal static MwMemberSymbol EventAlarmFn(MwContext context, string name)
+        {
+            return (context.Symbols.FindType(EventAlarmCanonical)?.Members
+                .FirstOrDefault(m => m.Canonical.StartsWith(
+                    EventAlarmCanonical + "$" + name + "(",
+                    System.StringComparison.Ordinal)))
+                ?? throw new CompilerInternalException(
+                    "stdlib 缺少 EventAlarm 通道: " + name);
+        }
+
         // Task 字段符号（declaration 形态；FieldEmitter 按宿主段查布局计划）
         internal static string TaskField(string taskTypeRef, string name,
             string typeCanonical) =>
@@ -259,32 +304,307 @@ namespace RigiCompiler.Middleware.Passes
         {
             var mir = context.Mir
                 ?? throw new CompilerInternalException("CoroutineSplit 要求 Mir 已挂载");
+            // B-1：taint 分析先行（栈式跨界，SYNTAX §11）——非 async fn
+            // 的挂起点沿直调图反向传染调用方；tainted 普通 fn 走裸
+            // frame split，tainted main 走 Task 包装 split + 根驱动
+            var tainted = TaintAnalysis(context, mir);
             // 快照遍历（split 向模块追加 resume/init 合成 fn）
             var asyncFns = mir.Functions.Where(f => f.IsAsync).ToList();
+            var entrypoint = mir.Functions.FirstOrDefault(f => f.IsEntrypoint);
+            // 阶段 1：plain tainted fn 的 frame 预注册（挂起点/活性/
+            // 保存槽/frame 类型+init）——tainted→tainted 调用点的
+            // callee frame 类型先于一切 resume 合成就绪（递归链安全）
+            var plainPlans = new List<SplitPlan>();
+            foreach (var fn in mir.Functions.ToList())
+            {
+                if (!fn.IsAsync && !fn.IsEntrypoint
+                    && tainted.Contains(fn.Symbol.Canonical))
+                {
+                    plainPlans.Add(PrepareSplit(context, mir, fn, tainted,
+                        SplitMode.Plain));
+                }
+            }
+            // 阶段 2a：async fn split（现状路径；体内的 tainted 直调点
+            // 同走调用协议——async 调用方无需传染但调用点必须改写）
             foreach (var fn in asyncFns)
             {
-                SplitFunction(context, mir, fn);
+                ExecuteSplit(context, mir,
+                    PrepareSplit(context, mir, fn, tainted, SplitMode.Tasked));
+            }
+            // 阶段 2b：tainted main → Task 包装 split + $mw.main.settle
+            //（rigi_entry 根驱动：调 stub 发布主协程 → drain → settle
+            // 取结果/重抛失败，对齐 VM BilVm.Run 的 main 协程化）
+            if (entrypoint != null && tainted.Contains(entrypoint.Symbol.Canonical))
+            {
+                ExecuteSplit(context, mir,
+                    PrepareSplit(context, mir, entrypoint, tainted, SplitMode.Tasked));
+                SynthesizeMainSettle(context, mir, entrypoint);
+            }
+            // 阶段 2c：plain tainted fn split（原符号改陷阱 stub——
+            // 全部调用点已协议化，直调残留属内部错误）
+            foreach (var plan in plainPlans)
+            {
+                ExecuteSplit(context, mir, plan);
             }
             // 冷 Task 构造重写（§18.4；split 之后——需要 resume fn 已合成）
             RewriteColdTaskConstructions(context, mir);
             RewriteBindColdBodies(context, mir);
-            // 自检①：split 后无残留 lowering 层协程指令。非 async fn
-            // 携带挂起点（如 main 直接 await）属 VM 栈式跨界语义，
-            // 棒2 起受控拒绝
+            // 自检①：split 后无残留 lowering 层协程指令与未改写的
+            // tainted 直调（残留 = taint 闭包漏网，属内部错误）。
+            // 豁免 .vdflt 默认臂——虚派发挂起点故意保留的原调用
+            //（vtable/iMap 动态派发到非 tainted 实现；其静态目标是
+            // tainted 声明属正常）
             foreach (var fn in mir.Functions)
             {
                 foreach (var block in fn.Blocks)
                 {
+                    if (block.Id.Contains(".vdflt", System.StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
                     foreach (var inst in block.Instructions)
                     {
                         if (inst is MirAwait or MirYieldBare or MirYieldAlarm
-                            || IsMutexEnter(inst))
+                            || IsMutexEnter(inst)
+                            || (inst is MirCall residualCall
+                                && tainted.Contains(residualCall.Target.Canonical))
+                            || (inst is MirSuperCall residualSuper
+                                && tainted.Contains(residualSuper.Target.Canonical))
+                            || (inst is MirNewObject residualNew
+                                && residualNew.Init != null
+                                && tainted.Contains(residualNew.Init.Canonical)))
                         {
-                            throw new MwNotSupportedException(
-                                $"MW11a 棒2 暂不支持非 async fn 的挂起点（await/yield/Mutex.enter）: {fn.Symbol.Canonical}");
+                            throw new CompilerInternalException(
+                                "CoroutineSplit 自检失败：taint 闭包漏网，残留挂起点/未改写 tainted 调用: "
+                                + fn.Symbol.Canonical);
                         }
                     }
                 }
+            }
+        }
+        // ===== B-1 taint 分析 =====
+        // 种子 = 含挂起点（await/yield/Mutex.enter）的非 async fn；沿
+        // 调用边反向传染调用方至不动点（链根恒为 main 或 async fn）。
+        // B-2 传染边全集：直调 / super（恒直调）/ 值类型宿主运算符
+        //（直调形态）/ 虚·interface·class 运算符派发（闭包内任一实
+        // 现 tainted 则整点升级——运行期目标静态不可钉死）；init 与
+        // $$call/间接调用形态保留受控拒绝（见 RejectUnsupported-
+        // TaintedShape 与下方 MirNewObject 臂）。
+        private HashSet<string> TaintAnalysis(MwContext context, MirModule mir)
+        {
+            var tainted = new HashSet<string>(System.StringComparer.Ordinal);
+            var byCanonical = new Dictionary<string, MirFunction>(
+                System.StringComparer.Ordinal);
+            foreach (var fn in mir.Functions)
+            {
+                byCanonical[fn.Symbol.Canonical] = fn;
+            }
+            var queue = new Queue<string>();
+            // new.indirect 的运行期目标由 typeid 决定（保守边 = 全
+            // init 族）——模块含 new.indirect 时 tainted init 无法保
+            // 证全部构造点协议化，受控拒绝
+            var hasNewIndirect = mir.Functions.Any(fn =>
+                fn.Blocks.SelectMany(b => b.Instructions)
+                    .Any(i => i is MirNewIndirect));
+            foreach (var fn in mir.Functions)
+            {
+                if (!fn.IsAsync
+                    && fn.Blocks.SelectMany(b => b.Instructions).Any(inst =>
+                        inst is MirAwait or MirYieldBare or MirYieldAlarm
+                        || IsMutexEnter(inst))
+                    && tainted.Add(fn.Symbol.Canonical))
+                {
+                    queue.Enqueue(fn.Symbol.Canonical);
+                }
+            }
+            while (queue.Count > 0)
+            {
+                var calleeCanonical = queue.Dequeue();
+                var calleeFn = byCanonical[calleeCanonical];
+                RejectUnsupportedTaintedShape(calleeFn);
+                if (hasNewIndirect && calleeFn.Symbol.HasKeyword(BilKeyword.Init))
+                {
+                    throw new MwNotSupportedException(
+                        "B-2 暂不支持含挂起点的 init 与 new.indirect 同模块共存（运行期构造目标不可钉死）: "
+                        + calleeCanonical);
+                }
+                foreach (var caller in mir.Functions)
+                {
+                    // async 调用方本身即状态机化（调用点在 split 时改写），
+                    // 无需传染；tainted 集合只收需要新状态机化的普通 fn
+
+                    if (caller.IsAsync || tainted.Contains(caller.Symbol.Canonical))
+                    {
+                        continue;
+                    }
+                    var infect = false;
+                    foreach (var block in caller.Blocks)
+                    {
+                        foreach (var inst in block.Instructions)
+                        {
+                            switch (inst)
+                            {
+                                case MirCall call
+                                    when call.Target.Canonical == calleeCanonical:
+                                    // 直调形态（显式 invoke 直调 / 值
+                                    // 类型宿主运算符）静态唯一目标→
+                                    // 传染；虚/interface 派发形态由
+                                    // 下方闭包规则统一覆盖
+                                    var direct = call.OperatorDispatch
+                                        ? Binding.ImplBinder.BindOperatorCall(call.Target)
+                                        : Binding.ImplBinder.BindCall(call.Target);
+                                    if (direct is Binding.DirectCallBinding)
+                                    {
+                                        infect = true;
+                                    }
+                                    break;
+                                case MirSuperCall superCall
+                                    when superCall.Target.Canonical == calleeCanonical:
+                                    // B-2：super 已解析为唯一基类实现
+                                    // （恒直调），同直调协议传染
+                                    infect = true;
+                                    break;
+                                case MirNewObject newObject
+                                    when newObject.Init?.Canonical == calleeCanonical:
+                                    // B-2：含挂起点的 init 经构造点协
+                                    // 议收编（EmitInitSplit——分配与
+                                    // init 下钻分离）
+                                    infect = true;
+                                    break;
+                            }
+                            // 虚/interface/class 运算符派发点：目标集合
+                            // 静态不唯一——闭包内任一实现 tainted 则整
+                            // 点升级（调用方传染；站点协议化见
+                            // EmitVirtualCallSplit）
+                            if (!infect && inst is MirCall anyCall
+                                && IsVirtualDispatchSite(anyCall)
+                                && ClosurePairsOf(context, anyCall.Target,
+                                    anyCall.OperatorDispatch)
+                                    .Any(p => tainted.Contains(p.ImplCanonical)))
+                            {
+                                infect = true;
+                            }
+                        }
+                    }
+                    if (infect && tainted.Add(caller.Symbol.Canonical))
+                    {
+                        queue.Enqueue(caller.Symbol.Canonical);
+                    }
+                }
+            }
+            return tainted;
+        }
+
+        // 虚派发站点判定（MirCall 的运行期目标非静态唯一）：显式
+        // invoke 经 BindCall、intrinsic 运算符经 BindOperatorCall；
+        // class 虚/interface iMap 两种形态
+        private static bool IsVirtualDispatchSite(MirCall call)
+        {
+            var binding = call.OperatorDispatch
+                ? Binding.ImplBinder.BindOperatorCall(call.Target)
+                : Binding.ImplBinder.BindCall(call.Target);
+            return binding is Binding.VirtualCallBinding
+                or Binding.InterfaceCallBinding;
+        }
+
+        // 虚/interface 派发的「类 → 槽实现」闭包对（调用点动态分流
+        // 与传染判定共用；静态知识，按目标 canonical 缓存）。镜像
+        // MirReachability.AddVirtualEdges/AddInterfaceEdges 的查询口
+        // 径，但保留每类实现身份（分流臂需要）
+        private readonly Dictionary<string,
+            List<(string ClassCanonical, string ImplCanonical)>> _closureCache = new(
+                System.StringComparer.Ordinal);
+
+        private List<(string ClassCanonical, string ImplCanonical)> ClosurePairsOf(
+            MwContext context, MwMemberSymbol target, bool operatorDispatch)
+        {
+            if (_closureCache.TryGetValue(target.Canonical, out var cached))
+            {
+                return cached;
+            }
+            var pairs = new List<(string, string)>();
+            var binding = operatorDispatch
+                ? Binding.ImplBinder.BindOperatorCall(target)
+                : Binding.ImplBinder.BindCall(target);
+            var query = context.DispatchQuery;
+            var ownerSlots = target.Owner == null
+                ? null : query?.GetVTableSlots(target.Owner.Canonical);
+            if (query != null && ownerSlots != null)
+            {
+                var slot = -1;
+                for (var i = 0; i < ownerSlots.Count; i++)
+                {
+                    if (ownerSlots[i] == target.Canonical)
+                    {
+                        slot = i;
+                        break;
+                    }
+                }
+                if (slot >= 0)
+                {
+                    switch (binding)
+                    {
+                        case Binding.VirtualCallBinding:
+                            foreach (var classCanonical in query.AllClassCanonicals())
+                            {
+                                if (!query.DerivesFrom(classCanonical,
+                                        target.Owner!.Canonical))
+                                {
+                                    continue;
+                                }
+                                var slots = query.GetVTableSlots(classCanonical);
+                                if (slots != null)
+                                {
+                                    pairs.Add((classCanonical, slots[slot]));
+                                }
+                            }
+                            break;
+                        case Binding.InterfaceCallBinding:
+                            foreach (var classCanonical in query.AllClassCanonicals())
+                            {
+                                var imap = query.GetIMap(classCanonical);
+                                var slots = query.GetVTableSlots(classCanonical);
+                                if (imap == null || slots == null)
+                                {
+                                    continue;
+                                }
+                                foreach (var (ifaceType, baseOffset) in imap)
+                                {
+                                    if (ifaceType == target.Owner!.Canonical
+                                        || context.Symbols.FindTypeByRef(ifaceType)
+                                            == target.Owner)
+                                    {
+                                        pairs.Add((classCanonical,
+                                            slots[baseOffset + slot]));
+                                    }
+                                }
+                            }
+                            break;
+                    }
+                }
+            }
+            _closureCache.Add(target.Canonical, pairs);
+            return pairs;
+        }
+
+        // 不可协议化形态拒绝：$$call 闭包体可经 invoke.indirect 触达
+        //（fn 指针面无法插挂起协议——运行期只有返回值通道）；wrapper/
+        // proxy 烘焙产物（$.wrapped./$.mwrapped./$mw. 前缀合成 fn）经
+        // wrapper 派发链/方法地址间接触达，同因拒绝。B-2 起虚成员
+        // 不再拒绝（调用点动态分流协议覆盖——EmitVirtualCallSplit）
+        private static void RejectUnsupportedTaintedShape(MirFunction fn)
+        {
+            var canonical = fn.Symbol.Canonical;
+            if (canonical.Contains("$$call(", System.StringComparison.Ordinal)
+                || canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
+                || canonical.Contains("$..init.", System.StringComparison.Ordinal)
+                || canonical.Contains(ProxyBakeSupport.WrappedInfix,
+                    System.StringComparison.Ordinal)
+                || canonical.Contains(ProxyBakeSupport.MwrappedInfix,
+                    System.StringComparison.Ordinal))
+            {
+                throw new MwNotSupportedException(
+                    "B-2 暂不支持间接调用/proxy 链可达的含挂起点 fn: " + canonical);
             }
         }
 
@@ -299,25 +619,156 @@ namespace RigiCompiler.Middleware.Passes
             internal MirInst Inst = null!;
             // 恢复后仍活跃的槽（活性分析回填，保 fn.Locals 序）
             internal List<string> LiveAfter = new();
+            // B-1：tainted→tainted 直调挂起点（Inst 为 MirCall 时非空）
+            internal CallSiteInfo? CallSite;
+            // B-2：虚/interface/运算符派发挂起点（目标集合动态分流）
+            internal VirtualSiteInfo? Virtual;
+            // B-2：含挂起点 init 的构造挂起点（Inst 为 MirNewObject）
+            internal InitSiteInfo? InitSite;
         }
 
-        private static List<SuspensionPoint> CollectSuspensionPoints(MirFunction fn)
+        // 含挂起点 init 的构造点协议信息：分配与 init 下钻分离——
+        // head 用合成空 init 完成分配（init.wrapper 缝合字段初始值
+        // 保持原位），Target 槽先落定；init frame 的 .this = 新建对
+        // 象，恢复后 DONE 直落原后继（结果即 Target 槽本身）
+        private sealed class InitSiteInfo
+        {
+            internal CallSiteInfo Site = null!;
+            internal string TargetLocal = "";
+            internal MirNewObject Original = null!;
+        }
+
+        // tainted 直调点的 callee 协议信息（PrepareCallSites 回填；
+        // FrameType/FrameInit 延迟到 EmitCallSplit 解析——plain frame
+        // 预注册完成后才存在，递归调用链安全）
+        private sealed class CallSiteInfo
+        {
+            internal MirFunction Callee = null!;
+            internal string CalleeLocal = "";        // 调用方 resume fn 内的 callee frame 槽
+            internal string CalleeFrameCanonical = "";
+            internal MwMemberSymbol ResumeSymbol = null!;
+            internal string? ResultFieldSymbol;      // callee 非 void 时的 $mw.result 字段符号
+            // B-2：实参→callee frame 落参计划（§7.2 隐藏参数感知：
+            // 类级 typeid 从调用约定剔除——按宿主构造形态合成常量
+            // typeid 或转抄调用方同名 .generic.* 局部）
+            internal List<ArgDrop> Drops = new();
+        }
+
+        // 单条落参：直落 = 调用点实参槽；TypeIdConst = MirGetTypeId
+        // 常量 typeid；CallerTypeId = 调用方 .generic.* 局部转抄
+        private sealed class ArgDrop
+        {
+            internal string FrameFieldSymbol = "";
+            internal MirOperand? Operand;
+            internal string? TypeIdTypeRef;
+            internal string? CallerTypeIdLocal;
+        }
+
+        // B-2 虚派发挂起点：闭包全类臂（最深派生优先——臂条件
+        // type.is 是子类判定，浅类臂不得遮蔽深类）。tainted 实现臂
+        // 走协议（建对应 frame 下钻）；非 tainted 实现臂落原调用块
+        //（普通虚派发，对齐 VM 可观察行为）；默认臂（闭包外类型/
+        // null 接收者）同为原调用（NRE 语义保持）
+        private sealed class VirtualSiteInfo
+        {
+            internal string ReceiverLocal = "";      // 接收者槽（分流链复读，强制活跃）
+            internal string? Result;                 // 原调用结果槽
+            internal MirBlock? ExcTarget;            // 原调用异常边
+            internal MirCall OriginalCall = null!;   // 默认臂/非 tainted 臂复用原指令
+            internal List<VirtualArm> Arms = new();  // 全闭包类臂（最深派生优先）
+        }
+
+        private sealed class VirtualArm
+        {
+            internal string ClassCanonical = "";
+            internal CallSiteInfo? Impl;             // 非 tainted 实现为 null（落原调用）
+        }
+
+        // split 模式：Tasked = Task 包装（async fn 与 tainted main——
+        // frame 带 $mw.task，终态走 Task complete/fail 序列）；Plain =
+        // 裸 frame（tainted 普通 fn——无 Task，结果写 $mw.result 由
+        // 调用方 DONE 臂读取，传播垫尾 release + ret FAILED 沿链上传）
+        private enum SplitMode { Tasked, Plain }
+
+        // split 计划（PrepareSplit 产出，ExecuteSplit 消费；两相分离
+        // 让 plain frame 类型先于一切 resume 合成完成注册）
+        private sealed class SplitPlan
+        {
+            internal MirFunction Fn = null!;
+            internal SplitMode Mode;
+            internal List<SuspensionPoint> Points = null!;
+            internal List<MirLocal> SavedSlots = null!;
+            internal HashSet<string> ParamNames = null!;
+            internal string FrameCanonical = "";
+            internal MwTypeSymbol FrameType = null!;
+            internal MirType FrameMirType = null!;
+            internal MwMemberSymbol FrameInit = null!;
+            internal string StateFieldSymbol = "";
+            internal string? TaskFieldSymbol;
+            internal string? TaskTypeRef;
+            internal string? TaskConstructionRef;
+            internal string? ResultFieldSymbol;
+            internal MwMemberSymbol ResumeSymbol = null!;
+        }
+
+        private List<SuspensionPoint> CollectSuspensionPoints(MwContext context,
+            MirFunction fn, HashSet<string> tainted)
         {
             var points = new List<SuspensionPoint>();
             foreach (var block in fn.Blocks)
             {
                 for (var i = 0; i < block.Instructions.Count; i++)
                 {
-                    if (block.Instructions[i] is MirAwait or MirYieldBare or MirYieldAlarm
-                        || IsMutexEnter(block.Instructions[i]))
-                    {
-                        points.Add(new SuspensionPoint
+                    var inst = block.Instructions[i];
+                    // B-1：直调 tainted fn 的调用点同为挂起点（callee
+                    // 挂起沿链上传，本 fn 须在此 state 恢复下钻）；
+                    // B-2：super 调用与直调形态运算符同为静态唯一目
+                    // 标收编；虚/interface/class 运算符派发点闭包内
+                    // 任一实现 tainted 则整点升级（动态分流协议）；
+                    // Mutex.enter 优先判（其目标永不 tainted）
+                    var isPoint = inst is MirAwait or MirYieldBare or MirYieldAlarm
+                        || IsMutexEnter(inst)
+                        || (inst is MirCall call && !call.OperatorDispatch
+                            && tainted.Contains(call.Target.Canonical)
+                            && Binding.ImplBinder.BindCall(call.Target)
+                                is Binding.DirectCallBinding)
+                        || (inst is MirCall operatorCall && operatorCall.OperatorDispatch
+                            && tainted.Contains(operatorCall.Target.Canonical)
+                            && Binding.ImplBinder.BindOperatorCall(operatorCall.Target)
+                                is Binding.DirectCallBinding)
+                        || (inst is MirSuperCall superCall
+                            && tainted.Contains(superCall.Target.Canonical))
+                        || (inst is MirNewObject newObject
+                            && newObject.Init != null
+                            && tainted.Contains(newObject.Init.Canonical));
+                    var point = isPoint
+                        ? new SuspensionPoint
                         {
                             Block = block,
                             InstIndex = i,
                             State = points.Count + 1,
-                            Inst = block.Instructions[i],
-                        });
+                            Inst = inst,
+                        }
+                        : null;
+                    if (point == null && inst is MirCall dispatchCall
+                        && !IsMutexEnter(dispatchCall)
+                        && IsVirtualDispatchSite(dispatchCall)
+                        && ClosurePairsOf(context, dispatchCall.Target,
+                            dispatchCall.OperatorDispatch)
+                            .Any(p => tainted.Contains(p.ImplCanonical)))
+                    {
+                        point = new SuspensionPoint
+                        {
+                            Block = block,
+                            InstIndex = i,
+                            State = points.Count + 1,
+                            Inst = inst,
+                            Virtual = new VirtualSiteInfo(),
+                        };
+                    }
+                    if (point != null)
+                    {
+                        points.Add(point);
                     }
                 }
             }
@@ -454,6 +905,37 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     point.LiveAfter.Add(mutexThis.Name);
                 }
+                // B-1：tainted 调用点的 callee frame 槽恒活跃——恢复块
+                // 重回调用块经 MirResumeCall 再下钻（frame 从调用方
+                // frame 的 callee 槽恢复）
+                if (point.CallSite != null
+                    && !point.LiveAfter.Contains(point.CallSite.CalleeLocal))
+                {
+                    point.LiveAfter.Add(point.CallSite.CalleeLocal);
+                }
+                // B-2：init 构造点的 init frame 槽恒活跃（同直调口径）
+                if (point.InitSite != null
+                    && !point.LiveAfter.Contains(point.InitSite.Site.CalleeLocal))
+                {
+                    point.LiveAfter.Add(point.InitSite.Site.CalleeLocal);
+                }
+                // B-2：虚派发点的接收者（恢复分流链复读）与各 tainted
+                // 实现的 callee frame 槽恒活跃
+                if (point.Virtual != null)
+                {
+                    if (!point.LiveAfter.Contains(point.Virtual.ReceiverLocal))
+                    {
+                        point.LiveAfter.Add(point.Virtual.ReceiverLocal);
+                    }
+                    foreach (var arm in point.Virtual.Arms)
+                    {
+                        if (arm.Impl != null
+                            && !point.LiveAfter.Contains(arm.Impl.CalleeLocal))
+                        {
+                            point.LiveAfter.Add(arm.Impl.CalleeLocal);
+                        }
+                    }
+                }
             }
         }
 
@@ -536,6 +1018,14 @@ namespace RigiCompiler.Middleware.Passes
                     break;
                 case MirUnaryIntrinsic unary:
                     AddOperandUse(unary.Operand, live);
+                    break;
+                // G4：占位运算符的运行期派发节点（操作数按借用计）
+                case MirGenericBinaryOp genericBinary:
+                    AddOperandUse(genericBinary.Left, live);
+                    AddOperandUse(genericBinary.Right, live);
+                    break;
+                case MirGenericUnaryOp genericUnary:
+                    AddOperandUse(genericUnary.Operand, live);
                     break;
                 case MirCall call:
                     AddOperandUses(call.Args, live);
@@ -649,6 +1139,10 @@ namespace RigiCompiler.Middleware.Passes
                 case MirCoroutineCreate create:
                     AddOperandUse(new MirLocalOperand(create.FrameSlot), live);
                     break;
+                // B-1：resume 直调借用 callee frame（所有权归调用方）
+                case MirResumeCall resumeCall:
+                    AddOperandUse(new MirLocalOperand(resumeCall.FrameSlot), live);
+                    break;
                 case MirFailureLoad failureLoad:
                     AddOperandUse(new MirLocalOperand(failureLoad.NodeIdSlot), live);
                     break;
@@ -661,6 +1155,8 @@ namespace RigiCompiler.Middleware.Passes
             MirCopyLocal copy => copy.Target,
             MirBinaryIntrinsic binary => binary.Target,
             MirUnaryIntrinsic unary => unary.Target,
+            MirGenericBinaryOp genericBinary => genericBinary.Target,
+            MirGenericUnaryOp genericUnary => genericUnary.Target,
             MirCall call => call.Result,
             MirSuperCall superCall => superCall.Result,
             MirInvokeIndirect invoke => invoke.Result,
@@ -691,15 +1187,23 @@ namespace RigiCompiler.Middleware.Passes
             MirTakePending takePending => takePending.TargetLocal,
             MirAwait awaitInst => awaitInst.ResultSlot,
             MirCoroutineCreate create => create.HandleSlot,
+            MirResumeCall resumeCall => resumeCall.CodeSlot,
             MirFailureLoad failureLoad => failureLoad.OutFatSlot,
             _ => null,
         };
 
-        // ===== split 主流程 =====
+        // ===== split 主流程（两相：PrepareSplit 收集/注册 frame →
+        // ExecuteSplit 合成 resume + 改写原 fn）=====
 
-        private void SplitFunction(MwContext context, MirModule mir, MirFunction fn)
+        private SplitPlan PrepareSplit(MwContext context, MirModule mir, MirFunction fn,
+            HashSet<string> tainted, SplitMode mode)
         {
-            var points = CollectSuspensionPoints(fn);
+            var points = CollectSuspensionPoints(context, fn, tainted);
+            // B-1：tainted 直调点建 callee 协议信息 + callee frame 合成
+            // 槽（先入 fn.Locals，活性分析/保存槽集/resume 局部表同源）
+            PrepareCallSites(context, mir, fn, points, tainted, mode);
+            // B-2：虚派发挂起点建分流臂协议信息（同理先入 fn.Locals）
+            PrepareVirtualCallSites(context, mir, fn, points, tainted);
             AnalyzeLiveness(fn, points);
 
             // 保存槽集 = 全部参数 ∪ 类级 .generic.* 局部（恒活跃）∪ 各
@@ -716,77 +1220,577 @@ namespace RigiCompiler.Middleware.Passes
                 || local.Name.StartsWith(".generic.", System.StringComparison.Ordinal)
                 || liveUnion.Contains(local.Name)).ToList();
 
-            // 棒5a：frame 追加 $mw.task 字段（自身 Task 胖引用——DONE 尾/
-            // 传播垫/恢复块经此取回 Task；取代旧面 rigi_task_current）
-            var taskTypeRef = TaskTypeRefOf(fn.ReturnType);
-            // 返回 T 的泛型 async：仍是 Task<TReturn> 族（有 result 字段）。
-            // 不得回退无元数 Task——可见区已不同（result），且 await 按
-            // Task<TReturn> 读 gate/handle
-            var taskConstructionRef = TypeLayout.IsGenericPlaceholder(
-                MirType.Of(taskTypeRef))
-                ? TaskPrefixOf(taskTypeRef)
-                : taskTypeRef;
-            var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(fn.Symbol.Canonical);
+            var plan = new SplitPlan
+            {
+                Fn = fn,
+                Mode = mode,
+                Points = points,
+                SavedSlots = savedSlots,
+                ParamNames = paramNames,
+                FrameCanonical = SyntheticTypePlanner.FrameCanonicalOf(fn.Symbol.Canonical),
+            };
             var frameSlots = savedSlots.Select(l => (l.Name, l.Type)).ToList();
-            frameSlots.Add((TaskSlotName, MirType.Of(taskConstructionRef)));
-            var frameType = SyntheticTypePlanner.EnsureFrameType(context, frameCanonical,
-                frameSlots);
-            var frameMirType = MirType.Of(frameCanonical);
-            var stateFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(frameCanonical,
-                SyntheticTypePlanner.StateFieldName, I32.Canonical);
-            string FieldOf(MirLocal local) => SyntheticTypePlanner.FrameFieldSymbol(
-                frameCanonical, local.Name, local.Type.Canonical);
-            var taskFieldSymbol = TaskFieldSymbolOf(frameCanonical, taskConstructionRef);
+            if (mode == SplitMode.Tasked)
+            {
+                // 棒5a：frame 追加 $mw.task 字段（自身 Task 胖引用——DONE 尾/
+                // 传播垫/恢复块经此取回 Task；取代旧面 rigi_task_current）
+                var taskTypeRef = TaskTypeRefOf(fn.ReturnType);
+                // 返回 T 的泛型 async：仍是 Task<TReturn> 族（有 result 字段）。
+                // 不得回退无元数 Task——可见区已不同（result），且 await 按
+                // Task<TReturn> 读 gate/handle
+                var taskConstructionRef = TypeLayout.IsGenericPlaceholder(
+                    MirType.Of(taskTypeRef))
+                    ? TaskPrefixOf(taskTypeRef)
+                    : taskTypeRef;
+                frameSlots.Add((TaskSlotName, MirType.Of(taskConstructionRef)));
+                plan.TaskTypeRef = taskTypeRef;
+                plan.TaskConstructionRef = taskConstructionRef;
+                plan.TaskFieldSymbol = TaskFieldSymbolOf(plan.FrameCanonical,
+                    taskConstructionRef);
+            }
+            else
+            {
+                // B-1 裸 frame：非 void 时追加 $mw.result 结果字段
+                //（调用方 DONE 臂读取；无 $mw.task——TaskState 投影是
+                // Task 持有者的可观察性，plain fn 无 Task 可投影）
+                if (!fn.ReturnType.IsVoid)
+                {
+                    frameSlots.Add((ResultSlotName, fn.ReturnType));
+                    plan.ResultFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                        plan.FrameCanonical, ResultSlotName, fn.ReturnType.Canonical);
+                }
+            }
+            plan.FrameType = SyntheticTypePlanner.EnsureFrameType(context,
+                plan.FrameCanonical, frameSlots);
+            plan.FrameMirType = MirType.Of(plan.FrameCanonical);
+            plan.StateFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                plan.FrameCanonical, SyntheticTypePlanner.StateFieldName, I32.Canonical);
 
             // frame 空 init（裸 ret；字段零值由 rigi_alloc 清零承担）
-            var initSymbol = context.Symbols.FindMember(
-                SyntheticTypePlanner.FrameInitCanonicalOf(frameCanonical))
-                ?? throw new CompilerInternalException("frame 空 init 未随类型注册: " + frameCanonical);
-            var thisParam = new MirLocal(".this", frameMirType);
-            mir.AddFunction(new MirFunction(initSymbol, MirType.Of(".void"),
+            plan.FrameInit = context.Symbols.FindMember(
+                SyntheticTypePlanner.FrameInitCanonicalOf(plan.FrameCanonical))
+                ?? throw new CompilerInternalException("frame 空 init 未随类型注册: " + plan.FrameCanonical);
+            var thisParam = new MirLocal(".this", plan.FrameMirType);
+            mir.AddFunction(new MirFunction(plan.FrameInit, MirType.Of(".void"),
                 new List<MirLocal> { thisParam }, new List<MirLocal> { thisParam },
                 new List<MirBlock>
                 {
                     new MirBlock("entry", new List<MirInst>(), new MirRet(null)),
                 }, false));
 
-            var resumeSymbol = ProxyBakeSupport.SyntheticMember(
+            plan.ResumeSymbol = ProxyBakeSupport.SyntheticMember(
                 "$mw.resume." + fn.Symbol.Canonical, owner: null);
+            return plan;
+        }
 
-            var resumeFn = BuildResumeFunction(context, mir, fn, points, savedSlots,
-                paramNames, frameMirType, stateFieldSymbol, taskFieldSymbol,
-                taskTypeRef, FieldOf, resumeSymbol);
-            mir.AddFunction(resumeFn);
-            if (IsZeroArgAsyncCall(fn))
+        // B-1：tainted 直调点协议信息回填（PrepareSplit 内、活性分析
+        // 之前——callee frame 槽须进 fn.Locals 才被保存槽集收编）。
+        // B-2：plain 模式的 yield Alarm 已支持（EmitPollGate 失败尾
+        // 有 plain 分叉——pending 保持置位 ret FAILED 沿链上传）；
+        // super 调用与显式/直调运算符同为静态唯一目标收编（同协议）；
+        // §7.2 隐藏参数（类级 typeid 剔除）经落参计划合成
+        private void PrepareCallSites(MwContext context, MirModule mir, MirFunction fn,
+            List<SuspensionPoint> points, HashSet<string> tainted, SplitMode mode)
+        {
+            foreach (var point in points)
             {
-                var thisLocal = fn.Parameters.FirstOrDefault(p => p.Name == ".this")
-                    ?? throw new CompilerInternalException(
-                        "0 参 $$call 缺 .this: " + fn.Symbol.Canonical);
-                _coldBinds.Add(new ColdBindEntry
+                // 虚派发挂起点由 PrepareVirtualCallSites 建臂（直调
+                // 协议不介入——同一调用点只能一种协议）
+                if (point.Virtual != null)
                 {
-                    OwnerCanonical = fn.Symbol.Owner!.Canonical,
-                    CallCanonical = fn.Symbol.Canonical,
-                    ResumeSymbol = resumeSymbol,
-                    FrameCanonical = frameCanonical,
-                    FrameType = frameType,
-                    FrameInit = initSymbol,
-                    TaskTypeRef = taskTypeRef,
-                    TaskConstructionRef = taskConstructionRef,
-                    ThisType = thisLocal.Type,
+                    continue;
+                }
+                IReadOnlyList<MirOperand> args;
+                MwMemberSymbol target;
+                string? hostConstructedRef = null;
+                switch (point.Inst)
+                {
+                    case MirCall call when !IsMutexEnter(call):
+                        args = call.Args;
+                        target = call.Target;
+                        hostConstructedRef = call.HostConstructedRef;
+                        break;
+                    case MirSuperCall superCall:
+                        args = superCall.Args;
+                        target = superCall.Target;
+                        break;
+                    case MirNewObject newObject:
+                        // 含挂起点的 init：落参实参 = .this（新建对象
+                        // 槽）+ 用户构造实参；宿主构造形态即 new 的
+                        // 类型（类级 typeid 合成恒可判定）
+                        var withThis = new List<MirOperand>
+                        {
+                            new MirLocalOperand(newObject.Target),
+                        };
+                        withThis.AddRange(newObject.Args);
+                        args = withThis;
+                        target = newObject.Init;
+                        hostConstructedRef = newObject.Type.Canonical;
+                        break;
+                    default:
+                        continue;
+                }
+                var callee = mir.Functions.FirstOrDefault(f =>
+                    f.Symbol.Canonical == target.Canonical)
+                    ?? throw new CompilerInternalException(
+                        "tainted callee 不在模块函数表: " + target.Canonical);
+                var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(
+                    callee.Symbol.Canonical);
+                var calleeLocal = "$mw.callee." + point.State;
+                fn.AddLocal(new MirLocal(calleeLocal, MirType.Of(frameCanonical)));
+                point.CallSite = new CallSiteInfo
+                {
+                    Callee = callee,
+                    CalleeLocal = calleeLocal,
+                    CalleeFrameCanonical = frameCanonical,
+                    ResumeSymbol = ProxyBakeSupport.SyntheticMember(
+                        "$mw.resume." + callee.Symbol.Canonical, owner: null),
+                    ResultFieldSymbol = callee.ReturnType.IsVoid
+                        ? null
+                        : SyntheticTypePlanner.FrameFieldSymbol(frameCanonical,
+                            ResultSlotName, callee.ReturnType.Canonical),
+                };
+                PlanArgDrops(context, fn, point.CallSite, callee, args,
+                    hostConstructedRef);
+                if (point.Inst is MirNewObject originalNew)
+                {
+                    point.InitSite = new InitSiteInfo
+                    {
+                        Site = point.CallSite,
+                        TargetLocal = originalNew.Target,
+                        Original = originalNew,
+                    };
+                    point.CallSite = null;
+                }
+            }
+        }
+
+        // 含挂起点 init 的合成空 init（模块级按类型懒建；对齐 frame/
+        // Task 空 init 先例——字段零值由 rigi_alloc 清零承担，字段初
+        // 始值由 ..init.wrapper 在构造点原位缝合）。.this 类型用模板
+        // 声明形（MIR fn 模板共享；类级 typeid 由 prologue 从对象头
+        // 自取，空体不用）
+        private readonly Dictionary<string, MwMemberSymbol> _emptyCtorInits = new(
+            System.StringComparer.Ordinal);
+
+        private MwMemberSymbol EmptyCtorInit(MwContext context, MirModule mir,
+            MwTypeSymbol type)
+        {
+            var template = context.Symbols.FindTypeByRef(type.Canonical) ?? type;
+            var declarationRef = template.Canonical;
+            if (_emptyCtorInits.TryGetValue(declarationRef, out var cached))
+            {
+                return cached;
+            }
+            var symbol = ProxyBakeSupport.SyntheticMember(
+                declarationRef + "$.mw.emptyinit()@.void", template);
+            var thisParam = new MirLocal(".this", MirType.Of(declarationRef));
+            mir.AddFunction(new MirFunction(symbol, MirType.Of(".void"),
+                new List<MirLocal> { thisParam }, new List<MirLocal> { thisParam },
+                new List<MirBlock>
+                {
+                    new MirBlock("entry", new List<MirInst>(), new MirRet(null)),
+                }, false));
+            _emptyCtorInits.Add(declarationRef, symbol);
+            return symbol;
+        }
+
+        // B-2 虚派发挂起点协议信息回填：闭包全类臂（最深派生优先
+        // 排序——type.is 子类判定下浅类臂不得遮蔽深类）；tainted
+        // 实现臂建 callee frame 槽 + 落参计划（每实现一套，frame
+        // 类型随实现不同）；泛型宿主闭包受控拒绝（构造形态臂条件
+        // 需 construction 级派发知识，布局查询是模板键——容量外）
+        private void PrepareVirtualCallSites(MwContext context, MirModule mir,
+            MirFunction fn, List<SuspensionPoint> points, HashSet<string> tainted)
+        {
+            foreach (var point in points)
+            {
+                if (point.Virtual == null)
+                {
+                    continue;
+                }
+                var call = (MirCall)point.Inst;
+                var target = call.Target;
+                if (target.Owner!.Declaration.GenericParameters.Count > 0)
+                {
+                    throw new MwNotSupportedException(
+                        "B-2 暂不支持泛型宿主虚派发链上的挂起点: " + target.Canonical);
+                }
+                var pairs = ClosurePairsOf(context, target, call.OperatorDispatch);
+                if (call.Args.Count == 0
+                    || call.Args[0] is not MirLocalOperand receiver)
+                {
+                    throw new CompilerInternalException(
+                        "虚派发挂起点缺接收者实参: " + target.Canonical);
+                }
+                point.Virtual.ReceiverLocal = receiver.Name;
+                point.Virtual.Result = call.Result;
+                point.Virtual.ExcTarget = call.ExcTarget;
+                point.Virtual.OriginalCall = call;
+                // 每 distinct tainted 实现一套协议信息
+                var implEntries = new Dictionary<string, CallSiteInfo>(
+                    System.StringComparer.Ordinal);
+                var armIndex = 0;
+                foreach (var (classCanonical, implCanonical) in pairs)
+                {
+                    CallSiteInfo? entry = null;
+                    if (tainted.Contains(implCanonical))
+                    {
+                        if (!implEntries.TryGetValue(implCanonical, out entry))
+                        {
+                            var callee = mir.Functions.FirstOrDefault(f =>
+                                f.Symbol.Canonical == implCanonical)
+                                ?? throw new CompilerInternalException(
+                                    "tainted 虚实现不在模块函数表: " + implCanonical);
+                            var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(
+                                implCanonical);
+                            var calleeLocal = "$mw.callee." + point.State + "."
+                                + armIndex;
+                            armIndex++;
+                            fn.AddLocal(new MirLocal(calleeLocal,
+                                MirType.Of(frameCanonical)));
+                            entry = new CallSiteInfo
+                            {
+                                Callee = callee,
+                                CalleeLocal = calleeLocal,
+                                CalleeFrameCanonical = frameCanonical,
+                                ResumeSymbol = ProxyBakeSupport.SyntheticMember(
+                                    "$mw.resume." + implCanonical, owner: null),
+                                ResultFieldSymbol = callee.ReturnType.IsVoid
+                                    ? null
+                                    : SyntheticTypePlanner.FrameFieldSymbol(
+                                        frameCanonical, ResultSlotName,
+                                        callee.ReturnType.Canonical),
+                            };
+                            PlanArgDrops(context, fn, entry, callee, call.Args,
+                                call.HostConstructedRef);
+                            implEntries.Add(implCanonical, entry);
+                        }
+                    }
+                    point.Virtual.Arms.Add(new VirtualArm
+                    {
+                        ClassCanonical = classCanonical,
+                        Impl = entry,
+                    });
+                }
+                // 最深派生优先（臂条件 type.is 是子类判定）：深度 =
+                // 闭包内被派生计数，降序
+                var query = context.DispatchQuery!;
+                point.Virtual.Arms.Sort((a, b) =>
+                    DepthOf(query, b.ClassCanonical, point.Virtual.Arms)
+                        .CompareTo(DepthOf(query, a.ClassCanonical, point.Virtual.Arms)));
+                if (point.Virtual.Arms.All(a => a.Impl == null))
+                {
+                    throw new CompilerInternalException(
+                        "虚派发挂起点闭包内无 tainted 实现: " + target.Canonical);
+                }
+            }
+        }
+
+        private static int DepthOf(IMwDispatchQuery query, string classCanonical,
+            List<VirtualArm> arms)
+        {
+            var depth = 0;
+            foreach (var arm in arms)
+            {
+                if (arm.ClassCanonical != classCanonical
+                    && query.DerivesFrom(classCanonical, arm.ClassCanonical))
+                {
+                    depth++;
+                }
+            }
+            return depth;
+        }
+
+        // §7.2 落参计划：MIR 调用点实参恒不含类级 typeid（class 宿主
+        // 被调方自取 / 值类型宿主发射侧合成直传）——实参按「形参剔除
+        // 类级 typeid」位序对 zip；被剔除的类级 typeid 按宿主构造形态
+        // 合成（闭合实参 → MirGetTypeId 常量；外层占位 → 调用方同名
+        // .generic.* 局部转抄；其余形态受控拒绝）
+        private static void PlanArgDrops(MwContext context, MirFunction fn,
+            CallSiteInfo site, MirFunction callee, IReadOnlyList<MirOperand> args,
+            string? hostConstructedRef)
+        {
+            var expected = new List<MirLocal>();
+            var hiddenTypeIds = new List<MirLocal>();
+            foreach (var parameter in callee.Parameters)
+            {
+                if (GenericAbi.IsClassLevelTypeId(callee.Symbol, parameter.Name))
+                {
+                    hiddenTypeIds.Add(parameter);
+                }
+                else
+                {
+                    expected.Add(parameter);
+                }
+            }
+            if (args.Count != expected.Count)
+            {
+                throw new MwNotSupportedException(
+                    "B-2 暂不支持实参与可见形参不对应的 tainted 调用（未知隐藏参数形态）: "
+                    + callee.Symbol.Canonical);
+            }
+            for (var i = 0; i < args.Count; i++)
+            {
+                site.Drops.Add(new ArgDrop
+                {
+                    FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                        site.CalleeFrameCanonical, expected[i].Name,
+                        expected[i].Type.Canonical),
+                    Operand = args[i],
                 });
             }
-            ReplaceWithStub(context, mir, fn, frameType, frameMirType, initSymbol,
-                resumeSymbol, taskTypeRef, taskFieldSymbol, FieldOf);
+            if (hiddenTypeIds.Count == 0)
+            {
+                return;
+            }
+            var owner = callee.Symbol.Owner
+                ?? throw new CompilerInternalException(
+                    "类级 typeid 形参缺宿主: " + callee.Symbol.Canonical);
+            // 宿主构造形态：优先调用点携带（G1 HostConstructedRef），
+            // 否则取接收者（首个实参 .this）静态类型；值类型接收者
+            // 经 cast/copy 适配成裸模板时沿产出链回溯（同
+            // ConcreteColdBodyType 先例）
+            var hostRef = hostConstructedRef;
+            if (hostRef == null && args.Count > 0
+                && args[0] is MirLocalOperand receiver)
+            {
+                hostRef = fn.FindLocal(receiver.Name).Type.Canonical;
+                if (owner.Declaration.GenericParameters.Count > 0
+                    && (!Layout.ConstructedTypeCollector.IsConstructed(hostRef)
+                        || BilVerificationContext.StripTypeArguments(
+                            MwTypeKey.Normalize(hostRef)) != owner.Canonical))
+                {
+                    hostRef = ResolveConstructedRefBackward(fn, receiver.Name,
+                        owner.Canonical) ?? hostRef;
+                }
+            }
+            var substitution = hostRef != null
+                && Layout.ConstructedTypeCollector.IsConstructed(hostRef)
+                && BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(hostRef)) == owner.Canonical
+                ? Layout.ConstructedTypeCollector.BuildSubstitution(
+                    MwTypeKey.Normalize(hostRef), owner.Declaration)
+                : null;
+            if (substitution == null)
+            {
+                throw new MwNotSupportedException(
+                    "B-2 暂不支持宿主构造形态静态不可知的 tainted 调用（类级 typeid 无法合成）: "
+                    + callee.Symbol.Canonical);
+            }
+            foreach (var parameter in hiddenTypeIds)
+            {
+                var typeArg = substitution[parameter.Name.Substring(".generic.".Length)];
+                var drop = new ArgDrop
+                {
+                    FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                        site.CalleeFrameCanonical, parameter.Name,
+                        parameter.Type.Canonical),
+                };
+                if (GenericAbi.TryPlaceholderName(typeArg, out var placeholder))
+                {
+                    // 外层占位 → 调用方同名 .generic.* 局部转抄（该局部
+                    // 恒入保存槽集——.generic.* 恒活跃规则）
+                    var callerLocal = ".generic." + placeholder;
+                    if (!fn.TryFindLocal(callerLocal, out _))
+                    {
+                        throw new MwNotSupportedException(
+                            "B-2 暂不支持类级 typeid 占位在调用方无同名局部的 tainted 调用: "
+                            + callee.Symbol.Canonical);
+                    }
+                    drop.CallerTypeIdLocal = callerLocal;
+                }
+                else if (!typeArg.Contains(".generic<", System.StringComparison.Ordinal))
+                {
+                    drop.TypeIdTypeRef = typeArg;
+                }
+                else
+                {
+                    throw new MwNotSupportedException(
+                        "B-2 暂不支持类级 typeid 实参为嵌套占位构造的 tainted 调用: "
+                        + callee.Symbol.Canonical);
+                }
+                site.Drops.Add(drop);
+            }
+        }
+
+        // 接收者槽的构造形态沿产出链回溯（cast/copy 适配会剥成裸模
+        // 板——泛型身份在源槽上；同 ConcreteColdBodyType 跳链先例，
+        // 8 跳环保护）
+        private static string? ResolveConstructedRefBackward(MirFunction fn,
+            string localName, string ownerCanonical)
+        {
+            var slot = localName;
+            for (var hop = 0; hop < 8; hop++)
+            {
+                string? copiedFrom = null;
+                foreach (var block in fn.Blocks)
+                {
+                    foreach (var inst in block.Instructions)
+                    {
+                        if (inst is MirCast cast && cast.Target == slot
+                            && cast.Source is MirLocalOperand fromCast)
+                        {
+                            copiedFrom = fromCast.Name;
+                        }
+                        if (inst is MirCopyLocal copy && copy.Target == slot
+                            && copy.Source is MirLocalOperand fromCopy)
+                        {
+                            copiedFrom = fromCopy.Name;
+                        }
+                    }
+                }
+                if (copiedFrom == null)
+                {
+                    return null;
+                }
+                var sourceType = fn.FindLocal(copiedFrom).Type.Canonical;
+                if (Layout.ConstructedTypeCollector.IsConstructed(sourceType)
+                    && BilVerificationContext.StripTypeArguments(
+                        MwTypeKey.Normalize(sourceType)) == ownerCanonical)
+                {
+                    return sourceType;
+                }
+                slot = copiedFrom;
+            }
+            return null;
+        }
+
+        private void ExecuteSplit(MwContext context, MirModule mir, SplitPlan plan)
+        {
+            var fn = plan.Fn;
+            string FieldOf(MirLocal local) => SyntheticTypePlanner.FrameFieldSymbol(
+                plan.FrameCanonical, local.Name, local.Type.Canonical);
+
+            var resumeFn = BuildResumeFunction(context, mir, plan, FieldOf);
+            mir.AddFunction(resumeFn);
+            if (plan.Mode == SplitMode.Tasked)
+            {
+                if (IsZeroArgAsyncCall(fn))
+                {
+                    var thisLocal = fn.Parameters.FirstOrDefault(p => p.Name == ".this")
+                        ?? throw new CompilerInternalException(
+                            "0 参 $$call 缺 .this: " + fn.Symbol.Canonical);
+                    _coldBinds.Add(new ColdBindEntry
+                    {
+                        OwnerCanonical = fn.Symbol.Owner!.Canonical,
+                        CallCanonical = fn.Symbol.Canonical,
+                        ResumeSymbol = plan.ResumeSymbol,
+                        FrameCanonical = plan.FrameCanonical,
+                        FrameType = plan.FrameType,
+                        FrameInit = plan.FrameInit,
+                        TaskTypeRef = plan.TaskTypeRef!,
+                        TaskConstructionRef = plan.TaskConstructionRef!,
+                        ThisType = thisLocal.Type,
+                    });
+                }
+                ReplaceWithStub(context, mir, fn, plan.FrameType, plan.FrameMirType,
+                    plan.FrameInit, plan.ResumeSymbol, plan.TaskTypeRef!,
+                    plan.TaskFieldSymbol!, FieldOf);
+            }
+            else
+            {
+                ReplaceWithTrap(mir, fn);
+            }
 
             // 自检②③：state 分发表项恰覆盖 入口+挂起点；frame 字段 =
-            // state + 保存槽 + $mw.task
-            var plan = context.Layout!.Find(frameCanonical)
-                ?? throw new CompilerInternalException("frame 布局计划缺失: " + frameCanonical);
-            if (plan.Fields.Count != savedSlots.Count + 2)
+            // state + 保存槽 + $mw.task（Tasked）/ $mw.result?（Plain）
+            var layoutPlan = context.Layout!.Find(plan.FrameCanonical)
+                ?? throw new CompilerInternalException("frame 布局计划缺失: " + plan.FrameCanonical);
+            var expected = plan.SavedSlots.Count + 1
+                + (plan.Mode == SplitMode.Tasked ? 1 : 0)
+                + (plan.ResultFieldSymbol != null ? 1 : 0);
+            if (layoutPlan.Fields.Count != expected)
             {
                 throw new CompilerInternalException(
-                    $"CoroutineSplit 自检失败：{fn.Symbol.Canonical} frame 字段数 {plan.Fields.Count} ≠ 保存槽 {savedSlots.Count} + state + task");
+                    $"CoroutineSplit 自检失败：{fn.Symbol.Canonical} frame 字段数 {layoutPlan.Fields.Count} ≠ 保存槽 {plan.SavedSlots.Count} + state + task/result");
             }
+        }
+
+        // plain tainted fn 的原符号陷阱 stub：全部调用点已协议化
+        //（taint 闭包 + 调用点改写），直调残留属内部错误——陷阱体
+        // 仅作防御（模块内符号保留，Emit 零特例）
+        private static void ReplaceWithTrap(MirModule mir, MirFunction fn)
+        {
+            var trap = new MirFunction(fn.Symbol, fn.ReturnType, fn.Parameters,
+                new List<MirLocal>(fn.Parameters),
+                new List<MirBlock>
+                {
+                    new MirBlock("entry", new List<MirInst>(), new MirUnreachable()),
+                }, fn.IsEntrypoint);
+            var index = mir.FunctionList.IndexOf(fn);
+            if (index < 0)
+            {
+                throw new CompilerInternalException(
+                    "CoroutineSplit：tainted fn 不在模块函数表: " + fn.Symbol.Canonical);
+            }
+            mir.FunctionList[index] = trap;
+        }
+
+        // ===== B-1 根驱动：$mw.main.settle 合成 =====
+        // tainted main 的 Task 包装 split 后，rigi_entry 在 drain 至
+        // quiescence 之后调本 fn 取 main 结果/重抛 main 失败（对齐 VM
+        // BilVm.Run 的 main.Failure 优先汇总）：failureNodeId != 0 →
+        // MirFailureLoad 取异常 + MirThrow（pending 置位，rigi_entry
+        // 收进 entry.exc 进 reporter）；否则解包 result 字段返回
+        //（void main 恒 0）
+        public static string MainSettleCanonicalOf(string taskTypeRef) =>
+            "$mw.main.settle(task:" + taskTypeRef + ")@.i32";
+
+        private void SynthesizeMainSettle(MwContext context, MirModule mir,
+            MirFunction mainFn)
+        {
+            var taskTypeRef = TaskTypeRefOf(mainFn.ReturnType);
+            var symbol = ProxyBakeSupport.SyntheticMember(
+                MainSettleCanonicalOf(taskTypeRef), owner: null);
+            var taskParam = new MirLocal("task", MirType.Of(taskTypeRef));
+            var settle = new MirFunction(symbol, I32,
+                new List<MirLocal> { taskParam }, new List<MirLocal> { taskParam },
+                new List<MirBlock>(), false);
+            string Fresh(string prefix, MirType type) =>
+                ProxyWildcardAbi.FreshLocal(settle, prefix, type);
+            var taskOp = new MirLocalOperand("task");
+            var nodeId = Fresh("$mw.settle.nid.", I64);
+            var zero = Fresh("$mw.settle.z.", I64);
+            var isFail = Fresh("$mw.settle.isf.", Bool);
+            settle.AddBlock(new MirBlock("entry", new List<MirInst>
+            {
+                new MirGetField(taskOp, TaskField(taskTypeRef, "failureNodeId", ".i64"),
+                    nodeId),
+                new MirLoadResource(ProxyWildcardAbi.AddI64Resource(context, 0), zero),
+                new MirBinaryIntrinsic(BilBinaryOp.CmpNe, new MirLocalOperand(nodeId),
+                    new MirLocalOperand(zero), I64, I64, Bool, isFail),
+            }, new MirCondBranch(new MirLocalOperand(isFail), "mw.settle.fail",
+                "mw.settle.ok")));
+
+            var okInsts = new List<MirInst>();
+            var okResult = Fresh("$mw.settle.r.",
+                mainFn.ReturnType.IsVoid ? I32 : mainFn.ReturnType);
+            if (!mainFn.ReturnType.IsVoid)
+            {
+                var rn = Fresh("$mw.settle.rn.",
+                    MirType.Of(".nullable<" + mainFn.ReturnType.Canonical + ">"));
+                okInsts.Add(new MirGetField(taskOp,
+                    TaskField(taskTypeRef, "result",
+                        ".nullable<" + mainFn.ReturnType.Canonical + ">"), rn));
+                okInsts.Add(new MirUnwrapNullable(new MirLocalOperand(rn),
+                    mainFn.ReturnType, okResult));
+            }
+            else
+            {
+                okInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddI32Resource(context, 0), okResult));
+            }
+            settle.AddBlock(new MirBlock("mw.settle.ok", okInsts,
+                new MirRet(new MirLocalOperand(okResult))));
+
+            var exc = Fresh("$mw.settle.exc.", Any);
+            settle.AddBlock(new MirBlock("mw.settle.fail", new List<MirInst>
+            {
+                new MirFailureLoad(nodeId, exc),
+                new MirThrow(new MirLocalOperand(exc), null),
+            }, new MirRetThrow()));
+            mir.AddFunction(settle);
         }
 
         private static string TaskTypeRefOf(MirType returnType) =>
@@ -855,24 +1859,33 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // ===== ④ resume fn 合成 =====
-
+        // plan.Mode = Tasked：frame 带 $mw.task，挂起/恢复做 TaskState
+        // 投影（markSuspended/markRunnable），DONE 尾走 Task 终态序列；
+        // plan.Mode = Plain（B-1 tainted 普通 fn）：无 Task——投影跳过，
+        // DONE 尾只写 $mw.result + ret DONE（frame 所有权归调用方，
+        // 不做最终 release），失败经 RcInjection plain 垫尾 ret FAILED
         private MirFunction BuildResumeFunction(MwContext context, MirModule mir,
-            MirFunction fn, List<SuspensionPoint> points, List<MirLocal> savedSlots,
-            HashSet<string> paramNames, MirType frameMirType, string stateFieldSymbol,
-            string taskFieldSymbol, string taskTypeRef,
-            System.Func<MirLocal, string> fieldOf, MwMemberSymbol resumeSymbol)
+            SplitPlan plan, System.Func<MirLocal, string> fieldOf)
         {
+            var fn = plan.Fn;
+            var points = plan.Points;
+            var savedSlots = plan.SavedSlots;
+            var paramNames = plan.ParamNames;
+            var stateFieldSymbol = plan.StateFieldSymbol;
+            var taskFieldSymbol = plan.TaskFieldSymbol;
+            var taskTypeRef = plan.TaskTypeRef;
             // 局部表：frame 参数 + 原 fn 全部局部副本（同名同型；参数在
             // resume fn 是普通局部，state 0 从 frame 恢复）
-            var frameParam = new MirLocal(FrameParamName, frameMirType);
+            var frameParam = new MirLocal(FrameParamName, plan.FrameMirType);
             var locals = new List<MirLocal> { frameParam };
             foreach (var local in fn.Locals)
             {
                 locals.Add(new MirLocal(local.Name, local.Type));
             }
-            var resumeFn = new MirFunction(resumeSymbol, I32,
+            var resumeFn = new MirFunction(plan.ResumeSymbol, I32,
                 new List<MirLocal> { frameParam }, locals, new List<MirBlock>(),
-                false, isCoroutineResume: true);
+                false, isCoroutineResume: true,
+                isPlainResume: plan.Mode == SplitMode.Plain);
             var frameOp = new MirLocalOperand(FrameParamName);
             var syms = Syms(context, mir);
 
@@ -943,13 +1956,27 @@ namespace RigiCompiler.Middleware.Passes
                 new MirBranch(entryBlockId)));
 
             // 挂起点恢复块（state N）：恢复活跃槽 → 重回 wait 块（await）
-            // 或 yield-alarm 探测块 / 原后继（裸 yield）
+            // 或 yield-alarm 探测块 / 调用块（tainted 直调点）/ 原后继
+            //（裸 yield / Mutex.enter）
             foreach (var point in points)
             {
                 var restoreInsts = new List<MirInst>();
                 EmitRestore(restoreInsts, point.LiveAfter);
                 string resumeTarget;
-                if (point.Inst is MirAwait)
+                if (point.CallSite != null || point.InitSite != null)
+                {
+                    // B-1：重回调用块——callee frame 已从本 frame 的
+                    // callee 槽恢复，MirResumeCall 再下钻
+                    resumeTarget = CallBlockId(point);
+                }
+                else if (point.Virtual != null)
+                {
+                    // B-2：重回恢复分流链（type.is 重判——接收者已从
+                    // frame 恢复，运行期类型不变必命中同臂）直落对应
+                    // 实现的调用块再下钻
+                    resumeTarget = VirtualResumeDispatchId(point);
+                }
+                else if (point.Inst is MirAwait)
                 {
                     resumeTarget = WaitBlockId(point);
                 }
@@ -958,8 +1985,12 @@ namespace RigiCompiler.Middleware.Passes
                     // 棒5a：先经轮询判位分流——EventAlarm 响铃恢复直续
                     // 原后继；PollingAlarm 重发布恢复先探测
                     resumeTarget = PollGateBlockId(point);
-                    EmitRestoreMark(context, restoreInsts, frameOp,
-                        taskFieldSymbol, taskTypeRef, Fresh);
+                    // TaskState 投影仅 Tasked（plain 无 Task 可投影）
+                    if (taskFieldSymbol != null)
+                    {
+                        EmitRestoreMark(context, restoreInsts, frameOp,
+                            taskFieldSymbol, taskTypeRef!, Fresh);
+                    }
                     resumeFn.AddBlock(new MirBlock("mw.state." + point.State, restoreInsts,
                         new MirBranch(resumeTarget)));
                     EmitPollGate(context, mir, resumeFn, fn, point, frameOp,
@@ -971,8 +2002,13 @@ namespace RigiCompiler.Middleware.Passes
                     // 裸 yield / Mutex.enter：恢复直落原后继
                     resumeTarget = ContBlockId(point);
                 }
-                EmitRestoreMark(context, restoreInsts, frameOp,
-                    taskFieldSymbol, taskTypeRef, Fresh);
+                // TaskState 投影是 Task 持有者的可观察性；plain resume
+                // 无 Task 可投影（对齐 VM：无 TaskObject 的协程不投影）
+                if (taskFieldSymbol != null)
+                {
+                    EmitRestoreMark(context, restoreInsts, frameOp,
+                        taskFieldSymbol, taskTypeRef!, Fresh);
+                }
                 resumeFn.AddBlock(new MirBlock("mw.state." + point.State, restoreInsts,
                     new MirBranch(resumeTarget)));
             }
@@ -984,8 +2020,7 @@ namespace RigiCompiler.Middleware.Passes
             {
                 if (!pointsByBlock.TryGetValue(block, out var blockPoints))
                 {
-                    RewriteReturn(context, mir, resumeFn, block, fn, frameOp,
-                        taskFieldSymbol, taskTypeRef, syms);
+                    RewriteReturn(context, mir, resumeFn, block, plan, frameOp, syms);
                     resumeFn.AddBlock(block);
                     continue;
                 }
@@ -995,7 +2030,25 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     var headInsts = block.Instructions
                         .Take(point.InstIndex).Skip(segmentStart).ToList();
-                    if (point.Inst is MirAwait awaitInst)
+                    if (point.CallSite != null)
+                    {
+                        EmitCallSplit(context, resumeFn, fn, point, currentId,
+                            headInsts, frameOp, stateFieldSymbol, taskFieldSymbol,
+                            taskTypeRef, syms, EmitSave, I32Const, Fresh);
+                    }
+                    else if (point.InitSite != null)
+                    {
+                        EmitInitSplit(context, mir, resumeFn, fn, point, currentId,
+                            headInsts, frameOp, stateFieldSymbol, taskFieldSymbol,
+                            taskTypeRef, syms, EmitSave, I32Const, Fresh);
+                    }
+                    else if (point.Virtual != null)
+                    {
+                        EmitVirtualCallSplit(context, resumeFn, fn, point, currentId,
+                            headInsts, frameOp, stateFieldSymbol, taskFieldSymbol,
+                            taskTypeRef, syms, EmitSave, I32Const, Fresh);
+                    }
+                    else if (point.Inst is MirAwait awaitInst)
                     {
                         EmitAwaitSplit(context, resumeFn, fn, point, awaitInst,
                             currentId, headInsts, frameOp, stateFieldSymbol,
@@ -1028,8 +2081,7 @@ namespace RigiCompiler.Middleware.Passes
                 // 尾段：挂起点之后的剩余指令 + 原终结符
                 var tailInsts = block.Instructions.Skip(segmentStart).ToList();
                 var tail = new MirBlock(currentId, tailInsts, block.Terminator);
-                RewriteReturn(context, mir, resumeFn, tail, fn, frameOp,
-                    taskFieldSymbol, taskTypeRef, syms);
+                RewriteReturn(context, mir, resumeFn, tail, plan, frameOp, syms);
                 resumeFn.AddBlock(tail);
             }
             return resumeFn;
@@ -1041,10 +2093,461 @@ namespace RigiCompiler.Middleware.Passes
         private static string ContBlockId(SuspensionPoint point) =>
             point.Block.Id + ".cont" + point.State;
 
+        private static string CallBlockId(SuspensionPoint point) =>
+            point.Block.Id + ".call" + point.State;
+
+        private static string VirtualResumeDispatchId(SuspensionPoint point) =>
+            point.Block.Id + ".call" + point.State + ".vrdisp";
+
         private static string PollGateBlockId(SuspensionPoint point) =>
             point.Block.Id + ".pollgate" + point.State;
 
-        // await 改写（棒5a 新交互点，对齐 VM VmDispatch.Await 语义）：
+        // B-1 tainted→tainted 直调改写（调用点是调用方的挂起点；对齐
+        // VM 栈式模型——挂起的是整条帧链，恢复沿链逐层下钻）：
+        //   head（原位置）：建 callee frame → 实参按形参序落 callee
+        //     frame 字段 → 存活跃槽（含 callee 槽）+ state=N（先于下
+        //     钻——callee 挂起时本层 frame 必须已可恢复）→ 落调用块；
+        //   调用块（首入与恢复共用）：MirResumeCall 原生栈下钻 callee
+        //     resume → 四码分流（0=SUSPENDED/1=YIELDED 上传同码 /
+        //     2=DONE 读 callee frame.$mw.result 续行 / 3=FAILED 取
+        //     pending 沿原 ExcTarget 重抛）。
+        // callee frame 所有权归本层（callee 槽持 +1；callee resume 借
+        // 用约定不做最终 release）
+        private void EmitCallSplit(MwContext context, MirFunction resumeFn,
+            MirFunction fn, SuspensionPoint point, string headId,
+            List<MirInst> headInsts, MirLocalOperand frameOp, string stateFieldSymbol,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
+            System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
+            System.Func<int, string, MirLoadResource> i32Const,
+            System.Func<string, MirType, string> fresh)
+        {
+            var info = point.CallSite!;
+            // B-2：MirCall / MirSuperCall 同协议（静态唯一目标）
+            var (result, excTarget) = point.Inst switch
+            {
+                MirCall call => (call.Result, call.ExcTarget),
+                MirSuperCall superCall => (superCall.Result, superCall.ExcTarget),
+                _ => throw new CompilerInternalException(
+                    "EmitCallSplit 非调用挂起点: " + point.Inst.GetType().Name),
+            };
+            var callId = CallBlockId(point);
+            var doneId = callId + ".done";
+            var propId = callId + ".prop";
+            var failId = callId + ".fail";
+            var calleeOp = new MirLocalOperand(info.CalleeLocal);
+            var frameType = context.Symbols.FindType(info.CalleeFrameCanonical)
+                ?? throw new CompilerInternalException(
+                    "tainted callee frame 未预注册: " + info.CalleeFrameCanonical);
+            var frameInit = context.Symbols.FindMember(
+                SyntheticTypePlanner.FrameInitCanonicalOf(info.CalleeFrameCanonical))
+                ?? throw new CompilerInternalException(
+                    "tainted callee frame init 缺失: " + info.CalleeFrameCanonical);
+
+            headInsts.Add(new MirNewObject(frameType, null, frameInit,
+                new List<MirOperand>(), info.CalleeLocal));
+            // §7.2 落参计划（B-2）：直落实参 / 常量 typeid 合成 /
+            // 调用方 .generic.* 局部转抄
+            foreach (var drop in info.Drops)
+            {
+                if (drop.Operand != null)
+                {
+                    headInsts.Add(new MirSetField(drop.Operand, calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+                else if (drop.TypeIdTypeRef != null)
+                {
+                    var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                    headInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                    headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+                else
+                {
+                    headInsts.Add(new MirSetField(
+                        new MirLocalOperand(drop.CallerTypeIdLocal!), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+            }
+            emitSave(headInsts, point.LiveAfter);
+            var stateConst = fresh("$mw.state.c.", I32);
+            headInsts.Add(i32Const(point.State, stateConst));
+            headInsts.Add(new MirSetField(new MirLocalOperand(stateConst), frameOp,
+                stateFieldSymbol));
+            resumeFn.AddBlock(new MirBlock(headId, headInsts, new MirBranch(callId)));
+
+            var code = fresh("$mw.call.code.", I32);
+            var codeTable = new BilSwitchTableResource(
+                "$mw.coroutine.call." + _resourceCounter++, ".i32",
+                new[] { "0", "1", "2", "3" });
+            context.Module.Resources.Add(codeTable);
+            resumeFn.AddBlock(new MirBlock(callId, new List<MirInst>
+            {
+                new MirResumeCall(info.ResumeSymbol, info.CalleeLocal, code),
+            }, new MirSwitch(new MirLocalOperand(code), codeTable,
+                new[] { propId, propId, doneId, failId }, "mw.state.bad")));
+
+            // DONE：借用 callee frame 读 $mw.result 续行
+            var doneInsts = new List<MirInst>();
+            if (result != null)
+            {
+                if (info.ResultFieldSymbol == null)
+                {
+                    throw new CompilerInternalException(
+                        "tainted 调用有结果槽但 callee 无 $mw.result: "
+                        + info.Callee.Symbol.Canonical);
+                }
+                doneInsts.Add(new MirGetField(calleeOp, info.ResultFieldSymbol,
+                    result));
+            }
+            resumeFn.AddBlock(new MirBlock(doneId, doneInsts,
+                new MirBranch(ContBlockId(point))));
+
+            // SUSPENDED/YIELDED 上传：frame 已写完，直返同码（Tasked
+            // 调用方先投影自身 Task Suspended——VM 无 TaskObject 的
+            // 协程不投影，plain 调用方同跳过）
+            var propInsts = new List<MirInst>();
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, propInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", fresh);
+            }
+            resumeFn.AddBlock(new MirBlock(propId, propInsts,
+                new MirRet(new MirLocalOperand(code))));
+
+            // FAILED：pending 已在 TLS（callee plain 垫尾保持置位），
+            // 取走重抛沿原 ExcTarget（对齐普通调用抛出语义；null 由
+            // RcInjection 进本 fn 传播垫继续上传/吸收）
+            var exc = fresh("$mw.call.exc.", Any);
+            var failInsts = new List<MirInst>
+            {
+                new MirTakePending(exc),
+                new MirThrow(new MirLocalOperand(exc), excTarget),
+            };
+            resumeFn.AddBlock(new MirBlock(failId, failInsts,
+                excTarget != null
+                    ? (MirTerminator)new MirBranch(excTarget.Id)
+                    : new MirRetThrow()));
+        }
+
+        // B-2 含挂起点 init 的构造改写（对齐 VM New 语义——分配 →
+        // init.wrapper 缝合 → init 调用；init 挂起 = 整条帧链挂起）：
+        //   head（原位置）：MirNewObject 分配（init.wrapper 原位缝合
+        //     + 合成空 init——真 init 不在此跑）→ Target 槽落定 →
+        //     建 init frame（.this = Target）+ 落参 → 存活跃槽 +
+        //     state=N → 落调用块；
+        //   调用块（首入与恢复共用）：MirResumeCall 下钻 init resume
+        //     → 四码分流（0/1 上传 / 2 DONE 直落原后继——结果即
+        //     Target 槽本身，无 $mw.result 可读 / 3 取 pending 沿原
+        //     MirNewObject.ExcTarget 重抛——半构造对象随本层托管槽
+        //     配平释放，对齐「init 内抛出释放新建实例」口径）。
+        private void EmitInitSplit(MwContext context, MirModule mir, MirFunction resumeFn,
+            MirFunction fn, SuspensionPoint point, string headId,
+            List<MirInst> headInsts, MirLocalOperand frameOp, string stateFieldSymbol,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
+            System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
+            System.Func<int, string, MirLoadResource> i32Const,
+            System.Func<string, MirType, string> fresh)
+        {
+            var initSite = point.InitSite!;
+            var info = initSite.Site;
+            var original = initSite.Original;
+            var callId = CallBlockId(point);
+            var doneId = callId + ".done";
+            var propId = callId + ".prop";
+            var failId = callId + ".fail";
+            var calleeOp = new MirLocalOperand(info.CalleeLocal);
+            var frameType = context.Symbols.FindType(info.CalleeFrameCanonical)
+                ?? throw new CompilerInternalException(
+                    "tainted init frame 未预注册: " + info.CalleeFrameCanonical);
+            var frameInit = context.Symbols.FindMember(
+                SyntheticTypePlanner.FrameInitCanonicalOf(info.CalleeFrameCanonical))
+                ?? throw new CompilerInternalException(
+                    "tainted init frame init 缺失: " + info.CalleeFrameCanonical);
+
+            // 分配（空 init；init.wrapper/WrapperArgs/ExcTarget 原位）
+            headInsts.Add(new MirNewObject(original.Type, original.InitWrapper,
+                EmptyCtorInit(context, mir, original.Type), new List<MirOperand>(),
+                original.Target, original.WrapperArgs, original.ExcTarget));
+            // init frame：.this = 新建对象 + 用户实参/类级 typeid 落参
+            headInsts.Add(new MirNewObject(frameType, null, frameInit,
+                new List<MirOperand>(), info.CalleeLocal));
+            foreach (var drop in info.Drops)
+            {
+                if (drop.Operand != null)
+                {
+                    headInsts.Add(new MirSetField(drop.Operand, calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+                else if (drop.TypeIdTypeRef != null)
+                {
+                    var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                    headInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                    headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+                else
+                {
+                    headInsts.Add(new MirSetField(
+                        new MirLocalOperand(drop.CallerTypeIdLocal!), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+            }
+            emitSave(headInsts, point.LiveAfter);
+            var stateConst = fresh("$mw.state.c.", I32);
+            headInsts.Add(i32Const(point.State, stateConst));
+            headInsts.Add(new MirSetField(new MirLocalOperand(stateConst), frameOp,
+                stateFieldSymbol));
+            resumeFn.AddBlock(new MirBlock(headId, headInsts, new MirBranch(callId)));
+
+            var code = fresh("$mw.call.code.", I32);
+            var codeTable = new BilSwitchTableResource(
+                "$mw.coroutine.call." + _resourceCounter++, ".i32",
+                new[] { "0", "1", "2", "3" });
+            context.Module.Resources.Add(codeTable);
+            resumeFn.AddBlock(new MirBlock(callId, new List<MirInst>
+            {
+                new MirResumeCall(info.ResumeSymbol, info.CalleeLocal, code),
+            }, new MirSwitch(new MirLocalOperand(code), codeTable,
+                new[] { propId, propId, doneId, failId }, "mw.state.bad")));
+
+            // DONE：结果即 Target 槽（head 已落定），直落原后继
+            resumeFn.AddBlock(new MirBlock(doneId, new List<MirInst>(),
+                new MirBranch(ContBlockId(point))));
+
+            // SUSPENDED/YIELDED 上传（同直调口径）
+            var propInsts = new List<MirInst>();
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, propInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", fresh);
+            }
+            resumeFn.AddBlock(new MirBlock(propId, propInsts,
+                new MirRet(new MirLocalOperand(code))));
+
+            // FAILED：pending 已在 TLS，取走重抛沿原构造异常边
+            var exc = fresh("$mw.call.exc.", Any);
+            var failInsts = new List<MirInst>
+            {
+                new MirTakePending(exc),
+                new MirThrow(new MirLocalOperand(exc), original.ExcTarget),
+            };
+            resumeFn.AddBlock(new MirBlock(failId, failInsts,
+                original.ExcTarget != null
+                    ? (MirTerminator)new MirBranch(original.ExcTarget.Id)
+                    : new MirRetThrow()));
+        }
+
+        // B-2 虚/interface/class 运算符派发挂起点改写（调用点动态分
+        // 流；对齐 VM 帧栈模型——运行期目标是谁，挂起/恢复语义就与
+        // 直调该目标完全一致）：
+        //   head（原位置）：存活跃槽（含接收者与各 callee 槽）+
+        //     state=N（先于下钻）→ 落首入分流链；
+        //   首入分流链（vdisp）：闭包全类臂最深派生优先 type.is 判
+        //     ——tainted 实现臂 → 建该实现 frame + 落参 → 调用块下
+        //     钻；非 tainted 实现臂 → 原调用块（普通虚派发）；默认
+        //     臂（闭包外/null 接收者）→ 原调用块（NRE 语义保持）；
+        //   调用块（首入与恢复共用，每实现一块）：MirResumeCall 下
+        //     钻 → 四码分流（0/1 上传 / 2 读该实现 frame.$mw.result
+        //     续行 / 3 取 pending 沿原 ExcTarget 重抛）；
+        //   恢复分流链（vrdisp，state N 恢复块落点）：同序 type.is
+        //     重判直落调用块（frame 不重建——首入已建）；默认臂防御
+        //     不可达（挂起前提即首入命中 tainted 臂）。
+        // callee frame 所有权归本层（各 callee 槽持 +1；resume 借用
+        // 约定不做最终 release）
+        private void EmitVirtualCallSplit(MwContext context, MirFunction resumeFn,
+            MirFunction fn, SuspensionPoint point, string headId,
+            List<MirInst> headInsts, MirLocalOperand frameOp, string stateFieldSymbol,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
+            System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
+            System.Func<int, string, MirLoadResource> i32Const,
+            System.Func<string, MirType, string> fresh)
+        {
+            var site = point.Virtual!;
+            var callId = CallBlockId(point);
+            var dispatchId = callId + ".vdisp";
+            var defaultId = callId + ".vdflt";
+            var propSuspendId = callId + ".vprops";
+            var propYieldId = callId + ".vpropy";
+            var failId = callId + ".vfail";
+            var receiverOp = new MirLocalOperand(site.ReceiverLocal);
+
+            emitSave(headInsts, point.LiveAfter);
+            var stateConst = fresh("$mw.state.c.", I32);
+            headInsts.Add(i32Const(point.State, stateConst));
+            headInsts.Add(new MirSetField(new MirLocalOperand(stateConst), frameOp,
+                stateFieldSymbol));
+            resumeFn.AddBlock(new MirBlock(headId, headInsts,
+                new MirBranch(dispatchId)));
+
+            // 每 tainted 实现的协议块 id（臂序即 site.Arms 序——最深
+            // 派生优先；同实现多类共用一个协议块组）
+            var implBlockIds = new Dictionary<CallSiteInfo, (string New, string Call,
+                string Done)>();
+            var nextImpl = 0;
+            foreach (var arm in site.Arms)
+            {
+                if (arm.Impl != null && !implBlockIds.ContainsKey(arm.Impl))
+                {
+                    implBlockIds.Add(arm.Impl, (callId + ".vnew" + nextImpl,
+                        callId + ".vcall" + nextImpl, callId + ".vdone" + nextImpl));
+                    nextImpl++;
+                }
+            }
+
+            // 分流链（首入/恢复共用生成器；resume=true 时 tainted 臂
+            // 直落调用块、默认臂防御不可达）
+            void EmitDispatchChain(string chainId, string checkPrefix, bool resume)
+            {
+                for (var k = 0; k < site.Arms.Count; k++)
+                {
+                    var arm = site.Arms[k];
+                    var checkId = k == 0 ? chainId : checkPrefix + (k - 1) + ".next";
+                    var cond = fresh("$mw.vchk.", Bool);
+                    string hitId;
+                    string missId;
+                    if (arm.Impl != null)
+                    {
+                        hitId = resume
+                            ? implBlockIds[arm.Impl].Call
+                            : implBlockIds[arm.Impl].New;
+                    }
+                    else
+                    {
+                        // 恢复链上的非 tainted 臂不可达（挂起前提即首
+                        // 入命中 tainted 臂，接收者类型不变）——防御
+                        hitId = resume ? "mw.state.bad" : defaultId;
+                    }
+                    missId = k + 1 < site.Arms.Count
+                        ? checkPrefix + k + ".next"
+                        : (resume ? "mw.state.bad" : defaultId);
+                    resumeFn.AddBlock(new MirBlock(checkId, new List<MirInst>
+                    {
+                        new MirTypeCheck(MirTypeCheckKind.Is, receiverOp,
+                            arm.ClassCanonical, null, cond),
+                    }, new MirCondBranch(new MirLocalOperand(cond), hitId, missId)));
+                }
+            }
+            EmitDispatchChain(dispatchId, callId + ".vc", resume: false);
+            EmitDispatchChain(VirtualResumeDispatchId(point), callId + ".vrc",
+                resume: true);
+
+            // 默认臂/非 tainted 臂：原调用直落续行（vtable/iMap 动态
+            // 派发——运行期目标必非 tainted，否则必中上方臂）
+            resumeFn.AddBlock(new MirBlock(defaultId,
+                new List<MirInst> { site.OriginalCall },
+                new MirBranch(ContBlockId(point))));
+
+            // 每 tainted 实现：建 frame + 落参（首入）→ 调用块四码
+            foreach (var (impl, ids) in implBlockIds)
+            {
+                var calleeOp = new MirLocalOperand(impl.CalleeLocal);
+                var frameType = context.Symbols.FindType(impl.CalleeFrameCanonical)
+                    ?? throw new CompilerInternalException(
+                        "tainted 虚实现 frame 未预注册: " + impl.CalleeFrameCanonical);
+                var frameInit = context.Symbols.FindMember(
+                    SyntheticTypePlanner.FrameInitCanonicalOf(impl.CalleeFrameCanonical))
+                    ?? throw new CompilerInternalException(
+                        "tainted 虚实现 frame init 缺失: " + impl.CalleeFrameCanonical);
+                var newInsts = new List<MirInst>
+                {
+                    new MirNewObject(frameType, null, frameInit,
+                        new List<MirOperand>(), impl.CalleeLocal),
+                };
+                foreach (var drop in impl.Drops)
+                {
+                    if (drop.Operand != null)
+                    {
+                        newInsts.Add(new MirSetField(drop.Operand, calleeOp,
+                            drop.FrameFieldSymbol));
+                    }
+                    else if (drop.TypeIdTypeRef != null)
+                    {
+                        var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                        newInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                        newInsts.Add(new MirSetField(new MirLocalOperand(tid),
+                            calleeOp, drop.FrameFieldSymbol));
+                    }
+                    else
+                    {
+                        newInsts.Add(new MirSetField(
+                            new MirLocalOperand(drop.CallerTypeIdLocal!), calleeOp,
+                            drop.FrameFieldSymbol));
+                    }
+                }
+                // callee 槽回存本层 frame：head 的 emitSave 在分流/建
+                // frame 之前执行（槽位尚为 null），恢复块从本层 frame
+                // 恢复 callee 槽下钻——必须在此把新建 frame 落进保存槽
+                var callerFrameCanonical = resumeFn.FindLocal(FrameParamName)
+                    .Type.Canonical;
+                newInsts.Add(new MirSetField(calleeOp, frameOp,
+                    SyntheticTypePlanner.FrameFieldSymbol(callerFrameCanonical,
+                        impl.CalleeLocal, impl.CalleeFrameCanonical)));
+                resumeFn.AddBlock(new MirBlock(ids.New, newInsts,
+                    new MirBranch(ids.Call)));
+
+                var code = fresh("$mw.call.code.", I32);
+                var codeTable = new BilSwitchTableResource(
+                    "$mw.coroutine.call." + _resourceCounter++, ".i32",
+                    new[] { "0", "1", "2", "3" });
+                context.Module.Resources.Add(codeTable);
+                resumeFn.AddBlock(new MirBlock(ids.Call, new List<MirInst>
+                {
+                    new MirResumeCall(impl.ResumeSymbol, impl.CalleeLocal, code),
+                }, new MirSwitch(new MirLocalOperand(code), codeTable,
+                    new[] { propSuspendId, propYieldId, ids.Done, failId },
+                    "mw.state.bad")));
+
+                // DONE：借用 callee frame 读 $mw.result 续行
+                var doneInsts = new List<MirInst>();
+                if (site.Result != null)
+                {
+                    if (impl.ResultFieldSymbol == null)
+                    {
+                        throw new CompilerInternalException(
+                            "tainted 虚调用有结果槽但实现无 $mw.result: "
+                            + impl.Callee.Symbol.Canonical);
+                    }
+                    doneInsts.Add(new MirGetField(calleeOp, impl.ResultFieldSymbol,
+                        site.Result));
+                }
+                resumeFn.AddBlock(new MirBlock(ids.Done, doneInsts,
+                    new MirBranch(ContBlockId(point))));
+            }
+
+            // SUSPENDED/YIELDED 上传（各实现调用块共用两块——上传码
+            // 是常量，无需引用各调用块的 code 局部）：frame 已写完，
+            // 直返常量码（Tasked 调用方先投影自身 Task Suspended）
+            void EmitPropBlock(string blockId, int resumeCode)
+            {
+                var propInsts = new List<MirInst>();
+                if (taskFieldSymbol != null)
+                {
+                    EmitTaskMark(context, propInsts, frameOp, taskFieldSymbol,
+                        taskTypeRef!, "markSuspended", fresh);
+                }
+                var propCode = fresh("$mw.code.", I32);
+                propInsts.Add(i32Const(resumeCode, propCode));
+                resumeFn.AddBlock(new MirBlock(blockId, propInsts,
+                    new MirRet(new MirLocalOperand(propCode))));
+            }
+            EmitPropBlock(propSuspendId, ResumeSuspended);
+            EmitPropBlock(propYieldId, ResumeYielded);
+
+            // FAILED（共用）：pending 已在 TLS（callee plain 垫尾保持
+            // 置位），取走重抛沿原 ExcTarget
+            var exc = fresh("$mw.call.exc.", Any);
+            var failInsts = new List<MirInst>
+            {
+                new MirTakePending(exc),
+                new MirThrow(new MirLocalOperand(exc), site.ExcTarget),
+            };
+            resumeFn.AddBlock(new MirBlock(failId, failInsts,
+                site.ExcTarget != null
+                    ? (MirTerminator)new MirBranch(site.ExcTarget.Id)
+                    : new MirRetThrow()));
+        }
+
+
         // wait 块 = acquire gate →（handle==0 冷 Task：tryStart 一次性
         // 判定 → 赢家 spawnIntoLocked + noteSpawn + publish）→ 先存活跃
         // 槽 + state=N（临界区内——发布安全的前提：waiter 被排空重发布
@@ -1055,7 +2558,7 @@ namespace RigiCompiler.Middleware.Passes
         private void EmitAwaitSplit(MwContext context, MirFunction resumeFn, MirFunction fn,
             SuspensionPoint point, MirAwait awaitInst, string headId, List<MirInst> headInsts,
             MirLocalOperand frameOp, string stateFieldSymbol,
-            string taskFieldSymbol, string taskTypeRef, RuntimeSyms syms,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
             System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
             System.Func<int, string, MirLoadResource> i32Const,
             System.Func<string, MirType, string> fresh,
@@ -1154,9 +2657,14 @@ namespace RigiCompiler.Middleware.Passes
                     new[] { suspendId, doneId, failId, cancelId }, "mw.state.bad")));
 
             // 挂起：frame 已在临界区内写完，投影 Suspended，直返 SUSPENDED
+            //（plain resume 无 Task——跳过投影，对齐 VM 无 TaskObject
+            // 协程口径）
             var suspendInsts = new List<MirInst>();
-            EmitTaskMark(context, suspendInsts, frameOp, taskFieldSymbol,
-                taskTypeRef, "markSuspended", fresh);
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, suspendInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", fresh);
+            }
             resumeFn.AddBlock(new MirBlock(suspendId, suspendInsts,
                 resumeRet(ResumeSuspended, suspendInsts)));
 
@@ -1204,7 +2712,7 @@ namespace RigiCompiler.Middleware.Passes
         private void EmitMutexEnterSplit(MwContext context, MirFunction resumeFn,
             SuspensionPoint point, MirCall enterCall, string headId,
             List<MirInst> headInsts, MirLocalOperand frameOp, string stateFieldSymbol,
-            string taskFieldSymbol, string taskTypeRef, RuntimeSyms syms,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
             System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
             System.Func<int, string, MirLoadResource> i32Const,
             System.Func<string, MirType, string> fresh,
@@ -1250,8 +2758,11 @@ namespace RigiCompiler.Middleware.Passes
             waitInsts.Add(i32Const(point.State, stateConst));
             waitInsts.Add(new MirSetField(new MirLocalOperand(stateConst), frameOp,
                 stateFieldSymbol));
-            EmitTaskMark(context, waitInsts, frameOp, taskFieldSymbol,
-                taskTypeRef, "markSuspended", fresh);
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, waitInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", fresh);
+            }
             waitInsts.Add(new MirCall(syms.MutexRelease,
                 new List<MirOperand> { new MirLocalOperand(gate) }, null));
             resumeFn.AddBlock(new MirBlock(waitId, waitInsts,
@@ -1301,7 +2812,7 @@ namespace RigiCompiler.Middleware.Passes
         private void EmitYieldAlarmSplit(MwContext context, MirFunction resumeFn,
             SuspensionPoint point, MirYieldAlarm yieldAlarm,
             string headId, List<MirInst> headInsts, MirLocalOperand frameOp,
-            string stateFieldSymbol, string taskFieldSymbol, string taskTypeRef,
+            string stateFieldSymbol, string? taskFieldSymbol, string? taskTypeRef,
             System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
             System.Func<int, List<MirInst>, MirTerminator> resumeRet,
             RuntimeSyms syms, System.Func<string, MirType, string> fresh)
@@ -1346,7 +2857,10 @@ namespace RigiCompiler.Middleware.Passes
             resumeFn.AddBlock(new MirBlock(pollId, pollInsts,
                 resumeRet(ResumeSuspended, pollInsts)));
 
-            // EventAlarm：闸内登记 waiter；已触发（粘滞）→ 自重排
+            // EventAlarm：闸内登记 waiter；已触发（粘滞）→ 自重排。
+            // L8：先经 ensureHandle 取底座句柄——用户直继子类
+            // handle==0 时懒建手动事件粘滞底座（VM TryAwaitTimer
+            // 同口径懒建），此后 rigi_alarm_wait 恒收非 0 句柄
             var ah = fresh("$mw.yield.ah.", I64);
             var curE = fresh("$mw.yield.cur.", I64);
             var rc = fresh("$mw.yield.rc.", I32);
@@ -1354,8 +2868,8 @@ namespace RigiCompiler.Middleware.Passes
             var notRegistered = fresh("$mw.yield.sig.", Bool);
             var eventInsts = new List<MirInst>
             {
-                new MirGetField(new MirLocalOperand(yieldAlarm.AlarmSlot),
-                    EventAlarmHandleField, ah),
+                new MirCall(EventAlarmFn(context, "ensureHandle"),
+                    new List<MirOperand> { new MirLocalOperand(yieldAlarm.AlarmSlot) }, ah),
                 new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), curE),
                 new MirCall(syms.AlarmWait,
                     new List<MirOperand> { new MirLocalOperand(ah),
@@ -1383,10 +2897,14 @@ namespace RigiCompiler.Middleware.Passes
             resumeFn.AddBlock(new MirBlock(signaledId, signaledInsts,
                 resumeRet(ResumeSuspended, signaledInsts)));
 
-            // 已登记：等响铃，结束执行段
+            // 已登记：等响铃，结束执行段（TaskState 投影仅 Tasked——
+            // plain 无 Task 可投影，对齐 VM 无 TaskObject 协程口径）
             var registeredInsts = new List<MirInst>();
-            EmitTaskMark(context, registeredInsts, frameOp, taskFieldSymbol,
-                taskTypeRef, "markSuspended", fresh);
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, registeredInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", fresh);
+            }
             resumeFn.AddBlock(new MirBlock(yieldId + ".registered",
                 registeredInsts, resumeRet(ResumeSuspended, registeredInsts)));
         }
@@ -1396,11 +2914,14 @@ namespace RigiCompiler.Middleware.Passes
         // 后继；PollingAlarm 重发布恢复（pending=1）先经 $mw.poll_probe
         // 探测：ready → poll_clear + 续行；not → poll_schedule（退避
         // 重排程）+ ret SUSPENDED（frame 未变，state 保持 N）；异常
-        //（-1，pending 已置位）→ 失败终态序列（Task FAILED，await 点
-        // 重抛——对齐 VM ProbePolling 的 yield 点失败口径）
+        //（-1，pending 已置位）→ 失败尾分叉：Tasked = 失败终态序列
+        //（Task FAILED，await 点重抛——对齐 VM ProbePolling 的 yield
+        // 点失败口径）；B-2 Plain = ret FAILED（pending 保持置位沿链
+        // 上传，调用方调用点 FAILED 臂取走重抛——对齐 VM 帧栈逐层
+        // 展开口径；release 序列由 RcInjection 标准 ret 出口配平）
         private void EmitPollGate(MwContext context, MirModule mir, MirFunction resumeFn,
             MirFunction fn, SuspensionPoint point, MirLocalOperand frameOp,
-            string taskFieldSymbol, string taskTypeRef, RuntimeSyms syms)
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms)
         {
             var gateId = PollGateBlockId(point);
             var probeId = gateId + ".probe";
@@ -1456,19 +2977,37 @@ namespace RigiCompiler.Middleware.Passes
                 new MirCall(syms.PollSchedule,
                     new List<MirOperand> { new MirLocalOperand(curW) }, null),
             };
-            EmitTaskMark(context, waitInsts, frameOp, taskFieldSymbol,
-                taskTypeRef, "markSuspended", Fresh);
+            // TaskState 投影仅 Tasked（plain 无 Task 可投影）
+            if (taskFieldSymbol != null)
+            {
+                EmitTaskMark(context, waitInsts, frameOp, taskFieldSymbol,
+                    taskTypeRef!, "markSuspended", Fresh);
+            }
             var waitCode = Fresh("$mw.code.", I32);
             waitInsts.Add(new MirLoadResource(
                 ProxyWildcardAbi.AddI32Resource(context, ResumeSuspended), waitCode));
             resumeFn.AddBlock(new MirBlock(waitId, waitInsts,
                 new MirRet(new MirLocalOperand(waitCode))));
 
-            // 探测异常（pending 已置位）：失败终态序列（与 RcInjection
-            // resume 垫尾同构——统一走 EmitFailTerminal）
+            // 探测异常（pending 已置位）：Tasked 走失败终态序列（与
+            // RcInjection resume 垫尾同构——统一走 EmitFailTerminal）；
+            // B-2 Plain 走链式上传（ret FAILED——与 RcInjection plain
+            // 垫尾同口径，托管槽 release 由标准 ret 出口配平）
             var failInsts = new List<MirInst>();
-            var failRet = EmitFailTerminal(context, mir, resumeFn, failInsts,
-                taskFieldSymbol, taskTypeRef, syms);
+            MirTerminator failRet;
+            if (taskFieldSymbol != null)
+            {
+                failRet = EmitFailTerminal(context, mir, resumeFn, failInsts,
+                    taskFieldSymbol, taskTypeRef!, syms);
+            }
+            else
+            {
+                var failCode = Fresh("$mw.code.", I32);
+                failInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddI32Resource(context, PlainResumeFailedCode),
+                    failCode));
+                failRet = new MirRet(new MirLocalOperand(failCode));
+            }
             resumeFn.AddBlock(new MirBlock(failId, failInsts, failRet));
         }
 
@@ -1618,10 +3157,13 @@ namespace RigiCompiler.Middleware.Passes
         // OnTerminal 的 complete 通道）：Task<T> 先把结果写 result
         // 字段（nullable 包装——终态保存与 waiter 读取以 Task.gate
         // 临界区建立 happens-before，§18.3）→ complete() → publishAll
-        // → noteTerminal → MirCoroutineDone → ret DONE
+        // → noteTerminal → MirCoroutineDone → ret DONE。
+        // B-1 Plain 分叉：裸 frame 无 Task——非 void 写 $mw.result
+        // 字段（调用方 DONE 臂读取）→ 直 ret DONE（无终态序列/无
+        // MirCoroutineDone——frame 所有权归调用方，本出口不做最终
+        // release）
         private void RewriteReturn(MwContext context, MirModule mir, MirFunction resumeFn,
-            MirBlock block, MirFunction original, MirLocalOperand frameOp,
-            string taskFieldSymbol, string taskTypeRef, RuntimeSyms syms)
+            MirBlock block, SplitPlan plan, MirLocalOperand frameOp, RuntimeSyms syms)
         {
             if (block.Terminator is not MirRet ret)
             {
@@ -1630,6 +3172,19 @@ namespace RigiCompiler.Middleware.Passes
             var insts = block.InstructionList;
             string Fresh(string prefix, MirType type) =>
                 ProxyWildcardAbi.FreshLocal(resumeFn, prefix, type);
+            if (plan.Mode == SplitMode.Plain)
+            {
+                if (ret.Value != null && plan.ResultFieldSymbol != null)
+                {
+                    insts.Add(new MirSetField(ret.Value, frameOp,
+                        plan.ResultFieldSymbol));
+                }
+                block.Terminator = ResumeDoneTerminator(context, resumeFn, insts, Fresh);
+                return;
+            }
+            var taskFieldSymbol = plan.TaskFieldSymbol!;
+            var taskTypeRef = plan.TaskTypeRef!;
+            var original = plan.Fn;
             var task = Fresh("$mw.task.", MirType.Of(FieldTypeOfTaskField(taskFieldSymbol)));
             insts.Add(new MirGetField(frameOp, taskFieldSymbol, task));
             if (ret.Value != null && !original.ReturnType.IsVoid)
@@ -1851,6 +3406,32 @@ namespace RigiCompiler.Middleware.Passes
             return hasThis;
         }
 
+        // 沿 extends 链找 $$call 成员（环保护；外部/缺失基类即止）。
+        // 与 VM FindCallTarget 拍平 sheet（含继承槽）同语义
+        private static MwMemberSymbol? FindCallAlongHierarchy(MwContext context,
+            MwTypeSymbol type)
+        {
+            var guard = new HashSet<string>(System.StringComparer.Ordinal);
+            var current = type;
+            while (guard.Add(current.Canonical))
+            {
+                var call = current.Members.FirstOrDefault(m =>
+                    m.Canonical.Contains("$$call(", System.StringComparison.Ordinal));
+                if (call != null)
+                {
+                    return call;
+                }
+                if (current.Declaration.ExtendsType is not { } baseRef
+                    || context.Symbols.FindTypeByRef(baseRef) is not
+                        { IsExternal: false } baseType)
+                {
+                    return null;
+                }
+                current = baseType;
+            }
+            return null;
+        }
+
         private static bool IsVoidTaskType(string taskTypeRef) =>
             !taskTypeRef.StartsWith("core.coroutine::Task<",
                 System.StringComparison.Ordinal);
@@ -2066,15 +3647,20 @@ namespace RigiCompiler.Middleware.Passes
             {
                 return cached;
             }
-            // 闭包的 async $$call → split 产物（frame 类型 + resume fn）
+            // 闭包的 async $$call → split 产物（frame 类型 + resume fn）。
+            // $$call 沿 extends 链解析（与 VM FindCallTarget 拍平 sheet
+            // 含继承槽同语义：Sub : Base : AsyncAction 的 $$call 声明在
+            // Base，frame/resume 也属 Base 的 split 产物）
             var closureType = context.Symbols.FindType(bodyType.Canonical)
                 ?? throw new MwNotSupportedException(
                     "冷 Task 的 body 静态类型不透明（native 半场暂不支持）: "
                     + bodyType.Canonical);
-            var call = closureType.Members.FirstOrDefault(m =>
-                m.Canonical.Contains("$$call(", System.StringComparison.Ordinal))
+            var call = FindCallAlongHierarchy(context, closureType)
                 ?? throw new MwNotSupportedException(
                     "冷 Task 的 body 缺少 $$call 实现: " + bodyType.Canonical);
+            // frame 的 .this 槽类型 = $$call 声明宿主（继承命中时为基类），
+            // 落字段符号必须按声明宿主拼写而非构造点静态类型
+            var callThisCanonical = call.Owner?.Canonical ?? bodyType.Canonical;
             var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(call.Canonical);
             var frameType = context.Symbols.FindType(frameCanonical)
                 ?? throw new MwNotSupportedException(
@@ -2111,7 +3697,7 @@ namespace RigiCompiler.Middleware.Passes
                 new MirNewObject(frameType, null, frameInit, new List<MirOperand>(), frame),
                 new MirSetField(bodyOp, new MirLocalOperand(frame),
                     SyntheticTypePlanner.FrameFieldSymbol(frameCanonical, ".this",
-                        bodyType.Canonical)),
+                        callThisCanonical)),
                 // Task 对象（合成空 init）+ body/gate/coldHandle 落字段
                 new MirNewObject(TaskTypeSymbolOf(context, taskTypeRef),
                     null, TaskEmptyInit(context, mir, taskTypeRef),

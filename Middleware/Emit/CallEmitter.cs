@@ -72,7 +72,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     EmitDirectCall(session, builder, slots,
                         session.FunctionOf(direct.Target.Canonical), call.Args, call.Result,
-                        call.ExcTarget);
+                        call.ExcTarget, call.HostConstructedRef);
                     break;
                 }
                 case VirtualCallBinding virtualCall:
@@ -137,12 +137,13 @@ namespace RigiCompiler.Middleware.Emit
         private static void EmitDirectCall(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             EmittedFunction callee,
-            IReadOnlyList<MirOperand> args, string? result, MirBlock? excTarget)
+            IReadOnlyList<MirOperand> args, string? result, MirBlock? excTarget,
+            string? hostConstructedRef = null)
         {
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
             var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result, temps,
-                boxed);
+                boxed, hostConstructedRef);
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
@@ -195,32 +196,57 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirFunction calleeMir, IReadOnlyList<MirOperand> args, string? result,
-            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
+            string? hostConstructedRef = null)
         {
             var hasOut = session.IsInlineValueType(calleeMir.ReturnType, out var outPlan);
             var thisAliases = calleeMir.Parameters.Count > 0
                 && calleeMir.Parameters[0].Name == ".this";
             var expected = ExpectedCallParams(calleeMir);
-            var values = new LLVMValueRef[args.Count + (hasOut ? 1 : 0)];
+            // G1：值类型泛型宿主的类级 typeid 保留在 LLVM 调用约定内——
+            // MIR 实参表（BIL 调用点同形）不含它们，按 fn 参数位序合并插入
+            var classIds = SynthesizeClassTypeIds(session, builder, slots, calleeMir,
+                hostConstructedRef, args);
+            var values = new List<LLVMValueRef>(
+                args.Count + (classIds?.Length ?? 0) + (hasOut ? 1 : 0));
             if (hasOut)
             {
-                values[0] = result != null
+                var outSlot = result != null
                     ? slots[result].Slot
-                    : LlvmEmitEnvironment.BuildEntryAlloca(builder, 
+                    : LlvmEmitEnvironment.BuildEntryAlloca(builder,
                         LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)outPlan.Size), "call.out");
                 if (result == null && outPlan.RefMapCount > 0)
                 {
-                    temps.Add(new ArcEmitter.RichTemp(values[0],
+                    temps.Add(new ArcEmitter.RichTemp(outSlot,
                         ArcEmitter.SheetOf(session, calleeMir.ReturnType), outPlan.Size));
                 }
+                values.Add(outSlot);
             }
-            for (var i = 0; i < args.Count; i++)
+            if (classIds == null)
             {
-                var expectType = i < expected.Count ? expected[i].Type : null;
-                values[i + (hasOut ? 1 : 0)] = CoerceArg(session, builder, slots, args[i],
-                    expectType, thisAliases && i == 0, temps, boxed);
+                for (var i = 0; i < args.Count; i++)
+                {
+                    var expectType = i < expected.Count ? expected[i].Type : null;
+                    values.Add(CoerceArg(session, builder, slots, args[i],
+                        expectType, thisAliases && i == 0, temps, boxed));
+                }
+                return values.ToArray();
             }
-            return values;
+            var argIndex = 0;
+            var idIndex = 0;
+            foreach (var parameter in calleeMir.Parameters)
+            {
+                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                {
+                    values.Add(classIds[idIndex++]);
+                    continue;
+                }
+                var expectType = argIndex < expected.Count ? expected[argIndex].Type : null;
+                values.Add(CoerceArg(session, builder, slots, args[argIndex],
+                    expectType, thisAliases && argIndex == 0, temps, boxed));
+                argIndex++;
+            }
+            return values.ToArray();
         }
 
         // canonical 签名形态（interface 调用：无 fn 体，按签名编组；接收
@@ -266,7 +292,8 @@ namespace RigiCompiler.Middleware.Emit
             return values;
         }
 
-        // 类级 typeid 已从 LLVM 调用约定剔除；实参列表与 BIL 调用点同形
+        // 类级 typeid 已从 LLVM 调用约定剔除（class 宿主；值类型宿主除外——
+        // 见 SynthesizeClassTypeIds）；实参列表与 BIL 调用点同形
         internal static List<MirLocal> ExpectedCallParams(MirFunction callee)
         {
             var list = new List<MirLocal>();
@@ -278,6 +305,135 @@ namespace RigiCompiler.Middleware.Emit
                 }
             }
             return list;
+        }
+
+        // ===== G1：泛型值类型宿主的类级 typeid 直传 =====
+
+        // 值类型无对象头隐藏槽，泛型值类型 fn 的类级 .generic.* 参数保留在
+        // LLVM 调用约定内（ModuleBuilder 声明/prologue 配合），调用点按
+        // fn 参数位序合成直传（与 class「被调方自取」对偶）。hostConstructedRef
+        // = 接收者/构造目标的构造形态 canonical（闭合或含外层占位）；null 时
+        // 依次回退：接收者静态类型（构造形）→ 当前 fn 同名 .generic.* 局部
+        //（裸模板形态：this 内自调/手写 BIL）。静态方法无类级参数（§9.2.3）
+        // 与非值类型宿主一律返回 null（调用侧零开销）。
+        internal static LLVMValueRef[]? SynthesizeClassTypeIds(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirFunction calleeMir, string? hostConstructedRef,
+            IReadOnlyList<MirOperand>? callArgs = null)
+        {
+            var owner = calleeMir.Symbol.Owner;
+            if (!GenericAbi.IsValueTypeOwner(owner)
+                || owner!.Declaration.GenericParameters.Count == 0
+                || calleeMir.Parameters.Count == 0
+                || calleeMir.Parameters[0].Name != ".this")
+            {
+                // 值类型静态成员无类级 typeid 实参（§9.2.3；调用约定剔除）
+                return null;
+            }
+            var names = new List<string>();
+            foreach (var parameter in calleeMir.Parameters)
+            {
+                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                {
+                    names.Add(parameter.Name.Substring(".generic.".Length));
+                }
+            }
+            if (names.Count == 0)
+            {
+                return null;
+            }
+            var hostRef = hostConstructedRef;
+            if (hostRef == null && callArgs is { Count: > 0 }
+                && callArgs[0] is MirLocalOperand receiver
+                && slots.ContainsKey(receiver.Name))
+            {
+                var receiverType = slots[receiver.Name].Local.Type.Canonical;
+                if (ConstructedTypeCollector.IsConstructed(receiverType)
+                    && BilVerificationContext.StripTypeArguments(
+                        MwTypeKey.Normalize(receiverType)) == owner.Canonical)
+                {
+                    hostRef = MwTypeKey.Normalize(receiverType);
+                }
+            }
+            var substitution = hostRef != null
+                ? ConstructedTypeCollector.BuildSubstitution(hostRef, owner.Declaration)
+                : null;
+            var values = new LLVMValueRef[names.Count];
+            for (var i = 0; i < names.Count; i++)
+            {
+                values[i] = MaterializeClassTypeId(session, builder, slots,
+                    names[i], substitution, calleeMir);
+            }
+            return values;
+        }
+
+        private static LLVMValueRef MaterializeClassTypeId(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            string paramName, Dictionary<string, string>? substitution, MirFunction calleeMir)
+        {
+            if (substitution != null && substitution.TryGetValue(paramName, out var arg))
+            {
+                if (GenericAbi.TryPlaceholderName(arg, out var placeholder))
+                {
+                    if (slots.ContainsKey(".generic." + placeholder))
+                    {
+                        return session.LoadLocal(builder, slots,
+                            new MirLocalOperand(".generic." + placeholder));
+                    }
+                    throw new MwNotSupportedException(
+                        $"泛型值类型方法的类级 typeid 实参静态不可解析: {calleeMir.Symbol.Canonical}"
+                        + $" 的 .generic.{paramName}（外层占位 .generic.{placeholder} 无当前 fn 局部）");
+                }
+                if (arg.Contains(".generic<", System.StringComparison.Ordinal))
+                {
+                    throw new MwNotSupportedException(
+                        $"泛型值类型方法的类级 typeid 实参为嵌套开放构造: {calleeMir.Symbol.Canonical}"
+                        + $" 的 .generic.{paramName} = {arg}");
+                }
+                return LLVMValueRef.CreateConstBitCast(session.TypeSheetFor(arg), PointerType());
+            }
+            // 裸模板形态：取当前 fn 同名 .generic.* 局部（WriteHiddenTypeIds 先例）
+            if (slots.ContainsKey(".generic." + paramName))
+            {
+                return session.LoadLocal(builder, slots,
+                    new MirLocalOperand(".generic." + paramName));
+            }
+            throw new MwNotSupportedException(
+                $"泛型值类型方法的类级 typeid 实参静态不可解析: {calleeMir.Symbol.Canonical}"
+                + $" 的 .generic.{paramName}");
+        }
+
+        // MIR 实参（BIL 调用点同形，不含类级 typeid）与合成 typeid 按 fn
+        // 参数位序合并（receiver/userArgs 已编组完成，仅做位序交织）
+        internal static LLVMValueRef[] MergeClassTypeIds(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirFunction calleeMir, string? hostConstructedRef, LLVMValueRef[] marshalledArgs)
+        {
+            var ids = SynthesizeClassTypeIds(session, builder, slots, calleeMir,
+                hostConstructedRef);
+            if (ids == null)
+            {
+                return marshalledArgs;
+            }
+            var merged = new LLVMValueRef[marshalledArgs.Length + ids.Length];
+            var argIndex = 0;
+            var idIndex = 0;
+            var outIndex = 0;
+            foreach (var parameter in calleeMir.Parameters)
+            {
+                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                {
+                    merged[outIndex++] = ids[idIndex++];
+                }
+                else
+                {
+                    merged[outIndex++] = marshalledArgs[argIndex++];
+                }
+            }
+            return merged;
         }
 
         internal static LLVMValueRef CoerceArg(ModuleBuilder.Session session,

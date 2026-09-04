@@ -164,6 +164,7 @@ namespace RigiCompiler.Tests
             ("TestSerializableCollectionsSnapshot", TestSerializableCollectionsSnapshot),
             ("TestSerializableTemporaryResume", TestSerializableTemporaryResume),
             ("TestSerializableGenericClone", TestSerializableGenericClone),
+            ("TestSerializationBaseImpliesSerializable", TestSerializationBaseImpliesSerializable),
             ("TestMessageQueueSmokeSemantics", TestMessageQueueSmokeSemantics),
             ("TestMessageQueueCapabilityMatrix", TestMessageQueueCapabilityMatrix),
             ("TestMessageQueueLifetimeEos", TestMessageQueueLifetimeEos),

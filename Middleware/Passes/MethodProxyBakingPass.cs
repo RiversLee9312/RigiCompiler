@@ -13,8 +13,10 @@ namespace RigiCompiler.Middleware.Passes
     /// wrapped 修饰符），按实现槽方法符号建 .proxy.call 环链——
     /// specific 环（方法级泛型 TReturn 代入被代理方法返回类型，void 擦除
     /// 为 .any 胖值形态）+ wildcard 环（.name 首参 = 实现槽 canonical
-    /// 字符串资源、args = 全实参按 named Any 具名包，恒等转发；改写
-    /// .name 重路由受控拒绝——VM 已支持，后续补）。原始方法体外移为
+    /// 字符串资源、args = 全实参按 named Any 具名包；inner 动态分派——
+    /// 刀6b：.name == 本成员恒等直进下一落点，改写 .name 经 per 宿主
+    /// $.mw.mwr router 重路由到宿主闭包任一可烘焙方法的最深层原始体，
+    /// VM ResolveInner/RerouteWildcardInner/FinishChain 同口径）。原始方法体外移为
     /// Host$.mwrapped.&lt;sig&gt;@&lt;ret&gt;（与 Entity 的 $.wrapped.
     /// 错开），原名 fn 替换为 trampoline：MirGetWrapperMethodAddr 取最
     /// 外环 wrapper 隐藏槽地址（刀3c 原地访问同口径，状态跨调用持久）→
@@ -55,6 +57,12 @@ namespace RigiCompiler.Middleware.Passes
                 bilBySymbol[bilFn.Symbol] = bilFn;
             }
 
+            // 刀6b：wildcard 环改写 .name 的 miss 落点——需建 router 的
+            // 宿主集合；methodCanonical → 其 $.mwrapped. 最深层原始体
+            // 定名（router 分支落点判定用，绕过候选自身 wrapper 链）
+            var rerouteHosts = new HashSet<string>(System.StringComparer.Ordinal);
+            var mwrappedByMethod = new Dictionary<string, string>(System.StringComparer.Ordinal);
+
             foreach (var (methodCanonical, wrappers) in installs)
             {
                 // 无 MIR 体（抽象/未达）不建链——VM 同场景链也无从发起
@@ -84,7 +92,23 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     continue;
                 }
-                BakeMethod(context, mir, bilBySymbol, member, original, wrappers, kinds);
+                mwrappedByMethod[methodCanonical] = BakeMethod(context, mir, bilBySymbol, member,
+                    original, wrappers, kinds, rerouteHosts);
+            }
+
+            // 刀6b：为 miss 分支涉及宿主编造 $.mw.mwr 重路由 router
+            //（per 宿主唯一，多方法/多环共享）
+            if (rerouteHosts.Count > 0)
+            {
+                var index = WrapperApplicationIndex.Build(context.Symbols);
+                foreach (var hostCanonical in rerouteHosts)
+                {
+                    var host = context.Symbols.FindType(hostCanonical)
+                        ?? throw new CompilerInternalException(
+                            "Method wrapper 重路由 router 宿主类型缺失: " + hostCanonical);
+                    BuildMethodRerouteRouter(context, mir, host, byCanonical, mwrappedByMethod,
+                        index);
+                }
             }
         }
 
@@ -184,9 +208,12 @@ namespace RigiCompiler.Middleware.Passes
 
         // ===== 链烘焙 =====
 
-        private static void BakeMethod(MwContext context, MirModule mir,
+        // 返回该方法 $.mwrapped. 最深层原始体的定名 canonical（router
+        // 落点判定用）
+        private static string BakeMethod(MwContext context, MirModule mir,
             Dictionary<string, BilFunction> bilBySymbol, MwMemberSymbol member,
-            MirFunction original, List<string> wrappers, List<MwProxyMatchKind> kinds)
+            MirFunction original, List<string> wrappers, List<MwProxyMatchKind> kinds,
+            ISet<string> rerouteHosts)
         {
             var hostCanonical = member.Owner?.Canonical
                 ?? throw new CompilerInternalException(
@@ -238,7 +265,7 @@ namespace RigiCompiler.Middleware.Passes
                     baked = SpecializeWildcard(context, bilBySymbol, member, original,
                         wrapperRef, hostCanonical);
                     RewriteWildcardInners(context, mir, baked, member, original, nextCallee,
-                        nextRingFn, nextWrapper, nextKind);
+                        nextRingFn, nextWrapper, nextKind, hostCanonical, rerouteHosts);
                 }
                 IndexOperatorLoweringPass.RewriteFunction(context, baked);
                 AccessorLoweringPass.RewriteFunction(context, baked);
@@ -267,6 +294,7 @@ namespace RigiCompiler.Middleware.Passes
             }
             list[index] = trampoline;
             mir.AddFunction(wrappedFn);
+            return wrappedSymbol.Canonical;
         }
 
         // specific 环特化：形状校验（模板值形参名/类型与被代理方法全等）
@@ -550,15 +578,23 @@ namespace RigiCompiler.Middleware.Passes
             }
         }
 
-        // wildcard 环 inner → 恒等转发（VM BuildRingInvokeArgs 的 Call/
-        // ringIsWildcard 分支同口径）：.name 必须是本环 .name 形参原样
-        // 转发——改写 .name 重路由受控拒绝（VM RerouteWildcardInner 已
-        // 支持，后续补）。无 fast-path CFG 变动（.name 恒等 → 恒命中），
-        // 原地改写为直线指令序列
+        // wildcard 环 inner → 动态分派（刀6b，与 VM ResolveInner/
+        // RerouteWildcardInner 同口径）：inner 显式携带的 .name 操作数
+        // 为准（proxy 体改写 .name 即按改写后符号重路由，SYNTAX §14.8）。
+        //   下一环为 wildcard：环 ABI（.name + 具名包）与名字无关，
+        //   透传 symbol 操作数直进内一环，原地直线改写（内层环各自的
+        //   分派递归处理，VM 帧符号透传同口径）；
+        //   下一环为 specific / 终态：hit/miss CFG 分割——
+        //   hit（.name == 本成员 canonical，恒等转发）→ 具名包按本成员
+        //   签名解包直进下一落点；
+        //   miss → router(H)（$.mw.mwr）按运行期符号重路由到宿主闭包
+        //   任一可烘焙方法的最深层原始体（绕过其自身 wrapper 链，VM
+        //   FinishChain 链末 InvokeResolved 同口径），全不中抛
+        //   core.NoSuchMethodException（Entity router 同文案）。
         private static void RewriteWildcardInners(MwContext context, MirModule mir,
             MirFunction ring, MwMemberSymbol member, MirFunction original,
             MwMemberSymbol nextCallee, MirFunction? nextRingFn, string? nextWrapper,
-            MwProxyMatchKind nextKind)
+            MwProxyMatchKind nextKind, string hostCanonical, ISet<string> rerouteHosts)
         {
             var valueParameterCount = 0;
             foreach (var parameter in ring.Parameters)
@@ -576,113 +612,323 @@ namespace RigiCompiler.Middleware.Passes
                 throw new MwNotSupportedException(
                     "wildcard .proxy.call 环形参形状不支持（受控拒绝）: " + ring.Symbol.Canonical);
             }
-            var hostOp = new MirLocalOperand(ProxyBakeSupport.InnerHostLocal);
-            var temp = 0;
-            foreach (var block in ring.Blocks)
+            var blockSeq = ring.Blocks.Count;
+            // 逐点改写：块分割后 cont 续行块可能仍含 inner（同环多次
+            // inner），每轮定位并处理一处，直至无残留
+            while (TryFindInner(ring, out var block, out var pos, out var inner))
             {
-                var insts = block.InstructionList;
+                RewriteOneWildcardInner(context, mir, ring, member, original, block!, pos,
+                    inner!, valueParameterCount, nextCallee, nextRingFn, nextWrapper, nextKind,
+                    hostCanonical, rerouteHosts, ref blockSeq);
+            }
+        }
+
+        // 环内首个 MirInnerCall 定位（含分割产生的 cont 续行块）
+        private static bool TryFindInner(MirFunction ring, out MirBlock? block, out int pos,
+            out MirInnerCall? inner)
+        {
+            foreach (var candidate in ring.Blocks)
+            {
+                var insts = candidate.InstructionList;
                 for (var i = 0; i < insts.Count; i++)
                 {
-                    if (insts[i] is not MirInnerCall inner)
+                    if (insts[i] is MirInnerCall found)
                     {
-                        continue;
+                        block = candidate;
+                        pos = i;
+                        inner = found;
+                        return true;
                     }
-                    var symbolOp = inner.Args[inner.Args.Count - valueParameterCount];
-                    if (symbolOp is not MirLocalOperand { Name: ".name" })
-                    {
-                        throw new MwNotSupportedException(
-                            "Method wrapper wildcard 环改写 .name 重路由暂不支持"
-                            + "（VM 已支持，后续补）: " + ring.Symbol.Canonical);
-                    }
-                    MirOperand namedOp;
-                    var packInsts = new List<MirInst>();
-                    if (valueParameterCount >= 2)
-                    {
-                        namedOp = inner.Args[inner.Args.Count - 1];
-                    }
-                    else
-                    {
-                        var namedLocal = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.named.",
-                            ProxyWildcardAbi.NamedPackType);
-                        ProxyWildcardAbi.EmitEmptyNamedPack(packInsts, namedLocal);
-                        namedOp = new MirLocalOperand(namedLocal);
-                    }
-
-                    if (nextKind == MwProxyMatchKind.Wildcard)
-                    {
-                        // 透传 .name + 具名包直进内一 wildcard 环（环 ABI
-                        // 两端皆 .any，结果直通）
-                        if (namedOp is not MirLocalOperand namedLocalOp)
-                        {
-                            throw new MwNotSupportedException(
-                                "wildcard .proxy.call 环具名包操作数非局部（受控拒绝）: "
-                                + ring.Symbol.Canonical);
-                        }
-                        var wName = "$mw.mw.w." + temp++;
-                        ring.AddLocal(new MirLocal(wName, MirType.Of(nextWrapper!)));
-                        var callArgs = ProxyWildcardAbi.BuildInvokeArgs(nextRingFn!,
-                            new MirLocalOperand(wName), ".name", null, namedLocalOp.Name,
-                            null, null);
-                        packInsts.Add(new MirCall(nextRingFn!.Symbol, callArgs, inner.Result,
-                            inner.ExcTarget));
-                        insts[i] = new MirGetWrapperMethodAddr(hostOp, member.Canonical,
-                            nextWrapper!, wName);
-                        insts.InsertRange(i + 1, packInsts);
-                        i += packInsts.Count;
-                        continue;
-                    }
-
-                    // 内一环 specific / 终态：具名包按名还原具体实参
-                    //（$mw.named.lookup 按 Pair key 命中，VM
-                    // UnboxNamedArgs 同口径；缺名补 null）
-                    var unpacked = ProxyWildcardAbi.EmitUnpackNamedArgs(context, mir, ring,
-                        packInsts, namedOp, original);
-                    var nextReturn = nextKind == MwProxyMatchKind.Specific
-                        ? nextRingFn!.ReturnType
-                        : original.ReturnType;
-                    List<MirOperand> args;
-                    if (nextKind == MwProxyMatchKind.Specific)
-                    {
-                        var wName = "$mw.mw.w." + temp++;
-                        ring.AddLocal(new MirLocal(wName, MirType.Of(nextWrapper!)));
-                        packInsts.Add(new MirGetWrapperMethodAddr(hostOp, member.Canonical,
-                            nextWrapper!, wName));
-                        args = new List<MirOperand> { new MirLocalOperand(wName) };
-                    }
-                    else
-                    {
-                        args = new List<MirOperand> { hostOp };
-                    }
-                    args.AddRange(unpacked);
-                    if (inner.Result == null)
-                    {
-                        packInsts.Add(new MirCall(nextCallee, args, null, inner.ExcTarget));
-                    }
-                    else if (nextReturn.IsVoid)
-                    {
-                        // 落点 void：环 ABI 以 .any 承载结果——补零值胖引用
-                        packInsts.Add(new MirCall(nextCallee, args, null, inner.ExcTarget));
-                        packInsts.Add(new MirLoadResource(
-                            ProxyWildcardAbi.AddNullAnyResource(context), inner.Result));
-                    }
-                    else if (nextReturn.IsAnyOrObject)
-                    {
-                        packInsts.Add(new MirCall(nextCallee, args, inner.Result,
-                            inner.ExcTarget));
-                    }
-                    else
-                    {
-                        var concrete = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.rt.",
-                            nextReturn);
-                        packInsts.Add(new MirCall(nextCallee, args, concrete, inner.ExcTarget));
-                        ProxyWildcardAbi.EmitBoxToAny(context, packInsts,
-                            new MirLocalOperand(concrete), nextReturn, inner.Result);
-                    }
-                    insts.RemoveAt(i);
-                    insts.InsertRange(i, packInsts);
-                    i += packInsts.Count - 1;
                 }
             }
+            block = null;
+            pos = -1;
+            inner = null;
+            return false;
+        }
+
+        private static void RewriteOneWildcardInner(MwContext context, MirModule mir,
+            MirFunction ring, MwMemberSymbol member, MirFunction original, MirBlock block,
+            int pos, MirInnerCall inner, int valueParameterCount, MwMemberSymbol nextCallee,
+            MirFunction? nextRingFn, string? nextWrapper, MwProxyMatchKind nextKind,
+            string hostCanonical, ISet<string> rerouteHosts, ref int blockSeq)
+        {
+            var insts = block.InstructionList;
+            // inner 实参尾段 [.name, 具名包]（symbolIndex = Count - 值形
+            // 参数，VM RerouteWildcardInner 同口径；MirInnerCall 操作数
+            // 恒为局部——FlowBuilder.Locals 不变量）
+            if (inner.Args[inner.Args.Count - valueParameterCount]
+                is not MirLocalOperand symbolLocal)
+            {
+                throw new CompilerInternalException(
+                    "wildcard .proxy.call 环 .name 操作数非局部: " + ring.Symbol.Canonical);
+            }
+            MirOperand namedOp;
+            var preInsts = new List<MirInst>();
+            if (valueParameterCount >= 2)
+            {
+                if (inner.Args[inner.Args.Count - 1] is not MirLocalOperand namedLocalOp)
+                {
+                    throw new CompilerInternalException(
+                        "wildcard .proxy.call 环具名包操作数非局部: " + ring.Symbol.Canonical);
+                }
+                namedOp = namedLocalOp;
+            }
+            else
+            {
+                var namedLocal = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.named.",
+                    ProxyWildcardAbi.NamedPackType);
+                ProxyWildcardAbi.EmitEmptyNamedPack(preInsts, namedLocal);
+                namedOp = new MirLocalOperand(namedLocal);
+            }
+            var hostOp = new MirLocalOperand(ProxyBakeSupport.InnerHostLocal);
+
+            if (nextKind == MwProxyMatchKind.Wildcard)
+            {
+                // 透传 symbol + 具名包直进内一 wildcard 环（环 ABI 两端
+                // 皆 .any 且与名字无关，结果直通；改写 .name 由内层环
+                // 各自的分派递归处理）
+                var passThrough = new List<MirInst>(preInsts);
+                var wName = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.w.",
+                    MirType.Of(nextWrapper!));
+                passThrough.Add(new MirGetWrapperMethodAddr(hostOp, member.Canonical,
+                    nextWrapper!, wName));
+                var callArgs = ProxyWildcardAbi.BuildInvokeArgs(nextRingFn!,
+                    new MirLocalOperand(wName), symbolLocal.Name, null,
+                    ((MirLocalOperand)namedOp).Name, null, null);
+                passThrough.Add(new MirCall(nextRingFn!.Symbol, callArgs, inner.Result,
+                    inner.ExcTarget));
+                insts.RemoveAt(pos);
+                insts.InsertRange(pos, passThrough);
+                return;
+            }
+
+            // 下一环 specific / 终态：hit/miss CFG 分割（ProxyBakingPass
+            // Entity wildcard 环同模式）
+            rerouteHosts.Add(hostCanonical);
+            var cont = new MirBlock("mw.mw.cont." + blockSeq++,
+                insts.GetRange(pos + 1, insts.Count - pos - 1), block.Terminator);
+            var hit = new MirBlock("mw.mw.hit." + blockSeq++, new List<MirInst>(),
+                new MirBranch(cont.Id));
+            var miss = new MirBlock("mw.mw.miss." + blockSeq++, new List<MirInst>(),
+                new MirBranch(cont.Id));
+            insts.RemoveRange(pos, insts.Count - pos);
+            insts.AddRange(preInsts);
+            var lit = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.lit.", ProxyWildcardAbi.StringType);
+            insts.Add(new MirLoadResource(
+                ProxyWildcardAbi.AddStringResource(context, member.Canonical), lit));
+            var cmp = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.eq.", ProxyWildcardAbi.BoolType);
+            insts.Add(new MirBinaryIntrinsic(BilBinaryOp.CmpEq, symbolLocal,
+                new MirLocalOperand(lit), ProxyWildcardAbi.StringType,
+                ProxyWildcardAbi.StringType, ProxyWildcardAbi.BoolType, cmp));
+            block.Terminator = new MirCondBranch(new MirLocalOperand(cmp), hit.Id, miss.Id);
+
+            // hit：具名包按名还原具体实参（$mw.named.lookup 按 Pair key
+            // 命中，VM UnboxNamedArgs 同口径；缺名补 null）
+            var hitInsts = hit.InstructionList;
+            var unpacked = ProxyWildcardAbi.EmitUnpackNamedArgs(context, mir, ring,
+                hitInsts, namedOp, original);
+            var nextReturn = nextKind == MwProxyMatchKind.Specific
+                ? nextRingFn!.ReturnType
+                : original.ReturnType;
+            List<MirOperand> args;
+            if (nextKind == MwProxyMatchKind.Specific)
+            {
+                var wName = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.w.",
+                    MirType.Of(nextWrapper!));
+                hitInsts.Add(new MirGetWrapperMethodAddr(hostOp, member.Canonical,
+                    nextWrapper!, wName));
+                args = new List<MirOperand> { new MirLocalOperand(wName) };
+            }
+            else
+            {
+                args = new List<MirOperand> { hostOp };
+            }
+            args.AddRange(unpacked);
+            if (inner.Result == null)
+            {
+                hitInsts.Add(new MirCall(nextCallee, args, null, inner.ExcTarget));
+            }
+            else if (nextReturn.IsVoid)
+            {
+                // 落点 void：环 ABI 以 .any 承载结果——补零值胖引用
+                hitInsts.Add(new MirCall(nextCallee, args, null, inner.ExcTarget));
+                hitInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddNullAnyResource(context), inner.Result));
+            }
+            else if (nextReturn.IsAnyOrObject)
+            {
+                hitInsts.Add(new MirCall(nextCallee, args, inner.Result, inner.ExcTarget));
+            }
+            else
+            {
+                var concrete = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.rt.", nextReturn);
+                hitInsts.Add(new MirCall(nextCallee, args, concrete, inner.ExcTarget));
+                ProxyWildcardAbi.EmitBoxToAny(context, hitInsts,
+                    new MirLocalOperand(concrete), nextReturn, inner.Result);
+            }
+
+            // miss：$.mw.mwr router 重路由（结果 .any 直通；槽类型非
+            // .any 属环 ABI 外形态，防御性拆箱）
+            var missInsts = miss.InstructionList;
+            var router = MethodRerouteRouterSymbol(hostCanonical);
+            if (inner.Result != null
+                && ring.FindLocal(inner.Result).Type.Canonical
+                    != ProxyWildcardAbi.AnyType.Canonical)
+            {
+                var routed = ProxyWildcardAbi.FreshLocal(ring, "$mw.mw.rt.",
+                    ProxyWildcardAbi.AnyType);
+                missInsts.Add(new MirCall(router,
+                    new List<MirOperand> { hostOp, symbolLocal, namedOp }, routed,
+                    inner.ExcTarget));
+                ProxyWildcardAbi.EmitUnboxFromAny(context, missInsts,
+                    new MirLocalOperand(routed), inner.Result,
+                    ring.FindLocal(inner.Result).Type);
+            }
+            else
+            {
+                missInsts.Add(new MirCall(router,
+                    new List<MirOperand> { hostOp, symbolLocal, namedOp }, inner.Result,
+                    inner.ExcTarget));
+            }
+
+            ring.AddBlock(hit);
+            ring.AddBlock(miss);
+            ring.AddBlock(cont);
+        }
+
+        // ===== .name 重路由 router（刀6b，per 宿主） =====
+
+        // 命名：H$.mw.mwr(symbol,namedArgs)@.any（与 Entity 的
+        // $.mw.router.<层> 错名；per 宿主唯一，多方法/多环共享）
+        private static MwMemberSymbol MethodRerouteRouterSymbol(string hostCanonical) =>
+            ProxyBakeSupport.SyntheticMember(hostCanonical
+                + "$.mw.mwr(symbol:.string,namedArgs:"
+                + ProxyWildcardAbi.NamedPackType.Canonical + ")@.any", owner: null);
+
+        // router 体：if 链按 .name 字符串比对宿主 extends 闭包（本类 +
+        // 祖先，环保护）全部可烘焙方法（IsBakeableTarget 同口径，字典序
+        // 产物确定；含源码中未被直接调用的——MirReachability 已按安装
+        // 指令预入队）。命中 → 具名包按候选签名解包（$mw.named.lookup
+        // 按 Pair key 命中，VM UnboxNamedArgs 同口径）→ 调候选最深层
+        // 原始体（Method 烘焙 → $.mwrapped.；Entity 烘焙 → $.wrapped.；
+        // 否则原名 fn——绕过候选自身全部 wrapper 链，VM FinishChain
+        // 链末 InvokeResolved 同口径；该 fn 由本 pass / ProxyBakingPass
+        // 按同一定名规则落地，定名确定性，先引后存合法），结果装箱
+        // .any；全不中抛 core.NoSuchMethodException（Entity router/VM
+        // call??? 链末同文案）
+        private static void BuildMethodRerouteRouter(MwContext context, MirModule mir,
+            MwTypeSymbol host, IReadOnlyDictionary<string, MirFunction> byCanonical,
+            IReadOnlyDictionary<string, string> mwrappedByMethod, WrapperApplicationIndex index)
+        {
+            var symbol = MethodRerouteRouterSymbol(host.Canonical);
+            var parameters = new List<MirLocal>
+            {
+                new MirLocal(".this", MirType.Of(host.Canonical)),
+                new MirLocal("symbol", ProxyWildcardAbi.StringType),
+                new MirLocal("namedArgs", ProxyWildcardAbi.NamedPackType),
+            };
+            var fn = new MirFunction(symbol, ProxyWildcardAbi.AnyType, parameters,
+                new List<MirLocal>(parameters), new List<MirBlock>(), false);
+            var thisOp = new MirLocalOperand(".this");
+            var symbolOp = new MirLocalOperand("symbol");
+            var namedOp = new MirLocalOperand("namedArgs");
+
+            // 候选表：extends 闭包可烘焙方法（有 MIR 体者；祖先为外部
+            // 类型即止——其成员本无体）
+            var candidates = new List<(MwMemberSymbol Member, MirFunction Fn)>();
+            var seen = new HashSet<string>(System.StringComparer.Ordinal);
+            var current = host;
+            var guard = new HashSet<string>(System.StringComparer.Ordinal) { host.Canonical };
+            while (true)
+            {
+                foreach (var member in current.Members)
+                {
+                    if (!IsBakeableTarget(member) || !seen.Add(member.Canonical))
+                    {
+                        continue;
+                    }
+                    if (byCanonical.TryGetValue(member.Canonical, out var targetFn))
+                    {
+                        candidates.Add((member, targetFn));
+                    }
+                }
+                if (current.Declaration.ExtendsType is not { } baseRef
+                    || context.Symbols.FindTypeByRef(baseRef) is not { IsExternal: false } baseType
+                    || !guard.Add(baseType.Canonical))
+                {
+                    break;
+                }
+                current = baseType;
+            }
+            candidates.Sort((a, b) => System.StringComparer.Ordinal.Compare(
+                a.Member.Canonical, b.Member.Canonical));
+
+            var blocks = new List<MirBlock>();
+            for (var k = 0; k < candidates.Count; k++)
+            {
+                var (candidate, targetFn) = candidates[k];
+                var checkId = k == 0 ? "entry" : "mw.mwr.chk." + k;
+                var caseId = "mw.mwr.case." + k;
+                var nextId = k + 1 < candidates.Count ? "mw.mwr.chk." + (k + 1) : "mw.mwr.miss";
+                var checkInsts = new List<MirInst>();
+                var lit = ProxyWildcardAbi.FreshLocal(fn, "$mw.mwr.lit.",
+                    ProxyWildcardAbi.StringType);
+                checkInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddStringResource(context, candidate.Canonical), lit));
+                var cmp = ProxyWildcardAbi.FreshLocal(fn, "$mw.mwr.eq.", ProxyWildcardAbi.BoolType);
+                checkInsts.Add(new MirBinaryIntrinsic(BilBinaryOp.CmpEq, symbolOp,
+                    new MirLocalOperand(lit), ProxyWildcardAbi.StringType,
+                    ProxyWildcardAbi.StringType, ProxyWildcardAbi.BoolType, cmp));
+                blocks.Add(new MirBlock(checkId, checkInsts,
+                    new MirCondBranch(new MirLocalOperand(cmp), caseId, nextId)));
+
+                var caseInsts = new List<MirInst>();
+                var outLocal = ProxyWildcardAbi.FreshLocal(fn, "$mw.mwr.out.",
+                    ProxyWildcardAbi.AnyType);
+                var unpacked = ProxyWildcardAbi.EmitUnpackNamedArgs(context, mir, fn,
+                    caseInsts, namedOp, targetFn);
+                var callArgs = new List<MirOperand> { thisOp };
+                callArgs.AddRange(unpacked);
+                MwMemberSymbol target;
+                if (mwrappedByMethod.TryGetValue(candidate.Canonical, out var mwrapped))
+                {
+                    target = ProxyBakeSupport.SyntheticMember(mwrapped, owner: null);
+                }
+                else if (ProxyBakeSupport.WillBakeHostMethod(context, mir, index, candidate,
+                        out var wrapped))
+                {
+                    target = ProxyBakeSupport.SyntheticMember(wrapped, owner: null);
+                }
+                else
+                {
+                    target = candidate;
+                }
+                ProxyBakingPass.EmitBoxedCall(context, fn, caseInsts, target, callArgs,
+                    targetFn.ReturnType, outLocal);
+                blocks.Add(new MirBlock(caseId, caseInsts,
+                    new MirRet(new MirLocalOperand(outLocal))));
+            }
+
+            // miss：抛 core.NoSuchMethodException（「未路由的降级请求：」
+            // + symbol，Entity router/VM call??? 链末同文案）
+            var missInsts = new List<MirInst>();
+            if (candidates.Count == 0)
+            {
+                // 零候选宿主：entry 直接落 miss
+                blocks.Add(new MirBlock("entry", missInsts, new MirRetThrow()));
+                ProxyBakingPass.EmitThrowNoSuchMethod(context, fn, missInsts, symbolOp);
+            }
+            else
+            {
+                ProxyBakingPass.EmitThrowNoSuchMethod(context, fn, missInsts, symbolOp);
+                blocks.Add(new MirBlock("mw.mwr.miss", missInsts, new MirRetThrow()));
+            }
+            foreach (var block in blocks)
+            {
+                fn.AddBlock(block);
+            }
+            mir.AddFunction(fn);
         }
 
         // ===== trampoline（原名槽替换体） =====

@@ -70,26 +70,41 @@ namespace RigiCompiler.Middleware.Emit
                 var builder = session.Builder;
                 var slots = session.Slots;
                 var temps = new List<ArcEmitter.RichTemp>();
+                var boxed = new List<ArcEmitter.FatTemp>();
+                // G1：泛型值类型 init 形参可为占位（胖值槽）——实参加工与
+                // class 路径同口径（ExpectedCallParams 已剔类级 typeid，
+                // 下标 +1 跳过 .this）
+                var initExpected = CallEmitter.ExpectedCallParams(
+                    session.FunctionOf(inst.Init.Canonical).Mir);
                 var userArgs = new LLVMValueRef[inst.Args.Count];
                 for (var i = 0; i < inst.Args.Count; i++)
                 {
-                    userArgs[i] = CallEmitter.MarshalArg(session, builder, slots, inst.Args[i],
-                        aliasThis: false, temps);
+                    var expectType = i + 1 < initExpected.Count ? initExpected[i + 1].Type : null;
+                    userArgs[i] = CallEmitter.CoerceArg(session, builder, slots, inst.Args[i],
+                        expectType, aliasThis: false, temps, boxed);
                 }
                 // new.wrapped（刀5）：wrapper 实参同口径编组
                 LLVMValueRef[]? wrapperArgs = null;
                 if (inst.WrapperArgs.Count > 0)
                 {
+                    var wrapperExpected = inst.InitWrapper != null
+                        && session.TryGetFunction(inst.InitWrapper.Canonical, out var wrapperFn)
+                            ? CallEmitter.ExpectedCallParams(wrapperFn.Mir)
+                            : null;
                     wrapperArgs = new LLVMValueRef[inst.WrapperArgs.Count];
                     for (var i = 0; i < inst.WrapperArgs.Count; i++)
                     {
-                        wrapperArgs[i] = CallEmitter.MarshalArg(session, builder, slots,
-                            inst.WrapperArgs[i], aliasThis: false, temps);
+                        var expectType = wrapperExpected != null && i + 1 < wrapperExpected.Count
+                            ? wrapperExpected[i + 1].Type
+                            : null;
+                        wrapperArgs[i] = CallEmitter.CoerceArg(session, builder, slots,
+                            inst.WrapperArgs[i], expectType, aliasThis: false, temps, boxed);
                     }
                 }
-                EmitInitValueOnSlot(session, builder, slots[inst.Target].Slot,
+                EmitInitValueOnSlot(session, builder, slots, slots[inst.Target].Slot,
                     inst.Type.Canonical, inst.InitWrapper, inst.Init, userArgs, wrapperArgs);
                 ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
             }
         }
 
@@ -158,11 +173,13 @@ namespace RigiCompiler.Middleware.Emit
 
         // 静态 new 与动态 struct ctor thunk 共用：零初始化 → wrapper →
         // init（.this = 槽地址原地生效）。泛型 struct 无对象头隐藏槽，
-        // 类级 typeid 按 GenericAbi 从 LLVM 约定剔除；闭合构造下 TypeSheet
-        // 即构造身份，thunk 侧以 TypeSheet 常量作为构造目标（init 不接收
-        // 类级 typeid，与 class「被调方自取」对偶）。
+        // 类级 typeid 保留在 init/wrapper 的 LLVM 调用约定内，按
+        // typeCanonical 的构造形态代入合成（闭合构造 = TypeSheet 常量；
+        // 外层占位 = 当前 fn 的 .generic.* 局部，与 class「被调方自取」对偶）。
         internal static void EmitInitValueOnSlot(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef slot, string typeCanonical,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            LLVMValueRef slot, string typeCanonical,
             MwMemberSymbol? initWrapper, MwMemberSymbol? init, LLVMValueRef[] userArgs,
             LLVMValueRef[]? wrapperArgs = null)
         {
@@ -172,7 +189,8 @@ namespace RigiCompiler.Middleware.Emit
             session.EmitMemSetZero(builder, slot, plan.Size);
             if (initWrapper != null && session.TryGetFunction(initWrapper.Canonical, out var wrapper))
             {
-                var wrapperCallArgs = AppendReceiver(slot, wrapperArgs);
+                var wrapperCallArgs = CallEmitter.MergeClassTypeIds(session, builder, slots,
+                    wrapper.Mir, typeCanonical, AppendReceiver(slot, wrapperArgs));
                 builder.BuildCall2(wrapper.Type, wrapper.Value, wrapperCallArgs, "");
             }
             if (init == null)
@@ -180,12 +198,8 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var emitted = session.FunctionOf(init.Canonical);
-            var initArgs = new LLVMValueRef[userArgs.Length + 1];
-            initArgs[0] = slot;
-            for (var i = 0; i < userArgs.Length; i++)
-            {
-                initArgs[i + 1] = userArgs[i];
-            }
+            var initArgs = CallEmitter.MergeClassTypeIds(session, builder, slots,
+                emitted.Mir, typeCanonical, AppendReceiver(slot, userArgs));
             if (emitted.Value.ParamsCount != (uint)initArgs.Length)
             {
                 throw new CompilerInternalException(

@@ -15,7 +15,10 @@ namespace RigiCompiler.Middleware.Emit
     ///   MirFailureLoad → rigi_failure_get(nodeId, outFat)（await 失败
     ///     快路径从 native 注册表读异常）；
     ///   MirCoroutineDone → 纯标记（RcInjection DONE 出口判定依据），
-    ///     无发射。
+    ///     无发射；
+    ///   MirResumeCall → callee resume fn 直调（B-1 tainted→tainted
+    ///     协议；i32(ptr) C ABI 与 rigi_coroutine_resume 同形态，但走
+    ///     原生栈下钻而非句柄面）。
     /// ARC 纪律：Emit 不插任何 acquire/release——MirCoroutineCreate.
     /// FrameSlot 的 +1 move 移交已由 RcInjection move 集配平；
     /// MirFailureLoad.OutFatSlot 是 +1 产出（RcInjection 产出类前置
@@ -46,6 +49,33 @@ namespace RigiCompiler.Middleware.Emit
             {
                 // 纯标记：RcInjection 的 DONE 出口判定依据，无发射
             }
+        }
+
+        internal sealed class ResumeCall : LlvmEmitVisitor<ResumeCall, MirResumeCall>
+        {
+            protected override void VisitCore(MirResumeCall inst,
+                ModuleBuilder.Session session) =>
+                EmitResumeCall(session, session.Builder, session.Slots, inst);
+        }
+
+        // MirResumeCall → 直调 callee resume fn（B-1 tainted→tainted
+        // 协议）：resume fn 的 LLVM 类型恒为 i32(ptr)（DeclareFunction
+        // 的 IsCoroutineResume 特判），frame 胖引用取 payload 半直传，
+        // i32 RigiResumeCode 落 code 槽。ARC 纪律：frame 借用（调用方
+        // callee 槽持 +1），本指令不产生/不消耗所有权
+        private static void EmitResumeCall(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirResumeCall inst)
+        {
+            var frameFat = session.LoadLocal(builder, slots,
+                new MirLocalOperand(inst.FrameSlot));
+            var framePayload = builder.BuildExtractValue(frameFat, 1, "rc.frame.pl");
+            var resume = session.FunctionOf(inst.ResumeFn.Canonical);
+            var code = builder.BuildCall2(resume.Type, resume.Value,
+                new[] { builder.BuildIntToPtr(framePayload, PointerType(),
+                    "rc.frame.ptr") }, "rc.code");
+            builder.BuildStore(code, slots[inst.CodeSlot].Slot);
         }
 
         // MirCoroutineCreate → rigi_coroutine_create(resumeFnAddr,

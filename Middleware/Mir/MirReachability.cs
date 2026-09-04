@@ -135,6 +135,12 @@ namespace RigiCompiler.Middleware.Mir
             // 族——无具名实参调用点的模块不会经普通边到达，按安装指令
             // 预入队
             EnqueueMethodWrapperPackSupport(context, bySymbol, queue);
+            // MW10 刀6b：带 wildcard .proxy.call 的 Method wrapper 安装
+            // 宿主——wildcard 环改写 .name 的 $.mw.mwr router 可直调宿主
+            // extends 闭包任一可烘焙方法的原始体（含源码中未被直接调用
+            // 的，VM RerouteWildcardInner/InvokeResolved 同口径可被路由
+            // 到），其有体 fn 预入队
+            EnqueueMethodWrapperRerouteHosts(context, bySymbol, queue);
             // MW10 刀3a：带 wildcard 方法/运算符 proxy（.proxy.* /
             // .proxy.opr.*）的 Entity 宿主——其全部可烘焙成员 fn 进可达
             // 闭包：wildcard 环 inner 重路由的 router 可直调任何成员的
@@ -462,6 +468,116 @@ namespace RigiCompiler.Middleware.Mir
             }
         }
 
+        // MW10 刀6b：收集带 wildcard .proxy.call 的 Method wrapper 安装
+        // 宿主（安装指令方法符号的 owner 类型），将其 extends 闭包全部
+        // 可烘焙方法（MethodProxyBakingPass.IsBakeableTarget 同口径；
+        // Passes 层不反向引用，此处保留副本）的有体 fn 入队——$.mw.mwr
+        // router 的 if 链分支目标
+        private static void EnqueueMethodWrapperRerouteHosts(MwContext context,
+            Dictionary<string, BilFunction> bySymbol,
+            Queue<(string Symbol, bool FromTentative)> queue)
+        {
+            var hosts = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var function in context.Module.Functions)
+            {
+                foreach (var block in function.Blocks)
+                {
+                    foreach (var inst in block.Instructions)
+                    {
+                        if (inst is not NewWrapperMethodInstruction install)
+                        {
+                            continue;
+                        }
+                        var wrapper = context.Symbols.FindTypeByRef(install.WrapperType.TypeRef);
+                        if (wrapper == null)
+                        {
+                            continue;
+                        }
+                        // wildcard 判定按 .name 首参（VM 口径；BIL kind
+                        // 修饰符对 .proxy.call 恒为 specific）
+                        var proxy = ProxyMatcher.FindProxy(wrapper, ".proxy.call",
+                                BilProxyKind.Specific)
+                            ?? ProxyMatcher.FindProxy(wrapper, ".proxy.call",
+                                BilProxyKind.Wildcard);
+                        if (proxy == null
+                            || CanonicalSignature.Parse(proxy.Canonical).Parameters
+                                is not { Count: > 0 } ps
+                            || ps[0].Name != ".name")
+                        {
+                            continue;
+                        }
+                        var member = context.Symbols.FindMember(install.Method.Symbol);
+                        if (member?.Owner is { IsExternal: false } owner)
+                        {
+                            hosts.Add(owner.Canonical);
+                        }
+                    }
+                }
+            }
+            foreach (var hostCanonical in hosts)
+            {
+                if (context.Symbols.FindType(hostCanonical) is not { } host)
+                {
+                    continue;
+                }
+                // extends 闭包（本类 + 祖先，环保护）
+                var current = host;
+                var guard = new HashSet<string>(System.StringComparer.Ordinal)
+                {
+                    host.Canonical,
+                };
+                while (true)
+                {
+                    foreach (var member in current.Members)
+                    {
+                        if (IsBakeableMethodWrapperTarget(member)
+                            && bySymbol.ContainsKey(member.Canonical))
+                        {
+                            queue.Enqueue((member.Canonical, false));
+                        }
+                    }
+                    if (current.Declaration.ExtendsType is not { } baseRef
+                        || context.Symbols.FindTypeByRef(baseRef) is not
+                            { IsExternal: false } baseType
+                        || !guard.Add(baseType.Canonical))
+                    {
+                        break;
+                    }
+                    current = baseType;
+                }
+            }
+        }
+
+        // MethodProxyBakingPass.IsBakeableTarget 同口径（排除 init/ext/
+        // static/..init/泛型成员与除 $$call 外的运算符；$$call 是
+        // callable 协议入口，lambda 隐藏类方法符号在此放行）
+        private static bool IsBakeableMethodWrapperTarget(MwMemberSymbol member)
+        {
+            if (member.Declaration.Kind != BilMemberKind.Method
+                || member.HasKeyword(BilKeyword.Init)
+                || member.HasKeyword(BilKeyword.Ext))
+            {
+                return false;
+            }
+            var key = member.SignatureKey;
+            if (key.StartsWith(".static.", System.StringComparison.Ordinal)
+                || key.StartsWith("..init", System.StringComparison.Ordinal))
+            {
+                return false;
+            }
+            if (member.Canonical.IndexOf('<', System.StringComparison.Ordinal) >= 0)
+            {
+                return false;
+            }
+            var dollar = member.Canonical.IndexOf('$');
+            if (dollar >= 0 && dollar + 1 < member.Canonical.Length
+                && member.Canonical[dollar + 1] == '$')
+            {
+                return member.Canonical.Contains("$$call(", System.StringComparison.Ordinal);
+            }
+            return true;
+        }
+
         // ProxyBakeSupport.IsBakeableHostMethod 同口径（排除 init/ext/
         // static/..init/泛型运算符与 $$call；泛型方法自遗6起可经
         // wildcard 环烘焙，运算符可烘焙）
@@ -564,6 +680,15 @@ namespace RigiCompiler.Middleware.Mir
                             AddNewEdges(context, newCase.Type.TypeRef, newCase.Arguments,
                                 localTypes, edges);
                             break;
+                        // L1：new.wrapped.case（§14.4.2）= new.case 边 +
+                        // 有参 ..init.wrapper 边（与 NewWrappedInstruction
+                        // 同族口径）
+                        case NewWrappedCaseInstruction newWrappedCase:
+                            AddNewEdges(context, newWrappedCase.Type.TypeRef,
+                                newWrappedCase.CaseArguments, localTypes, edges);
+                            AddInitWrapperEdge(context, newWrappedCase.Type.TypeRef,
+                                newWrappedCase.WrapperArguments.Count, edges);
+                            break;
                         case NewWrapperEntityInstruction newWrapper:
                             AddWrapperInstallEdges(context, newWrapper.WrapperType.TypeRef,
                                 newWrapper.Arguments, localTypes, edges);
@@ -579,6 +704,15 @@ namespace RigiCompiler.Middleware.Mir
                         case GetFieldInstruction getField:
                             AddAccessorEdge(context, fn, getField.Field.Symbol,
                                 BilAccessorKind.Getter, edges);
+                            break;
+                        // L1：getid.field 的字段符号是 get/set.field.indirect
+                        //（lowering 期静态解析）的字段来源——读写双向访问器
+                        // 边保守并收（与直译 get/set.field 同口径）
+                        case GetIdFieldInstruction getIdField:
+                            AddAccessorEdge(context, fn, getIdField.Field.Symbol,
+                                BilAccessorKind.Getter, edges);
+                            AddAccessorEdge(context, fn, getIdField.Field.Symbol,
+                                BilAccessorKind.Setter, edges);
                             break;
                         case SetFieldInstruction setField:
                             AddAccessorEdge(context, fn, setField.Field.Symbol,
@@ -654,12 +788,23 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         // 遗1 用户运算符边：解析不到（MIR 构建期会响亮失败）或内建
-        // 操作数族时不构成边
+        // 操作数族时不构成边。G4：泛型占位左操作数（.generic< 形态）——
+        // 静态不可解析，运行期按实际 typeid 派发到全部候选（与
+        // GenericOpEmitter 的派发臂同一集合，ImplBinder 注释见）
         private static void AddUserOperatorEdges(MwContext context, BilBinaryOp op,
             string leftType, string rightType, List<string> edges)
         {
             if (ImplBinder.IsBuiltinBinaryOperand(leftType))
             {
+                return;
+            }
+            if (leftType.Contains(".generic<", System.StringComparison.Ordinal))
+            {
+                foreach (var candidate in ImplBinder.CollectOperatorCandidates(
+                    context.Symbols, ImplBinder.UserBinaryOperatorName(op)))
+                {
+                    AddOperatorMemberEdges(context, candidate, edges);
+                }
                 return;
             }
             var member = ImplBinder.FindUserBinaryOperator(context.Symbols, op,
@@ -675,6 +820,15 @@ namespace RigiCompiler.Middleware.Mir
         {
             if (ImplBinder.IsBuiltinUnaryOperand(operandType))
             {
+                return;
+            }
+            if (operandType.Contains(".generic<", System.StringComparison.Ordinal))
+            {
+                foreach (var candidate in ImplBinder.CollectOperatorCandidates(
+                    context.Symbols, ImplBinder.UserUnaryOperatorName(op)))
+                {
+                    AddOperatorMemberEdges(context, candidate, edges);
+                }
                 return;
             }
             var member = ImplBinder.FindUserUnaryOperator(context.Symbols, op, operandType);

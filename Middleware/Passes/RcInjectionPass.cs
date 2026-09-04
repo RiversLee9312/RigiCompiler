@@ -91,11 +91,13 @@ namespace RigiCompiler.Middleware.Passes
 
         // 出口有效 release 序列：基础序列（releaseOrder，已排除 move 槽
         // 与 frame 参数）+ DONE 出口/传播垫（block==null）追加 frame
-        // 参数最终 release
+        // 参数最终 release。B-1：plain resume（tainted 普通 fn）的
+        // frame 所有权归调用方（不经 MirCoroutineCreate move），任何
+        // 出口都不做 frame 最终 release
         private static List<string> EffectiveReleaseOrder(MirFunction fn, MirBlock? block,
             List<string> releaseOrder)
         {
-            if (!fn.IsCoroutineResume)
+            if (!fn.IsCoroutineResume || fn.IsPlainResume)
             {
                 return releaseOrder;
             }
@@ -160,7 +162,29 @@ namespace RigiCompiler.Middleware.Passes
                 return;
             }
             MirBlock pad;
-            if (fn.IsPollProbe)
+            if (fn.IsPlainResume)
+            {
+                // B-1 垫尾分叉：plain resume（tainted 普通 fn）的传播垫
+                // = release 全托管槽 + ret FAILED（3）——pending 保持
+                // 置位沿调用链上传（调用方调用点 FAILED 臂取走重抛）；
+                // 无 Task 终态序列、无 frame 最终 release（所有权归
+                // 调用方，callee 槽随调用方 frame 释放）
+                var failCode = ProxyWildcardAbi.FreshLocal(fn, "$mw.code.",
+                    MirType.Of(".i32"));
+                var padInsts = new List<MirInst>(releaseOrder.Count + 2)
+                {
+                    new MirLoadResource(
+                        ProxyWildcardAbi.AddI32Resource(context,
+                            CoroutineSplitPass.PlainResumeFailedCode), failCode),
+                };
+                foreach (var name in releaseOrder)
+                {
+                    padInsts.Add(new MirReleaseSlot(name));
+                }
+                pad = new MirBlock(PropagateBlockId, padInsts,
+                    new MirRet(new MirLocalOperand(failCode)));
+            }
+            else if (fn.IsPollProbe)
             {
                 // MW11b 棒3 垫尾分叉：probe fn 的传播垫 = release 全托管
                 // 槽 + ret -1——pending 保持置位（不 MirTakePending），
@@ -229,7 +253,8 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         MirCall call when call.ExcTarget == null => new MirCall(
                             call.Target, call.Args, call.Result, pad,
-                            operatorDispatch: call.OperatorDispatch),
+                            operatorDispatch: call.OperatorDispatch,
+                            hostConstructedRef: call.HostConstructedRef),
                         MirSuperCall superCall when superCall.ExcTarget == null => new MirSuperCall(
                             superCall.Target, superCall.Args, superCall.Result, pad),
                         MirInvokeIndirect invoke when invoke.ExcTarget == null => new MirInvokeIndirect(
@@ -241,6 +266,15 @@ namespace RigiCompiler.Middleware.Passes
                             new MirBinaryIntrinsic(binary.Op, binary.Left, binary.Right,
                                 binary.LeftType, binary.RightType, binary.ResultType,
                                 binary.Target, pad),
+                        MirGenericBinaryOp genericBinary when genericBinary.ExcTarget == null =>
+                            new MirGenericBinaryOp(genericBinary.Op, genericBinary.Left,
+                                genericBinary.Right, genericBinary.LeftType,
+                                genericBinary.RightType, genericBinary.ResultType,
+                                genericBinary.Target, pad),
+                        MirGenericUnaryOp genericUnary when genericUnary.ExcTarget == null =>
+                            new MirGenericUnaryOp(genericUnary.Op, genericUnary.Operand,
+                                genericUnary.OperandType, genericUnary.ResultType,
+                                genericUnary.Target, pad),
                         MirCast cast when cast.ExcTarget == null => new MirCast(
                             cast.Source, cast.Target, cast.IsSafe, cast.TargetTypeRef,
                             cast.TargetTypeId, pad),
@@ -274,6 +308,9 @@ namespace RigiCompiler.Middleware.Passes
             MirThrow throwInst => throwInst.ExcTarget == null,
             // MW9b-G：守卫型可抛指令
             MirBinaryIntrinsic binary => binary.ExcTarget == null,
+            // G4：占位派发节点（运行期抛出点：候选落空/除零守卫）
+            MirGenericBinaryOp genericBinary => genericBinary.ExcTarget == null,
+            MirGenericUnaryOp genericUnary => genericUnary.ExcTarget == null,
             MirCast cast => cast.ExcTarget == null,
             MirUnboxAny unbox => unbox.ExcTarget == null,
             MirSetArray setArray => setArray.ExcTarget == null,
@@ -465,6 +502,8 @@ namespace RigiCompiler.Middleware.Passes
         {
             MirLoadResource load => load.Target,
             MirBinaryIntrinsic binary => binary.Target,
+            MirGenericBinaryOp genericBinary => genericBinary.Target,
+            MirGenericUnaryOp genericUnary => genericUnary.Target,
             MirCall call => call.Result,
             MirSuperCall superCall => superCall.Result,
             MirInvokeIndirect invoke => invoke.Result,

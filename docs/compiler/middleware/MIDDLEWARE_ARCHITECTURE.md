@@ -403,7 +403,12 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   Rigi 方法；yield → Dispatcher 重排当前任务。
 - **冷 Task**（RUNTIME §18.4）：spawn-into 复用 Task 对象建协程，Task↔
   协程 1:1；`run`/`executor` 预设与换绑、TaskState 投影由 Rigi 侧 Task
-  方法承载。多 Worker 与取消入口随本阶段定稿。
+  方法承载。多 Worker 与取消入口随本阶段定稿。body 绑定双通道
+  （CoroutineSplitPass 棒5a）：构造点静态类型具体 → `$mw.coldtask.*`
+  工厂预建 frame/句柄（`$$call` 沿 extends 链解析，frame/resume 取
+  声明宿主的 split 产物，与 VM `FindCallTarget` 拍平 sheet 含继承槽
+  同语义）；静态类型不透明（AsyncAction/AsyncFunc 槽）→ 保留真 init，
+  启动时 `bindColdBody` 改写为 type.is 链 + `$mw.bindcold.*` 动态绑定。
 
 **MW11a 已收口（中间形态：C 侧重实现，单线程垂直切片）**：
 
@@ -436,9 +441,49 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   pending 收进合成槽（不立即报告）→ `rigi_root_end` →
   `rigi_executor_run`（drain 至 quiescence，fire-and-forget 同被等待）→
   失败汇总（main 失败 > 未观察失败，同 MW9 顶层 reporter 出口）。
-- **非 async fn 挂起点受控拒绝**（VM 栈式跨界语义，棒2 起
-  MwNotSupportedException）：native 侧 main 是同步根协程，await/yield 只
-  能出现在 async fn 体内。
+- **非 async fn 挂起点全链支持**（B-1 起，VM 栈式跨界语义对齐）：
+  taint 分析沿调用图反向标记「可达挂起点」fn（tainted）；tainted
+  普通 fn 状态机化（裸 frame：`state` + 保存槽 + `$mw.result`，无
+  Task 包装，frame 所有权归调用方；resume fn `IsPlainResume`，传播
+  垫尾 release + ret FAILED(3) 沿链上传）；tainted→tainted 直调
+  改写为建 callee frame + 落参 + `MirResumeCall` 原生栈下钻 +
+  四码分流（SUSPENDED/YIELDED 上传 / DONE 读 `$mw.result` 续行 /
+  FAILED 取 pending 沿原 ExcTarget 重抛）；tainted main 走 Task
+  包装 split + `$mw.main.settle`，rigi_entry 改「调 stub 发布主
+  协程 → drain → settle 取结果/重抛失败」（对齐 VM `BilVm.Run`
+  的 main 协程化）。
+- **B-2 全组合收口**：① taint 传染边全集 = 直调 / super（恒直调）
+  / 值类型宿主运算符（直调形态）/ 虚·interface·class 运算符派发
+  （闭包内任一实现 tainted 则整点升级）/ new init。② 虚/interface
+  派发挂起点 = 调用点动态分流：闭包全类臂（最深派生优先——臂条
+  件 type.is 是子类判定，浅类臂不得遮蔽深类），tainted 实现臂走
+  直调协议（每实现一套 frame/落参/调用块；callee 槽在臂内建后回
+  存本层 frame——head 的 emitSave 先于分流执行），非 tainted 实
+  现臂与默认臂（闭包外/null 接收者）落原调用（普通虚派发，NRE
+  语义保持）；恢复经同序恢复分流链直落调用块（frame 不重建）。
+  ③ super 调用与直调运算符同直调协议。④ 含挂起点的 init：构造
+  点分配与 init 下钻分离——head 用合成空 init 分配（init.wrapper
+  原位缝合字段初始值）→ Target 槽先落定 → init frame（.this =
+  新建对象）下钻；DONE 直落原后继（结果即 Target 槽）。⑤ §7.2
+  隐藏参数落参：实参按「形参剔除类级 typeid」位序 zip；被剔除
+  的类级 typeid 按宿主构造形态合成（闭合实参 → MirGetTypeId 常
+  量；外层占位 → 调用方同名 .generic.* 局部转抄；值类型接收者被
+  cast/copy 剥成裸模板时沿产出链回溯构造形态）。⑥ plain fn 内
+  yield Alarm 放开：恢复闸失败尾 plain 分叉（pending 保持置位
+  ret FAILED 沿链上传，对齐 VM 帧栈逐层展开；Tasked 仍走 Task
+  FAILED 终态序列）。⑦ using dispose 可挂起（§17.3）：dispose
+  虚派发臂同②协议化。B-2 保留的受控拒绝边界：泛型宿主虚派发
+  链挂起点（构造形态臂条件需 construction 级派发知识，布局查询
+  是模板键）；$$call/invoke.indirect 与 wrapper/proxy 烘焙链
+  （$.wrapped./$.mwrapped./$mw. 前缀合成 fn）可达的 tainted fn
+  （fn 指针面只有返回值通道，无法插挂起协议）；含挂起点的 init
+  与 new.indirect 同模块（运行期构造目标不可钉死）；实参与可见
+  形参不对应的未知隐藏参数形态；嵌套占位构造的类级 typeid 实参。
+  另记可观察错位（VM 参考行为的不对称怪癖，未对齐）：挂起的
+  init 在同一 fn 的 try 内抛出时 VM 于该 fn 捕获，native 将异常
+  传播出该 fn——根因是 MirNewObject 不带 try 异常边（历史形态
+  「pending 推迟到下一检查点」）与 VM 恢复路径帧展开的差异，
+  对齐需 lowering 契约变更（容量外）。
 - Alarm / 多 Worker / 取消入口随 MW11c 转向定稿（coroutine.c 内以
   「MW11c」标注加锁点，实体已按并发语义设计——C11 原子 CAS、Task 闸、
   Executor 锁）；按转向，这些 C 侧实体按本节首段保留/重构清单迁移进
@@ -491,7 +536,9 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 - `invoke fn(..super)` → 直接基类原始实现；`..create` 仅属 Middleware/VM 生命
   周期阶段；
 - `invoke.indirect` → callable 协议（`$$call` 虚调用；async `$$call` 同槽，结果为 `Task`/`Task<T>`，CoroutineSplit 改写目标 stub）；
-- native 函数：直接生成对 `rigi_rt` shim 的调用；返回用户引用类型的 FFI ABI
+- native 函数：直接生成对原生符号的调用——rigi_rt 面 C 名 = `rigi_` + symbol；
+  非 rigi_rt 用户库（L6 起）C 名 = symbol 原文，链接输入经 `native --link`
+  追加（RUNTIME §26 库解析留白的定稿）；返回用户引用类型的 FFI ABI
   在此定稿（SYNTAX §4.6 / RUNTIME §26 的留白）。
 
 **String ABI（MW7 定稿）**：不可变值类型，槽仍为 `{ i8* data, i64 len }` UTF-8。
@@ -523,14 +570,40 @@ clang 编 `rigi_rt` 与 LLVM 生成代码各自 lowering 一致，无需显式 f
 MwTypeKey.Normalize 归一，环保护）。具化计划独立入表：字段复用模板
 canonical（`.generic` → 16B 胖值槽入 refMap，具体类型照旧）；vtable 槽 =
 模板 fn canonical；基类链沿代入后的构造基类递归。iMap 按代入后的构造接口具化生成（接口 sheet 引用具化接口空壳 sheet）。
+**泛型值类型（struct/enum struct）同法具化**：字段/vtable 槽 0/refMap/enum
+判别表复用模板计划（占位字段恒 16B 胖值槽，构造与模板布局同构），无对象头
+隐藏 typeid 槽、无 iMap（值类型不参与虚/接口派发）；ifaceClosure 按构造
+canonical 重生。构造 interface/wrapper 的 new 保留受控拒绝（语言层非法，
+P3 已拒；且 native 对「无 init 声明 + 零实参」构造本就整体受控拒绝）。
 
-**类级 typeid ABI（被调方自取）**：泛型类在 16B 对象头之后、用户字段之前
+**类级 typeid ABI（被调方自取 / 值类型直传对偶）**：泛型类在 16B 对象头之后、用户字段之前
 为每个类级类型参数留 i64 TypeSheet 指针槽（继承时基类隐藏字段在前；
 typeid 不是托管引用，不进 refMap）。`new` 站在 rigi_alloc 之后把构造实参
 的 TypeSheet（或当前 fn 的 `.generic.*` 局部）写入隐藏字段，再调
 `..init.wrapper` / init——init 实参不传类级 typeid。实例方法（含 init）
 的 LLVM 调用约定剔除类级 `.generic.X`；entry prologue 从 `.this` 隐藏字段
 装入该局部。方法级 typeid 仍由调用点按 §7.2 序物化传递。
+**泛型值类型宿主无对象头可藏**：其实例成员 fn 的类级 `.generic.X` 参数
+**保留在 LLVM 调用约定内**（.this 槽指针之后、普通参数之前），调用点按
+接收者/构造目标的构造形态代入直传——闭合实参 = TypeSheet 常量，外层占位
+= 当前 fn 的 `.generic.*` 局部；frontend 对方法接收者的「构造 → 裸模板」
+擦除 cast 由 MIR 构建期溯源（FlowBuilder._erasedValueHosts）回解构造形态。
+值类型静态成员无类级 typeid 实参（SYNTAX §9.2.3 本就不用；BIL 仍声明的
+形参槽落 core::Any sheet 常量，对齐 VM AlignGenericHiddenArgs 缺省 .any）。
+
+**泛型占位操作数运算（G4 定稿）**：`T extends Bound` 内的 `a + b` 族
+（操作数静态类型含 `.generic<` 占位）直译为 MirGenericBinaryOp /
+MirGenericUnaryOp，发射期运行期派发（GenericOpEmitter，VM ExecuteBinary
+同口径）：内建标量/String 按实际 sheet 逐臂求值优先；否则按左操作数实际
+typeid 经 rigi_type_is 逐候选臂判定（候选 = 模块内全部同名 operator，
+派生深度降序；普通形参再经右臂 type_is 校验）；!= 调 equals 取反、
+</<=/>/>= 调 compareTo 按 ComparisonResult 判别映射 bool。全落空抛
+core.NoSuchMethodException（VM VmException「没有用户 operator …」对应面）。
+边界：泛型宿主的 operator 候选编译期受控拒绝（构造 sheet 无法反解类型
+实参）；方法级泛型 typeid 注入仅支持普通形参恰为占位的精确形态，其余
+注入 core::Any（VM 推断失败缺省同口径）；Entity wrapper 的 operator
+代理链不经此面；接口声明的 operator 不在候选集（VM FindOperator 的宿主
+集只含 extends 链，同口径）。
 
 **TypeSheet 全局名**：无角括号的既有名保持不变；构造 canonical 的 `<,>`
 转义为 `$` / `.`（空格删除），避免跨工具链引号差异。
@@ -684,7 +757,7 @@ Middleware/                 # 本仓库顶层目录（C#，.NET 10 LTS）
 ├── Emit/                   # ModuleBuilder 瘦驱动（MIR→LLVM 翻译 pass；rigi_entry 合成 = VM BilVm.Run 语义：singletons/globals.init/main → Dispatcher.workerLoop → 失败汇总）+ LlvmEmitEnvironment/Context 组合根 + LlvmEmitDispatchers 唯一 switch + 簇 CRTP（*Emitter；new 归 NewEmitter，native 归 NativeCallEmitter，虚/接口归 VirtualCallEmitter，getid 归 TypeIdEmitter，Nullable 归 NullableEmitter，MW11c 协程三指令归 CoroutineEmitter）+ LlvmBitcode / ObjectEmitter
 ├── Toolchain/              # ToolchainResolver（--toolchain → RIGI_LLVM → tools/.llvm/<rid> → PATH）/ ExternalProcess 外部进程封装
 ├── Runtime/                # RigiRtBuilder：rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 → clang -emit-llvm -c 编成 bitcode（unity build）
-└── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain）
+└── Cli/                    # native 驱动（--file/--out/--emit-obj/--emit-ll/--toolchain/--libuv-dir/--link；L6 起 --link 追加非 rigi_rt 库链接输入）
 
 rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内嵌，clang 现场编 bitcode 合并进模块）
 ├── shim.c                  # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print / rigi_print_err / rigi_string_concat / main → rigi_entry
@@ -702,6 +775,9 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
 │                             #   + MW11d 手动事件三面（rigi_event_create/signal/destroy——
 │                             #   MessageQueue「消息可得」唤醒底座，先信号后销毁）
+│                             #   + L8 rigi_event_create_sticky（用户 EventAlarm 直继子类默认底座：
+│                             #   粘滞形态，signal 恒置已触发并归还 armed，幂等；stdlib
+│                             #   EventAlarm.ensureHandle 懒建，yield 分流改经 ensureHandle 取柄）
 ├── message.c/.h            # MW11d MessageQueue 传输层 native 面：句柄注册表（id 不复用）/
 │                             #   capability 矩阵校验/broadcast 日志 + 独立 cursor/watermark 回收/
 │                             #   EOS/单 outstanding next 登记；只搬运 Parcel，不回调 Rigi

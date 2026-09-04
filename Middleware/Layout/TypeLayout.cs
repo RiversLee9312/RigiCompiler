@@ -81,7 +81,7 @@ namespace RigiCompiler.Middleware.Layout
                 case "double": return LLVMTypeRef.Double;
                 case "String": return StringAbi.ValueType(context);
                 default:
-                    if (IsTypeId(type))
+                    if (IsTypeId(type) || IsFieldId(type))
                     {
                         return LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
                     }
@@ -129,6 +129,15 @@ namespace RigiCompiler.Middleware.Layout
             var stripped = BilVerificationContext.StripTypeArguments(canonical);
             return stripped == "core::Type" || stripped == ".typeid";
         }
+
+        // .fieldid<OWNER, VALUE_TYPE, instance|static>（L1：getid.field /
+        // field.indirect 族）——native 表示 = 8B 占位指针（描述符无消费面，
+        // 字段符号由 MIR 直译节点携带）；非托管
+        public static bool IsFieldId(MirType type) =>
+            IsFieldIdCanonical(type.Canonical);
+
+        public static bool IsFieldIdCanonical(string canonical) =>
+            BilVerificationContext.StripTypeArguments(canonical) == ".fieldid";
 
         public static bool IsGenericPlaceholder(MirType type) =>
             type.Canonical.Contains(".generic<", System.StringComparison.Ordinal)
@@ -238,7 +247,7 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return ManagedSlotKind.String;
             }
-            if (type.IsVoid || IsTypeId(type))
+            if (type.IsVoid || IsTypeId(type) || IsFieldId(type))
             {
                 return ManagedSlotKind.Unmanaged;
             }

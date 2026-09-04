@@ -193,13 +193,19 @@ typedef struct RigiSyncMutexRt
     struct RigiSyncMutexRt *next_live;
 } RigiSyncMutexRt;
 
-/* 全局 live 登记表（atexit 兜底清扫依据）：一把 uv_mutex 护三条链。
+/* 全局 live 登记表（atexit 兜底清扫依据）：一把 uv_mutex 护四条链。
  * 初始化经 uv_once（棒5a：多 Worker 并发首建 sync mutex/Worker 时
  * 无双检竞态） */
 static uv_mutex_t rigi_worker_registry_gate;
 static RigiWorker *rigi_worker_live = NULL;
 static RigiSem *rigi_sem_live = NULL;
 static RigiSyncMutexRt *rigi_smutex_live = NULL;
+/* 第四条链（L8）：用户 EventAlarm 粘滞底座（rigi_event_create_sticky
+ * 产物）。消息队列手动事件（auto_reset）由队列回收显式 destroy，
+ * 不进本链；粘滞底座无属主销毁通道，统一随进程退出释放（memtrack
+ * 零泄漏口径；RigiTimer.next_live 复用——手动事件不入 Worker
+ * live_timers 链，槽位空闲） */
+static RigiTimer *rigi_event_live = NULL;
 
 static void rigi_worker_cleanup(void);
 
@@ -665,8 +671,8 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
     int32_t registered;
     if (timer == 0)
     {
-        fprintf(stderr, "rigi_rt: rigi_alarm_wait 收到空句柄（无时钟底座的"
-            "用户 EventAlarm 子类不支持 yield）\n");
+        fprintf(stderr, "rigi_rt: rigi_alarm_wait 收到空句柄（编译器 bug："
+            "yield EventAlarm 分流应先经 EventAlarm.ensureHandle 懒建底座）\n");
         abort();
     }
     t = (RigiTimer *)(uintptr_t)timer;
@@ -700,13 +706,15 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
  * 零 uv 接触——无 owner 绑定、无 uv_timer、不进 live 链；signal/
  * destroy 允许任意线程调用（gate 保护；waiter 重发布走
  * rigi_dispatch_publish 跨线程安全通道，同 rigi_timer_alarm_ring
- * 「闸外逐个发布」纪律）。armed 计入/归还看门狗口径与定时器一致。 */
-int64_t rigi_event_create(void)
+ * 「闸外逐个发布」纪律）。armed 计入/归还看门狗口径与定时器一致。
+ * L8 起两形态：auto_reset=1 消息队列（wait 消费 signaled）/
+ * auto_reset=0 用户 EventAlarm 子类默认底座（粘滞，§19.3）。 */
+static int64_t rigi_event_create_impl(int auto_reset)
 {
     RigiTimer *ev = (RigiTimer *)rigi_track_malloc(sizeof(RigiTimer));
     memset(ev, 0, sizeof(*ev));
     ev->manual = 1;
-    ev->auto_reset = 1;
+    ev->auto_reset = auto_reset;
     if (uv_mutex_init(&ev->gate) != 0)
     {
         fprintf(stderr, "rigi_rt: uv_mutex_init 失败（环境耗尽）\n");
@@ -715,6 +723,27 @@ int64_t rigi_event_create(void)
     ev->armed_counted = 1;
     atomic_fetch_add_explicit(&rigi_stat_armed, 1, memory_order_relaxed);
     return (int64_t)(uintptr_t)ev;
+}
+
+int64_t rigi_event_create(void)
+{
+    return rigi_event_create_impl(1);
+}
+
+/* 用户 EventAlarm 子类默认底座（L8，§19.3）：手动事件粘滞形态——
+ * signal 恒置已触发（迟到 wait 立即消费且不清 signaled），重复
+ * signal 幂等；stdlib EventAlarm.ensureHandle 懒建。无属主销毁通道，
+ * 挂登记册第四条链随进程退出统一释放 */
+int64_t rigi_event_create_sticky(void)
+{
+    int64_t ev = rigi_event_create_impl(0);
+    RigiTimer *e = (RigiTimer *)(uintptr_t)ev;
+    rigi_worker_registry_ensure();
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    e->next_live = rigi_event_live;
+    rigi_event_live = e;
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    return ev;
 }
 
 void rigi_event_signal(int64_t ev)
@@ -730,10 +759,27 @@ void rigi_event_signal(int64_t ev)
     uv_mutex_lock(&e->gate);
     waiters = e->waiters;
     e->waiters = NULL;
-    if (waiters == NULL)
+    if (e->auto_reset)
     {
-        /* 无 waiter：置粘滞 signaled，下一个 wait 立即消费（auto_reset） */
+        if (waiters == NULL)
+        {
+            /* 无 waiter：置粘滞 signaled，下一个 wait 立即消费（auto_reset） */
+            e->signaled = 1;
+        }
+    }
+    else
+    {
+        /* 粘滞形态（L8 用户 EventAlarm 底座，§19.3）：signal 即终态
+         * ——恒置 signaled（有 waiter 也置，重复 signal 幂等）；此后
+         * 新 wait 恒立即重发布、不再需要外部唤醒源，唤醒债务归还
+         *（armed_counted 防双归还，对齐响铃耗尽口径） */
         e->signaled = 1;
+        if (e->armed_counted)
+        {
+            e->armed_counted = 0;
+            atomic_fetch_sub_explicit(&rigi_stat_armed, 1,
+                memory_order_relaxed);
+        }
     }
     uv_mutex_unlock(&e->gate);
     while (waiters != NULL)
@@ -1091,9 +1137,10 @@ void rigi_main_worker_shutdown(void)
     rigi_worker_loop_teardown(w);
 }
 
-/* atexit 兜底清扫：未显式 destroy 的 Worker/信号量/同步锁统一释放。
- * Worker 线程此刻应已全部随入口 fn 返回（Rigi Dispatcher 退出协议），
- * 残余走 destroy 同路径；登记册互斥自身不记账（静态存储，随进程消亡） */
+/* atexit 兜底清扫：未显式 destroy 的 Worker/信号量/同步锁与用户
+ * EventAlarm 粘滞底座（L8 第四条链）统一释放。Worker 线程此刻应已
+ * 全部随入口 fn 返回（Rigi Dispatcher 退出协议），残余走 destroy
+ * 同路径；登记册互斥自身不记账（静态存储，随进程消亡） */
 static void rigi_worker_cleanup(void)
 {
     while (rigi_worker_live != NULL)
@@ -1107,6 +1154,14 @@ static void rigi_worker_cleanup(void)
     while (rigi_smutex_live != NULL)
     {
         rigi_sync_mutex_destroy((int64_t)(uintptr_t)rigi_smutex_live);
+    }
+    while (rigi_event_live != NULL)
+    {
+        RigiTimer *next = rigi_event_live->next_live;
+        /* 同 rigi_event_destroy 路径（幂等 + 残余 waiter 防御清扫 +
+         * armed 归还 + 台账配对）；粘滞底座不得再被引用（进程退出中） */
+        rigi_event_destroy((int64_t)(uintptr_t)rigi_event_live);
+        rigi_event_live = next;
     }
     uv_mutex_destroy(&rigi_worker_registry_gate);
 }
@@ -1246,6 +1301,12 @@ int64_t rigi_event_create(void)
     int *flag = (int *)rigi_track_malloc(sizeof(int));
     *flag = 0;
     return (int64_t)(uintptr_t)flag;
+}
+
+/* 降级形态不区分 auto_reset/粘滞（waiter 面 abort，signaled 语义同形） */
+int64_t rigi_event_create_sticky(void)
+{
+    return rigi_event_create();
 }
 
 void rigi_event_signal(int64_t ev)

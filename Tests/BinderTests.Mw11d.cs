@@ -141,6 +141,39 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("@Serializable 宿主已合成 fromParcel",
                 marked != null && marked.Methods.Any(m =>
                     m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
+
+            TestHarness.Section("P3 @SerializationBase 隐含 @Serializable");
+
+            var implied = BindUnitWithStdlib(
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "pub class BaseMarked { pub var n: i32 = 0 }\n");
+            CheckNoErrors("base-only 宿主绑定无诊断", implied.Unit);
+            var baseMarked = implied.Unit.Symbols.GlobalNamespace.ChildNamespaces
+                .First(n => n.Name == "core").ChildNamespaces
+                .First(n => n.Name == "serialization").Types
+                .FirstOrDefault(t => t.Name == "BaseMarked");
+            TestHarness.CheckTrue("base-only 宿主已合成 toParcel",
+                baseMarked != null && baseMarked.Methods.Any(m =>
+                    m.Name == RigiCompiler.Bil.BilSpellings.ToParcelMethodName));
+            TestHarness.CheckTrue("base-only 宿主已合成 fromParcel",
+                baseMarked != null && baseMarked.Methods.Any(m =>
+                    m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
+
+            var withSerImplied = BindUnitWithStdlib(
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "class BaseTake { pub var n: i32 = 0 }\n" +
+                "func take\\<T with Serializable>(x: T) { }\n" +
+                "func f() { take\\<BaseTake>(new BaseTake()) }\n");
+            CheckNoErrors("with Serializable 填入 base-only 类合法", withSerImplied.Unit);
+
+            var withSerI32 = BindUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "func take\\<T with Serializable>(x: T) { }\n" +
+                "func f() { take\\<i32>(0) }\n");
+            TestHarness.CheckSemanticError("with Serializable 填入 i32 拒绝（§20.2.3）",
+                withSerI32.Unit.Diagnostics, "does not satisfy the 'With Serializable'");
         }
     }
 }

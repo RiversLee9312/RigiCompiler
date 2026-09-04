@@ -73,7 +73,7 @@ namespace RigiCompiler.Middleware.Emit
 
         // string 比较降级（VM 基准：eq/ne 内容相等；排序为字典序三态）：
         // rigi_string_compare(a, b) 的 i32 三态结果与 0 做次序判定
-        private static LLVMValueRef EmitStringCompare(ModuleBuilder.Session session,
+        internal static LLVMValueRef EmitStringCompare(ModuleBuilder.Session session,
             LLVMBuilderRef builder, BilBinaryOp op, LLVMValueRef left, LLVMValueRef right)
         {
             var cmp = CallEmitter.EmitStringCompareCall(session, builder, left, right);
@@ -91,7 +91,8 @@ namespace RigiCompiler.Middleware.Emit
             return builder.BuildICmp(predicate, cmp, zero, "string.cmp");
         }
 
-        private static LLVMValueRef SelectPrimitive(LLVMBuilderRef builder, PrimitiveOpKind kind,
+        // G4 复用给 GenericOpEmitter 的内建臂
+        internal static LLVMValueRef SelectPrimitive(LLVMBuilderRef builder, PrimitiveOpKind kind,
             LLVMValueRef left, LLVMValueRef right)
         {
             return kind switch

@@ -506,6 +506,54 @@ namespace RigiCompiler.Middleware.Binding
                 System.StringComparison.Ordinal);
         }
 
+        // G4 占位运算的派发候选集（VM FindOperator 的静态投影）：模块内
+        // 全部同名 operator 方法（非 External；接口声明的 operator 不在
+        // 此列——VM FindOperatorMember 的宿主集只含 extends 链，接口
+        // 默认实现亦不会被命中，排除即 VM 口径）。按宿主派生深度降序
+        // 排列（最深优先 = VM 沿实际类型派生链先命中最具体实现）。
+        // MirReachability 可达边与 GenericOpEmitter 派发臂共用同一集合。
+        public static List<MwMemberSymbol> CollectOperatorCandidates(MwSymbolTable symbols,
+            string operatorName)
+        {
+            var list = new List<MwMemberSymbol>();
+            foreach (var member in symbols.Members)
+            {
+                if (member.IsExternal
+                    || member.Owner?.Declaration.Kind == BilTypeKind.Interface)
+                {
+                    continue;
+                }
+                if (IsOperatorNamed(member, operatorName))
+                {
+                    list.Add(member);
+                }
+            }
+            list.Sort((a, b) =>
+            {
+                var depth = DerivationDepth(symbols, b).CompareTo(DerivationDepth(symbols, a));
+                return depth != 0
+                    ? depth
+                    : string.CompareOrdinal(a.Canonical, b.Canonical);
+            });
+            return list;
+        }
+
+        private static int DerivationDepth(MwSymbolTable symbols, MwMemberSymbol member)
+        {
+            var depth = 0;
+            for (var type = member.Owner; type != null;)
+            {
+                var extends = type.Declaration.ExtendsType;
+                type = extends == null ? null : symbols.FindTypeByRef(extends);
+                depth++;
+                if (depth > 64)
+                {
+                    break;   // 防御：环状 extends（verifier 已拒）
+                }
+            }
+            return depth;
+        }
+
         // 形参匹配（静态口径）：剥 .generic./.vargs./.kwargs. 隐藏形参；
         // 宿主泛型代入（SubstituteHostGenerics 同 BindIndirectCall 口径）
         // 后逐个可赋（实参静态类型 → 形参类型，沿 extends/implements 闭包）

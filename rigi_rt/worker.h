@@ -135,6 +135,11 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter);
  * 否则置 signaled；wait 经 rigi_alarm_wait 消费 signaled。
  * destroy 不走 live_timers 清扫，由队列回收显式调用。 */
 int64_t rigi_event_create(void);
+/* 用户 EventAlarm 子类默认底座（L8，§19.3）：手动事件粘滞形态——
+ * signal 恒置已触发（迟到 wait 立即重发布且不清 signaled）并归还
+ * armed；重复 signal 幂等。stdlib EventAlarm.ensureHandle 懒建；
+ * 无属主销毁通道，挂登记册链随 atexit 兜底释放（memtrack 口径） */
+int64_t rigi_event_create_sticky(void);
 void rigi_event_signal(int64_t ev);
 void rigi_event_destroy(int64_t ev);
 

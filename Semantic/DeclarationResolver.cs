@@ -100,6 +100,9 @@ namespace RigiCompiler
             StaticGenericBanChecker.Visit(env);
             VarianceChecker.Visit(env);
             WrapperApplicationChecker.Visit(env);
+            // @SerializationBase 隐含 @Serializable：源码级 SB 应用落定后、
+            // 字段检查与继承闭包检查前追加合成 Serializable 应用
+            SerializableImplicationRegistrar.Visit(env);
             SerializableFieldChecker.Visit(env);
             WrapperInheritanceChecker.Visit(env);
             // S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4 canonical shape 与

@@ -20,6 +20,8 @@ namespace RigiCompiler.Middleware.Mir
         protected override void VisitCore(SetVarInstruction inst, FlowBuilder flow)
         {
             flow.EnsureOpen();
+            // L1：typeid/fieldid 静态追踪随拷贝传播（indirect 族解析用）
+            flow.PropagateIdCopy(inst.Source.Name, inst.Target.Name);
             flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
         }
     }
@@ -29,6 +31,7 @@ namespace RigiCompiler.Middleware.Mir
         protected override void VisitCore(GetVarInstruction inst, FlowBuilder flow)
         {
             flow.EnsureOpen();
+            flow.PropagateIdCopy(inst.Source.Name, inst.Target.Name);
             flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
         }
     }
@@ -80,7 +83,10 @@ namespace RigiCompiler.Middleware.Mir
     // 同口径）。找不到 operator：编译期受控拒绝（VM 运行期抛
     // VmException「没有用户 operator …」；native 无运行期查找设施，
     // 编译期拒绝是其保守超集——分歧记遗1 报告）。泛型占位左操作数
-    //（T extends Bound 内运算）静态不可唯一解析，同形拒绝。
+    //（T extends Bound 内运算，G4）：直译 MirGenericBinaryOp，发射期
+    // 运行期按实际 typeid 派发（GenericOpEmitter，VM ExecuteBinary 同
+    // 口径——内建标量求值优先，否则按左操作数实际类型沿派生链找最
+    // 具体实现，全落空抛 core.NoSuchMethodException）
     internal static class UserOperatorLowering
     {
         internal static void LowerBinary(FlowBuilder flow, BinaryIntrinsicInstruction inst,
@@ -91,9 +97,10 @@ namespace RigiCompiler.Middleware.Mir
             var target = inst.Target.Name;
             if (leftType.Canonical.Contains(".generic<", System.StringComparison.Ordinal))
             {
-                throw new MwNotSupportedException(
-                    $"泛型占位左操作数的二元运算静态不可解析（VM 运行期按实际类型派发）: "
-                    + $"{leftType.Canonical} 的 operator {operatorName}");
+                flow.Add(new MirGenericBinaryOp(inst.Op,
+                    flow.Local(inst.Left), flow.Local(inst.Right), leftType, rightType,
+                    flow.TypeOf(target), target, flow.Tries.CurrentExcTarget()));
+                return;
             }
             var member = ImplBinder.FindUserBinaryOperator(flow.Context.Symbols, inst.Op,
                 leftType.Canonical, rightType.Canonical)
@@ -128,9 +135,11 @@ namespace RigiCompiler.Middleware.Mir
             if (operandType.Canonical.Contains(".generic<",
                     System.StringComparison.Ordinal))
             {
-                throw new MwNotSupportedException(
-                    $"泛型占位操作数的一元运算静态不可解析（VM 运行期按实际类型派发）: "
-                    + $"{operandType.Canonical}");
+                // G4：占位操作数一元运算——运行期按实际 typeid 派发
+                flow.Add(new MirGenericUnaryOp(inst.Op, flow.Local(inst.Operand),
+                    operandType, flow.TypeOf(inst.Target.Name), inst.Target.Name,
+                    flow.Tries.CurrentExcTarget()));
+                return;
             }
             var member = ImplBinder.FindUserUnaryOperator(flow.Context.Symbols, inst.Op,
                 operandType.Canonical)
@@ -200,6 +209,74 @@ namespace RigiCompiler.Middleware.Mir
             flow.EnsureOpen();
             flow.Add(new MirGetField(flow.Local(inst.Object), inst.Field.Symbol,
                 inst.Target.Name, flow.Tries.CurrentExcTarget()));
+        }
+    }
+
+    // §13.5 间接实例字段族（L1）：FIELDID_VAR 局部经 FlowBuilder 静态
+    // 追踪解析回字段符号，落与直译版相同的 MirGetField/MirSetField
+    //（访问器/wrapper 链经 AccessorLoweringPass 同口径复用；VM：
+    // RequireFieldId 后 GetField/SetField 同路径）。静态不可解析
+    //（fieldid 跨函数流转等）受控拒绝——编译期拒绝是 VM 运行期解析
+    // 的保守超集（同 get.wrapper.indirect / UserOperatorLowering 先例）
+    internal sealed class GetFieldIndirectLowering
+        : MirLowerVisitor<GetFieldIndirectLowering, GetFieldIndirectInstruction>
+    {
+        protected override void VisitCore(GetFieldIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            var symbol = IndirectFieldResolve.Resolve(flow, inst.FieldId, "get.field.indirect");
+            flow.Add(new MirGetField(flow.Local(inst.Object), symbol,
+                inst.Target.Name, flow.Tries.CurrentExcTarget()));
+        }
+    }
+
+    internal sealed class SetFieldIndirectLowering
+        : MirLowerVisitor<SetFieldIndirectLowering, SetFieldIndirectInstruction>
+    {
+        protected override void VisitCore(SetFieldIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            var symbol = IndirectFieldResolve.Resolve(flow, inst.FieldId, "set.field.indirect");
+            flow.Add(new MirSetField(flow.Local(inst.Source), flow.Local(inst.Object), symbol));
+        }
+    }
+
+    // §13.5 间接静态字段族（L1）：TYPEID_VAR 仅作类别校验（VM 同口径：
+    // RequireTypeId 后弃置——字段符号自带 owner 段），字段符号静态解析
+    // 后落 MirGetStatic/MirSetStatic（构造类型静态访问限制同直译版）
+    internal sealed class GetFieldStaticIndirectLowering
+        : MirLowerVisitor<GetFieldStaticIndirectLowering, GetFieldStaticIndirectInstruction>
+    {
+        protected override void VisitCore(GetFieldStaticIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            var symbol = IndirectFieldResolve.Resolve(flow, inst.FieldId, "get.field.static.indirect");
+            FlowBuilder.RejectConstructedStatic(symbol);
+            flow.Add(new MirGetStatic(symbol, inst.Target.Name));
+        }
+    }
+
+    internal sealed class SetFieldStaticIndirectLowering
+        : MirLowerVisitor<SetFieldStaticIndirectLowering, SetFieldStaticIndirectInstruction>
+    {
+        protected override void VisitCore(SetFieldStaticIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            var symbol = IndirectFieldResolve.Resolve(flow, inst.FieldId, "set.field.static.indirect");
+            FlowBuilder.RejectConstructedStatic(symbol);
+            flow.Add(new MirSetStatic(flow.Local(inst.Source), symbol));
+        }
+    }
+
+    file static class IndirectFieldResolve
+    {
+        internal static string Resolve(FlowBuilder flow, BilVariableOperand fieldId,
+            string opcode)
+        {
+            return flow.TryResolveFieldIdSymbol(fieldId.Name, out var symbol)
+                ? symbol
+                : throw new MwNotSupportedException(
+                    $"{opcode} 的 fieldid 静态不可解析: ${fieldId.Name}（fn {flow.FnSymbol}）");
         }
     }
 

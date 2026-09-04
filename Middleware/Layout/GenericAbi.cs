@@ -81,15 +81,37 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return true;
             }
+            var name = template.Canonical;
+            // 泛型值类型（G1）：构造 struct/enum 各自具化计划——字段复用
+            // 模板（占位字段恒 16B 胖值槽），无对象头隐藏 typeid 槽；
+            // core::Type 无 stdlib 声明，走 ConstructedLayout 合成 sheet
+            if (template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
+            {
+                return name != "core::Type";
+            }
             if (template.Declaration.Kind != BilTypeKind.Class)
             {
                 return false;
             }
-            var name = template.Canonical;
             return name != TypeLayout.ArrayTypeCanonical
                 && name != "core::Nullable"
                 && name != "core::Type";
         }
+
+        // 值类型宿主（struct/enum struct/wrapper）：无对象头，类级 typeid
+        // 不能藏实例隐藏字段——泛型值类型 fn 的类级 .generic.* 参数保留在
+        // LLVM 调用约定内，由调用点按 §7.2 序直传（class「被调方自取」对偶）
+        public static bool IsValueTypeOwner(MwTypeSymbol? owner) =>
+            owner != null && owner.Declaration.Kind is BilTypeKind.Struct
+                or BilTypeKind.EnumStruct or BilTypeKind.Wrapper;
+
+        // 类级 typeid 参数是否保留在 LLVM 调用约定内（G1）：值类型宿主的
+        // 实例成员（.this 居首）保留、调用点直传；class 宿主剔除（prologue
+        // 从隐藏字段自取）；值类型静态成员剔除（§9.2.3 不得用类级参数，
+        // 调用点不传——BIL 仍声明该形参，VM AlignGenericHiddenArgs 缺省
+        // 填 .any，native 由 EmitBody 落 core::Any sheet 常量兜底）
+        public static bool KeepsClassTypeIdInAbi(MwMemberSymbol? fnSymbol, bool hasThisParam) =>
+            fnSymbol != null && IsValueTypeOwner(fnSymbol.Owner) && hasThisParam;
 
         // 仅转义构造类型的 <,> 空格；无角括号的既有名（含 ::）保持不变
         public static string EscapeGlobalName(string prefix, string canonical)

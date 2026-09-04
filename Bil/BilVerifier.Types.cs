@@ -1719,7 +1719,10 @@ namespace RigiCompiler.Bil
                     return;
                 }
             }
-            if (!newCase.Case.QualifiedName.StartsWith(typeRef + "."))
+            // G1：构造宿主（Choice<.i32>.Some）——case 归属按剥泛型模板名
+            // 判定（case 全名恒为模板形；VM NewCase 按模板全名查表同口径）
+            var caseOwnerRef = BilVerificationContext.StripTypeArguments(typeRef);
+            if (!newCase.Case.QualifiedName.StartsWith(caseOwnerRef + "."))
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"new.case 的 case \"{newCase.Case.QualifiedName}\" 不属于类型 \"{typeRef}\""));

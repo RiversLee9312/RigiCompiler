@@ -445,8 +445,9 @@
             {
                 // 棒5a：Timer 与 sleep 的 SleepAlarm 统一走 VM 侧定时器
                 // 记录通道（EventAlarm 基类 handle 字段 → 排程/waiter/
-                // signaled；handle==0 的用户直继子类在 TryAwaitTimer 内
-                // 拒绝）；VmEventAlarm 专用表示已退役
+                // signaled；L8 起 handle==0 的用户直继子类在
+                // TryAwaitTimer 内懒建手动事件粘滞底座并回写）；
+                // VmEventAlarm 专用表示已退役
                 if (alarm is VmObject alarmObject)
                 {
                     if (Dispatch.TryAwaitTimer(alarmObject, this))

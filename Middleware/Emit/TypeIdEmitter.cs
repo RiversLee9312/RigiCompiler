@@ -58,6 +58,20 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
+        // getid.field（L1）：fieldid 槽 = 8B 占位指针，运行时值无消费面
+        //（indirect 族 lowering 期已静态解析回字段符号）——写 null 占位，
+        // 保持「先写后读」槽纪律
+        internal sealed class OfField : LlvmEmitVisitor<OfField, MirGetFieldId>
+        {
+            protected override void VisitCore(MirGetFieldId inst, ModuleBuilder.Session session)
+            {
+                session.Builder.BuildStore(
+                    LLVMValueRef.CreateConstNull(
+                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)),
+                    session.Slots[inst.Target].Slot);
+            }
+        }
+
         private static bool IsClosedValueForTypeOf(ModuleBuilder.Session session, MirType type)
         {
             if (TypeLayout.IsGenericPlaceholder(type))

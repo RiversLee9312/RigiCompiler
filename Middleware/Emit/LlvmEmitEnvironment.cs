@@ -361,10 +361,11 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
-        // 非标量、非 String、非 typeid 的引用类局部 = 胖引用槽
+        // 非标量、非 String、非 typeid/fieldid 的引用类局部 = 胖引用槽
         internal static bool IsFatReferenceLocal(MirType type)
         {
-            if (type.IsVoid || type.Key == "String" || TypeLayout.IsTypeId(type))
+            if (type.IsVoid || type.Key == "String" || TypeLayout.IsTypeId(type)
+                || TypeLayout.IsFieldId(type))
             {
                 return false;
             }

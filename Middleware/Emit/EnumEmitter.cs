@@ -9,6 +9,9 @@ namespace RigiCompiler.Middleware.Emit
     /// 写 u32 隐藏判别常量 + init 直调（.this 传槽地址）；type.is.case =
     /// 读判别 + icmp eq 判别常量（非子类型检查、不比较 payload）。
     /// enum 无零值：不写零初始化（DA/verifier 兜底）。
+    /// L1：new.wrapped.case（§14.4.2）在判别与 init 之间插入有参
+    /// ..init.wrapper 直调（VM PushConstructorTail 的 wrapper→init
+    /// 序同口径；receiver = 槽地址，与 EmitInitValueOnSlot 同形态）。
     /// </summary>
     internal static class EnumEmitter
     {
@@ -28,26 +31,58 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirNewCase inst)
         {
             var slot = slots[inst.Target].Slot;
+            // G1：构造 enum 的宿主 canonical（类级 typeid 合成代入用；
+            // 非泛型 enum 合成面返回 null 零开销）
+            var hostRef = slots[inst.Target].Local.Type.Canonical;
             // 隐藏判别字段（u32 @ 偏移 0）
             builder.BuildStore(
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, inst.Case.Discriminant, false),
                 slot);
+            var temps = new List<ArcEmitter.RichTemp>();
+            var boxed = new List<ArcEmitter.FatTemp>();
+            // new.wrapped.case（L1）：有参 ..init.wrapper 先于 enum init
+            if (inst.InitWrapper != null
+                && session.TryGetFunction(inst.InitWrapper.Canonical, out var wrapperFn))
+            {
+                // G1：泛型 enum 的 wrapper 形参可为占位（胖值槽）——实参
+                // 加工与 init 同口径（ExpectedCallParams 已剔类级 typeid，
+                // 下标 +1 跳过 .this）
+                var wrapperExpected = CallEmitter.ExpectedCallParams(wrapperFn.Mir);
+                var wrapperArgs = new LLVMValueRef[inst.WrapperArgs.Count + 1];
+                wrapperArgs[0] = slot;
+                for (var i = 0; i < inst.WrapperArgs.Count; i++)
+                {
+                    var expectType = i + 1 < wrapperExpected.Count
+                        ? wrapperExpected[i + 1].Type : null;
+                    wrapperArgs[i + 1] = CallEmitter.CoerceArg(session, builder, slots,
+                        inst.WrapperArgs[i], expectType, aliasThis: false, temps, boxed);
+                }
+                wrapperArgs = CallEmitter.MergeClassTypeIds(session, builder, slots,
+                    wrapperFn.Mir, hostRef, wrapperArgs);
+                builder.BuildCall2(wrapperFn.Type, wrapperFn.Value, wrapperArgs, "");
+            }
             if (inst.Init == null)
             {
                 // 无 init 声明 + 零实参的 enum：仅写判别（VM NewCase 同口径）
+                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
                 return;
             }
             var init = session.FunctionOf(inst.Init.Canonical);
-            var temps = new List<ArcEmitter.RichTemp>();
+            var initExpected = CallEmitter.ExpectedCallParams(init.Mir);
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = slot;
             for (var i = 0; i < inst.Args.Count; i++)
             {
-                initArgs[i + 1] = CallEmitter.MarshalArg(session, builder, slots,
-                    inst.Args[i], aliasThis: false, temps);
+                var expectType = i + 1 < initExpected.Count ? initExpected[i + 1].Type : null;
+                initArgs[i + 1] = CallEmitter.CoerceArg(session, builder, slots,
+                    inst.Args[i], expectType, aliasThis: false, temps, boxed);
             }
+            initArgs = CallEmitter.MergeClassTypeIds(session, builder, slots,
+                init.Mir, hostRef, initArgs);
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
         }
 
         private static void EmitIsCase(ModuleBuilder.Session session, LLVMBuilderRef builder,

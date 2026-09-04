@@ -217,6 +217,23 @@ namespace RigiCompiler.Middleware.Emit
             // 末位 '@'：MW11a frame 字段符号内嵌 fn canonical（自带 '@'，
             // 如 $mw.frame.$work(n:.i32)@.i32#n@core::i32），首 '@' 会截错
             var at = fieldSymbol.LastIndexOf('@');
+            // B-1：frame 槽类型本身也可以是 frame canonical（tainted
+            // 调用点的 $mw.callee.N 槽，类型 $mw.frame.<callee fn
+            // canonical> 同样内嵌 '@'）——末位 '@' 会截出 callee fn 的
+            // 返回段。frame 槽名恒不含 '@'（fn 局部名与 state/$mw.task/
+            // $mw.result），故 frame 字段符号取 '#' 后首个 '@' 起全尾
+            if (fieldSymbol.StartsWith("$mw.frame.", System.StringComparison.Ordinal))
+            {
+                var hash = fieldSymbol.IndexOf('#');
+                if (hash >= 0)
+                {
+                    var firstAt = fieldSymbol.IndexOf('@', hash + 1);
+                    if (firstAt >= 0)
+                    {
+                        at = firstAt;
+                    }
+                }
+            }
             if (at < 0)
             {
                 throw new CompilerInternalException($"字段符号缺类型段: {fieldSymbol}");

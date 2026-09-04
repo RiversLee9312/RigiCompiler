@@ -1423,16 +1423,17 @@ namespace RigiCompiler.Bil.Vm
         // yield EventAlarm（§19.3/§19.5，棒5a 起 Timer 与 sleep 的
         // SleepAlarm 统一本通道）：注册/触发原子握手——signaled 则
         // 返回 false（调用方结束执行段并重新发布）；否则登记 waiter 并
-        // 在同一锁内挂起。handle 字段在 EventAlarm 基类上（0 = 无
-        // 时钟底座——用户直继子类无事件源，拒绝）
+        // 在同一锁内挂起。handle 字段在 EventAlarm 基类上；L8 起
+        // handle==0（用户直继子类无事件源）懒建手动事件粘滞底座并
+        // 回写（native EventAlarm.ensureHandle → rigi_event_create_sticky
+        // 同口径）
         internal bool TryAwaitTimer(VmObject alarmObject, VmCoroutine waiter)
         {
             var handle = ReadI64Field(alarmObject,
                 "core.coroutine::EventAlarm#handle@.i64");
             if (handle == 0)
             {
-                throw new VmException(
-                    "yield EventAlarm 仅支持 sleep/Timer 产生的运行时 Alarm");
+                handle = EnsureEventBase(alarmObject);
             }
             if (!_timers.TryGetValue(handle, out var record))
             {
@@ -1546,16 +1547,72 @@ namespace RigiCompiler.Bil.Vm
         private readonly object _mqGate = new object();
 
         // 手动 EventAlarm（rigi_event_* 镜像）：复用 VmTimerRecord（
-        // Gate/Waiters/Signaled 与 TryAwaitTimer 握手兼容），无 DotNetTimer
-        private long MqEventCreate()
+        // Gate/Waiters/Signaled 与 TryAwaitTimer 握手兼容），无 DotNetTimer。
+        // L8 起两形态：autoReset=true 消息队列（wait 消费 signaled）/
+        // autoReset=false 用户 EventAlarm 默认底座（粘滞，§19.3）
+        private long EventCreateCore(bool autoReset)
         {
             var handle = NewHandle();
             _timers[handle] = new VmTimerRecord
             {
-                AutoReset = true,
+                AutoReset = autoReset,
                 Marker = new WakeupMarker(this),
             };
             return handle;
+        }
+
+        private long MqEventCreate() => EventCreateCore(autoReset: true);
+
+        // L8：用户直继 EventAlarm 子类默认底座懒建（native EventAlarm.
+        // ensureHandle → rigi_event_create_sticky 同口径）：lock 内双检
+        // + 回写 handle 字段——并发首触只建一枚（§19.3 握手前置：底座
+        // 唯一性本身须原子）；记录为粘滞形态
+        private long EnsureEventBase(VmObject alarmObject)
+        {
+            lock (_timers)
+            {
+                var existing = ReadI64Field(alarmObject,
+                    "core.coroutine::EventAlarm#handle@.i64");
+                if (existing != 0)
+                {
+                    return existing;
+                }
+                var handle = EventCreateCore(autoReset: false);
+                alarmObject.WriteField("core.coroutine::EventAlarm#handle@.i64",
+                    new VmI64(handle));
+                return handle;
+            }
+        }
+
+        // L8：rigi_event_create_sticky hook 承载（stdlib EventAlarm.
+        // ensureHandle 的 native 声明；粘滞形态）
+        internal VmValue EventCreateSticky(IReadOnlyList<VmValue> args) =>
+            new VmI64(EventCreateCore(autoReset: false));
+
+        // L8：rigi_event_signal 镜像（stdlib EventAlarm.signal 的 native
+        // 声明）：粘滞形态触发——闸内恒置 Signaled（终态，重复 signal
+        // 幂等）+ 归还唤醒债务 + 排空 waiter，闸外逐个发布（native
+        // rigi_event_signal 同序；signal 前写入对恢复协程可见，§21）
+        internal VmValue EventSignal(IReadOnlyList<VmValue> args)
+        {
+            var handle = RequireI64("rigi_event_signal", args, 0);
+            if (!_timers.TryGetValue(handle, out var record))
+            {
+                return VmVoid.Instance;
+            }
+            List<VmCoroutine> waiters;
+            lock (record.Gate)
+            {
+                waiters = record.Waiters;
+                record.Waiters = new List<VmCoroutine>();
+                record.Signaled = true;
+                record.Marker?.Disarm();
+            }
+            foreach (var waiter in waiters)
+            {
+                Publish(waiter, "EventAlarm.signal");
+            }
+            return VmVoid.Instance;
         }
 
         private void MqEventSignal(long handle)

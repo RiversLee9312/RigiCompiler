@@ -196,7 +196,7 @@ namespace RigiCompiler.Tests
             ("TestMethodProxyWildcardUnpackByName", TestMethodProxyWildcardUnpackByName),
             ("TestMethodProxyBakingHostForms", TestMethodProxyBakingHostForms),
             ("TestMethodProxyEntityComposition", TestMethodProxyEntityComposition),
-            ("TestMethodProxyWildcardRerouteRejects", TestMethodProxyWildcardRerouteRejects),
+            ("TestMethodProxyWildcardReroute", TestMethodProxyWildcardReroute),
             ("TestSuperCallBypassesWrapperBaking", TestSuperCallBypassesWrapperBaking),
             ("TestGetTypeIdVarEmission", TestGetTypeIdVarEmission),
             ("TestTypeIdConstructedSheets", TestTypeIdConstructedSheets),
@@ -205,6 +205,7 @@ namespace RigiCompiler.Tests
             ("TestStaticEmission", TestStaticEmission),
             ("TestArrayPathEmission", TestArrayPathEmission),
             ("TestSpanPathEmission", TestSpanPathEmission),
+            ("TestRawBufferEmission", TestRawBufferEmission),
             ("TestInvokeIndirect", TestInvokeIndirect),
             ("TestNativeFfiAbi", TestNativeFfiAbi),
             ("TestBoxAnyEmission", TestBoxAnyEmission),
@@ -1125,25 +1126,67 @@ namespace RigiCompiler.Tests
                 && brG.Target == throwInst.ExcTarget.Id,
                 fail.Terminator?.GetType().Name ?? "<null>");
 
-            // ⑩ 非 async fn 的挂起点受控拒绝（VM 栈式跨界语义，棒2 不支持）
-            var rejected = false;
-            var rejectDetail = "";
-            try
-            {
-                PipelineFromSource(
-                    "async func one(): i32 { return 1 }\n" +
-                    "pub func main(): i32 {\n" +
-                    "    var t = one()\n" +
-                    "    var r = await t\n" +
-                    "    return r\n" +
-                    "}\n", "coro.split10.bil");
-            }
-            catch (MwNotSupportedException ex)
-            {
-                rejected = ex.Message.Contains("非 async");
-                rejectDetail = ex.Message;
-            }
-            TestHarness.CheckTrue("⑩ 非 async fn 挂起点受控拒绝", rejected, rejectDetail);
+            // ⑩ B-1 栈式跨界（SYNTAX §11）：main 直接 await —— main
+            // Task 包装 split（stub ret 热 Task + resume + frame）+
+            // $mw.main.settle 合成；模块无残留 MirAwait
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = one()\n" +
+                "    var r = await t\n" +
+                "    return r\n" +
+                "}\n", "coro.split10.bil");
+            var mainStub = StubOf(ctx, "$main(");
+            TestHarness.CheckTrue("⑩ main Task 包装 split（stub IsAsync + ret Task）",
+                mainStub.IsAsync
+                && mainStub.ReturnType.Canonical.StartsWith("core.coroutine::Task",
+                    StringComparison.Ordinal),
+                mainStub.Symbol.Canonical + " → " + mainStub.ReturnType.Canonical);
+            var mainResume = ResumeOf(ctx, mainStub);
+            TestHarness.CheckTrue("⑩ main resume 含 await wait 块（四路分流）",
+                mainResume.Blocks.Any(b => b.Id.Contains(".wait")),
+                string.Join(", ", mainResume.Blocks.Select(b => b.Id)));
+            TestHarness.CheckTrue("⑩ $mw.main.settle 已合成",
+                ctx.Mir!.Functions.Any(f => f.Symbol.Canonical.StartsWith(
+                    "$mw.main.settle(", StringComparison.Ordinal)), "");
+            TestHarness.CheckTrue("⑩ 模块无残留 MirAwait",
+                ctx.Mir.Functions.SelectMany(f => f.Blocks)
+                    .SelectMany(b => b.Instructions).All(i => i is not MirAwait), "");
+
+            // ⑫ B-1：main → 单层同步 fn（内含 await）——callee 裸
+            // frame split（IsPlainResume resume + $mw.result 字段 +
+            // 原符号陷阱 stub），main resume 内调用点改写为
+            // MirResumeCall 四码分流
+            ctx = PipelineFromSource(
+                "async func one(): i32 { return 1 }\n" +
+                "func addTwice(n: i32): i32 {\n" +
+                "    var t = one()\n" +
+                "    var r = await t\n" +
+                "    return r + n\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return addTwice(41)\n" +
+                "}\n", "coro.split12.bil");
+            var plainStub = StubOf(ctx, "$addTwice(");
+            TestHarness.CheckTrue("⑫ tainted 普通 fn 原符号改陷阱 stub",
+                !plainStub.IsAsync
+                && plainStub.Blocks.Single().Terminator is MirUnreachable,
+                plainStub.Symbol.Canonical);
+            var plainResume = ResumeOf(ctx, plainStub);
+            TestHarness.CheckTrue("⑫ plain resume 标记（IsCoroutineResume + IsPlainResume）",
+                plainResume.IsCoroutineResume && plainResume.IsPlainResume, "");
+            mainResume = ResumeOf(ctx, StubOf(ctx, "$main("));
+            var callBlock = mainResume.Blocks.SingleOrDefault(b =>
+                b.Instructions.OfType<MirResumeCall>().Any());
+            TestHarness.CheckTrue("⑫ 调用点 MirResumeCall 四码分流",
+                callBlock is { } cb
+                && cb.Instructions.OfType<MirResumeCall>().Any()
+                && cb.Terminator is MirSwitch,
+                string.Join(", ", mainResume.Blocks.Select(b => b.Id)));
+            TestHarness.CheckTrue("⑫ callee frame 含 $mw.result 字段",
+                plainResume.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirSetField>()
+                    .Any(s => s.FieldSymbol.Contains("#$mw.result@")), "");
 
             // ⑪ 不透明 AsyncAction 槽：跳过 coldtask 工厂，bindColdBody
             // 改写为 type.is 链 + $mw.bindcold.*（不再 MwNotSupported）
@@ -1175,6 +1218,42 @@ namespace RigiCompiler.Tests
                 bindBody == null ? "<null>" : string.Join(",",
                     bindBody.Blocks.SelectMany(b => b.Instructions)
                         .Select(i => i.GetType().Name)));
+
+            // ⑫ 继承 $$call 的冷 body（Sub : Base : AsyncAction，Sub
+            // 自身无 $$call）：工厂沿 extends 链解析，frame/resume 取
+            // 声明宿主 Base 的 split 产物（VM 拍平 sheet 同语义）
+            ctx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "pub shared abstract class Base : core.AsyncAction {\n" +
+                "    pub override async operator call() { }\n" +
+                "}\n" +
+                "pub shared class Sub : Base {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const t = new Task(new Sub())\n" +
+                "    await t\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n", "coro.split12.bil");
+            var coldFactory = ctx.Mir!.Functions.FirstOrDefault(f =>
+                f.Symbol.Canonical.Contains("$mw.coldtask.", StringComparison.Ordinal)
+                && f.Symbol.Canonical.Contains("|Sub", StringComparison.Ordinal));
+            TestHarness.CheckTrue("⑫ 继承 $$call 冷 body 工厂生成",
+                coldFactory != null,
+                string.Join(",", ctx.Mir!.Functions.Select(f => f.Symbol.Canonical)
+                    .Where(c => c.Contains("$mw.", StringComparison.Ordinal))));
+            TestHarness.CheckTrue("⑫ 工厂 frame 取声明宿主 Base 的 split 产物",
+                coldFactory != null
+                && coldFactory.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirNewObject>().Any(n =>
+                        n.Type.Canonical.Contains("Base$$call(",
+                            StringComparison.Ordinal)),
+                coldFactory == null ? "<null>" : string.Join(",",
+                    coldFactory.Blocks.SelectMany(b => b.Instructions)
+                        .OfType<MirNewObject>().Select(n => n.Type.Canonical)));
         }
 
         // ===== MW11b 棒3：yield Alarm 切分形态 + probe 合成 fn =====
@@ -1214,9 +1293,11 @@ namespace RigiCompiler.Tests
                     s => s.FieldSymbol.Contains("#state@"))
                 && yieldBlock.Terminator is MirCondBranch);
             var eventBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.event"));
-            TestHarness.CheckTrue("① event 分支：读 EventAlarm.handle + rigi_alarm_wait 登记",
-                eventBlock.Instructions.OfType<MirGetField>().Any(g =>
-                    g.FieldSymbol == CoroutineSplitPass.EventAlarmHandleField)
+            // L8：handle 直读改为 ensureHandle 调用（用户直继子类懒建
+            // 默认底座）；登记仍走 rigi_alarm_wait 闸内握手
+            TestHarness.CheckTrue("① event 分支：ensureHandle 取底座 + rigi_alarm_wait 登记",
+                eventBlock.Instructions.OfType<MirCall>().Any(c =>
+                    c.Target.Canonical.Contains("EventAlarm$ensureHandle("))
                 && eventBlock.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("rigi_alarm_wait(")));
             var signaledBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.signaled"));
@@ -4378,39 +4459,73 @@ namespace RigiCompiler.Tests
                 && ll.Contains("$.wrapped.work") && ll.Contains("$.mwrapped.work"), ll);
         }
 
-        // wildcard 环改写 .name 重路由：受控拒绝（VM 已支持，后续补）。
-        // 前端 + BIL 验证器（§21.3 保留首参恒等）已先行拒绝，本用例绕过
-        // 门禁直读 BIL 文本，压 MW 层第二道防线
-        private static void TestMethodProxyWildcardRerouteRejects()
+        // wildcard 环改写 .name 重路由（刀6b 正例，VM
+        // RerouteWildcardInner 同口径）：proxy 体覆写 .name 形参后
+        // inner(.name, args)——前端/验证器放行（保留首参操作数名恒等、
+        // 值可改写），烘焙不再受控拒绝：wildcard 环 inner 改写为
+        // hit/miss 动态分派块（hit = 本成员 canonical 恒等直进终态；
+        // miss 调 $.mw.mwr router），router if 链覆盖宿主可烘焙方法
+        //（other 未被烘焙 → 原名 fn；fetch 被烘焙 → $.mwrapped. 最深
+        // 层原始体），链末 miss 抛 NoSuchMethodException
+        private static void TestMethodProxyWildcardReroute()
         {
             var (_, _, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    pub init()\n" +
                 "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
-                "        return inner(\"other\", args)\n" +
+                "        .name = \"Service$other(x:.i32)@.i32\"\n" +
+                "        return inner(.name, args)\n" +
                 "    }\n" +
                 "}\n" +
                 "pub class Service {\n" +
                 "    pub init()\n" +
                 "    @Timed\n" +
                 "    pub func fetch(x: i32): i32 { return x }\n" +
+                "    pub func other(x: i32): i32 { return (x + 100) }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var s = new Service()\n" +
                 "    return s.fetch(1)\n" +
                 "}\n");
-            var context = new MwContext(BilReader.Read(text));
-            var rejected = false;
-            try
-            {
-                RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
-            }
-            catch (RigiCompiler.Middleware.MwNotSupportedException)
-            {
-                rejected = true;
-            }
-            TestHarness.CheckTrue("wildcard 环改写 .name 受控拒绝", rejected);
+            var gate = BilGate.Accept(text, "wrapper.reroute.bil");
+            TestHarness.CheckTrue("改写 .name 用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            var functions = context.Mir!.Functions;
+            var allInsts = functions.SelectMany(f => f.Blocks)
+                .SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue("改写 .name 烘焙后无残留 MirInnerCall",
+                !allInsts.OfType<MirInnerCall>().Any());
+
+            var ring = functions.Single(f =>
+                f.Symbol.Canonical.Contains("Timed$.bake.Service$fetch"));
+            TestHarness.CheckTrue("wildcard 环 inner → hit/miss 动态分派块",
+                ring.Blocks.Any(b => b.Terminator is MirCondBranch));
+            TestHarness.CheckTrue("wildcard 环 miss 调 $.mw.mwr router",
+                ring.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
+                    .Any(c => c.Target.Canonical.StartsWith("Service$.mw.mwr(",
+                        System.StringComparison.Ordinal)));
+
+            var router = functions.Single(f =>
+                f.Symbol.Canonical.StartsWith("Service$.mw.mwr(",
+                    System.StringComparison.Ordinal));
+            var routerCalls = router.Blocks.SelectMany(b => b.Instructions)
+                .OfType<MirCall>().ToList();
+            TestHarness.CheckTrue("router 覆盖未烘焙方法原名 fn（other）",
+                routerCalls.Any(c => c.Target.Canonical
+                    == "Service$other(x:.i32)@.i32"));
+            TestHarness.CheckTrue("router 覆盖被烘焙方法最深层原始体（fetch → $.mwrapped.）",
+                routerCalls.Any(c => c.Target.Canonical
+                    == "Service$.mwrapped.fetch(x:.i32)@core::i32"));
+            TestHarness.CheckTrue("router 链末 miss 抛 NoSuchMethodException",
+                router.Blocks.SelectMany(b => b.Instructions).OfType<MirThrow>().Any());
+
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+            TestHarness.CheckTrue("LLVM 含 mwr router",
+                ll.Contains("Service$.mw.mwr("), ll);
         }
 
         // ===== super 绕过 wrapper 链（遗留12 任务②，对齐 VM
@@ -4930,6 +5045,205 @@ namespace RigiCompiler.Tests
             return slice.Contains($"i32 {size}, i32 {flags}");
         }
 
+        // ===== raw.hex/raw.bin 字节缓冲区物化（§19.3；L5 资源面）=====
+        // 合法 load 目标 = 字节缓冲区三族：.array<u8>（TestArrayPathEmission
+        // 已覆盖）/ core::Span<u8> / core::SharedSpan<u8>。VM 对 raw load
+        // 无物化语义（LoadResource 拒绝），本面 LL 级断言 + NativeE2E
+        // native-only 端到端（RunRawBufferSpanCase）
+
+        private static void TestRawBufferEmission()
+        {
+            // raw.hex → core::Span<u8>：span_alloc + 静态字节常量 + memcpy
+            const string spanBil =
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"rawspan\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_Data = raw.hex x2FF2331C,\n" +
+                "    R_Zero = i32 0\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        core::Span<.u8> d,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_Data) $d\n" +
+                "        load res(R_Zero) $r\n" +
+                "        ret $r\n" +
+                "    }\n" +
+                "}\n";
+            var spanGate = BilGate.Accept(spanBil, "rawspan.bil");
+            TestHarness.CheckTrue("raw→Span 门禁放行", spanGate.IsAccepted,
+                string.Join("; ", spanGate.Errors));
+            var spanContext = new MwContext(spanGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(spanContext);
+            using var spanModule = ModuleBuilder.Build(spanContext, spanContext.Mir!);
+            var spanLl = spanModule.PrintToString();
+            TestHarness.CheckTrue("raw→Span 字节常量",
+                spanLl.Contains("@raw.R_Data") && spanLl.Contains("c\"/\\F23\\1C\""), spanLl);
+            TestHarness.CheckTrue("raw→Span 走 span_alloc",
+                spanLl.Contains("call ptr @rigi_span_alloc(ptr"), spanLl);
+            TestHarness.CheckTrue("raw→Span 具化 sheet",
+                spanLl.Contains("typesheet.core::Span$core::u8$"), spanLl);
+
+            // raw.bin → core::SharedSpan<u8>（b0101010101010101 = 0x55 0x55）
+            const string sharedBil =
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"rawshared\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_Bits = raw.bin b0101010101010101,\n" +
+                "    R_Zero = i32 0\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        core::SharedSpan<.u8> b,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_Bits) $b\n" +
+                "        load res(R_Zero) $r\n" +
+                "        ret $r\n" +
+                "    }\n" +
+                "}\n";
+            var sharedGate = BilGate.Accept(sharedBil, "rawshared.bil");
+            TestHarness.CheckTrue("raw→SharedSpan 门禁放行", sharedGate.IsAccepted,
+                string.Join("; ", sharedGate.Errors));
+            var sharedContext = new MwContext(sharedGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(sharedContext);
+            using var sharedModule = ModuleBuilder.Build(sharedContext, sharedContext.Mir!);
+            var sharedLl = sharedModule.PrintToString();
+            TestHarness.CheckTrue("raw→SharedSpan 字节常量",
+                sharedLl.Contains("@raw.R_Bits") && sharedLl.Contains("c\"UU\""), sharedLl);
+            TestHarness.CheckTrue("raw→SharedSpan 走 span_alloc",
+                sharedLl.Contains("call ptr @rigi_span_alloc(ptr"), sharedLl);
+            TestHarness.CheckTrue("raw→SharedSpan 具化 sheet FlagShared",
+                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan$core::u8$", 32, 18),
+                sharedLl);
+
+            // 负例：raw → .i32（字节缓冲区外目标无 §19.3 语义；VM 同拒）
+            var scalarBil = spanBil.Replace("core::Span<.u8> d", ".i32 d")
+                .Replace("rawspan", "rawscalar");
+            var scalarGate = BilGate.Accept(scalarBil, "rawscalar.bil");
+            TestHarness.CheckTrue("raw→i32 门禁放行（verifier 跳过严格匹配）",
+                scalarGate.IsAccepted, string.Join("; ", scalarGate.Errors));
+            var scalarCaught = false;
+            try
+            {
+                var scalarContext = new MwContext(scalarGate.Module!);
+                var scalarMir = MirBuilder.Build(scalarContext);
+                using var scalarModule = ModuleBuilder.Build(scalarContext, scalarMir);
+            }
+            catch (MwNotSupportedException ex)
+            {
+                scalarCaught = ex.Message.Contains("字节缓冲区");
+            }
+            TestHarness.CheckTrue("raw→i32 受控拒绝（非字节缓冲区目标）", scalarCaught);
+
+            // 负例：§19.2 集合资源（array<string>）load 受控拒绝——VM
+            // LoadResource 同拒（"不支持的资源形态"），物化语义规范留白
+            const string collectionBil =
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"rawcoll\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_Names = array<string> { \"a\", \"b\" },\n" +
+                "    R_Zero = i32 0\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        .string d,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_Names) $d\n" +
+                "        load res(R_Zero) $r\n" +
+                "        ret $r\n" +
+                "    }\n" +
+                "}\n";
+            var collGate = BilGate.Accept(collectionBil, "rawcoll.bil");
+            TestHarness.CheckTrue("集合资源 load 门禁放行", collGate.IsAccepted,
+                string.Join("; ", collGate.Errors));
+            var collCaught = false;
+            try
+            {
+                var collContext = new MwContext(collGate.Module!);
+                var collMir = MirBuilder.Build(collContext);
+                using var collModule = ModuleBuilder.Build(collContext, collMir);
+            }
+            catch (MwNotSupportedException ex)
+            {
+                collCaught = ex.Message.Contains("无 load 物化语义");
+            }
+            TestHarness.CheckTrue("集合资源 load 受控拒绝（VM 同拒）", collCaught);
+
+            // 负例：switch-table 资源不是可装载的值（§19.4 走 switch 指令
+            // 专用通道），load 引用受控拒绝
+            var tableBil = collectionBil
+                .Replace("R_Names = array<string> { \"a\", \"b\" }",
+                    "R_Switch = switch-table<.i32> { 1, 2, 3 }")
+                .Replace("R_Names", "R_Switch")
+                .Replace("rawcoll", "rawtable");
+            var tableGate = BilGate.Accept(tableBil, "rawtable.bil");
+            TestHarness.CheckTrue("switch-table load 门禁放行", tableGate.IsAccepted,
+                string.Join("; ", tableGate.Errors));
+            var tableCaught = false;
+            try
+            {
+                var tableContext = new MwContext(tableGate.Module!);
+                var tableMir = MirBuilder.Build(tableContext);
+                using var tableModule = ModuleBuilder.Build(tableContext, tableMir);
+            }
+            catch (MwNotSupportedException ex)
+            {
+                tableCaught = ex.Message.Contains("无 load 物化语义");
+            }
+            TestHarness.CheckTrue("switch-table load 受控拒绝（专用通道）", tableCaught);
+        }
+
         // ===== invoke.indirect（§15.3 callable 协议）=====
 
         private static void TestInvokeIndirect()
@@ -5137,15 +5451,30 @@ namespace RigiCompiler.Tests
                 anyRetLl.Contains("alloca { i64, i64 }") && anyRetLl.Contains("align 16"),
                 anyRetLl);
 
-            ExpectMwNotSupportedFromSource(
+            // L6：非 rigi_rt 库放行——C 符号 = symbol 原文（无 rigi_ 前缀），
+            // 参数/返回 ABI 与 rigi_rt 面同一套；链接输入归 native --link
+            var libcLl = EmitLlFromSource(
                 "@NativeLibrary(\"libc\")\n" +
                 "@NativeSymbol(\"abs\")\n" +
                 "native func abs(x: i32): i32\n" +
                 "pub func main(): i32 {\n" +
                 "    return abs(-1)\n" +
-                "}\n",
-                "MW1 不支持 native 库: libc",
-                "非 rigi_rt 库拒绝消息");
+                "}\n", "ffi.userlib.bil");
+            TestHarness.CheckTrue("非 rigi_rt 库 fn 声明：C 符号原文无前缀",
+                libcLl.Contains("declare i32 @abs(i32)"), libcLl);
+            TestHarness.CheckTrue("非 rigi_rt 库调用形状",
+                libcLl.Contains("call i32 @abs(i32"), libcLl);
+
+            var userStringLl = EmitLlFromSource(
+                "@NativeLibrary(\"mylib\")\n" +
+                "@NativeSymbol(\"my_echo\")\n" +
+                "native func my_echo(text: String): String\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = my_echo(\"x\")\n" +
+                "    return 0\n" +
+                "}\n", "ffi.userlib.string.bil");
+            TestHarness.CheckTrue("非 rigi_rt 库 String 面：void + rigi_string* 出入参",
+                userStringLl.Contains("declare void @my_echo(ptr, ptr)"), userStringLl);
 
             var typeIdLl = EmitLlFromSource(
                 "pub class Holder {\n" +
@@ -5261,6 +5590,11 @@ namespace RigiCompiler.Tests
         private static void ExpectMwNotSupportedFromSource(string source, string needle, string label)
         {
             var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            ExpectMwNotSupportedFromBil(text, needle, label);
+        }
+
+        private static void ExpectMwNotSupportedFromBil(string text, string needle, string label)
+        {
             var gate = BilGate.Accept(text, label);
             TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5421,17 +5755,216 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("prologue 从隐藏字段 load 类级 typeid",
                 ll.Contains("tid.bits") || ll.Contains("load i64"), ll);
 
-            ExpectMwNotSupportedFromSource(
+            // G1：泛型值类型构造（原受控拒绝翻正）——具化计划复用模板
+            // 布局（占位字段 = 16B 胖值槽）、无对象头隐藏 typeid 槽、
+            // 类级 typeid 随 init 调用直传（§7.2 序、构造实参 TypeSheet 常量）
+            var (_, _, structText) = BilTestHarness.EmitBilUnit(
                 "pub struct Wrap\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return this.v }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    var w = new Wrap\\<i32>(1)\n" +
-                "    return w.v\n" +
+                "    return w.get()\n" +
+                "}\n");
+            var structGate = BilGate.Accept(structText, "g1.struct.bil");
+            TestHarness.CheckTrue("泛型 struct 源门禁放行", structGate.IsAccepted,
+                string.Join("; ", structGate.Errors));
+            var structContext = new MwContext(structGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(structContext);
+            var structPlan = structContext.Layout!.Find("Wrap<core::i32>");
+            TestHarness.CheckTrue("构造 struct 计划已入表", structPlan != null);
+            TestHarness.CheckTrue("构造 struct 计划为 Struct 且无隐藏 typeid 槽",
+                structPlan!.Kind == TypeLayoutKind.Struct
+                && structPlan.HiddenTypeIdSlots.Count == 0);
+            var structVField = FieldOf(structPlan, "#v@");
+            TestHarness.CheckTrue("构造 struct 字段复用模板 canonical 且为胖值槽",
+                structVField != null && structVField.IsReferenceSlot
+                && structVField.Offset == 0 && structVField.Symbol.StartsWith("Wrap#"));
+            TestHarness.CheckTrue("构造 struct Size=16（单胖槽）且槽 0 init 分发器",
+                structPlan.Size == 16 && structPlan.VTableSlots.Count == 1
+                && structPlan.VTableSlots[0] == LayoutEngine.InitDispatchSlot);
+
+            using var structLlvm = ModuleBuilder.Build(structContext, structContext.Mir!);
+            var structLl = structLlvm.PrintToString();
+            TestHarness.CheckTrue("构造 struct sheet 全局（转义名）",
+                structLl.Contains("typesheet.Wrap$core::i32$"), structLl);
+            // init 调用：.this 槽指针 + 类级 typeid 常量 + 胖值实参
+            TestHarness.CheckTrue("struct init 调用含类级 typeid 实参（TypeSheet 常量直传）",
+                structLl.Contains(
+                    "call void @\"Wrap$init(v:.generic<$.generic.T>)@.void\"(ptr %")
+                && structLl.Contains("typesheet.core::i32"), structLl);
+            // get 调用：类级 typeid 实参（擦除 cast 溯源回构造形态）
+            TestHarness.CheckTrue("struct 方法调用含类级 typeid 实参",
+                structLl.Contains(
+                    "call void @\"Wrap$get()@.generic<$.generic.T>\"(ptr %")
+                || structLl.Contains(
+                    "call { i64, i64 } @\"Wrap$get()@.generic<$.generic.T>\"(ptr %"),
+                structLl);
+
+            // G1 enum 半边（frontend S11 不支持泛型 enum case，手写 BIL 直驱）：
+            // 构造 enum 具化计划 + new.case 判别写入 + init 类级 typeid 直传
+            var enumBil =
+                "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n    R_0 = i32 7\n    R_1 = i32 1\n}\n\n" +
+                "LocalSymbols {\n" +
+                "    .type Choice = enum-struct generic(T) pub {\n" +
+                "        .field Choice#tag@.i32 pub var\n" +
+                "        .field Choice#payload@.generic<$.generic.T> pub var\n" +
+                "        .method Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void pub init\n" +
+                "        .case Choice.Some(tag:.i32,payload:.generic<$.generic.T>) discriminant auto\n" +
+                "    }\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n\nExternalSymbols {\n}\n\n" +
+                "fn(Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void) {\n" +
+                "    .args {\n" +
+                "        .return = .void,\n" +
+                "        .this = Choice,\n" +
+                "        .generic.T = .typeid,\n" +
+                "        tag = .i32,\n" +
+                "        payload = .generic<$.generic.T>\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        set.field $tag $.this field(Choice#tag@.i32)\n" +
+                "        set.field $payload $.this field(Choice#payload@.generic<$.generic.T>)\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        Choice<.i32> c,\n" +
+                "        .i32 .t0,\n" +
+                "        .i32 .t1\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_0) $.t0\n" +
+                "        load res(R_1) $.t1\n" +
+                "        new.case type(Choice<.i32>) case(Choice.Some) $c [$.t1, $.t0]\n" +
+                "        ret $.t0\n" +
+                "    }\n" +
+                "}\n";
+            var enumGate = BilGate.Accept(enumBil, "g1.enum.bil");
+            TestHarness.CheckTrue("构造 enum 手写 BIL 门禁放行", enumGate.IsAccepted,
+                string.Join("; ", enumGate.Errors));
+            var enumContext = new MwContext(enumGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(enumContext);
+            var enumPlan = enumContext.Layout!.Find("Choice<core::i32>");
+            TestHarness.CheckTrue("构造 enum 计划已入表（Enum kind + 判别复用模板）",
+                enumPlan != null && enumPlan.Kind == TypeLayoutKind.Enum
+                && enumPlan.EnumCases.Count == 1
+                && enumPlan.EnumCases[0].Discriminant == 0u);
+            using var enumLlvm = ModuleBuilder.Build(enumContext, enumContext.Mir!);
+            var enumLl = enumLlvm.PrintToString();
+            TestHarness.CheckTrue("构造 enum sheet 全局（转义名）",
+                enumLl.Contains("typesheet.Choice$core::i32$"), enumLl);
+            TestHarness.CheckTrue("enum init 调用含类级 typeid 实参（直传）",
+                enumLl.Contains(
+                    "@\"Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void\"(ptr %")
+                && enumLl.Contains("typesheet.core::i32"), enumLl);
+
+            // G2 保留边界（手写 BIL 直驱；frontend P3 已拒 interface/wrapper
+            // 构造）：构造 interface/wrapper 的 new 仍受控拒绝——native 对
+            // 「无 init 声明 + 零实参」构造（含非泛型 class 同形）本就是
+            // 受控拒绝面，两形态落在同一边界内
+            ExpectMwNotSupportedFromBil(
+                "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n    R_0 = i32 0\n}\n\n" +
+                "LocalSymbols {\n" +
+                "    .type IBox = interface generic(T) pub {\n" +
+                "        .method IBox$get()@.generic<$.generic.T> pub\n" +
+                "    }\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n\nExternalSymbols {\n}\n\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        IBox<.i32> b,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        new type(IBox<.i32>) $b []\n" +
+                "        load res(R_0) $r\n" +
+                "        ret $r\n" +
+                "    }\n" +
                 "}\n",
-                "泛型值类型构造",
-                "泛型 struct 构造拒绝消息");
+                "构造类型形态",
+                "G2 构造 interface new 保留受控拒绝");
+            ExpectMwNotSupportedFromBil(
+                "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n    R_0 = i32 5\n}\n\n" +
+                "LocalSymbols {\n" +
+                "    .type W = wrapper generic(T) pub rich {\n" +
+                "        .field W#level@.generic<$.generic.T> pub var\n" +
+                "        .method W$init(level:.generic<$.generic.T>)@.void pub init\n" +
+                "    }\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n\nExternalSymbols {\n}\n\n" +
+                "fn(W$init(level:.generic<$.generic.T>)@.void) {\n" +
+                "    .args {\n" +
+                "        .return = .void,\n" +
+                "        .this = W,\n" +
+                "        .generic.T = .typeid,\n" +
+                "        level = .generic<$.generic.T>\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        set.field $level $.this field(W#level@.generic<$.generic.T>)\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        W<.i32> w,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_0) $r\n" +
+                "        new type(W<.i32>) $w [$r]\n" +
+                "        ret $r\n" +
+                "    }\n" +
+                "}\n",
+                "构造类型形态",
+                "G2 构造 wrapper new 保留受控拒绝");
+
+            // G4 边界：泛型宿主的 operator 命中占位派发候选集 → 编译期
+            // 受控拒绝（构造 sheet 无法反解类型实参/模板身份；VM 按
+            // 字符串 TypeRef 运行期解析——分歧记录见 GenericOpEmitter）
+            ExpectMwNotSupportedFromSource(
+                "pub interface Addable {\n" +
+                "    operator plus(another: Addable): Addable\n" +
+                "}\n" +
+                "pub class Num implements Addable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator plus(another: Addable): Addable {\n" +
+                "        return new Num(this.n + ((another as Num).n))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class GBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator plus(other: GBox\\<T>): GBox\\<T> {\n" +
+                "        return new GBox\\<T>(this.v)\n" +
+                "    }\n" +
+                "}\n" +
+                "func add\\<T extends Addable>(a: T, b: T): Addable {\n" +
+                "    return a + b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = add\\<Num>(new Num(1), new Num(2))\n" +
+                "    return 0\n" +
+                "}\n",
+                "候选 operator 宿主为泛型类型",
+                "G4 泛型宿主 operator 候选受控拒绝");
         }
 
         // ===== 构造接口 iMap + VirtualSlotOf 精确化（MW5 c2-b）=====
@@ -5661,9 +6194,11 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("try MIR 构造放行（MW9a）",
                 tryMir.Functions.Any(f => f.IsEntrypoint));
 
-            // raw.hex/raw.bin：§19.3 未定 load 目标类型（array/Span 布局
-            // 知识）→ 物化随 MW4 定稿；门禁放行（verifier 对 raw 跳过严格
-            // 匹配），资源发射受控拒绝
+            // raw.hex/raw.bin：§19.3 字节序列物化已随 L5 定稿（字节缓冲区
+            // 三族 .array<u8>/core::Span<u8>/core::SharedSpan<u8>，见
+            // TestRawBufferEmission）；.string 等缓冲区外目标无字节序列
+            // 语义（VM 对 raw load 整体拒绝）——门禁放行（verifier 对
+            // raw 跳过严格匹配），资源发射受控拒绝
             const string rawBil =
                 "BIL \"1.1\"\n" +
                 "\n" +
@@ -5812,6 +6347,15 @@ namespace RigiCompiler.Tests
                     File.Exists(objPath) && new FileInfo(objPath).Length > 0);
                 TestHarness.CheckTrue("native stdout 纯净", accepted.Out.Length == 0,
                     accepted.Out);
+
+                // L6：--link 链接输入存在性校验（早失败，退出码 2）
+                var missingLink = RunNative("native", "--file", okPath,
+                    "--emit-obj", Path.Combine(dir, "app2.o"),
+                    "--link", Path.Combine(dir, "nope.lib"));
+                TestHarness.CheckTrue("native --link 输入不存在退出码 2",
+                    missingLink.Code == 2);
+                TestHarness.CheckTrue("native --link 错误走 stderr",
+                    missingLink.Err.Contains("--link"), missingLink.Err);
             }
             finally
             {

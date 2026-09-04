@@ -31,6 +31,7 @@
 // native 原语面（§17.4，rigi_rt，rigi_ 前缀）：
 //   Worker 创建/销毁/入队唤醒/park、协程句柄 create/resume/destroy/
 //   lane/current、定时器创建、EventAlarm waiter 登记（alarm_wait）、
+//   用户 EventAlarm 默认底座（event_create_sticky/signal，L8）、
 //   PollingAlarm 轮询状态（poll_arm/pending/schedule/clear）、同步
 //   Mutex（仅供 Dispatcher 内部队列一致性，不得跨挂起点持有，与语言级
 //   异步 Mutex 严格区分）、TLS 当前上下文、rigi_time_now 时钟。
@@ -427,10 +428,27 @@ pub shared abstract class PollingAlarm {
 // 原子握手在 native 定时器记录闸内（rigi_alarm_wait / 响铃回调——与
 // VM VmTimerRecord/VmEventAlarm 的取舍同构：waiter 是协程句柄，不经
 // Rigi 对象传达），handle = native 时钟底座句柄（rigi_timer_create
-// 响铃形态）；handle == 0 = 无事件源的用户直继子类（yield 时 native
-// 诊断 abort / VM 抛 VmException）
+// 响铃形态）。L8：handle == 0 的用户直继子类不再拒绝——ensureHandle
+// 懒建 MW11d 手动事件粘滞形态作默认底座（rigi_event_create_sticky；
+// VM 侧 TryAwaitTimer 同口径懒建），事件源经 protected signal() 触发
 pub shared abstract class EventAlarm {
     internal var handle: i64 = (0 as i64)
+
+    // 懒建默认底座（L8）：无事件源的用户直继子类（handle == 0）在首个
+    // yield/signal 时补手动事件粘滞底座；并发首触互斥在 Dispatcher 闸内
+    // 双检（§19.3 注册/触发原子握手的前置：底座唯一性本身须原子）。
+    // 仅生成代码 yield EventAlarm 分流与本类 signal 调用
+    internal func ensureHandle(): i64 {
+        if (handle != (0 as i64)) { return handle }
+        return new Dispatcher().ensureEventBase(this)
+    }
+
+    // 事件源触发入口（§19.3）：粘滞、幂等——无 waiter 时置已触发
+    //（迟到 yield 立即具备重新发布条件）；有 waiter 时在同一闸内原子
+    // 排空并逐个发布回 waiter 自己的 Executor。重复调用幂等
+    protected func signal() {
+        rigi_event_signal(ensureHandle())
+    }
 }
 
 // sleep 的运行时内部 EventAlarm 子类（§19.4）：构造即把 deadline
@@ -852,6 +870,19 @@ priv shared singleton class Dispatcher {
         }
     }
 
+    // 用户 EventAlarm 默认底座懒建（L8，§19.3）：gate 临界区内双检 +
+    // rigi_event_create_sticky 回写——并发首触只建一枚；仅 EventAlarm.
+    // ensureHandle 调用（快路径不进场，竞争仅发生在首个 yield/signal）
+    internal func ensureEventBase(alarm: EventAlarm): i64 {
+        rigi_sync_mutex_acquire(gate)
+        if (alarm.handle == (0 as i64)) {
+            alarm.handle = rigi_event_create_sticky()
+        }
+        const result = alarm.handle
+        rigi_sync_mutex_release(gate)
+        return result
+    }
+
     // 按 Worker 身份取本 lane 队首（0 = 空；Worker 只消费自己的 lane）
     priv func nextFor(worker: i64): i64 {
         rigi_sync_mutex_acquire(gate)
@@ -1007,6 +1038,18 @@ priv native func rigi_coroutine_set_lane(handle: i64, lane: i32)
 @NativeLibrary("rigi_rt")
 @NativeSymbol("alarm_wait")
 priv native func rigi_alarm_wait(alarm: i64, waiter: i64): i32
+
+// L8：用户 EventAlarm 直继子类的默认底座两面（§19.3）——MW11d 手动
+// 事件的粘滞形态（非 auto_reset：signal 恒置已触发并归还 armed，
+// 迟到 yield 立即重发布；重复 signal 幂等）。仅 EventAlarm.
+// ensureHandle/signal 调用
+@NativeLibrary("rigi_rt")
+@NativeSymbol("event_create_sticky")
+priv native func rigi_event_create_sticky(): i64
+
+@NativeLibrary("rigi_rt")
+@NativeSymbol("event_signal")
+priv native func rigi_event_signal(event: i64)
 
 // 棒5a：PollingAlarm 轮询状态（§19.2；退避 1→32ms 与 VM 同口径）。
 // arm=yield 点登记（退避复位）；pending=恢复块判「先探测再续行」；

@@ -47,6 +47,47 @@ namespace RigiCompiler
         }
     }
 
+    // ===== @SerializationBase 隐含 @Serializable =====
+    //
+    // SerializationBase 与 Serializable 无继承关系，但源码级 @SerializationBase
+    // 的宿主视同同时应用 @Serializable（合成 toParcel/fromParcel、字段可序列化
+    // 检查、with Serializable 约束满足、:Serializable 暴露面、BIL
+    // wrapped(Serializable) 发射与运行期 with 判定——下游判定点统一读
+    // AppliedWrappers，在此追加一次合成应用即全链生效）。
+    // 判据 Syntax != null：区分 SerializationBaseRegistrar 对内建基元
+    // （i32/String/Array/List/Map）的 FromConstraint 登记——内建基元绝不能
+    // 获得 Serializable（§20.2.3 回归防线）。
+    // 豁免 core.serialization::Parcel：Parcel 是动态类型容器本体，其
+    // data: Map<String, Any> 字段设计上不满足静态可序列性（§20.3 Map 递归
+    // 检查 value=Any 不收）；若隐含 Serializable，字段检查与合成编码
+    // （EncodeMap 以 T=Any 调 setElement<T with SerializationBase>）会炸掉
+    // stdlib 编译。
+    internal sealed class SerializableImplicationRegistrar : ResolverVisitor<SerializableImplicationRegistrar>
+    {
+        protected override void VisitCore(ResolveEnvironment env)
+        {
+            var symbols = env.Unit.Symbols;
+            var serializable = SerializationFacts.FindWrapper(symbols, "Serializable");
+            var serializationBase = SerializationFacts.FindWrapper(symbols, "SerializationBase");
+            if (serializable == null || serializationBase == null) return;
+            var parcel = SerializationFacts.FindParcel(symbols);
+
+            foreach (var entry in env.TypeEntries)
+            {
+                if (!entry.InGraph || entry.Symbol is not TypeSymbol
+                    { Kind: TypeKind.Class or TypeKind.Struct } host) continue;
+                if (parcel != null && ReferenceEquals(host, parcel)) continue;
+                if (!host.AppliedWrappers.Any(w =>
+                    ReferenceEquals(w.WrapperDefinition, serializationBase) && w.Syntax != null))
+                {
+                    continue;
+                }
+                if (SerializationFacts.HasWrapper(host, serializable)) continue;
+                host.AppliedWrappers.Add(WrapperApplication.FromConstraint(serializable));
+            }
+        }
+    }
+
     // ===== MW11d A5/B2-3：@Serializable 宿主字段可序列性检查 =====
     internal sealed class SerializableFieldChecker : ResolverVisitor<SerializableFieldChecker>
     {

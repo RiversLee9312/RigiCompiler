@@ -48,7 +48,10 @@ namespace RigiCompiler.Middleware.Emit
             (TypeLayout.IsGenericPlaceholder(to) || to.IsAnyOrObject)
             && !TypeLayout.IsGenericPlaceholder(from)
             && !from.IsAnyOrObject
-            && IsBoxableValue(session, from);
+            && IsBoxableValue(session, from)
+            // G1：开放构造值类型形参（WPair<.generic<$.generic.T>>）仍是
+            // 内联值 ABI（指针），不是胖盒——不得装箱
+            && !session.IsInlineValueType(to, out _);
 
         internal static bool NeedsUnbox(ModuleBuilder.Session session, MirType from, MirType to) =>
             TypeLayout.IsGenericPlaceholder(from)

@@ -25,6 +25,12 @@ namespace RigiCompiler.Middleware.Emit
                 case MirUnaryIntrinsic unary:
                     ScalarEmitter.Unary.Visit(unary, session);
                     break;
+                case MirGenericBinaryOp genericBinary:
+                    GenericOpEmitter.Binary.Visit(genericBinary, session);
+                    break;
+                case MirGenericUnaryOp genericUnary:
+                    GenericOpEmitter.Unary.Visit(genericUnary, session);
+                    break;
                 case MirCall call:
                     CallEmitter.Invoke.Visit(call, session);
                     break;
@@ -103,6 +109,9 @@ namespace RigiCompiler.Middleware.Emit
                 case MirGetTypeId getTypeId:
                     TypeIdEmitter.OfType.Visit(getTypeId, session);
                     break;
+                case MirGetFieldId getFieldId:
+                    TypeIdEmitter.OfField.Visit(getFieldId, session);
+                    break;
                 case MirGetTypeIdVar getTypeIdVar:
                     TypeIdEmitter.OfVar.Visit(getTypeIdVar, session);
                     break;
@@ -143,6 +152,10 @@ namespace RigiCompiler.Middleware.Emit
                     break;
                 case MirCoroutineDone done:
                     CoroutineEmitter.Done.Visit(done, session);
+                    break;
+                // B-1：tainted→tainted 协议的 resume 直调
+                case MirResumeCall resumeCall:
+                    CoroutineEmitter.ResumeCall.Visit(resumeCall, session);
                     break;
                 default:
                     throw new CompilerInternalException($"未覆盖的 MIR 指令: {inst.GetType().Name}");

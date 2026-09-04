@@ -93,15 +93,15 @@ namespace RigiCompiler.Middleware.Runtime
             };
         }
 
-        // native 声明 (lib, symbol) → C 符号（RUNTIME §26：lib 恒 rigi_rt，
-        // C 名 = rigi_ + symbol）
+        // native 声明 (lib, symbol) → C 符号（RUNTIME §26 的库解析留白在
+        // Middleware 定稿）：rigi_rt 面 C 名 = rigi_ + symbol（既有约定）；
+        // 任意用户库（L6 起放行）C 名 = symbol 原文，链接输入经
+        // native --link <路径...> 追加（NativeCommand）。C 边界 ABI 与
+        // rigi_rt 面同一套（String → rigi_string* / out 首参 / bool→i8，
+        // 见 NativeCallEmitter），用户 C 函数按此形状书写。
         public static string MapNativeSymbol(string library, string symbol)
         {
-            if (library != "rigi_rt")
-            {
-                throw new MwNotSupportedException($"MW1 不支持 native 库: {library}");
-            }
-            return "rigi_" + symbol;
+            return library == "rigi_rt" ? "rigi_" + symbol : symbol;
         }
     }
 }

@@ -67,6 +67,14 @@ namespace RigiCompiler.Tests
         private static (string Label, Action Run) BilCase(string label, string bil) =>
             (label, () => RunBilCase(label, bil));
 
+        // L6：非 rigi_rt 库 FFI 的 native-only 用例（VM 无对应 hook，§22.5
+        // 表外拒绝是定稿行为，不做 VM 对拍）——cSource 现场 clang -c 出
+        // 目标文件，经 native --link 链入，断言 stdout/退出码字面量
+        private static (string Label, Action Run) NativeOnlyCase(string label,
+            string source, string cSource, string expectedStdout, int expectedExit) =>
+            (label, () => RunNativeOnlyCase(label, source, cSource,
+                expectedStdout, expectedExit));
+
         private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
             (label, () => RunFailCase(label, source, needle, null));
 
@@ -193,6 +201,63 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return classify(2)\n" +
                 "}\n"),
+            // MW3：f64 selector → 比较链降级（命中两项 + default）
+            Case("switch f64 selector 命中与 default",
+                "pub func classify(x: double): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (1.5) -> { return 10 }\n" +
+                "        (2.5) -> { return 20 }\n" +
+                "        default -> { return 1 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return ((classify(2.5) + classify(1.5)) + classify(9.0))\n" +
+                "}\n"),
+            // MW3：f32 selector → 比较链降级（命中 + default）
+            Case("switch f32 selector 命中与 default",
+                "pub func classify(x: float): i32 {\n" +
+                "    switch (x) {\n" +
+                "        (0.5f) -> { return 5 }\n" +
+                "        (1.5f) -> { return 15 }\n" +
+                "        default -> { return 2 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return classify(1.5f) + classify(0.25f)\n" +
+                "}\n"),
+            // MW3：String selector → 比较链降级，按值相等（运行时拼接的
+            // 字符串命中字面量 case，证实非引用恒等）+ default
+            Case("switch String selector 按值命中与 default",
+                "pub func classify(s: String): i32 {\n" +
+                "    switch (s) {\n" +
+                "        (\"hello\") -> { return 10 }\n" +
+                "        (\"world\") -> { return 20 }\n" +
+                "        default -> { return 3 }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var built = \"wor\" + \"ld\"\n" +
+                "    return ((classify(\"hello\") + classify(built)) + classify(\"?\"))\n" +
+                "}\n"),
+            // MW3：VM 语义边界（C# == 口径）——NaN 与任何 case 不等（落
+            // default）；-0.0/+0.0 交叉命中与 NaN case 标签见下方手写
+            // BIL 用例「switch f64 符号零与 NaN 标签（BIL 级）」
+            Case("switch f64 NaN selector 落 default",
+                "pub func main(): i32 {\n" +
+                "    var zero = 0.0\n" +
+                "    var nan = (zero / zero)\n" +
+                "    var nanBranch = switch (nan) {\n" +
+                "        (0.0) -> { return@_ 1 }\n" +
+                "        (1.0) -> { return@_ 2 }\n" +
+                "        default -> { return@_ 3 }\n" +
+                "    }\n" +
+                "    var hitBranch = switch (zero) {\n" +
+                "        (0.0) -> { return@_ 10 }\n" +
+                "        default -> { return@_ 20 }\n" +
+                "    }\n" +
+                "    return (nanBranch + hitBranch)\n" +
+                "}\n"),
+            BilCase("switch f64 符号零与 NaN 标签（BIL 级）", SwitchF64SignZeroBil),
             Case("pattern switch 降级链（call blk）",
                 "pub func main(): i32 {\n" +
                 "    var x = 5\n" +
@@ -1052,6 +1117,284 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return pass\\<i32>(42)\n" +
                 "}\n"),
+            // ===== G1：泛型值类型构造（VM↔native 对拍）=====
+            Case("泛型 struct 构造与字段方法（i32）",
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(7)\n" +
+                "    if (w.v == 7) { w.v = 8 }\n" +
+                "    return w.get()\n" +
+                "}\n"),
+            Case("泛型 struct 构造与字段方法（string）",
+                "import core.io.Console\n" +
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<String>(\"ok\")\n" +
+                "    Console.println(w.get())\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("泛型 struct 开放构造（方法内 new 同型 T）",
+                "pub struct WPair\\<T> {\n" +
+                "    pub var a: T\n" +
+                "    pub var b: T\n" +
+                "    pub init(_ -> a, _ -> b)\n" +
+                "    pub func swap(): WPair\\<T> { return new WPair\\<T>(this.b, this.a) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new WPair\\<i32>(1, 2)\n" +
+                "    var q = p.swap()\n" +
+                "    return (q.a * 10) + q.b\n" +
+                "}\n"),
+            Case("泛型 struct 经函数参数传递",
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "}\n" +
+                "func pass(w: Wrap\\<i32>): i32 { return w.get() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(9)\n" +
+                "    return pass(w)\n" +
+                "}\n"),
+            Case("泛型 struct 类级 typeid 直通（is T / T() 标量界）",
+                "pub struct Wrap\\<T extends i32> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func get(): T { return this.v }\n" +
+                "    pub func holds(x: Any): bool { return x is T }\n" +
+                "    pub func makeDefault(): T { return T() }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(7)\n" +
+                "    var r = 0\n" +
+                "    if (w.holds(7 as Any)) { r = 10 }\n" +
+                "    if (w.holds(\"s\" as Any)) { r = 99 }\n" +
+                "    var d = w.makeDefault()\n" +
+                "    return (r + w.get()) + d\n" +
+                "}\n"),
+            Case("泛型 struct 装箱 Any 与拆回",
+                "import core.io.Console\n" +
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(41)\n" +
+                "    var a = w as Any\n" +
+                "    var back = a as Wrap\\<i32>\n" +
+                "    if (back.v == 41) { Console.println(\"box ok\") }\n" +
+                "    return back.v\n" +
+                "}\n"),
+            Case("泛型 struct 动态构造（typeOf 来源）",
+                "import core.io.Console\n" +
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var seed = new Wrap\\<i32>(0)\n" +
+                "    var t = typeOf(seed)\n" +
+                "    var w = new t(6)\n" +
+                "    if (w.v == 6) { Console.println(\"dyn ok\") }\n" +
+                "    return w.v\n" +
+                "}\n"),
+            Case("构造 struct 字段内嵌（struct 持构造 struct）",
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub struct Outer {\n" +
+                "    pub var w: Wrap\\<i32>\n" +
+                "    pub init(_ -> w)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var o = new Outer(new Wrap\\<i32>(5))\n" +
+                "    o.w.v = 6\n" +
+                "    return o.w.v\n" +
+                "}\n"),
+            Case("泛型 struct 用户运算符直调",
+                "pub struct WPair\\<T> {\n" +
+                "    pub var tag: i32\n" +
+                "    pub var a: T\n" +
+                "    pub var b: T\n" +
+                "    pub init(_ -> tag, _ -> a, _ -> b)\n" +
+                "    pub operator plus(other: WPair\\<T>): WPair\\<T> {\n" +
+                "        return new WPair\\<T>((this.tag + other.tag), this.a, other.b)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = new WPair\\<i32>(1, 10, 20) + new WPair\\<i32>(2, 30, 40)\n" +
+                // POSIX 退出码 8 位截断：判定用小面额累加（0..255 口径）
+                "    var acc = 0\n" +
+                "    if (p.tag == 3) { acc = acc + 1 }\n" +
+                "    if (p.a == 10) { acc = acc + 2 }\n" +
+                "    if (p.b == 40) { acc = acc + 4 }\n" +
+                "    return acc\n" +
+                "}\n"),
+            Case("泛型 struct 静态成员裸名访问（不经构造类型）",
+                "pub struct Wrap\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub static func tag(): i32 { return 3 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var w = new Wrap\\<i32>(1)\n" +
+                "    return w.v + Wrap.tag()\n" +
+                "}\n"),
+            // ===== G4：泛型占位操作数运算的运行期派发（VM↔native 对拍）=====
+            Case("占位运算：接口界 plus 派发（class 实参）",
+                "pub interface Addable {\n" +
+                "    operator plus(another: Addable): Addable\n" +
+                "}\n" +
+                "pub class Num implements Addable {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator plus(another: Addable): Addable {\n" +
+                "        return new Num(this.n + ((another as Num).n))\n" +
+                "    }\n" +
+                "}\n" +
+                "func add\\<T extends Addable>(a: T, b: T): Addable {\n" +
+                "    return a + b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = add\\<Num>(new Num(1), new Num(2))\n" +
+                "    return ((r as Num).n)\n" +
+                "}\n"),
+            Case("占位运算：equals/!= 与最派生实现",
+                "pub open class Base {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator equals(other: Base): bool { return this.n == other.n }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub var extra: i32\n" +
+                "    pub init(_ -> n, _ -> extra)\n" +
+                "    pub operator equals(other: Base): bool { return false }\n" +
+                "}\n" +
+                "func eq2\\<T extends Base>(a: T, b: T): bool { return a == b }\n" +
+                "func ne2\\<T extends Base>(a: T, b: T): bool { return a != b }\n" +
+                "pub func main(): i32 {\n" +
+                // POSIX 退出码 8 位截断：权重取小面额（0..255 口径）
+                "    var acc = 0\n" +
+                "    if (eq2\\<Base>(new Base(1), new Base(1))) { acc = acc + 1 }\n" +
+                "    if (ne2\\<Base>(new Base(1), new Base(2))) { acc = acc + 2 }\n" +
+                "    if (eq2\\<Derived>(new Derived(1, 2), new Derived(1, 2))) { acc = acc + 4 }\n" +
+                "    if (ne2\\<Derived>(new Derived(1, 2), new Derived(1, 2))) { acc = acc + 8 }\n" +
+                "    return acc\n" +
+                "}\n"),
+            Case("占位运算：compareTo 排序三态映射",
+                "pub interface Ranked {\n" +
+                "    operator compareTo(other: Ranked): core.ComparisonResult\n" +
+                "}\n" +
+                "pub class Score implements Ranked {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator compareTo(other: Ranked): core.ComparisonResult {\n" +
+                "        const d = this.n - ((other as Score).n)\n" +
+                "        if (d < 0) { return .LesserThanAnother }\n" +
+                "        if (d > 0) { return .GreaterThanAnother }\n" +
+                "        return .Equal\n" +
+                "    }\n" +
+                "}\n" +
+                "func lt\\<T extends Ranked>(a: T, b: T): bool { return a < b }\n" +
+                "func ge\\<T extends Ranked>(a: T, b: T): bool { return a >= b }\n" +
+                "pub func main(): i32 {\n" +
+                "    var acc = 0\n" +
+                "    if (lt\\<Score>(new Score(1), new Score(2))) { acc = acc + 1 }\n" +
+                "    if (ge\\<Score>(new Score(2), new Score(2))) { acc = acc + 2 }\n" +
+                "    if (lt\\<Score>(new Score(3), new Score(2))) { acc = acc + 100 }\n" +
+                "    return acc\n" +
+                "}\n"),
+            Case("占位运算：一元 opposite（struct 界直调）",
+                "pub struct VNum {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator opposite(): VNum { return new VNum(0 - this.n) }\n" +
+                "}\n" +
+                "func neg\\<T extends VNum>(a: T): VNum { return -a }\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = neg\\<VNum>(new VNum(5))\n" +
+                // POSIX 退出码 8 位截断：显式判定转正（-5 在 Linux 会被截成 251）
+                "    if (r.n == -5) { return 5 }\n" +
+                "    return 1\n" +
+                "}\n"),
+            Case("占位运算：struct 界 plus（值类型接收者拆箱直调）",
+                "pub struct VNum {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "    pub operator plus(other: VNum): VNum {\n" +
+                "        return new VNum(this.n + other.n)\n" +
+                "    }\n" +
+                "}\n" +
+                "func add\\<T extends VNum>(a: T, b: T): VNum { return a + b }\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = add\\<VNum>(new VNum(3), new VNum(4))\n" +
+                "    return r.n\n" +
+                "}\n"),
+            // 落空负例（BIL 级）：界承诺的 operator 在实际类型上缺失——
+            // VM 抛「没有用户 operator plus：Plain」；native 沿候选链全
+            // 落空抛 core.NoSuchMethodException（同为未捕获出口 exit 1）
+            ("占位运算落空：无 operator（BIL 级）",
+                () => RunBilFailCase("占位运算落空：无 operator（BIL 级）",
+                    BuildGenericOpMissBil(), "没有用户 operator", "NoSuchMethodException")),
+            // G1 enum 半边：frontend S11 不发射泛型 enum case，BIL 级
+            // 手写对拍（VM NewCase 经 ResolveTypeRef 具体化同语义）
+            BilCase("泛型 enum case 构造（BIL 级对拍）",
+                "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n    R_0 = i32 7\n    R_1 = i32 1\n}\n\n" +
+                "LocalSymbols {\n" +
+                "    .type Choice = enum-struct generic(T) pub {\n" +
+                "        .field Choice#tag@.i32 pub var\n" +
+                "        .field Choice#payload@.generic<$.generic.T> pub var\n" +
+                "        .method Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void pub init\n" +
+                "        .case Choice.Some(tag:.i32,payload:.generic<$.generic.T>) discriminant auto\n" +
+                "    }\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n\nExternalSymbols {\n}\n\n" +
+                "fn(Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void) {\n" +
+                "    .args {\n" +
+                "        .return = .void,\n" +
+                "        .this = Choice,\n" +
+                "        .generic.T = .typeid,\n" +
+                "        tag = .i32,\n" +
+                "        payload = .generic<$.generic.T>\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        set.field $tag $.this field(Choice#tag@.i32)\n" +
+                "        set.field $payload $.this field(Choice#payload@.generic<$.generic.T>)\n" +
+                "        ret\n" +
+                "    }\n" +
+                "}\n\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "    .vars {\n" +
+                "        Choice<.i32> c,\n" +
+                "        .i32 .t0,\n" +
+                "        .i32 .t1,\n" +
+                "        .i32 .t2,\n" +
+                "        .i32 .t3\n" +
+                "    }\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_0) $.t0\n" +
+                "        load res(R_1) $.t1\n" +
+                "        new.case type(Choice<.i32>) case(Choice.Some) $c [$.t1, $.t0]\n" +
+                "        get.field $c $.t2 field(Choice#tag@.i32)\n" +
+                "        get.field $c $.t3 field(Choice#payload@.generic<$.generic.T>)\n" +
+                "        add $.t2 $.t3 $.t0\n" +
+                "        ret $.t0\n" +
+                "    }\n" +
+                "}\n"),
             Case("泛型类经构造基类多虚派发",
                 "pub open class PairV\\<T> {\n" +
                 "    pub init() { }\n" +
@@ -1854,6 +2197,136 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    return new Child().work()\n" +
+                "}\n"),
+            // ===== MW10 刀6b：Method wrapper wildcard 改写 .name
+            // 重路由（VM ResolveInner/RerouteWildcardInner 同口径）=====
+            // ⑨e 基本重路由命中：proxy 体覆写 .name 形参（前端/验证器
+            // 放行——保留首参操作数名恒等、值可改写），hit/miss 分派
+            // miss 进 $.mw.mwr router → other 原名 fn（未被烘焙）；VM
+            // 侧帧符号改写后链末 InvokeResolved 同落点
+            Case("Method wrapper wildcard 改写 .name 重路由命中",
+                "import core.io.Console\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        .name = \"Service$other(x:.i32)@.i32\"\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "    pub func other(x: i32): i32 { return (x + 100) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var r = s.fetch(1)\n" +
+                "    Console.println(\"r=\" + r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑨f miss 双侧口径：改写目标不存在——VM 链末
+            // InvokeResolved 抛基础设施级 VmException「找不到 fn 定义」
+            // （用户不可捕获）；native router 全不中抛
+            // core.NoSuchMethodException「未路由的降级请求：」（Entity
+            // router 同文案）——双侧 exit 1、stdout 一致，各自关键字
+            FailCase("Method wrapper wildcard 改写 .name 未路由",
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Timed {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        .name = \"Service$ghost(x:.i32)@.i32\"\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Timed\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    return s.fetch(1)\n" +
+                "}\n", "找不到 fn 定义", "未路由的降级请求"),
+            // ⑨g 多层环组合：外层 wildcard 改写 .name、内层 wildcard
+            // 原样透传（fetch 与 other 同装 WIn——VM 内层环按改写后
+            // 符号取槽，无状态 wrapper 双端可观察一致）；改写经透传
+            // 路径进内层环，环序 out→in、内层看到改写后符号、落点
+            // other 原始体
+            Case("Method wrapper 双层 wildcard 改写 .name 剩余环序",
+                "import core.io.Console\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WOut {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        Console.println(\"out:\" + .name)\n" +
+                "        .name = \"Service$other(x:.i32)@.i32\"\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper WIn {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        Console.println(\"in:\" + .name)\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @WOut\n" +
+                "    @WIn\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "    @WIn\n" +
+                "    pub func other(x: i32): i32 { return (x + 100) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var r = s.fetch(1)\n" +
+                "    Console.println(\"r=\" + r.toString())\n" +
+                "    var r2 = s.other(2)\n" +
+                "    Console.println(\"r2=\" + r2.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑨h 落点绕过目标自身 wrapper 链（VM FinishChain 链末
+            // InvokeResolved 同口径）：other 自挂 Trace（specific），
+            // 重路由落点 = other 的 $.mwrapped. 最深层原始体——fetch(1)
+            // 经 Rer 改写后只有 "rer" 一次打印（无 "trace"）；直调
+            // other(2) 正常触发 Trace
+            Case("Method wrapper 改写 .name 落点绕过目标自身链",
+                "import core.io.Console\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Rer {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call(.name: String, args: named Any...): Any {\n" +
+                "        Console.println(\"rer\")\n" +
+                "        .name = \"Service$other(x:.i32)@.i32\"\n" +
+                "        return inner(.name, args)\n" +
+                "    }\n" +
+                "}\n" +
+                "@WrapperTarget(.Method)\n" +
+                "pub wrapper Trace {\n" +
+                "    pub init()\n" +
+                "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                "        Console.println(\"trace\")\n" +
+                "        return inner(x)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Service {\n" +
+                "    pub init()\n" +
+                "    @Rer\n" +
+                "    pub func fetch(x: i32): i32 { return (x + 1) }\n" +
+                "    @Trace\n" +
+                "    pub func other(x: i32): i32 { return (x + 100) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Service()\n" +
+                "    var r = s.fetch(1)\n" +
+                "    Console.println(\"r=\" + r.toString())\n" +
+                "    var r2 = s.other(2)\n" +
+                "    Console.println(\"r2=\" + r2.toString())\n" +
+                "    return 0\n" +
                 "}\n"),
             // ===== MW10 刀5：singleton 运行时（VM 为基准）=====
             // ① 基本语义：两次 new 同一实例、状态共享（VM §8.7）
@@ -3136,6 +3609,13 @@ namespace RigiCompiler.Tests
                 "}\n"),
             ("包转发（整包）", RunPackForwardCase),
             ("typeid 数组元素读取（BIL 级）", RunTypeIdArrayGetCase),
+            ("cast.indirect 族（BIL 级）", RunIndirectCastCase),
+            ("cast.indirect 不命中抛 CastException（BIL 级）", RunIndirectCastFailCase),
+            ("get.wrapper.indirect（BIL 级）", RunGetWrapperIndirectCase),
+            ("getid.field + field.indirect 族（BIL 级）", RunFieldIndirectCase),
+            ("new.wrapped.case（BIL 级）", RunNewWrappedCaseCase),
+            ("new.wrapped.case init 失配双侧拒绝（BIL 级）", RunNewWrappedCaseRejectCase),
+            ("raw.hex/raw.bin → Span/SharedSpan 字节缓冲区（BIL 级）", RunRawBufferSpanCase),
             Case("kwargs 遍历 Pair 拆箱",
                 "import core.io.Console\n" +
                 "func show(opts: named Any...): i32 {\n" +
@@ -4303,10 +4783,11 @@ namespace RigiCompiler.Tests
                 "    a[9] = 2\n" +
                 "    return 0\n" +
                 "}\n", "数组下标越界", "core::OutOfBoundException: 数组下标越界：9（长度 3）"),
-            // ===== MW11a 棒3 协程对拍（VM 母本移植；main 是同步根协程
-            // ——非 async fn 挂起点受控拒绝，await 一律收进 async fn
-            // 体内，main spawn 后返回常量；stdout 打印只放 await/join
-            // 之后的数据依赖确定位置，不断言并发交错序）=====
+            // ===== MW11a 棒3 协程对拍（VM 母本移植；B-1 起 main 与
+            // 其同步调用链可直接挂起——本组保留「await 收进 async run()
+            // 体内」写法作回归，main 直接 await 形态见下方 B-1 组；
+            // stdout 打印只放 await/join 之后的数据依赖确定位置，不断言
+            // 并发交错序）=====
             // ① fork/join 取值（VM TestForkJoinAndFireAndForget join 母本）：
             // 三路 spawn → run 内 await → 求和打印 9
             Case("协程 fork/join 取值",
@@ -4433,6 +4914,708 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ===== B-1 栈式跨界（SYNTAX §11：main 以及由它同步调用
+            // 的普通 fn 可以直接 await/yield）：非 async 挂起点全链
+            // 支持，对拍 VM =====
+            // B-1① main 直接 await（await 目标真挂起——yield 强制跨
+            // 执行段）：stdout 42 + 退出码 42
+            Case("栈式跨界 main 直接 await",
+                "import core.io.Console\n" +
+                "async func add(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = add(41)\n" +
+                "    var r = await t\n" +
+                "    Console.println(r.toString())\n" +
+                "    return r\n" +
+                "}\n"),
+            // B-1② main → 单层同步 fn（内含 await）：形参/局部跨
+            // 挂起保存（acc 在 await 后仍须正确），stdout 45
+            Case("栈式跨界 同步 fn 内 await 参数局部保持",
+                "import core.io.Console\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func compute(a: i32, b: i32): i32 {\n" +
+                "    var acc = a + b\n" +
+                "    var t = slow(acc)\n" +
+                "    var r = await t\n" +
+                "    return r + acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = compute(10, 5)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-1③ 终态快路径：await 已完成 Task 不挂起（无 yield）
+            Case("栈式跨界 main await 已完成 Task",
+                "import core.io.Console\n" +
+                "async func quick(): i32 { return 5 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = quick()\n" +
+                "    var r = await t\n" +
+                "    Console.println(r.toString())\n" +
+                "    return r\n" +
+                "}\n"),
+            // B-1④ 异常跨链：tainted callee 恢复后抛出 → FAILED 沿
+            // 调用点原 ExcTarget 进 main 的 try 派发垫捕获
+            Case("栈式跨界 同步 fn 恢复后抛出被 main 捕获",
+                "import core.io.Console\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func risky(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    if (r > 100) {\n" +
+                "        throw new core.RuntimeException(\"too-big\")\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        return risky(60)\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            // B-1⑤ main 失败链路（FailCase）：tainted callee 未捕获
+            // 异常 → main Task FAILED → settle 重抛 → 顶层 reporter
+            FailCase("栈式跨界 main 失败顶层格式",
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func boom(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    throw new core.RuntimeException(\"deep\")\n" +
+                "    return r\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return boom(3)\n" +
+                "}\n", "deep", "core::RuntimeException: deep"),
+            // ===== B-2 全组合收口 =====
+            // B-2① async fn 体直调 tainted 普通 fn：整条栈同步挂起，
+            // 结果是裸返回值（不是 Task——栈式语义），求和 62
+            Case("栈式跨界 async 调 tainted 裸返回",
+                "import core.io.Console\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func work(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    return r + 1\n" +
+                "}\n" +
+                "async func run(): i32 {\n" +
+                "    var x = work(10)\n" +
+                "    var y = work(20)\n" +
+                "    return x + y\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = run()\n" +
+                "    var r = await t\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2② Task.State 投影可观察性：async 调用方的栈悬在
+            // tainted 链内时其 Task 投影 Suspended（prop 臂 markSuspended
+            // 与 VM 对齐）；观察协程 yield 让步后读 state
+            Case("栈式跨界 async 调用方 Task.State 投影",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "func tag(s: TaskState): String {\n" +
+                "    if (s is .Created) { return \"created\" }\n" +
+                "    if (s is .Runnable) { return \"runnable\" }\n" +
+                "    if (s is .Suspended) { return \"suspended\" }\n" +
+                "    if (s is .Completed) { return \"completed\" }\n" +
+                "    if (s is .Failed) { return \"failed\" }\n" +
+                "    return \"cancelled\"\n" +
+                "}\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func work(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    return r + 1\n" +
+                "}\n" +
+                "async func run(): i32 {\n" +
+                "    return work(10)\n" +
+                "}\n" +
+                "async func watch(t: Task\\<i32>) {\n" +
+                "    yield\n" +
+                "    Console.println(\"mid:\" + tag(t.state))\n" +
+                "    var r = await t\n" +
+                "    Console.println(\"end:\" + tag(t.state))\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = run()\n" +
+                "    var w = watch(t)\n" +
+                "    await w\n" +
+                "    var r = await t\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2③ 三层嵌套 tainted 链（main→level1→level2→level3→
+            // await）：每级调用点都是调用方的挂起点，acc 跨层保持 14
+            Case("栈式跨界 三层嵌套挂起链",
+                "import core.io.Console\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "func level3(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    return r + 1\n" +
+                "}\n" +
+                "func level2(n: i32): i32 {\n" +
+                "    var acc = level3(n) + 1\n" +
+                "    return acc\n" +
+                "}\n" +
+                "func level1(n: i32): i32 {\n" +
+                "    var acc = level2(n) + 1\n" +
+                "    return acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = level1(10)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2④ 直接递归 tainted fn：每层 yield 挂起整链，恢复沿
+            // 链逐层下钻（down(5)=15）
+            Case("栈式跨界 直接递归逐层挂起",
+                "import core.io.Console\n" +
+                "func down(n: i32): i32 {\n" +
+                "    if (n <= 0) {\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    yield\n" +
+                "    return n + down(n - 1)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = down(5)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑤ 互递归 tainted fn（isOdd/isEven 经 yield 互挂）：
+            // taint 不动点闭包覆盖环
+            Case("栈式跨界 互递归挂起",
+                "import core.io.Console\n" +
+                "func isOdd(n: i32): bool {\n" +
+                "    if (n <= 0) {\n" +
+                "        return false\n" +
+                "    }\n" +
+                "    yield\n" +
+                "    return isEven(n - 1)\n" +
+                "}\n" +
+                "func isEven(n: i32): bool {\n" +
+                "    if (n <= 0) {\n" +
+                "        return true\n" +
+                "    }\n" +
+                "    yield\n" +
+                "    return isOdd(n - 1)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = isOdd(7)\n" +
+                "    var b = isEven(8)\n" +
+                "    Console.println(a.toString() + b.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑥ 异常跨多层链 + try/finally：tainted 三层（top→
+            // mid(try/finally)→deep(await 后抛)）——FAILED 沿链上传，
+            // 每层传播垫配平释放，finally 在逐层展开时执行
+            Case("栈式跨界 异常多层传播 try/finally",
+                "import core.io.Console\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n * 2\n" +
+                "}\n" +
+                "func deep(n: i32): i32 {\n" +
+                "    var t = slow(n)\n" +
+                "    var r = await t\n" +
+                "    if (r > 10) {\n" +
+                "        throw new core.RuntimeException(\"deep-\" + r.toString())\n" +
+                "    }\n" +
+                "    return r\n" +
+                "}\n" +
+                "func mid(n: i32): i32 {\n" +
+                "    try {\n" +
+                "        return deep(n)\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"fin-mid\")\n" +
+                "    }\n" +
+                "}\n" +
+                "func top(n: i32): i32 {\n" +
+                "    var v = mid(n)\n" +
+                "    return v + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var r = top(8)\n" +
+                "        Console.println(r.toString())\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑦ using 穿越 tainted fn 挂起点：seq using 的 dispose
+            // 在恢复后续行时正常执行（RcInjection 托管槽跨挂起配平）
+            Case("栈式跨界 using 穿越挂起点",
+                "import core.io.Console\n" +
+                "pub shared class Res implements core.IDisposable {\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "    pub override func dispose() {\n" +
+                "        Console.println(\"dispose \" + tag.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "func useIt(n: i32): i32 {\n" +
+                "    seq using(const r = new Res(n)) {\n" +
+                "        var t = slow(n)\n" +
+                "        var v = await t\n" +
+                "        return v * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = useIt(3)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑧ void main 含挂起点：settle 恒 0（无 result 解包），
+            // stdout 次序对齐 VM
+            Case("栈式跨界 void main 裸 yield",
+                "import core.io.Console\n" +
+                "pub func main() {\n" +
+                "    yield\n" +
+                "    Console.println(\"void-main\")\n" +
+                "}\n"),
+            // B-2⑨ yield Alarm（EventAlarm/sleep）在 tainted 普通 fn：
+            // B-2 起放开（plain 恢复闸无 TaskState 投影），sleep 唤醒
+            // 后续行 42
+            Case("栈式跨界 普通 fn yield sleep",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "func nap(n: i32): i32 {\n" +
+                "    yield sleep(1)\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var r = nap(41)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑩ yield PollingAlarm 在 tainted 普通 fn：arm 协程
+            // 裸 yield 后翻牌——覆盖未就绪→退避（poll_schedule 再挂）
+            // →就绪路径（plain 恢复闸无投影跳过）；探测节奏跨端不必
+            // 一致（§19.2 退避非语言语义），只断言恢复事实
+            Case("栈式跨界 普通 fn yield PollingAlarm 退避翻牌",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Flip : PollingAlarm {\n" +
+                "    pub var ready: bool = false\n" +
+                "    pub override func isReady(): bool { return ready }\n" +
+                "}\n" +
+                "async func arm(f: Flip) {\n" +
+                "    yield\n" +
+                "    f.ready = true\n" +
+                "}\n" +
+                "func waitFlip(f: Flip) {\n" +
+                "    yield f\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flip()\n" +
+                "    arm(f)\n" +
+                "    waitFlip(f)\n" +
+                "    Console.println(\"recovered\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑪ isReady 抛异常经 plain 链上传（B-2 plain 失败尾：
+            // probe ret -1 pending 保持置位 → 恢复闸 ret FAILED →
+            // 调用点 FAILED 臂取走重抛 → main try/catch 捕获；对齐
+            // VM 帧栈逐层展开口径）
+            Case("栈式跨界 普通 fn isReady 异常沿链捕获",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Boom : PollingAlarm {\n" +
+                "    pub init() { }\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        throw new core.RuntimeException(\"probe\")\n" +
+                "    }\n" +
+                "}\n" +
+                "func waitBoom(b: Boom) {\n" +
+                "    yield b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Boom()\n" +
+                "    try {\n" +
+                "        waitBoom(b)\n" +
+                "        Console.println(\"miss\")\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑫ Mutex 竞争挂起跨 tainted 链：普通 fn await
+            // m.acquire()（enter 在 async acquire 体内——priv enter
+            // 用户不可直调，语言级 plain fn 无法直含 Mutex.enter）；
+            // 双 worker 竞争同锁，结果配平 14（memtrack 零泄漏）
+            Case("栈式跨界 Mutex 竞争跨链配平",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "func critical(m: Mutex, n: i32): i32 {\n" +
+                "    var g = await m.acquire()\n" +
+                "    yield\n" +
+                "    var r = n * 2\n" +
+                "    m.release(g)\n" +
+                "    return r\n" +
+                "}\n" +
+                "async func worker(m: Mutex, n: i32): i32 {\n" +
+                "    return critical(m, n)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Mutex()\n" +
+                "    var a = worker(m, 3)\n" +
+                "    var b = worker(m, 4)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    Console.println((x + y).toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑬ 虚调用链挂起点·混合闭包：Base.step 含 yield
+            //（tainted），Derived.step 普通——调用点动态分流：Base
+            // 实例走协议（7），Derived 实例落原虚调用（51）
+            Case("栈式跨界 虚调用混合闭包动态分流",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(b: Base, n: i32): i32 {\n" +
+                "    return b.step(n) + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = drive(new Base(), 5)\n" +
+                "    var b = drive(new Derived(), 5)\n" +
+                "    Console.println((a.toString() + \",\") + b.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑭ 虚调用链挂起点·全 tainted 闭包：两个实现臂都走
+            // 协议（最深派生优先 type.is 分流，各实现 frame 独立）
+            Case("栈式跨界 虚调用全 tainted 闭包",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(b: Base, n: i32): i32 {\n" +
+                "    return b.step(n) + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = drive(new Base(), 5)\n" +
+                "    var b = drive(new Derived(), 5)\n" +
+                "    Console.println((a.toString() + \",\") + b.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑮ interface 调用链挂起点：iMap 闭包分流（Slow
+            // tainted 走协议 7，Fast 普通落原调用 51）
+            Case("栈式跨界 interface 调用动态分流",
+                "import core.io.Console\n" +
+                "pub interface IStepper {\n" +
+                "    func step(n: i32): i32\n" +
+                "}\n" +
+                "pub class Slow implements IStepper {\n" +
+                "    pub init() { }\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Fast implements IStepper {\n" +
+                "    pub init() { }\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(s: IStepper, n: i32): i32 {\n" +
+                "    return s.step(n) + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = drive(new Slow(), 5)\n" +
+                "    var b = drive(new Fast(), 5)\n" +
+                "    Console.println((a.toString() + \",\") + b.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑯ super 调用含挂起点的基类实现：super 恒直调（静态
+            // 唯一目标），同直调协议；override 体内两次 super 调用
+            Case("栈式跨界 super 调用基类挂起实现",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        var a = super(n)\n" +
+                "        var b = super(n)\n" +
+                "        return a + b\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Derived()\n" +
+                "    var r = d.step(10)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑰ 异常经虚派发链上传：Base.step（tainted 臂）恢复
+            // 后抛出 → FAILED 沿链 → main try/catch 捕获；Derived
+            // 普通臂不受影响
+            Case("栈式跨界 虚调用异常沿链捕获",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        if (n > 10) {\n" +
+                "            throw new core.RuntimeException(\"base-\" + n.toString())\n" +
+                "        }\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(b: Base, n: i32): i32 {\n" +
+                "    return b.step(n) + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var r = drive(new Base(), 20)\n" +
+                "        Console.println(r.toString())\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    var ok = drive(new Derived(), 5)\n" +
+                "    Console.println(ok.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑱ async 调用方经虚派发链挂起：run 直调 tainted
+            // drive（虚点），整条栈同步挂起，裸返回求和 58
+            Case("栈式跨界 async 经虚链同步挂起",
+                "import core.io.Console\n" +
+                "pub open class Base {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(b: Base, n: i32): i32 {\n" +
+                "    return b.step(n) + 1\n" +
+                "}\n" +
+                "async func run(): i32 {\n" +
+                "    var x = drive(new Base(), 5)\n" +
+                "    var y = drive(new Derived(), 5)\n" +
+                "    return x + y\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = run()\n" +
+                "    var r = await t\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑲ 含挂起点的 init：构造点分配与 init 下钻分离
+            //（合成空 init 分配 + init.wrapper 原位缝合 + init frame
+            // .this = 新建对象），恢复后字段写入可见 42
+            Case("栈式跨界 init 内挂起",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) {\n" +
+                "        yield\n" +
+                "        v = x * 2\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = new Node(21)\n" +
+                "    Console.println(n.v.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2⑳ 字段初始值缝合 + init 挂起：init.wrapper 在挂起
+            // init 之前原位跑完（v=5 先落，init 恢复后 v+x），跨
+            // tainted 工厂 fn 两实例 15,25
+            Case("栈式跨界 init 挂起字段初始值缝合",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var v: i32 = 5\n" +
+                "    pub init(x: i32) {\n" +
+                "        yield\n" +
+                "        v = v + x\n" +
+                "    }\n" +
+                "}\n" +
+                "func make(x: i32): Node {\n" +
+                "    var n = new Node(x)\n" +
+                "    return n\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = make(10)\n" +
+                "    var b = make(20)\n" +
+                "    Console.println((a.v.toString() + \",\") + b.v.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2㉑ init 恢复后抛异常经构造链 FAILED 上传：tainted
+            // 工厂 fn 内的构造点未捕获 → 沿调用点 FAILED 臂 → main
+            // try/catch 捕获（caught:big-20 + 3）
+            Case("栈式跨界 init 异常沿链捕获",
+                "import core.io.Console\n" +
+                "pub class Node {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) {\n" +
+                "        yield\n" +
+                "        if (x > 10) {\n" +
+                "            throw new core.RuntimeException(\"big-\" + x.toString())\n" +
+                "        }\n" +
+                "        v = x\n" +
+                "    }\n" +
+                "}\n" +
+                "func make(x: i32): Node {\n" +
+                "    var n = new Node(x)\n" +
+                "    return n\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var a = make(20)\n" +
+                "        Console.println(a.v.toString())\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    var ok = make(3)\n" +
+                "    Console.println(ok.v.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2㉒ class 运算符 intrinsic 派发含挂起点：单类闭包
+            // 臂走协议（operator plus 内 yield），求值 42
+            Case("栈式跨界 运算符派发挂起",
+                "import core.io.Console\n" +
+                "pub class Acc {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub operator plus(other: Acc): Acc {\n" +
+                "        yield\n" +
+                "        return new Acc(v + other.v)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Acc(10)\n" +
+                "    var b = new Acc(32)\n" +
+                "    var c = a + b\n" +
+                "    Console.println(c.v.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2㉓ 泛型值类型方法的类级 typeid 落参合成（§7.2 隐
+            // 藏参数）：宿主闭合构造 PairBox<i32> → MirGetTypeId 常
+            // 量 typeid 落 callee frame，恢复后读字段 42
+            Case("栈式跨界 泛型值类型方法隐藏参数",
+                "import core.io.Console\n" +
+                "pub struct PairBox\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(x: T) { v = x }\n" +
+                "    pub func get(): T {\n" +
+                "        yield\n" +
+                "        return v\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new PairBox\\<i32>(40)\n" +
+                "    var r = b.get()\n" +
+                "    Console.println((r + 2).toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // B-2㉔ using dispose 可挂起（BIL §17.3）：dispose 内
+            // yield——正常 return 路径与异常展开路径的 dispose 均经
+            // 虚派发臂协议化挂起/恢复，次序与 VM 对齐（dispose 先于
+            // 续行/捕获打印）
+            Case("栈式跨界 using dispose 可挂起双路径",
+                "import core.io.Console\n" +
+                "pub shared class Res implements core.IDisposable {\n" +
+                "    pub var tag: i32\n" +
+                "    pub init(t: i32) { tag = t }\n" +
+                "    pub override func dispose() {\n" +
+                "        yield\n" +
+                "        Console.println(\"dispose \" + tag.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "async func slow(n: i32): i32 {\n" +
+                "    yield\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "func useIt(n: i32): i32 {\n" +
+                "    seq using(const r = new Res(n)) {\n" +
+                "        var t = slow(n)\n" +
+                "        var v = await t\n" +
+                "        return v * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "func boomIt(n: i32): i32 {\n" +
+                "    seq using(const r = new Res(n + 100)) {\n" +
+                "        var t = slow(n)\n" +
+                "        var v = await t\n" +
+                "        throw new core.RuntimeException(\"mid-\" + v.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = useIt(3)\n" +
+                "    Console.println(a.toString())\n" +
+                "    try {\n" +
+                "        var b = boomIt(4)\n" +
+                "        Console.println(b.toString())\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
                 "    return 0\n" +
                 "}\n"),
             // ⑧ async 无挂起点 fn（统一切分后直跑到底）
@@ -4617,6 +5800,81 @@ namespace RigiCompiler.Tests
                 "    run()\n" +
                 "    return 0\n" +
                 "}\n"),
+            // ===== L8：用户 EventAlarm 直继子类默认底座（§19.3）=====
+            // 无时钟底座的用户子类经 ensureHandle 懒建手动事件粘滞
+            // 底座，protected signal() 为事件源触发入口；VM/native
+            // 同源码对拍（断言落最终结果，不锁跨协程交错次序）
+            // ⑭c signal 唤醒双 waiter：两 waiter 挂同一 Gate，opener
+            //     sleep 后 open() 触发——waiter 登记与 signal 的先后
+            //     序由粘滞兜底（先触发后登记也不丢）；和 13 次序无关
+            Case("协程 用户EventAlarm signal 唤醒双 waiter",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Gate : EventAlarm {\n" +
+                "    pub func fire() { signal() }\n" +
+                "}\n" +
+                "async func waiter(g: Gate, n: i32): i32 {\n" +
+                "    yield\n" +
+                "    yield g\n" +
+                "    return n + 1\n" +
+                "}\n" +
+                "async func opener(g: Gate) {\n" +
+                "    yield sleep(30)\n" +
+                "    g.fire()\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var g = new Gate()\n" +
+                "    var a = waiter(g, 1)\n" +
+                "    var b = waiter(g, 10)\n" +
+                "    opener(g)\n" +
+                "    var x = await a\n" +
+                "    var y = await b\n" +
+                "    Console.println((x + y).toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑭d 先 signal 后 yield 不丢（粘滞）：signal 时无 waiter
+            //     → 恒置已触发；迟到 yield 立即具备重新发布条件（仍
+            //     结束当前执行段）
+            Case("协程 用户EventAlarm 先signal后yield不丢",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Gate : EventAlarm {\n" +
+                "    pub func fire() { signal() }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var g = new Gate()\n" +
+                "    g.fire()\n" +
+                "    yield g\n" +
+                "    Console.println(\"not lost\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑭e 重复 signal 幂等 + 二次 yield 仍粘滞（§19.3：实例
+            //     保持已触发状态，重复触发幂等）
+            Case("协程 用户EventAlarm 重复signal幂等粘滞",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class Gate : EventAlarm {\n" +
+                "    pub func fire() { signal() }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var g = new Gate()\n" +
+                "    g.fire()\n" +
+                "    g.fire()\n" +
+                "    yield g\n" +
+                "    g.fire()\n" +
+                "    yield g\n" +
+                "    Console.println(\"idempotent sticky\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
             // ⑮ using 清理穿越 alarm yield（ASYNC §8 验收项）：正常
             // 路径 return 与异常路径 throw 的 dispose 均执行且次序正确
             //（dispose 先于 Task 终态 → 先于 await 续行打印）
@@ -4687,9 +5945,9 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n"),
             // ===== MW11c 棒5a 阶段4：跨 Executor 对拍（VM
-            // BilVmTaskTests.TestCrossExecutorCombination 母本）。main
-            // 不得 await（native 非 async 挂起点受控拒绝），包进 async
-            // run()。先 Main 冷 Task（无懒起 Worker），再 Compute/IO
+            // BilVmTaskTests.TestCrossExecutorCombination 母本）。包进
+            // async run()（B-1 起 main 可直接 await，此处保留回归
+            // 写法）。先 Main 冷 Task（无懒起 Worker），再 Compute/IO
             // 懒起；join 回 Main；memtrack 零泄漏 =====
             Case("协程冷 Task Main join",
                 "import core.io.Console\n" +
@@ -4827,6 +6085,43 @@ namespace RigiCompiler.Tests
                 "    const t = wrap(func{async () -> { Console.println(\"opaque\") }})\n" +
                 "    await t\n" +
                 "    const n = await wrapI(func{async (): i32 -> 9})\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 冷 Task body 的 $$call 沿 extends 链继承（Sub 自身无
+            // $$call）：VM 拍平 sheet 解析；native 工厂/bindColdBody
+            // 链同语义（MW11c 棒5a 残余面收口）
+            Case("协程冷 Task body 继承 $$call",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub shared abstract class Act : core.AsyncAction {\n" +
+                "    pub override async operator call() {\n" +
+                "        Console.println(\"inherited\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub shared class Sub : Act {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub shared abstract class ActI : core.AsyncFunc\\<i32> {\n" +
+                "    pub override async operator call(): i32 {\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n" +
+                "pub shared class SubI : ActI {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "func wrap(body: core.AsyncAction): Task {\n" +
+                "    return new Task(body)\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const t = new Task(new Sub())\n" +
+                "    await t\n" +
+                "    const u = wrap(new Sub())\n" +
+                "    await u\n" +
+                "    const n = await new Task\\<i32>(new SubI())\n" +
                 "    Console.println(n.toString())\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -4989,6 +6284,28 @@ namespace RigiCompiler.Tests
                 "    src.n = 0\n" +
                 "    if (copy.n == 11) {\n" +
                 "        return 42\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n"),
+            // @SerializationBase 隐含 @Serializable：base-only 类 deepCopy 对拍
+            Case("序列化 @SerializationBase 隐含 Serializable",
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "pub class BaseOnly {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub var s: String = \"\"\n" +
+                "    pub init(_ -> n, _ -> s)\n" +
+                "}\n" +
+                "@EntryPoint\n" +
+                "pub func main(): i32 {\n" +
+                "    var src = new BaseOnly(7, \"hi\")\n" +
+                "    var copy = deepCopy\\<BaseOnly>(src)\n" +
+                "    src.n = 9\n" +
+                "    src.s = \"bye\"\n" +
+                "    if ((copy.n == 7) and (copy.s == \"hi\")) {\n" +
+                "        if ((src.n == 9) and (src.s == \"bye\")) {\n" +
+                "            return 42\n" +
+                "        }\n" +
                 "    }\n" +
                 "    return 1\n" +
                 "}\n"),
@@ -5706,6 +7023,179 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n",
                 new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "512" }),
+            // ===== imap/getAtIndex 回归（Bug1 接口 iMap 恒模板键 /
+            // Bug2a 泛型占位数组元素运行时 stride / Bug2b 接口派发
+            // 结果拆箱）=====
+            // ① for-in over List<i32> 求和（最小 imap 派发路径）
+            Case("for-in List<i32> 求和",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var list = new List\\<i32>()\n" +
+                "    list.add(1)\n" +
+                "    list.add(2)\n" +
+                "    list.add(3)\n" +
+                "    var sum: i32 = 0\n" +
+                "    for (x in list) {\n" +
+                "        sum = (sum + x)\n" +
+                "    }\n" +
+                "    Console.println(\"sum=${sum}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ② wrapper + for-in（imap_repro 母本）：打印 done 3
+            Case("wrapper + for-in List<i32>",
+                "import core.collections.*\n" +
+                "@WrapperTarget(.Value)\n" +
+                "pub wrapper Clamped {\n" +
+                "    pub var min: i32\n" +
+                "    pub var max: i32\n" +
+                "    pub init() {\n" +
+                "        min = 0\n" +
+                "        max = 100\n" +
+                "    }\n" +
+                "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
+                "    operator .proxy.set\\<TValue>(value: TValue) {\n" +
+                "        var v = (value as i32)\n" +
+                "        if ((v > max)) { v = max }\n" +
+                "        if ((v < min)) { v = min }\n" +
+                "        inner((v as TValue))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var list = new List\\<i32>()\n" +
+                "    list.add(1)\n" +
+                "    list.add(2)\n" +
+                "    list.add(3)\n" +
+                "    @Clamped\n" +
+                "    var health: i32 = 50\n" +
+                "    for (x in list) {\n" +
+                "        health = x\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"done ${health}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ③ while + getAtIndex 同步正确性（imap_a4 母本）：done 3
+            Case("while + getAtIndex 同步",
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var list = new List\\<i32>()\n" +
+                "    list.add(1)\n" +
+                "    list.add(2)\n" +
+                "    list.add(3)\n" +
+                "    var health: i32 = 50\n" +
+                "    var i: i64 = 0L\n" +
+                "    var ic: i64 = list.length\n" +
+                "    while ((i < ic)) {\n" +
+                "        var x = list.getAtIndex(i)\n" +
+                "        health = (x if? 0)\n" +
+                "        i = (i + 1L)\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"done ${health}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ④ async 跨挂起 getAtIndex（imap_repro_b 母本；main 只
+            // spawn + return 常量）：ok 7 -5 42 r=1
+            Case("async 跨挂起 getAtIndex",
+                "import core.collections.*\n" +
+                "async func one(): i32 { return 1 }\n" +
+                "async func run(): i32 {\n" +
+                "    var list = new List\\<i32>()\n" +
+                "    list.add(7)\n" +
+                "    list.add(-5)\n" +
+                "    list.add(42)\n" +
+                "    var t = one()\n" +
+                "    var r = await t\n" +
+                "    var a = list.getAtIndex(0L)\n" +
+                "    var b = list.getAtIndex(1L)\n" +
+                "    var c = list.getAtIndex(2L)\n" +
+                "    if (((a if? -1) != 7)) { return 11 }\n" +
+                "    if (((b if? -1) != -5)) { return 12 }\n" +
+                "    if (((c if? -1) != 42)) { return 13 }\n" +
+                "    core.io.Console.println(\"ok ${(a if? -1)} ${(b if? -1)} ${(c if? -1)} r=${r}\")\n" +
+                "    return 0\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑤ 元素类型矩阵：i64/bool/String/自定义 class
+            // add → getAtIndex 往返
+            Case("List 元素类型矩阵往返",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub class Item {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var li = new List\\<i64>()\n" +
+                "    li.add(9000000000L)\n" +
+                "    var lb = new List\\<bool>()\n" +
+                "    lb.add(true)\n" +
+                "    var ls = new List\\<String>()\n" +
+                "    ls.add(\"hi\")\n" +
+                "    var lc = new List\\<Item>()\n" +
+                "    lc.add(new Item(5))\n" +
+                "    var n = (li.getAtIndex(0L) if? 0L)\n" +
+                "    var b = (lb.getAtIndex(0L) if? false)\n" +
+                "    var s = (ls.getAtIndex(0L) if? \"\")\n" +
+                "    var it = lc.getAtIndex(0L)\n" +
+                "    var iv = (it?.v if? -1)\n" +
+                "    Console.println(\"${n} ${b} ${s} ${iv}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ⑥ getAtIndex 越界得 null（if? 兜底分支）
+            Case("getAtIndex 越界 null 兜底",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var list = new List\\<i32>()\n" +
+                "    list.add(1)\n" +
+                "    var x = (list.getAtIndex(5L) if? -1)\n" +
+                "    var y = (list.getAtIndex(0L) if? -1)\n" +
+                "    Console.println(\"${x} ${y}\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ===== L6：非 rigi_rt native 库 FFI 端到端（RUNTIME §26 库解析
+            // 留白定稿：C 符号 = @NativeSymbol 原文，链接输入走 native
+            // --link）。VM 侧无此 hook（§22.5 表外拒绝是定稿行为），本组
+            // 为 native-only 证明：现场 clang 编最小 C 源出目标文件，链接后
+            // 断言 stdout/退出码字面量 =====
+            NativeOnlyCase("FFI 用户库标量与 String 入参",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigiffi\")\n" +
+                "@NativeSymbol(\"rigiffi_add\")\n" +
+                "native func ffiAdd(a: i32, b: i32): i32\n" +
+                "@NativeLibrary(\"rigiffi\")\n" +
+                "@NativeSymbol(\"rigiffi_mul\")\n" +
+                "native func ffiMul(a: i64, b: i64): i64\n" +
+                "@NativeLibrary(\"rigiffi\")\n" +
+                "@NativeSymbol(\"rigiffi_len\")\n" +
+                "native func ffiLen(text: String): i64\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(ffiAdd(20, 22).toString())\n" +
+                "    Console.println(ffiMul(6L, 7L).toString())\n" +
+                "    Console.println(ffiLen(\"hello\").toString())\n" +
+                "    return ffiAdd(1, 2)\n" +
+                "}\n",
+                "typedef struct { const char *data; long long len; } rigi_string;\n" +
+                "int rigiffi_add(int a, int b) { return a + b; }\n" +
+                "long long rigiffi_mul(long long a, long long b) { return a * b; }\n" +
+                "long long rigiffi_len(const rigi_string *s) { return s->len; }\n",
+                "42\n42\n5\n", 3),
+            // bool 参数 C 边界 = i8 槽（NativeCallEmitter zext i1）
+            NativeOnlyCase("FFI 用户库 bool 与 f64",
+                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigiffi2\")\n" +
+                "@NativeSymbol(\"rigiffi_pick\")\n" +
+                "native func ffiPick(flag: bool, x: double): double\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(ffiPick(true, 1.5).toString())\n" +
+                "    Console.println(ffiPick(false, 1.5).toString())\n" +
+                "    return 0\n" +
+                "}\n",
+                "double rigiffi_pick(signed char flag, double x) { return flag ? x : -x; }\n",
+                "1.5\n-1.5\n", 0),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
@@ -5983,6 +7473,101 @@ namespace RigiCompiler.Tests
             "}\n";
 
         // string 排序比较的手写 BIL（前端 P3 未放行 String 的 < 运算符，
+        // MW3：f64 switch 比较链降级的符号零/NaN 口径（BIL 级，VM
+        // ValuesEqual 即 C# ==）：-0.0 selector 命中 0 case、+0.0 selector
+        // 命中 -0.0 case（符号零相等）；NaN case 标签永不命中（跳过头项
+        // 落第二项）。期望退出码 10+20+40=70
+        private const string SwitchF64SignZeroBil =
+            "BIL \"1.1\"\n" +
+            "\n" +
+            "Metadata {\n" +
+            "    module = string \"swfsign\"\n" +
+            "}\n" +
+            "\n" +
+            "Resources {\n" +
+            "    R_T1 = switch-table<.f64> { 0 },\n" +
+            "    R_T2 = switch-table<.f64> { -0.0 },\n" +
+            "    R_T3 = switch-table<.f64> { NaN, 2.0 },\n" +
+            "    R_NegZero = f64 -0.0,\n" +
+            "    R_PosZero = f64 0,\n" +
+            "    R_Two = f64 2.0,\n" +
+            "    R_0 = i32 0,\n" +
+            "    R_10 = i32 10,\n" +
+            "    R_20 = i32 20,\n" +
+            "    R_40 = i32 40,\n" +
+            "    R_1 = i32 1,\n" +
+            "    R_2 = i32 2,\n" +
+            "    R_4 = i32 4\n" +
+            "}\n" +
+            "\n" +
+            "LocalSymbols {\n" +
+            "    .method $main()@.i32 pub entrypoint\n" +
+            "}\n" +
+            "\n" +
+            "ExternalSymbols {\n" +
+            "}\n" +
+            "\n" +
+            "fn($main()@.i32) {\n" +
+            "    .args {\n" +
+            "        .return = .i32\n" +
+            "    }\n" +
+            "    .vars {\n" +
+            "        .f64 x,\n" +
+            "        .i32 acc,\n" +
+            "        .i32 .t0,\n" +
+            "        .breakid .b0,\n" +
+            "        .breakid .b1,\n" +
+            "        .breakid .b2\n" +
+            "    }\n" +
+            "    .block entry entrypoint {\n" +
+            "        load res(R_0) $acc\n" +
+            "        load res(R_NegZero) $x\n" +
+            "        switch $x res(R_T1)\n" +
+            "            [blk(i0)]\n" +
+            "            blk(d0)\n" +
+            "            $.b0\n" +
+            "        load res(R_PosZero) $x\n" +
+            "        switch $x res(R_T2)\n" +
+            "            [blk(i1)]\n" +
+            "            blk(d1)\n" +
+            "            $.b1\n" +
+            "        load res(R_Two) $x\n" +
+            "        switch $x res(R_T3)\n" +
+            "            [blk(i2a), blk(i2b)]\n" +
+            "            blk(d2)\n" +
+            "            $.b2\n" +
+            "        ret $acc\n" +
+            "    }\n" +
+            "    .block i0 {\n" +
+            "        load res(R_10) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block d0 {\n" +
+            "        load res(R_1) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block i1 {\n" +
+            "        load res(R_20) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block d1 {\n" +
+            "        load res(R_2) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block i2a {\n" +
+            "        load res(R_4) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block i2b {\n" +
+            "        load res(R_40) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "    .block d2 {\n" +
+            "        load res(R_4) $.t0\n" +
+            "        add $acc $.t0 $acc\n" +
+            "    }\n" +
+            "}\n";
+
         // §11.5 内建形态合法）：cmp.lt/gt/le 三形态 + native print 面输出。
         // 结构模仿前端产物（if 块 + breakid），VM 侧经 rigi_rt/print hook 执行
         private const string StringOrderBil =
@@ -6257,6 +7842,593 @@ namespace RigiCompiler.Tests
             RunBilCase("包转发（整包）", BilWriter.Write(module));
         }
 
+        // ===== L1：8 条「VM 支持但前端不发射」指令的 BIL 级对拍 =====
+
+        // cast.indirect / cast.safe.indirect（§12.1/§12.2 动态形态）：
+        // 上转/下转命中（rigi_try_cast 视图改写），safe 不命中产 null
+        //（type.is 观测为 false）；全程与 VM 同 BIL 对拍
+        private static void RunIndirectCastCase()
+        {
+            RunBilCase("cast.indirect 族（BIL 级）", BilWriter.Write(IndirectCastModule(false)));
+        }
+
+        // cast.indirect 不命中：VM CastFailed 与 native EmitCastThrow
+        // 同型（core::CastException），退出码 1、stderr 关键字对齐
+        private static void RunIndirectCastFailCase()
+        {
+            RunBilFailCase("cast.indirect 不命中抛 CastException（BIL 级）",
+                BilWriter.Write(IndirectCastModule(true)), "无法将", "CastException");
+        }
+
+        // Animal/Dog（extends）模块：源码骨架（携 stdlib，异常构造/
+        // 顶层 reporter 可达）+ $main 入口块清空后直织间接 cast 序列
+        //（前端不发射的形态）。failMode = 以 Animal 实例对 .typeid<Dog>
+        // 做强制 cast.indirect（不命中路径）
+        // G4 落空负例模块（BIL 级）：合法骨架（Addable + add<T> 携
+        // stdlib，异常类型/init 可达）+ 手写 Plain（无 operator）——
+        // main 改写为 add<Plain>，运行期候选链全落空
+        private static string BuildGenericOpMissBil()
+        {
+            var (_, module, _) = BilTestHarness.EmitBilUnit(
+                "pub interface Addable {\n" +
+                "    operator plus(another: Addable): Addable\n" +
+                "}\n" +
+                "func add\\<T extends Addable>(a: T, b: T): Addable {\n" +
+                "    return a + b\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return 0\n" +
+                "}\n");
+            var plain = new BilTypeDeclaration("Plain", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            plain.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Plain$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(plain);
+            var plainInit = new BilFunction("Plain$init()@.void");
+            plainInit.Args.Add(new BilArgDeclaration(".return", ".void"));
+            plainInit.Args.Add(new BilArgDeclaration(".this", "Plain"));
+            var plainInitBody = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            plainInitBody.Instructions.Add(new RetInstruction());
+            plainInit.Blocks.Add(plainInitBody);
+            module.Functions.Add(plainInit);
+
+            module.Resources.Add(new BilScalarResource("R_Z", BilScalarType.I32, "0"));
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            var entry = main.Blocks.Single(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint));
+            entry.Instructions.Clear();
+            main.Vars.Add(new BilVarDeclaration(".typeid", "tid"));
+            main.Vars.Add(new BilVarDeclaration("Plain", "p1"));
+            main.Vars.Add(new BilVarDeclaration("Plain", "p2"));
+            main.Vars.Add(new BilVarDeclaration("Addable", "rr"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "rz"));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Plain"),
+                BilOp.Var("tid")));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Plain"), BilOp.Var("p1"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Plain"), BilOp.Var("p2"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new InvokeInstruction(
+                BilOp.Fn("$add(a:.generic<$.generic.T>,b:.generic<$.generic.T>)@Addable"),
+                BilOp.Var("rr"),
+                new[]
+                {
+                    BilOp.Var("tid"), BilOp.Var("p1"), BilOp.Var("p2"),
+                }));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[^1],
+                BilOp.Var("rz")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("rz")));
+            return BilWriter.Write(module);
+        }
+
+        private static BilModule IndirectCastModule(bool failMode)
+        {
+            var (_, module, _) = BilTestHarness.EmitBilUnit(
+                "pub open class Animal {\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub class Dog : Animal {\n" +
+                "    pub var n: i32\n" +
+                "    pub init() { n = 7 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return 0\n" +
+                "}\n");
+            module.Resources.Add(new BilScalarResource("R_C99", BilScalarType.I32, "99"));
+            var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
+            var entry = main.Blocks.Single(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint));
+            entry.Instructions.Clear();
+            main.Vars.Add(new BilVarDeclaration("Dog", "d"));
+            main.Vars.Add(new BilVarDeclaration("Animal", "a"));
+            main.Vars.Add(new BilVarDeclaration("Animal", "a2"));
+            main.Vars.Add(new BilVarDeclaration("Dog", "back"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Animal>", "ta"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Dog>", "td"));
+            main.Vars.Add(new BilVarDeclaration(".nullable<Dog>", "miss"));
+            main.Vars.Add(new BilVarDeclaration(".bool", "flag"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            main.Vars.Add(new BilVarDeclaration(".breakid", "bk"));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Dog"), BilOp.Var("d"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new NewInstruction(BilOp.Type("Animal"), BilOp.Var("a2"),
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Animal"),
+                BilOp.Var("ta")));
+            // Dog → Animal 上转（运行期 typeid 命中）
+            entry.Instructions.Add(new CastIndirectInstruction(BilOp.Var("d"), BilOp.Var("a"),
+                BilOp.Var("ta"), isSafe: false));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Dog"),
+                BilOp.Var("td")));
+            if (failMode)
+            {
+                // Animal 实例 → Dog 强制转换：运行期不命中
+                entry.Instructions.Add(new LoadInstruction(module.Resources[^1],
+                    BilOp.Var("r")));
+                entry.Instructions.Add(new CastIndirectInstruction(BilOp.Var("a2"),
+                    BilOp.Var("back"), BilOp.Var("td"), isSafe: false));
+                entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            }
+            else
+            {
+                // Animal（实为 Dog）→ Dog 下转命中，读回字段验证身份
+                entry.Instructions.Add(new CastIndirectInstruction(BilOp.Var("a"),
+                    BilOp.Var("back"), BilOp.Var("td"), isSafe: false));
+                entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("back"),
+                    BilOp.Var("r"), BilOp.Field("Dog#n@.i32")));
+                // safe 不命中：Animal 非 Dog → null；type.is 观测 false
+                entry.Instructions.Add(new CastIndirectInstruction(BilOp.Var("a2"),
+                    BilOp.Var("miss"), BilOp.Var("td"), isSafe: true));
+                entry.Instructions.Add(new DirectTypeCheckInstruction(BilTypeCheckKind.Is,
+                    BilOp.Var("miss"), BilOp.Type("Dog"), BilOp.Var("flag")));
+                var thenBlock = new BilBlock("cast-then");
+                thenBlock.Instructions.Add(new LoadInstruction(module.Resources[^1],
+                    BilOp.Var("r")));
+                thenBlock.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+                main.Blocks.Add(thenBlock);
+                entry.Instructions.Add(new IfInstruction(BilOp.Var("flag"), thenBlock,
+                    null, BilOp.Var("bk")));
+                entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            }
+            return module;
+        }
+
+        // get.wrapper.indirect（§12.4 动态形态，前端无整体取值路径）：
+        // Host wrapped(Wrap) + 有参 ..init.wrapper 安装后，经
+        // getid.type 的 typeid 间接取 wrapper 值拷贝，读字段验证
+        //（BilVmTests.WrapperHostModule 同构手工模块）
+        private static void RunGetWrapperIndirectCase()
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_L", BilScalarType.I32, "5"));
+            var wrap = new BilTypeDeclaration("Wrap", BilTypeKind.Wrapper,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilKeywordModifier(BilKeyword.Rich));
+            wrap.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                "Wrap#level@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            wrap.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Wrap$init(level:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(wrap);
+            var host = new BilTypeDeclaration("Host", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public),
+                new BilWrappedModifier("Wrap"));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Host$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            host.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Host$..init.wrapper(level:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            module.LocalSymbols.Add(host);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+
+            var wrapInit = new BilFunction("Wrap$init(level:.i32)@.void");
+            wrapInit.Args.Add(new BilArgDeclaration(".return", ".void"));
+            wrapInit.Args.Add(new BilArgDeclaration(".this", "Wrap"));
+            wrapInit.Args.Add(new BilArgDeclaration("level", ".i32"));
+            var wrapEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            wrapEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("level"),
+                BilOp.Var(".this"), BilOp.Field("Wrap#level@.i32")));
+            wrapEntry.Instructions.Add(new RetInstruction());
+            wrapInit.Blocks.Add(wrapEntry);
+            module.Functions.Add(wrapInit);
+
+            var hostInit = new BilFunction("Host$init()@.void");
+            hostInit.Args.Add(new BilArgDeclaration(".return", ".void"));
+            hostInit.Args.Add(new BilArgDeclaration(".this", "Host"));
+            var hostInitEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            hostInitEntry.Instructions.Add(new RetInstruction());
+            hostInit.Blocks.Add(hostInitEntry);
+            module.Functions.Add(hostInit);
+
+            var initWrapper = new BilFunction("Host$..init.wrapper(level:.i32)@.void");
+            initWrapper.Args.Add(new BilArgDeclaration(".return", ".void"));
+            initWrapper.Args.Add(new BilArgDeclaration(".this", "Host"));
+            initWrapper.Args.Add(new BilArgDeclaration("level", ".i32"));
+            var wrapperEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            wrapperEntry.Instructions.Add(new NewWrapperEntityInstruction(BilOp.Type("Wrap"),
+                new[] { BilOp.Var("level") }));
+            wrapperEntry.Instructions.Add(new RetInstruction());
+            initWrapper.Blocks.Add(wrapperEntry);
+            module.Functions.Add(initWrapper);
+
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "lv"));
+            main.Vars.Add(new BilVarDeclaration("Host", "h"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Wrap>", "wid"));
+            main.Vars.Add(new BilVarDeclaration("Wrap", "w"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("lv")));
+            entry.Instructions.Add(new NewWrappedInstruction(BilOp.Type("Host"),
+                BilOp.Var("h"), new[] { BilOp.Var("lv") },
+                Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Wrap"),
+                BilOp.Var("wid")));
+            entry.Instructions.Add(new GetWrapperIndirectInstruction(BilOp.Var("h"),
+                BilOp.Var("wid"), BilOp.Var("w")));
+            entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("w"), BilOp.Var("r"),
+                BilOp.Field("Wrap#level@.i32")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            RunBilCase("get.wrapper.indirect（BIL 级）", BilWriter.Write(module));
+        }
+
+        // getid.field + get/set.field.indirect + get/set.field.static.indirect
+        //（§12.6/§13.5，前端尚不发射——BilVmTests.IndirectBoxModule 同构
+        // 手工模块，返回实例字段与静态字段之和验证双向读写）
+        private static void RunFieldIndirectCase()
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_7", BilScalarType.I32, "7"));
+            var box = new BilTypeDeclaration("Box", BilTypeKind.Class,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, "Box#n@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticField,
+                "Box#.static.tag@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            box.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "Box$init()@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            module.LocalSymbols.Add(box);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+            var init = new BilFunction("Box$init()@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "Box"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "v"));
+            main.Vars.Add(new BilVarDeclaration("Box", "obj"));
+            main.Vars.Add(new BilVarDeclaration(".typeid<Box>", "tid"));
+            main.Vars.Add(new BilVarDeclaration(".fieldid<Box, .i32, instance>", "fid"));
+            main.Vars.Add(new BilVarDeclaration(".fieldid<Box, .i32, static>", "sfid"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "r2"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "sum"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("v")));
+            entry.Instructions.Add(new GetIdTypeInstruction(BilOp.Type("Box"), BilOp.Var("tid")));
+            entry.Instructions.Add(new GetIdFieldInstruction(BilOp.Field("Box#n@.i32"),
+                BilOp.Var("fid")));
+            entry.Instructions.Add(new GetIdFieldInstruction(
+                BilOp.Field("Box#.static.tag@.i32"), BilOp.Var("sfid")));
+            entry.Instructions.Add(new NewIndirectInstruction(BilOp.Var("tid"),
+                BilOp.Var("obj"), Array.Empty<BilVariableOperand>()));
+            entry.Instructions.Add(new SetFieldIndirectInstruction(BilOp.Var("v"),
+                BilOp.Var("obj"), BilOp.Var("fid")));
+            entry.Instructions.Add(new SetFieldStaticIndirectInstruction(BilOp.Var("v"),
+                BilOp.Var("tid"), BilOp.Var("sfid")));
+            entry.Instructions.Add(new GetFieldIndirectInstruction(BilOp.Var("obj"),
+                BilOp.Var("r"), BilOp.Var("fid")));
+            entry.Instructions.Add(new GetFieldStaticIndirectInstruction(BilOp.Var("r2"),
+                BilOp.Var("tid"), BilOp.Var("sfid")));
+            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Add,
+                BilOp.Var("r"), BilOp.Var("r2"), BilOp.Var("sum")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("sum")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            RunBilCase("getid.field + field.indirect 族（BIL 级）", BilWriter.Write(module));
+        }
+
+        // new.wrapped.case（§14.4.2，前端尚不发射）：带参
+        // ..init.wrapper 的 enum case 构造——wrapper 实参先行（体内写
+        // 静态字段作可观测副作用），case 实参随后进 init。返回
+        // v + 静态标记验证双序执行（7 + 3 = 10）
+        private static void RunNewWrappedCaseCase()
+        {
+            RunBilCase("new.wrapped.case（BIL 级）",
+                BilWriter.Write(NewWrappedCaseModule(mismatch: false)));
+        }
+
+        // new.wrapped.case 的 case 实参不匹配任何 init：VM 运行期抛
+        // 「new.case 实参不匹配任何 init」（VM 不过门禁）；native 由
+        // BilGate（BilVerifier §14.3/§14.4.2）编译期拒绝——同一非法
+        // 模块双侧同拒（消息关键字对齐）
+        private static void RunNewWrappedCaseRejectCase()
+        {
+            var text = BilWriter.Write(NewWrappedCaseModule(mismatch: true));
+            var vm = BilVm.Run(BilReader.Read(text));
+            TestHarness.CheckTrue("new.wrapped.case init 失配：VM 有异常",
+                vm.Exception != null);
+            TestHarness.CheckTrue("new.wrapped.case init 失配：VM 消息含关键字",
+                vm.Exception != null && vm.Exception.Message.Contains("不匹配任何 init"),
+                vm.Exception?.Message ?? "");
+
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var compiled = RunNative("native", "--file", bilPath,
+                    "--out", Path.Combine(dir, "case.exe"));
+                TestHarness.CheckTrue("new.wrapped.case init 失配：native 门禁拒绝（退出 1）",
+                    compiled.Code == 1, $"code={compiled.Code} err={compiled.Err}");
+                TestHarness.CheckTrue("new.wrapped.case init 失配：native 消息含关键字",
+                    compiled.Err.Contains("不匹配"), compiled.Err);
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        // raw.hex/raw.bin → core::Span<u8>/core::SharedSpan<u8>（§19.3 字节
+        // 序列；L5 资源面）：VM 对 raw load 整体无物化语义（VmContext
+        // LoadResource 拒绝）——先钉住该取证，native 侧按字节缓冲区语义
+        // 物化（span_alloc + 静态字节常量 memcpy）。exit = 4 + 2 = 6
+        //（两缓冲区 length 字段之和），全程 native-only 验证
+        private static void RunRawBufferSpanCase()
+        {
+            const string bil =
+                "BIL \"1.1\"\n" +
+                "\n" +
+                "Metadata {\n" +
+                "    module = string \"rawspan\"\n" +
+                "}\n" +
+                "\n" +
+                "Resources {\n" +
+                "    R_Data = raw.hex x2FF2331C,\n" +
+                "    R_Bits = raw.bin b0101010101010101\n" +
+                "}\n" +
+                "\n" +
+                "LocalSymbols {\n" +
+                "    .method $main()@.i32 pub entrypoint\n" +
+                "}\n" +
+                "\n" +
+                "ExternalSymbols {\n" +
+                "}\n" +
+                "\n" +
+                "fn($main()@.i32) {\n" +
+                "    .args {\n" +
+                "        .return = .i32\n" +
+                "    }\n" +
+                "\n" +
+                "    .vars {\n" +
+                "        core::Span<.u8> d,\n" +
+                "        core::SharedSpan<.u8> b,\n" +
+                "        .i32 n,\n" +
+                "        .i32 m,\n" +
+                "        .i32 r\n" +
+                "    }\n" +
+                "\n" +
+                "    .block entry entrypoint {\n" +
+                "        load res(R_Data) $d\n" +
+                "        load res(R_Bits) $b\n" +
+                "        get.field $d $n field(core::Span#length@.i32)\n" +
+                "        get.field $b $m field(core::SharedSpan#length@.i32)\n" +
+                "        add $n $m $r\n" +
+                "        ret $r\n" +
+                "    }\n" +
+                "}\n";
+            // 取证钉住：VM 对 raw 资源 load 拒绝（无物化语义可对照，
+            // 故本面只能 native-only 验证，不走 RunBilCase 对拍）
+            var vm = BilVm.Run(BilReader.Read(bil));
+            TestHarness.CheckTrue("raw → Span：VM 拒绝 raw load（取证）",
+                vm.Exception != null
+                && vm.Exception.Message.Contains("不支持的标量资源类型"),
+                vm.Exception?.Message ?? "");
+
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, bil, new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue("raw → Span：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0)
+                {
+                    return;
+                }
+                var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
+                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                TestHarness.CheckTrue("raw → Span：退出码 6（两 length 之和）",
+                    runExit == 6, $"exit={runExit} stderr={nativeErr}");
+                TestHarness.CheckTrue("raw → Span：stdout 为空", nativeOut.Length == 0,
+                    nativeOut);
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        // enum E（字段 v + 静态 tag + 有参 ..init.wrapper）：case E.Param
+        // 洞实参 x 进 init；wrapper 实参 t 进 ..init.wrapper（写静态
+        // tag）。mismatch = case 实参多给一个（不匹配任何 init）
+        private static BilModule NewWrappedCaseModule(bool mismatch)
+        {
+            var module = new BilModule();
+            module.Resources.Add(new BilScalarResource("R_7", BilScalarType.I32, "7"));
+            module.Resources.Add(new BilScalarResource("R_3", BilScalarType.I32, "3"));
+            var e = new BilTypeDeclaration("E", BilTypeKind.EnumStruct,
+                new BilAccessibilityModifier(BilAccessibility.Public));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, "E#v@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.StaticField,
+                "E#.static.tag@.i32",
+                new BilModifier[] { new BilAccessibilityModifier(BilAccessibility.Public) }));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "E$init(x:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Init),
+                }));
+            e.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "E$..init.wrapper(t:.i32)@.void",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Private),
+                    new BilKeywordModifier(BilKeyword.CompilerGenerated),
+                }));
+            e.Members.Add(new BilCaseDeclaration("E.Fixed"));
+            e.Members.Add(new BilCaseDeclaration("E.Param",
+                new[] { new BilCaseParameter("v", ".i32") }));
+            module.LocalSymbols.Add(e);
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@.i32",
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+
+            var init = new BilFunction("E$init(x:.i32)@.void");
+            init.Args.Add(new BilArgDeclaration(".return", ".void"));
+            init.Args.Add(new BilArgDeclaration(".this", "E"));
+            init.Args.Add(new BilArgDeclaration("x", ".i32"));
+            var initEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            initEntry.Instructions.Add(new SetFieldInstruction(BilOp.Var("x"),
+                BilOp.Var(".this"), BilOp.Field("E#v@.i32")));
+            initEntry.Instructions.Add(new RetInstruction());
+            init.Blocks.Add(initEntry);
+            module.Functions.Add(init);
+
+            var wrapper = new BilFunction("E$..init.wrapper(t:.i32)@.void");
+            wrapper.Args.Add(new BilArgDeclaration(".return", ".void"));
+            wrapper.Args.Add(new BilArgDeclaration(".this", "E"));
+            wrapper.Args.Add(new BilArgDeclaration("t", ".i32"));
+            var wrapperEntry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            wrapperEntry.Instructions.Add(new SetFieldStaticInstruction(BilOp.Var("t"),
+                BilOp.Type("E"), BilOp.Field("E#.static.tag@.i32")));
+            wrapperEntry.Instructions.Add(new RetInstruction());
+            wrapper.Blocks.Add(wrapperEntry);
+            module.Functions.Add(wrapper);
+
+            var main = new BilFunction("$main()@.i32");
+            main.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "t"));
+            main.Vars.Add(new BilVarDeclaration("E", "e"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "r"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "s"));
+            main.Vars.Add(new BilVarDeclaration(".i32", "sum"));
+            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("x")));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[1], BilOp.Var("t")));
+            entry.Instructions.Add(new NewWrappedCaseInstruction(BilOp.Type("E"),
+                BilOp.Case("E.Param"), BilOp.Var("e"),
+                new[] { BilOp.Var("t") },
+                mismatch
+                    ? new[] { BilOp.Var("x"), BilOp.Var("t") }
+                    : (IReadOnlyList<BilVariableOperand>)new[] { BilOp.Var("x") }));
+            entry.Instructions.Add(new GetFieldInstruction(BilOp.Var("e"), BilOp.Var("r"),
+                BilOp.Field("E#v@.i32")));
+            entry.Instructions.Add(new GetFieldStaticInstruction(BilOp.Var("s"),
+                BilOp.Type("E"), BilOp.Field("E#.static.tag@.i32")));
+            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Add,
+                BilOp.Var("r"), BilOp.Var("s"), BilOp.Var("sum")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("sum")));
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+        // 语言级异常（消息含 keyword）；native 编译链接成功、运行退出码
+        // 1、stderr 含 nativeNeedle（缺省同 keyword）、stdout 一致
+        private static void RunBilFailCase(string label, string bilText, string keyword,
+            string? nativeNeedle = null)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var vm = BilVm.Run(BilReader.Read(bilText));
+                TestHarness.CheckTrue(label + "：VM 有异常", vm.Exception != null);
+                TestHarness.CheckTrue(label + "：VM 消息含关键字",
+                    vm.Exception != null && vm.Exception.Message.Contains(keyword),
+                    vm.Exception?.Message ?? "");
+
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, bilText, new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0)
+                {
+                    return;
+                }
+                var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
+                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
+                    $"exit={runExit}");
+                TestHarness.CheckTrue(label + "：native stderr 含关键字",
+                    nativeErr.Contains(nativeNeedle ?? keyword), nativeErr);
+                TestHarness.Check(label + "：stdout 一致",
+                    NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
         // typeid 数组（泛型位置包 TArgs 的承载形态 .array<.typeid<.any>>）：
         // 元素 = 8B 内联 sheet 指针（sheet FlagInlineValue/typeSize=8），非 16B
         // 胖槽——回归 stride 双口径（发射 16B/分配 8B）导致的堆越界（linux glibc
@@ -6358,6 +8530,62 @@ namespace RigiCompiler.Tests
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
                 TestHarness.CheckTrue(label + "：退出码一致",
                     runExit == expectedExit, $"native={runExit} vm={expectedExit} stderr={nativeErr}");
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        // L6：非 rigi_rt 库 FFI native-only 驱动——Rigi 源走全管线出 BIL；
+        // cSource 用工具链 clang -c 现场编成目标文件，native --file --out
+        // --link 一次编译链接；执行产物断言 stdout（行尾归一）与退出码
+        private static void RunNativeOnlyCase(string label, string source,
+            string cSource, string expectedStdout, int expectedExit)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var text = BilWriter.Write(module);
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+
+                // 现场出最小外部库（复用工具链解析，无外部依赖）
+                var clang = ToolchainResolver.ResolveClang(null);
+                TestHarness.CheckTrue(label + "：clang 可用", clang != null);
+                if (clang == null)
+                {
+                    return;
+                }
+                var cPath = Path.Combine(dir, "ffi.c");
+                var objPath = Path.Combine(dir, "ffi.o");
+                File.WriteAllText(cPath, cSource, new UTF8Encoding(false));
+                var cExit = ExternalProcess.Run(clang,
+                    new[] { cPath, "-c", "-o", objPath }, out _, out var cErr);
+                TestHarness.CheckTrue(label + "：C 源编译成功", cExit == 0, cErr);
+                if (cExit != 0)
+                {
+                    return;
+                }
+
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath,
+                    "--out", exePath, "--link", objPath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0)
+                {
+                    return;
+                }
+                var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
+                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                TestHarness.Check(label + "：stdout 符合预期",
+                    NormalizeNewlines(nativeOut), expectedStdout);
+                TestHarness.CheckTrue(label + "：退出码符合预期",
+                    runExit == expectedExit, $"native={runExit} 期望={expectedExit} stderr={nativeErr}");
             }
             finally
             {

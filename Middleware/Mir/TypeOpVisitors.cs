@@ -1,5 +1,6 @@
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Mir
 {
@@ -11,7 +12,25 @@ namespace RigiCompiler.Middleware.Mir
         protected override void VisitCore(GetIdTypeInstruction inst, FlowBuilder flow)
         {
             flow.EnsureOpen();
+            // L1：登记静态 id 追踪（get.wrapper.indirect 等 indirect 族的
+            // lowering 期解析用）；值本身照常经 MirGetTypeId 物化
+            flow.NoteTypeId(inst.Target.Name, MwTypeKey.Normalize(inst.TargetType.TypeRef));
             flow.Add(new MirGetTypeId(inst.TargetType.TypeRef, inst.Target.Name));
+        }
+    }
+
+    // §12.6 取得字段 fieldid：getid.field field(FIELD) TARGET_FIELDID。
+    // fieldid 的运行时值在 native 无消费面（indirect 族 lowering 期经
+    // 静态追踪解析回字段符号，与直译版同路径）；MIR 节点仅占位登记
+    //（发射 = 槽内写 null，槽型 .fieldid → ptr，见 TypeLayout）
+    internal sealed class GetIdFieldLowering
+        : MirLowerVisitor<GetIdFieldLowering, GetIdFieldInstruction>
+    {
+        protected override void VisitCore(GetIdFieldInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            flow.NoteFieldId(inst.Target.Name, inst.Field.Symbol);
+            flow.Add(new MirGetFieldId(inst.Field.Symbol, inst.Target.Name));
         }
     }
 
@@ -76,6 +95,22 @@ namespace RigiCompiler.Middleware.Mir
             var (_, caseSymbol) = flow.ResolveCase(
                 FlowBuilder.EnumOwnerOf(inst.Case.QualifiedName), inst.Case.QualifiedName);
             flow.Add(new MirIsCase(caseSymbol, flow.Local(inst.Value), inst.Target.Name));
+        }
+    }
+
+    // §12.1/§12.2 动态转换（cast.indirect / cast.safe.indirect）：目标
+    // sheet 运行期取自 TYPEID_VAR 局部，直译复用 MirCast 的 indirect 形态
+    //（CastEmitter.EmitDynamic：装箱源 + rigi_try_cast + 命中改写视图，
+    // 落空按 IsSafe 产 null 或抛 CastException——与 VM CastOrThrow/
+    // CastSafe(RequireTypeId) 逐条同语义）
+    internal sealed class CastIndirectLowering
+        : MirLowerVisitor<CastIndirectLowering, CastIndirectInstruction>
+    {
+        protected override void VisitCore(CastIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            flow.Add(new MirCast(flow.Local(inst.Source), inst.Target.Name, inst.IsSafe,
+                null, flow.Local(inst.TypeId), flow.Tries.CurrentExcTarget()));
         }
     }
 
@@ -156,6 +191,20 @@ namespace RigiCompiler.Middleware.Mir
                         inst.Target.Name));
                     return;
                 }
+                flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
+                return;
+            }
+            // G1：泛型值类型「构造 → 裸模板」擦除 cast（frontend 对方法调用
+            // 接收者的固定形态）——值语义恒等视图，降为拷贝并登记构造形态
+            // 供类级 typeid 合成回溯（VM：cast 改写视图 typeid、无数据移动；
+            // 值类型无视图可写，恒等即语义）
+            if (flow.IsUserValueType(sourceType)
+                && ConstructedTypeCollector.IsConstructed(sourceType.Canonical)
+                && BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(sourceType.Canonical)) == targetType.Canonical)
+            {
+                flow.NoteErasedValueHost(inst.Target.Name,
+                    MwTypeKey.Normalize(sourceType.Canonical));
                 flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
                 return;
             }

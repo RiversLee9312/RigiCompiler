@@ -351,7 +351,10 @@ namespace RigiCompiler.Middleware.Emit
                     {
                         throw new MwNotSupportedException($"入口函数不得有参数: {fn.Symbol.Canonical}");
                     }
-                    if (!fn.ReturnType.IsVoid && fn.ReturnType.Key != "i32")
+                    // B-1：tainted main 已 split 为 spawn stub（ret 热
+                    // Task；IsAsync 标记），返回类型约束由 EmitEntryStub
+                    // 的根驱动变体接管
+                    if (!fn.IsAsync && !fn.ReturnType.IsVoid && fn.ReturnType.Key != "i32")
                     {
                         throw new MwNotSupportedException(
                             $"MW1 入口函数返回类型仅支持 .i32/.void: {fn.Symbol.Canonical}");
@@ -388,7 +391,11 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     for (var i = 0; i < fn.Parameters.Count; i++)
                     {
-                        if (GenericAbi.IsClassLevelTypeId(fn.Symbol, fn.Parameters[i].Name))
+                        // G1：值类型泛型宿主的实例成员保留类级 typeid 参数
+                        //（无对象头隐藏槽可自取，调用点按 §7.2 序直传）
+                        if (GenericAbi.IsClassLevelTypeId(fn.Symbol, fn.Parameters[i].Name)
+                            && !GenericAbi.KeepsClassTypeIdInAbi(fn.Symbol,
+                                fn.Parameters.Count > 0 && fn.Parameters[0].Name == ".this"))
                         {
                             continue;
                         }
@@ -425,6 +432,13 @@ namespace RigiCompiler.Middleware.Emit
             //      main.Failure ?? UnobservedFailure）：entry.exc 非空 →
             //      reporter；否则 rigi_failure_take_unobserved（native
             //      失败注册表）有 → 同 reporter；都无 → ret main 返回值
+            // B-1 根驱动变体：main tainted（含挂起点）时 CoroutineSplit
+            //      已把它 split 成 spawn stub（IsAsync 标记，ret 热
+            //      Task）——本 stub 调 main() 即发布主协程进
+            //      Dispatcher（对齐 VM BilVm.Run 的 main 协程化），
+            //      drain 段跑到 quiescence 后调 $mw.main.settle 取回
+            //      结果/重抛 main 失败（重抛置 pending → 收进
+            //      entry.exc，失败汇总序不变）
             // reporter 前提缺失（模块内无异常类型可达 → pending 恒空、
             // 不可能有失败）时退回无检查序列（workerLoop 段仍按可达性
             // 发射）
@@ -437,6 +451,8 @@ namespace RigiCompiler.Middleware.Emit
                 SetCurrentFunction(stub);
                 var reporterTarget = ResolveUncaughtReporterTarget(out var exceptionSheet);
                 var reporterAvailable = reporterTarget != null;
+                // B-1：tainted main 的 spawn stub 标记（ret 热 Task）
+                var mainIsCoroutine = entrypoint.Mir.IsAsync;
 
                 // 合成槽（entry 块 alloca）：entry.exc = 已 take 的异常
                 // 对象裸指针（+1 持有）；entry.fat = 未观察失败 out 槽；
@@ -453,6 +469,9 @@ namespace RigiCompiler.Middleware.Emit
                     takeEntry = stub.AppendBasicBlock("entry.take");
                 }
                 var resultSlot = builder.BuildAlloca(LLVMTypeRef.Int32, "entry.result");
+                // B-1：tainted main 的热 Task 持有槽（drain 后 settle
+                // 消费并归还）
+                LLVMValueRef mainTaskSlot = default;
 
                 foreach (var singleton in Singletons)
                 {
@@ -471,7 +490,20 @@ namespace RigiCompiler.Middleware.Emit
                         System.Array.Empty<LLVMValueRef>(), "");
                     EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
                 }
-                if (entrypoint.Mir.ReturnType.IsVoid)
+                if (mainIsCoroutine)
+                {
+                    // B-1 根驱动：main 已是 spawn stub——调用即建 frame/
+                    // cohandle 并 noteSpawn+publish 进 Dispatcher（结果
+                    // 待 drain 后 settle 取回，此处先落 0 占位）
+                    var mainTask = builder.BuildCall2(entrypoint.Type, entrypoint.Value,
+                        System.Array.Empty<LLVMValueRef>(), "main.task");
+                    mainTaskSlot = builder.BuildAlloca(
+                        TypeLayout.FatReferenceType(Context), "entry.task");
+                    builder.BuildStore(mainTask, mainTaskSlot);
+                    builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false),
+                        resultSlot);
+                }
+                else if (entrypoint.Mir.ReturnType.IsVoid)
                 {
                     builder.BuildCall2(entrypoint.Type, entrypoint.Value,
                         System.Array.Empty<LLVMValueRef>(), "");
@@ -536,6 +568,28 @@ namespace RigiCompiler.Middleware.Emit
                 // MW12b §25.2：undisposed 全局异常事件 drain（派发时机
                 // 定稿：main/drain 之后、失败汇总之前）
                 EmitGexcDrain(builder, stub, reporterAvailable, takeEntry);
+
+                // B-1 根驱动收尾：drain 至 quiescence 后主协程已终态
+                // ——settle 读 Task 取 main 结果（写 resultSlot）/重抛
+                // main 失败（pending 置位，随后收进 entry.exc）；Task
+                // 胖引用随 settle 归还
+                if (mainIsCoroutine)
+                {
+                    var settleCanonical = Passes.CoroutineSplitPass.MainSettleCanonicalOf(
+                        entrypoint.Mir.ReturnType.Canonical);
+                    if (!TryGetFunction(settleCanonical, out var settleFn))
+                    {
+                        throw new CompilerInternalException(
+                            "main settle fn 未合成: " + settleCanonical);
+                    }
+                    var heldTask = builder.BuildLoad2(
+                        TypeLayout.FatReferenceType(Context), mainTaskSlot, "entry.task.v");
+                    var settled = builder.BuildCall2(settleFn.Type, settleFn.Value,
+                        new[] { heldTask }, "entry.settle");
+                    builder.BuildStore(settled, resultSlot);
+                    ArcEmitter.EmitReleaseFatValue(this, builder, heldTask);
+                    EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
+                }
 
                 if (reporterAvailable)
                 {
@@ -748,8 +802,21 @@ namespace RigiCompiler.Middleware.Emit
                 for (var i = 0; i < fn.Parameters.Count; i++)
                 {
                     var parameter = fn.Parameters[i];
-                    if (GenericAbi.IsClassLevelTypeId(fn.Symbol, parameter.Name))
+                    // G1：值类型泛型宿主实例成员的类级 typeid 是真实 LLVM
+                    // 参数（调用点直传）；class 宿主与值类型静态成员剔除
+                    //（前者 prologue 自取；后者 §9.2.3 不用，落 Any 兜底）
+                    if (GenericAbi.IsClassLevelTypeId(fn.Symbol, parameter.Name)
+                        && !GenericAbi.KeepsClassTypeIdInAbi(fn.Symbol,
+                            fn.Parameters.Count > 0 && fn.Parameters[0].Name == ".this"))
                     {
+                        if (GenericAbi.IsValueTypeOwner(fn.Symbol.Owner))
+                        {
+                            // 值类型静态成员的类级 typeid 形参（BIL 声明但
+                            // §9.2.3 不可用）：落 core::Any sheet 常量，对齐
+                            // VM AlignGenericHiddenArgs 缺省 .any 口径
+                            builder.BuildStore(
+                                TypeSheetFor("core::Any"), slots[parameter.Name].Slot);
+                        }
                         continue;
                     }
                     var llvmParam = emitted.Value.GetParam((uint)llvmIndex++);
@@ -921,6 +988,12 @@ namespace RigiCompiler.Middleware.Emit
                 if (owner == null || owner.Declaration.GenericParameters.Count == 0
                     || !slots.ContainsKey(".this")
                     || Layout?.Find(GenericAbi.PlanKey(owner)) is not { } plan)
+                {
+                    return;
+                }
+                // G1：值类型宿主无对象头隐藏槽（类级 typeid 调用点直传，
+                // 参数已落槽）——不得对值类型 .this（裸指针）做胖引用解包
+                if (plan.HiddenTypeIdSlots.Count == 0)
                 {
                     return;
                 }

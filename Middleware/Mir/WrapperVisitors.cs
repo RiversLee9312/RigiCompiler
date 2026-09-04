@@ -19,6 +19,76 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // §12.4 动态形态：get.wrapper.indirect VALUE WRAPPER_TYPEID_VAR RESULT。
+    // wrapper 隐藏槽偏移是布局期静态量（native 无运行期槽查找面），
+    // typeid 局部经 FlowBuilder 静态 id 追踪解析回 typeref 后落与直译版
+    // 相同的 MirGetWrapper（VM：RequireTypeId 后 GetWrapper 同路径）；
+    // 静态不可解析（跨函数流转等）或宿主静态类型（沿 extends 链）无该
+    // wrapper 槽时受控拒绝——编译期拒绝是 VM 运行期「宿主没有 wrapper」
+    // 解析失败的保守超集（同 UserOperatorLowering 先例）
+    internal sealed class GetWrapperIndirectLowering
+        : MirLowerVisitor<GetWrapperIndirectLowering, GetWrapperIndirectInstruction>
+    {
+        protected override void VisitCore(GetWrapperIndirectInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            if (!flow.TryResolveTypeIdRef(inst.WrapperTypeId.Name, out var wrapperRef))
+            {
+                throw new MwNotSupportedException(
+                    $"get.wrapper.indirect 的 wrapper typeid 静态不可解析: "
+                    + $"${inst.WrapperTypeId.Name}（fn {flow.FnSymbol}）");
+            }
+            var wrapperType = MwTypeKey.Normalize(wrapperRef);
+            if (flow.Context.Symbols.FindTypeByRef(wrapperType) is not
+                { Declaration.Kind: BilTypeKind.Wrapper })
+            {
+                throw new MwNotSupportedException(
+                    $"get.wrapper.indirect 的 typeid 目标不是 wrapper 类型: "
+                    + $"{wrapperType}（fn {flow.FnSymbol}）");
+            }
+            var hostType = flow.TypeOf(inst.Value.Name).Canonical;
+            if (!HasEntityWrapperSlot(flow, MwTypeKey.Normalize(hostType), wrapperType))
+            {
+                throw new MwNotSupportedException(
+                    $"get.wrapper.indirect 宿主 {hostType} 无 wrapper 槽 {wrapperType}"
+                    + $"（VM 运行期同形失败；native 槽偏移静态不可得，编译期拒绝）（fn {flow.FnSymbol}）");
+            }
+            flow.Add(new MirGetWrapper(flow.Local(inst.Value), wrapperType, inst.Target.Name));
+        }
+
+        // 沿 extends 链下探取 Entity 隐藏槽（WrapperEmitter.
+        // ResolveEntitySlotSymbol 同口径，槽恒归首次声明名下随基类计划
+        // 逐层拷入）
+        private static bool HasEntityWrapperSlot(FlowBuilder flow, string hostCanonical,
+            string wrapperType)
+        {
+            var current = hostCanonical;
+            var guard = new HashSet<string>(System.StringComparer.Ordinal);
+            while (guard.Add(current))
+            {
+                var candidate = WrapperAbi.EntityFieldSymbol(current, wrapperType);
+                var plan = flow.Context.Layout?.Find(current);
+                if (plan != null)
+                {
+                    foreach (var field in plan.Fields)
+                    {
+                        if (field.Symbol == candidate)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                if (flow.Context.Symbols.FindTypeByRef(current)?.Declaration.ExtendsType
+                        is not { } baseRef)
+                {
+                    return false;
+                }
+                current = MwTypeKey.Normalize(baseRef);
+            }
+            return false;
+        }
+    }
+
     internal sealed class GetSelfLowering : MirLowerVisitor<GetSelfLowering, GetSelfInstruction>
     {
         protected override void VisitCore(GetSelfInstruction inst, FlowBuilder flow)

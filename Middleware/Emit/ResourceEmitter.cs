@@ -21,26 +21,40 @@ namespace RigiCompiler.Middleware.Emit
             if (load.Resource is BilScalarResource scalar
                 && scalar.Type is BilScalarType.RawHex or BilScalarType.RawBin)
             {
-                EmitRawArray(session, builder, slots, load.Target, targetType, scalar);
+                EmitRawBuffer(session, builder, slots, load.Target, targetType, scalar);
                 return;
             }
             builder.BuildStore(BuildResourceValue(session, load.Resource, targetType),
                 slots[load.Target].Slot);
         }
 
-        private static void EmitRawArray(ModuleBuilder.Session session, LLVMBuilderRef builder,
+        // §19.3 原始数据只表示不可变 byte sequence；合法 load 目标即字节
+        // 缓冲区三族（MW4 注释点名的 array/Span 布局知识）：.array<u8>、
+        // core::Span<u8>、core::SharedSpan<u8>。verifier 对 raw 跳过严格
+        // 匹配（§19.3 未定目标类型），其余目标类型无字节序列语义——VM 对
+        // raw load 整体无物化语义（LoadResource 拒绝），此处保留受控拒绝
+        private static void EmitRawBuffer(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string target,
             MirType targetType, BilScalarResource scalar)
         {
-            if (!TypeLayout.IsArray(targetType)
-                || !TypeLayout.TryGetArrayElement(targetType, out var element)
-                || element.Key != "u8")
+            if (TypeLayout.IsArray(targetType)
+                && TypeLayout.TryGetArrayElement(targetType, out var arrayElement)
+                && arrayElement.Key == "u8")
             {
-                throw new MwNotSupportedException(
-                    $"raw.hex/raw.bin 仅支持物化为 .array<u8>（当前目标 {targetType.Canonical}）: {scalar.Name}");
+                ArrayEmitter.MaterializeU8Array(session, builder, slots[target].Slot,
+                    DecodeRaw(scalar), scalar.Name);
+                return;
             }
-            ArrayEmitter.MaterializeU8Array(session, builder, slots[target].Slot,
-                DecodeRaw(scalar), scalar.Name);
+            if (TypeLayout.IsSpanLike(targetType)
+                && TypeLayout.TryGetContiguousElement(targetType, out var spanElement)
+                && spanElement.Key == "u8")
+            {
+                ArrayEmitter.MaterializeU8Span(session, builder, slots[target].Slot,
+                    targetType, DecodeRaw(scalar), scalar.Name);
+                return;
+            }
+            throw new MwNotSupportedException(
+                $"raw.hex/raw.bin 仅支持物化为字节缓冲区 .array<u8>/core::Span<u8>/core::SharedSpan<u8>（当前目标 {targetType.Canonical}）: {scalar.Name}");
         }
 
         private static byte[] DecodeRaw(BilScalarResource scalar)
@@ -86,18 +100,23 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return LLVMValueRef.CreateConstNull(TypeLayout.MapType(session.Context, targetType));
             }
+            // §19.2 集合资源（array/pair/map）与 §19.4/§19.5 表资源无 load
+            // 物化语义——VM LoadResource 同拒（"不支持的资源形态"），属规范
+            // 留白而非实现滞后；switch-table/catch-table 各经 switch/try
+            // 专用指令通道消费，本就不是可装载的值
             if (resource is not BilScalarResource scalar)
             {
                 throw new MwNotSupportedException(
-                    $"MW2 暂不支持资源形态（array/pair/map 随 MW4 对象系统、catch-table 随 MW9）: {resource.Name}");
+                    $"资源形态无 load 物化语义（§19.2 集合资源 VM 同拒；switch-table/catch-table 走 switch/try 专用通道）: {resource.Name}");
             }
             var context = session.Context;
             var text = scalar.LiteralText;
             switch (scalar.Type)
             {
+                // raw 已在 VisitCore 拦截分流（含非法目标受控拒绝），此臂不可达
                 case BilScalarType.RawHex or BilScalarType.RawBin:
                     throw new MwNotSupportedException(
-                        $"raw.hex/raw.bin 仅支持物化为 .array<u8>（当前目标 {targetType.Canonical}）: {resource.Name}");
+                        $"raw.hex/raw.bin 仅支持物化为字节缓冲区 .array<u8>/core::Span<u8>/core::SharedSpan<u8>（当前目标 {targetType.Canonical}）: {resource.Name}");
                 case BilScalarType.String:
                     return StringAbi.BuildConstant(session.Module, BilScalarLiteral.DecodeString(text), resource.Name);
                 case BilScalarType.Bool:
@@ -114,8 +133,10 @@ namespace RigiCompiler.Middleware.Emit
                     return LLVMValueRef.CreateConstRealOfStringAndSize(LLVMTypeRef.Float, text, (uint)text.Length);
                 case BilScalarType.F64:
                     return LLVMValueRef.CreateConstRealOfStringAndSize(LLVMTypeRef.Double, text, (uint)text.Length);
+                // BilScalarType 全枚举已覆盖（raw 提前分流），default 为
+                // 未来枚举扩展的防御性受控拒绝
                 default:
-                    throw new MwNotSupportedException($"MW1 不支持资源类型 {scalar.Type}: {resource.Name}");
+                    throw new MwNotSupportedException($"资源标量类型无物化语义 {scalar.Type}: {resource.Name}");
             }
         }
     }

@@ -9,7 +9,8 @@ namespace RigiCompiler.Middleware.Emit
     /// <summary>
     /// 块终结符发射（Emit 分面）：MirRet（含 entrypoint 的 i32 包装）/
     /// MirBranch/MirCondBranch/MirSwitch（常量表匹配，整数族/bool/char
-    /// selector 直对应 LLVM switch）/MirUnreachable。
+    /// selector 直对应 LLVM switch；f32/f64/String selector 降级为按表序
+    /// 相等比较链）/MirUnreachable。
     /// </summary>
     internal static class TerminatorEmitter
     {
@@ -77,7 +78,7 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // switch → LLVM switch 指令（整数族/bool/char selector 直接
-        // 对应；float/double/string 的非常量指令匹配待比较链降级）
+        // 对应；f32/f64/String selector 走比较链降级 EmitSwitchCompareChain）
         private static void EmitSwitch(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             Dictionary<string, LLVMBasicBlockRef> blockRefs, MirSwitch sw)
@@ -88,10 +89,15 @@ namespace RigiCompiler.Middleware.Emit
             var isChar = key == "char";
             var isSigned = key is "i8" or "i16" or "i32" or "i64";
             var isUnsigned = key is "u8" or "u16" or "u32" or "u64";
+            if (key is "float" or "double" or "String")
+            {
+                EmitSwitchCompareChain(session, builder, slots, blockRefs, sw, key == "String");
+                return;
+            }
             if (!isBool && !isChar && !isSigned && !isUnsigned)
             {
                 throw new MwNotSupportedException(
-                    $"MW3 switch 暂支持整数族/bool/char selector: {sw.Table.SelectorTypeRef}");
+                    $"MW3 switch 暂支持整数族/bool/char/f32/f64/String selector: {sw.Table.SelectorTypeRef}");
             }
             var llvmType = TypeLayout.MapType(session.Context, selectorType);
             var selector = session.LoadLocal(builder, slots, sw.Selector);
@@ -120,6 +126,57 @@ namespace RigiCompiler.Middleware.Emit
                         BilScalarLiteral.ParseUnsigned(text), false);
                 }
                 switchInst.AddCase(caseValue, blockRefs[sw.ItemTargets[i]]);
+            }
+        }
+
+        // f32/f64/String selector 的比较链降级（LLVM switch 仅支持整数）：
+        // 按表序逐元素 cmp.eq，首个命中项进对应 item、全不命中落 default
+        // ——与 VM §16.6 ValuesEqual 逐项同口径。float 走 OEQ：NaN 与任何
+        // 值不等（VM C# == 同口径）、-0.0 与 +0.0 相等；String 复用
+        // rigi_string_compare 三态 == 0 的按值相等（ScalarEmitter 同面）
+        private static void EmitSwitchCompareChain(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            Dictionary<string, LLVMBasicBlockRef> blockRefs, MirSwitch sw, bool isString)
+        {
+            var selector = session.LoadLocal(builder, slots, sw.Selector);
+            var defaultTarget = blockRefs[sw.DefaultTarget];
+            if (sw.ItemTargets.Count == 0)
+            {
+                // 空表：无项可比，直落 default（VM 同口径）
+                builder.BuildBr(defaultTarget);
+                return;
+            }
+            for (var i = 0; i < sw.ItemTargets.Count; i++)
+            {
+                var text = sw.Table.Elements[i];
+                LLVMValueRef condition;
+                if (isString)
+                {
+                    var caseValue = StringAbi.BuildConstant(session.Module,
+                        BilScalarLiteral.DecodeString(text), sw.Table.Name + "." + i);
+                    var cmp = CallEmitter.EmitStringCompareCall(session, builder, selector, caseValue);
+                    condition = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, cmp,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false), "sw.seq");
+                }
+                else
+                {
+                    var caseValue = LLVMValueRef.CreateConstRealOfStringAndSize(
+                        selector.TypeOf, text, (uint)text.Length);
+                    condition = builder.BuildFCmp(LLVMRealPredicate.LLVMRealOEQ, selector,
+                        caseValue, "sw.feq");
+                }
+                LLVMBasicBlockRef next = default;
+                if (i + 1 < sw.ItemTargets.Count)
+                {
+                    next = session.CurrentFunction.AppendBasicBlock("sw.chain." + i);
+                }
+                builder.BuildCondBr(condition, blockRefs[sw.ItemTargets[i]],
+                    i + 1 < sw.ItemTargets.Count ? next : defaultTarget);
+                if (i + 1 < sw.ItemTargets.Count)
+                {
+                    builder.PositionAtEnd(next);
+                }
             }
         }
     }

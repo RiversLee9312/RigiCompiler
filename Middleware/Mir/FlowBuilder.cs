@@ -168,7 +168,40 @@ namespace RigiCompiler.Middleware.Mir
                     MirBuilder.ResolveSuperCall(_context, _fnSymbol, ArgTypes(args)),
                     args, result, excTarget);
             }
-            return new MirCall(ResolveTarget(symbol), args, result, excTarget);
+            var target = ResolveTarget(symbol);
+            return new MirCall(target, args, result, excTarget,
+                hostConstructedRef: ResolveValueHostTypeRef(target, args));
+        }
+
+        // G1：泛型值类型宿主的实例方法调用——类级 typeid 随实参直传
+        //（值类型无对象头隐藏槽，与 class「被调方自取」对偶），构造形态
+        // 由接收者静态类型给出；frontend 的擦除 cast（构造 → 裸模板）经
+        // _erasedValueHosts 回溯。静态方法无类级 typeid（SYNTAX §9.2.3），
+        // 发射侧按 fn 实参表定是否需要，此处仅尽力附上构造 ref
+        private string? ResolveValueHostTypeRef(MwMemberSymbol target, List<MirOperand> args)
+        {
+            var owner = target.Owner;
+            if (!GenericAbi.IsValueTypeOwner(owner)
+                || owner!.Declaration.GenericParameters.Count == 0
+                // 静态成员无 .this 接收者、无类级 typeid 实参（§9.2.3）
+                || target.Canonical.Contains("$.static.", System.StringComparison.Ordinal)
+                || args.Count == 0 || args[0] is not MirLocalOperand receiver)
+            {
+                return null;
+            }
+            var receiverType = TypeOf(receiver.Name).Canonical;
+            if (ConstructedTypeCollector.IsConstructed(receiverType)
+                && BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(receiverType)) == owner.Canonical)
+            {
+                return MwTypeKey.Normalize(receiverType);
+            }
+            if (receiverType == owner.Canonical
+                && TryResolveErasedValueHost(receiver.Name, out var erased))
+            {
+                return erased;
+            }
+            return null;
         }
 
         private static string RedirectBuiltinToString(string symbol) => symbol switch
@@ -181,12 +214,11 @@ namespace RigiCompiler.Middleware.Mir
         internal (MwTypeSymbol Type, MwCaseSymbol Case) ResolveCase(string typeRef,
             string qualifiedName)
         {
+            // G1：构造 enum（Choice<i32>.Some(...)）具化支持——VM NewCase
+            // 经 ResolveTypeRef 具体化同语义；宿主解析到模板，构造身份
+            // 由目标局部静态类型携带（Emit 侧代入类级 typeid）
             var type = _context.Symbols.FindTypeByRef(typeRef)
                 ?? throw new MwNotSupportedException($"MW4 enum 类型不可解析: {typeRef}");
-            if (ConstructedTypeCollector.IsConstructed(typeRef))
-            {
-                throw new MwNotSupportedException($"MW5 暂不支持泛型值类型构造: {typeRef}");
-            }
             if (type.Declaration.Kind != BilTypeKind.EnumStruct)
             {
                 throw new MwNotSupportedException($"MW4 new.case/type.is.case 仅限 enum struct: {typeRef}");
@@ -221,7 +253,7 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         internal bool IsUserValueType(MirType type) =>
-            _context.Symbols.FindType(type.Canonical) is { Declaration.Kind:
+            _context.Symbols.FindTypeByRef(type.Canonical) is { Declaration.Kind:
                 BilTypeKind.Struct or BilTypeKind.EnumStruct };
 
         internal bool IsBoxableValueType(MirType type)
@@ -230,7 +262,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 return true;
             }
-            return _context.Symbols.FindType(type.Canonical) is { Declaration.Kind:
+            return _context.Symbols.FindTypeByRef(type.Canonical) is { Declaration.Kind:
                 BilTypeKind.Struct or BilTypeKind.EnumStruct };
         }
 
@@ -255,6 +287,70 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         internal MirLocalOperand Local(BilVariableOperand operand) => new(operand.Name);
+
+        // ===== 静态 id 追踪（L1：get.wrapper.indirect / field.indirect 族）=====
+        // getid.type / getid.field 的产物局部 → 静态 typeref / 字段符号；
+        // 经 set.var/get.var 拷贝传播（未追踪源覆盖 = 撤登记，保守对齐
+        // verifier FieldIdOf 的「不可静态解则不算」口径）。不做跨块流敏感
+        // 合并——与 verifier 直线路径先例同覆盖；静态不可解析的 indirect
+        // 使用点在 lowering 受控拒绝（native 无运行期 wrapper 槽/字段偏移
+        // 查找面，编译期拒绝是 VM 运行期解析的保守超集）
+        private readonly Dictionary<string, string> _typeIdRefs = new(System.StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _fieldIdSymbols = new(System.StringComparer.Ordinal);
+
+        // G1：泛型值类型方法接收者的构造形态追踪——frontend 对泛型值类型
+        // 方法调用接收者先发「构造 → 裸模板」的擦除 cast（BIL invoke 接收者
+        // 静态类型须为模板），类级 typeid 合成需回溯构造实参；随
+        // set.var/get.var 拷贝传播（同上行 id 追踪口径），未追踪即 null，
+        // 发射侧退 .generic.* 局部兜底/受控拒绝
+        private readonly Dictionary<string, string> _erasedValueHosts = new(System.StringComparer.Ordinal);
+
+        internal void NoteErasedValueHost(string name, string constructedRef) =>
+            _erasedValueHosts[name] = constructedRef;
+
+        internal bool TryResolveErasedValueHost(string name, out string constructedRef) =>
+            _erasedValueHosts.TryGetValue(name, out constructedRef!);
+
+        internal void NoteTypeId(string name, string typeRef) => _typeIdRefs[name] = typeRef;
+
+        internal void NoteFieldId(string name, string symbol) => _fieldIdSymbols[name] = symbol;
+
+        internal bool TryResolveTypeIdRef(string name, out string typeRef) =>
+            _typeIdRefs.TryGetValue(name, out typeRef!);
+
+        internal bool TryResolveFieldIdSymbol(string name, out string symbol) =>
+            _fieldIdSymbols.TryGetValue(name, out symbol!);
+
+        // set.var/get.var 拷贝传播：源已追踪 → 目标继承；源未追踪 → 目标
+        // 撤登记（覆盖写语义）。.typeid/.fieldid 槽的唯一生产者是
+        // getid.* 与拷贝，其余写形态不出现在 indirect 族合法模块内
+        internal void PropagateIdCopy(string sourceName, string targetName)
+        {
+            if (_typeIdRefs.TryGetValue(sourceName, out var typeRef))
+            {
+                _typeIdRefs[targetName] = typeRef;
+            }
+            else
+            {
+                _typeIdRefs.Remove(targetName);
+            }
+            if (_fieldIdSymbols.TryGetValue(sourceName, out var symbol))
+            {
+                _fieldIdSymbols[targetName] = symbol;
+            }
+            else
+            {
+                _fieldIdSymbols.Remove(targetName);
+            }
+            if (_erasedValueHosts.TryGetValue(sourceName, out var constructedRef))
+            {
+                _erasedValueHosts[targetName] = constructedRef;
+            }
+            else
+            {
+                _erasedValueHosts.Remove(targetName);
+            }
+        }
 
         internal MwMemberSymbol ResolveTarget(string symbol)
         {

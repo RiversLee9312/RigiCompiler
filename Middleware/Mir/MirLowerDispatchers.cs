@@ -72,6 +72,18 @@ namespace RigiCompiler.Middleware.Mir
                 case GetFieldInstruction getField:
                     GetFieldLowering.Visit(getField, flow);
                     break;
+                case GetFieldIndirectInstruction getFieldIndirect:
+                    GetFieldIndirectLowering.Visit(getFieldIndirect, flow);
+                    break;
+                case SetFieldIndirectInstruction setFieldIndirect:
+                    SetFieldIndirectLowering.Visit(setFieldIndirect, flow);
+                    break;
+                case GetFieldStaticIndirectInstruction getStaticIndirect:
+                    GetFieldStaticIndirectLowering.Visit(getStaticIndirect, flow);
+                    break;
+                case SetFieldStaticIndirectInstruction setStaticIndirect:
+                    SetFieldStaticIndirectLowering.Visit(setStaticIndirect, flow);
+                    break;
                 case SetFieldInstruction setField:
                     SetFieldLowering.Visit(setField, flow);
                     break;
@@ -90,6 +102,9 @@ namespace RigiCompiler.Middleware.Mir
                 case GetIdTypeInstruction getIdType:
                     GetIdTypeLowering.Visit(getIdType, flow);
                     break;
+                case GetIdFieldInstruction getIdField:
+                    GetIdFieldLowering.Visit(getIdField, flow);
+                    break;
                 case GetIdVarInstruction getIdVar:
                     GetIdVarLowering.Visit(getIdVar, flow);
                     break;
@@ -101,6 +116,9 @@ namespace RigiCompiler.Middleware.Mir
                     break;
                 case GetWrapperInstruction getWrapper:
                     GetWrapperLowering.Visit(getWrapper, flow);
+                    break;
+                case GetWrapperIndirectInstruction getWrapperIndirect:
+                    GetWrapperIndirectLowering.Visit(getWrapperIndirect, flow);
                     break;
                 case GetSelfInstruction getSelf:
                     GetSelfLowering.Visit(getSelf, flow);
@@ -132,11 +150,17 @@ namespace RigiCompiler.Middleware.Mir
                 case NewCaseInstruction newCase:
                     NewCaseLowering.Visit(newCase, flow);
                     break;
+                case NewWrappedCaseInstruction newWrappedCase:
+                    NewWrappedCaseLowering.Visit(newWrappedCase, flow);
+                    break;
                 case IsCaseInstruction isCase:
                     IsCaseLowering.Visit(isCase, flow);
                     break;
                 case CastInstruction cast:
                     CastLowering.Visit(cast, flow);
+                    break;
+                case CastIndirectInstruction castIndirect:
+                    CastIndirectLowering.Visit(castIndirect, flow);
                     break;
                 case AwaitInstruction awaitInst:
                     AwaitLowering.Visit(awaitInst, flow);

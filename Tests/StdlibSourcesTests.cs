@@ -425,14 +425,16 @@ namespace RigiCompiler.Tests
             // MW11c 顶层：namespace + 15 类型（Task/Task\<TReturn\> +
             // TaskState + Executor 族 4 + PollingAlarm/EventAlarm/
             // SleepAlarm + Mutex + Timer + CoroutineLocal + I64Queue/
-            // Dispatcher）+ laneOfExecutor 助手 + 29 个 rigi_ native
-            // 原语 + sleep Rigi 包装（共 47 个声明）。棒5a：删
+            // Dispatcher）+ laneOfExecutor 助手 + 31 个 rigi_ native
+            // 原语 + sleep Rigi 包装（共 49 个声明）。棒5a：删
             // make_sleep_alarm；增 SleepAlarm/laneOfExecutor 与句柄
             // lane/current、alarm_wait、poll_*、failure_record/drop；
-            // 其后增 coro_local_push/pop/get/inherit（§20.2）
-            TestHarness.CheckTrue("顶层恰好 47 个声明（namespace + 15 类型 + 31 func）",
-                root.Declarations.Count == 47, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 47) { TestHarness.Blank(); return; }
+            // 其后增 coro_local_push/pop/get/inherit（§20.2）；
+            // L8 增 event_create_sticky/event_signal（用户 EventAlarm
+            // 默认底座两面，§19.3）
+            TestHarness.CheckTrue("顶层恰好 49 个声明（namespace + 15 类型 + 33 func）",
+                root.Declarations.Count == 49, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 49) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.coroutine",
@@ -486,10 +488,14 @@ namespace RigiCompiler.Tests
                 && ready.Name == "isReady"
                 && ready.Modifiers.Contains(Keywords.ABSTRACT)
                 && ready.Body == null);
-            TestHarness.CheckTrue("声明[9] 是 EventAlarm（abstract）",
+            TestHarness.CheckTrue("声明[9] 是 EventAlarm（abstract，L8 增 ensureHandle/signal 底座面）",
                 root.Declarations[9] is ClassDeclarationASTNode eventAlarm
                 && eventAlarm.ClassName == "EventAlarm"
-                && eventAlarm.Modifiers.Contains(Keywords.ABSTRACT));
+                && eventAlarm.Modifiers.Contains(Keywords.ABSTRACT)
+                && eventAlarm.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "ensureHandle")
+                && eventAlarm.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "signal"));
             TestHarness.CheckTrue("声明[10] 是 SleepAlarm : EventAlarm（priv shared）",
                 root.Declarations[10] is ClassDeclarationASTNode sleepAlarm
                 && sleepAlarm.ClassName == "SleepAlarm"
@@ -549,10 +555,10 @@ namespace RigiCompiler.Tests
                 && laneOf.Modifiers.Contains(Keywords.PRIV)
                 && laneOf.Body != null);
 
-            // 声明[17..45]：§17.4 native 原语面（rigi_ 前缀，priv native；
+            // 声明[17..47]：§17.4 native 原语面（rigi_ 前缀，priv native；
             // 棒5a 增 coroutine_current/lane、alarm_wait、poll_*、
             // failure_record/drop；make_sleep_alarm 已删；其后增
-            // coro_local_* 四面）
+            // coro_local_* 四面；L8 增 event_create_sticky/event_signal）
             string[] expectedNatives = {
                 "rigi_worker_create", "rigi_worker_destroy", "rigi_worker_enqueue",
                 "rigi_worker_park", "rigi_coroutine_create", "rigi_coroutine_resume",
@@ -562,6 +568,7 @@ namespace RigiCompiler.Tests
                 "rigi_tls_current_context", "rigi_time_now",
                 "rigi_coroutine_current", "rigi_coroutine_get_lane",
                 "rigi_coroutine_set_lane", "rigi_alarm_wait",
+                "rigi_event_create_sticky", "rigi_event_signal",
                 "rigi_poll_arm", "rigi_poll_pending", "rigi_poll_schedule",
                 "rigi_poll_clear", "rigi_failure_record", "rigi_failure_drop",
                 "rigi_coro_local_push", "rigi_coro_local_pop",
@@ -584,8 +591,8 @@ namespace RigiCompiler.Tests
                         false, root.Declarations[index].GetType().Name);
                 }
             }
-            TestHarness.CheckTrue("声明[46] 是 sleep Rigi 包装（非 native，有体）",
-                root.Declarations[46] is CallableDeclarationASTNode sleep
+            TestHarness.CheckTrue("声明[48] 是 sleep Rigi 包装（非 native，有体）",
+                root.Declarations[48] is CallableDeclarationASTNode sleep
                 && sleep.Name == "sleep"
                 && !sleep.Modifiers.Contains(Keywords.NATIVE)
                 && sleep.Body != null
@@ -877,9 +884,10 @@ namespace RigiCompiler.Tests
                     .Any(e => e.EnumName == "QueueHandleType" && e.Cases.Count == 3
                         && e.Cases.Select(c => c.CaseName).SequenceEqual(
                             new[] { "Reader", "Owner", "Sender" })));
-            // MW11d-C：QueueHandle/QueueItem 落地为 shared class——native 尚不
-            // 支持泛型值类型构造（Middleware CallVisitors/FlowBuilder 的 MW5
-            // 受控拒绝）；capability 语义由 id 承载，与对象身份无关
+            // MW11d-C：QueueHandle/QueueItem 落地为 shared class——设计
+            // 定型于 native 尚无泛型值类型构造的时期（G1 已补齐该能力，
+            // 见 Middleware GenericAbi/ConstructedLayout）；capability
+            // 语义由 id 承载，与对象身份无关，维持 class 形态不变
             TestHarness.CheckTrue("含 QueueHandle / QueueItem class",
                 root.Declarations.OfType<ClassDeclarationASTNode>()
                     .Any(s => s.ClassName == "QueueHandle")

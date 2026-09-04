@@ -286,5 +286,34 @@ namespace RigiCompiler.Tests
             CheckOk("with Serializable 泛型 clone/deepCopy", result);
             CheckI32("泛型 clone main 返回 42", result, 42);
         }
+
+        // @SerializationBase 隐含 @Serializable：core.serialization 内 base-only
+        // 类 deepCopy 往返（main 经 @EntryPoint 从同命名空间选为入口）
+        private static void TestSerializationBaseImpliesSerializable()
+        {
+            var result = Run(
+                "namespace core.serialization\n" +
+                "@SerializationBase\n" +
+                "pub class BaseOnly {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub var s: String = \"\"\n" +
+                "    pub init(_ -> n, _ -> s)\n" +
+                "}\n" +
+                "@EntryPoint\n" +
+                "pub func main(): i32 {\n" +
+                "    var src = new BaseOnly(7, \"hi\")\n" +
+                "    var copy = deepCopy\\<BaseOnly>(src)\n" +
+                "    src.n = 9\n" +
+                "    src.s = \"bye\"\n" +
+                "    if ((copy.n == 7) and (copy.s == \"hi\")) {\n" +
+                "        if ((src.n == 9) and (src.s == \"bye\")) {\n" +
+                "            return 42\n" +
+                "        }\n" +
+                "    }\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("@SerializationBase 隐含 Serializable deepCopy 往返", result);
+            CheckI32("base-only deepCopy main 返回 42", result, 42);
+        }
     }
 }

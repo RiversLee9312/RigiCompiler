@@ -106,13 +106,12 @@ namespace RigiCompiler.Middleware.Mir
             }
             var template = flow.Context.Symbols.FindTypeByRef(typeRef)
                 ?? throw new MwNotSupportedException($"MW4 new 的类型不可解析: {typeRef}");
+            // G2：构造类型形态边界——class 与值类型（struct/enum，G1）具化
+            // 支持；interface/wrapper 的 new 语言层非法（frontend P3 拒绝），
+            // 仅手写 BIL 可达，保留受控拒绝
             if (ConstructedTypeCollector.IsConstructed(typeRef)
-                && template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
-            {
-                throw new MwNotSupportedException($"MW5 暂不支持泛型值类型构造: {typeRef}");
-            }
-            if (ConstructedTypeCollector.IsConstructed(typeRef)
-                && template.Declaration.Kind != BilTypeKind.Class)
+                && template.Declaration.Kind is not (BilTypeKind.Class
+                    or BilTypeKind.Struct or BilTypeKind.EnumStruct))
             {
                 throw new MwNotSupportedException($"MW5 暂不支持的构造类型形态: {typeRef}");
             }
@@ -157,6 +156,14 @@ namespace RigiCompiler.Middleware.Mir
             var sheetCanonical = GenericAbi.IsClosedConstructed(typeRef)
                 ? MwTypeKey.Normalize(typeRef)
                 : template.Canonical;
+            // G1 值类型：开放构造不坍缩到模板 canonical——值类型无 alloc
+            // sheet 消费，保留原 ref 供类级 typeid 代入（外层泛型占位名
+            // 可与模板参数名不同，坍缩后 substitution 丢失实参名）
+            if (template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct
+                && ConstructedTypeCollector.IsConstructed(typeRef))
+            {
+                sheetCanonical = MwTypeKey.Normalize(typeRef);
+            }
             var type = sheetCanonical == template.Canonical
                 ? template
                 : new MwTypeSymbol(sheetCanonical, template);
@@ -195,24 +202,68 @@ namespace RigiCompiler.Middleware.Mir
         protected override void VisitCore(NewCaseInstruction inst, FlowBuilder flow)
         {
             flow.EnsureOpen();
-            var (type, caseSymbol) = flow.ResolveCase(inst.Type.TypeRef, inst.Case.QualifiedName);
+            EmitNewCase(flow, inst.Type.TypeRef, inst.Case.QualifiedName, inst.Arguments,
+                wrapperArguments: null, inst.Target.Name);
+        }
+
+        // new.case / new.wrapped.case 共用的 case 构造翻译（L1 抽出）：
+        // wrapperArguments 非空 = §14.4.2 形态——按 wrapper 实参个数匹配
+        // 有参 ..init.wrapper（VM PushConstructorTail 的
+        // TryFindInitWrapper + 实参个数校验同口径），无匹配受控拒绝
+        //（VM 运行期「类型没有 ..init.wrapper / 实参个数不匹配」同形
+        // 异常；native 编译期拒绝，同 new.case init 失配先例）
+        internal static void EmitNewCase(FlowBuilder flow, string typeRef,
+            string caseQualifiedName, IReadOnlyList<BilVariableOperand> caseArguments,
+            IReadOnlyList<BilVariableOperand>? wrapperArguments, string target)
+        {
+            var (type, caseSymbol) = flow.ResolveCase(typeRef, caseQualifiedName);
             MwMemberSymbol? init = null;
             try
             {
+                // G1：构造 enum 的 init 匹配代入构造实参（同 new 路径口径）
                 init = MirBuilder.ResolveInit(flow.Context.Symbols, type,
-                    flow.ArgTypes(inst.Arguments), skipReceiver: 0);
+                    flow.ArgTypes(caseArguments), skipReceiver: 0,
+                    constructedTypeRef: typeRef);
             }
-            catch (MwNotSupportedException) when (inst.Arguments.Count == 0)
+            catch (MwNotSupportedException) when (caseArguments.Count == 0)
             {
                 // 无 init 声明 + 零实参：仅写判别（VM NewCase 同口径）
             }
-            if (init == null && inst.Arguments.Count > 0)
+            if (init == null && caseArguments.Count > 0)
             {
                 throw new MwNotSupportedException(
-                    $"new.case 实参不匹配任何 init: {inst.Type.TypeRef}（VM 运行期同形异常）");
+                    $"new.case 实参不匹配任何 init: {typeRef}（VM 运行期同形异常）");
             }
-            flow.Add(new MirNewCase(caseSymbol, init,
-                FlowBuilder.Locals(inst.Arguments), inst.Target.Name));
+            MwMemberSymbol? initWrapper = null;
+            if (wrapperArguments != null)
+            {
+                initWrapper = MirBuilder.FindInitWrapper(flow.Context.Symbols, type,
+                    wrapperArguments.Count);
+                if (initWrapper == null && wrapperArguments.Count > 0)
+                {
+                    throw new MwNotSupportedException(
+                        $"new.wrapped.case 无匹配 {wrapperArguments.Count} 参 "
+                        + $"..init.wrapper: {typeRef}（VM 运行期同形异常）");
+                }
+            }
+            flow.Add(new MirNewCase(caseSymbol, init, FlowBuilder.Locals(caseArguments),
+                target, initWrapper,
+                wrapperArguments == null
+                    ? null
+                    : (IReadOnlyList<MirOperand>)FlowBuilder.Locals(wrapperArguments)));
+        }
+    }
+
+    // new.wrapped.case type(E) case(E.C) TARGET [WRAPPER_ARGS] [CASE_ARGS]
+    //（§14.4.2，L1）：有参 ..init.wrapper 的 enum case 构造
+    internal sealed class NewWrappedCaseLowering
+        : MirLowerVisitor<NewWrappedCaseLowering, NewWrappedCaseInstruction>
+    {
+        protected override void VisitCore(NewWrappedCaseInstruction inst, FlowBuilder flow)
+        {
+            flow.EnsureOpen();
+            NewCaseLowering.EmitNewCase(flow, inst.Type.TypeRef, inst.Case.QualifiedName,
+                inst.CaseArguments, inst.WrapperArguments, inst.Target.Name);
         }
     }
 }

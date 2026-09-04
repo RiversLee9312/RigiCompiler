@@ -115,6 +115,13 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => ctx.Dispatch.TimerCancel(args));
             hooks.Register("rigi_rt", "timer_destroy",
                 (ctx, args) => ctx.Dispatch.TimerDestroy(args));
+            // L8：用户 EventAlarm 直继子类默认底座两面（stdlib
+            // EventAlarm.ensureHandle/signal 的 native 声明；rigi_rt
+            // worker.c 手动事件粘滞形态镜像，§19.3）
+            hooks.Register("rigi_rt", "event_create_sticky",
+                (ctx, args) => ctx.Dispatch.EventCreateSticky(args));
+            hooks.Register("rigi_rt", "event_signal",
+                (ctx, args) => ctx.Dispatch.EventSignal(args));
             // MW11d-C MessageQueue 传输层（rigi_rt/message.c 同语义镜像）
             hooks.Register("rigi_rt", "mq_create",
                 (ctx, args) => ctx.Dispatch.MqCreate(args));

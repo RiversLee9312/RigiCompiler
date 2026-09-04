@@ -47,6 +47,13 @@ namespace RigiCompiler.Middleware.Mir
         // 直调）；RcInjection 传播垫尾分叉（releases + ret -1，pending
         // 保持置位由恢复块失败尾取走）与 alarm 参数借用约定的识别标记
         public bool IsPollProbe { get; }
+        // B-1（非 async 挂起点栈式跨界）：tainted 普通 fn 的 resume
+        // 状态机 fn（CoroutineSplitPass 合成）——与 async resume 共用
+        // i32(ptr) C ABI 与 frame 借用约定，但 frame 所有权归调用方
+        //（不经 MirCoroutineCreate move），DONE 出口不做最终 release；
+        // 传播垫尾 = release 配平 + ret FAILED（pending 保持置位沿
+        // 调用链上传），无 Task 终态序列
+        public bool IsPlainResume { get; }
 
         private readonly List<MirLocal> _locals;
         private readonly Dictionary<string, MirLocal> _localMap;
@@ -55,7 +62,7 @@ namespace RigiCompiler.Middleware.Mir
             IReadOnlyList<MirLocal> parameters, IReadOnlyList<MirLocal> locals,
             IReadOnlyList<MirBlock> blocks, bool isEntrypoint,
             bool isAsync = false, bool isCoroutineResume = false,
-            bool isPollProbe = false)
+            bool isPollProbe = false, bool isPlainResume = false)
         {
             Symbol = symbol;
             ReturnType = returnType;
@@ -66,6 +73,7 @@ namespace RigiCompiler.Middleware.Mir
             IsAsync = isAsync;
             IsCoroutineResume = isCoroutineResume;
             IsPollProbe = isPollProbe;
+            IsPlainResume = isPlainResume;
             _localMap = new Dictionary<string, MirLocal>(System.StringComparer.Ordinal);
             foreach (var local in _locals)
             {

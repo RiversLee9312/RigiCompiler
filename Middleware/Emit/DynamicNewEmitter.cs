@@ -571,7 +571,7 @@ namespace RigiCompiler.Middleware.Emit
                 // sret：在 out 指针上完成零初始化 → wrapper → init
                 var slot = thunk.Fn.GetParam(0);
                 slot.Name = "out";
-                NewEmitter.EmitInitValueOnSlot(session, builder, slot,
+                NewEmitter.EmitInitValueOnSlot(session, builder, emptySlots, slot,
                     plan.Symbol.Canonical, init.Wrapper, init.Member, userArgs);
                 builder.BuildRetVoid();
                 return;

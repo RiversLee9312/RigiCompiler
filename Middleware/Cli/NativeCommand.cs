@@ -89,6 +89,24 @@ namespace RigiCompiler.Middleware.Cli
     }
 
     /// <summary>
+    /// native --link：非 rigi_rt native 库（RUNTIME §26 库解析留白，L6 定稿）
+    /// 的额外链接输入——目标文件 / 静态库 / 导入库 / 共享库全路径，逐条原样
+    /// 追加到 clang 链接行（.o/.obj/.a/.lib/.so 双平台同形态；win 的 .dll
+    /// 经其导入库 .lib 链入）。仅随 --out 生效。
+    /// </summary>
+    public class NativeLinkOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--link",
+            Description = "追加非 rigi_rt native 库的链接输入（目标文件/静态库/导入库/共享库路径，可多条）",
+            ArgsHint = "<路径...>",
+            MinArgs = 1,
+            MaxArgs = int.MaxValue,
+        };
+    }
+
+    /// <summary>
     /// native：Middleware 驱动（MIDDLEWARE_ARCHITECTURE §11 Cli/）——BIL 文本经
     /// Gate 门禁 → MwContext（符号表 + MIR）→ 进程内 LLVM 管线（模块构建 →
     /// rigi_rt bitcode 合并 → 优化 → .o）→ clang 驱动 lld 链接可执行文件。
@@ -109,6 +127,7 @@ namespace RigiCompiler.Middleware.Cli
             new NativeEmitLlOption(),
             new NativeToolchainOption(),
             new NativeLibuvDirOption(),
+            new NativeLinkOption(),
             new VerboseOption(),
             new LogToOption(),
         };
@@ -171,7 +190,8 @@ namespace RigiCompiler.Middleware.Cli
             try
             {
                 return EmitAndLink(gate.Module!, outPath, emitObjPath, emitLlPath,
-                    result.Get("--toolchain")?[0], result.Get("--libuv-dir")?[0]);
+                    result.Get("--toolchain")?[0], result.Get("--libuv-dir")?[0],
+                    result.Get("--link"));
             }
             catch (MwNotSupportedException ex)
             {
@@ -182,8 +202,21 @@ namespace RigiCompiler.Middleware.Cli
 
         private static int EmitAndLink(Bil.BilModule module, string? outPath,
             string? emitObjPath, string? emitLlPath, string? toolchainDir,
-            string? libuvDir)
+            string? libuvDir, IReadOnlyList<string>? linkInputs)
         {
+            // --link 输入先验存在（L6：非 rigi_rt 库链接；仅随 --out 消费，
+            // 但早失败优于链接期 lld 报错）
+            if (linkInputs != null)
+            {
+                foreach (var input in linkInputs)
+                {
+                    if (!File.Exists(input))
+                    {
+                        Console.Error.WriteLine($"--link 链接输入不存在: {input}");
+                        return 2;
+                    }
+                }
+            }
             var context = new MwContext(module);
             MwPipeline.CreateDefault().Run(context);
             var mir = context.Mir!;
@@ -270,6 +303,12 @@ namespace RigiCompiler.Middleware.Cli
                 // libuv 命中时追加静态库全路径 + 平台系统库（win 九个 /
                 // linux pthread+dl，见 LibuvResolver.SystemLibraryArgs）
                 var linkArgs = new List<string> { tempObject, "-o", outPath, "-fuse-ld=lld" };
+                // L6：用户 native 库链接输入紧随主目标文件（lld 按序解析，
+                // 外部符号在主目标之后满足）
+                if (linkInputs != null)
+                {
+                    linkArgs.AddRange(linkInputs);
+                }
                 if (libuv != null)
                 {
                     linkArgs.Add(libuv.StaticLibPath);

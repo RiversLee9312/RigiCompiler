@@ -48,8 +48,8 @@ namespace RigiCompiler.Middleware.Emit
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
-            CallEmitter.StoreScalarResult(session, builder, slots,
-                MirType.Of(signature.ReturnTypeRef), abstractResult, call.Result);
+            CallEmitter.StoreCoercedResult(session, builder, slots,
+                MirType.Of(signature.ReturnTypeRef), abstractResult, call.Result, call.ExcTarget);
         }
 
         // interface 调用：rigi_imap_entry(obj, @typesheet.Iface, slot) 查
@@ -60,7 +60,7 @@ namespace RigiCompiler.Middleware.Emit
             MirCall call, MwMemberSymbol target)
         {
             var slot = InterfaceSlotOf(session, target);
-            var ifaceSheet = InterfaceSheetOf(session, target, slots, call.Args[0]);
+            var ifaceSheet = InterfaceSheetOf(session, target);
             var signature = CanonicalSignature.Parse(target.Canonical);
             var fnType = MethodFunctionTypeOf(session, target, signature);
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
@@ -74,8 +74,8 @@ namespace RigiCompiler.Middleware.Emit
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
-            CallEmitter.StoreScalarResult(session, builder, slots,
-                MirType.Of(signature.ReturnTypeRef), callResult, call.Result);
+            CallEmitter.StoreCoercedResult(session, builder, slots,
+                MirType.Of(signature.ReturnTypeRef), callResult, call.Result, call.ExcTarget);
         }
 
         // callable 协议：对 CallTarget 虚调用 $$call（实参列表不含 receiver，此处补上）
@@ -116,7 +116,7 @@ namespace RigiCompiler.Middleware.Emit
             LLVMValueRef entry;
             if (owner.Declaration.Kind == BilTypeKind.Interface)
             {
-                var ifaceSheet = InterfaceSheetOf(session, callOperator, slots, inst.CallTarget);
+                var ifaceSheet = InterfaceSheetOf(session, callOperator);
                 entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
                     new[] { ObjectPointer(session, builder, slots, inst.CallTarget), ifaceSheet,
                             LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
@@ -135,8 +135,8 @@ namespace RigiCompiler.Middleware.Emit
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
-            CallEmitter.StoreScalarResult(session, builder, slots,
-                MirType.Of(signature.ReturnTypeRef), callResult, inst.Result);
+            CallEmitter.StoreCoercedResult(session, builder, slots,
+                MirType.Of(signature.ReturnTypeRef), callResult, inst.Result, inst.ExcTarget);
         }
 
         // 接收者胖引用 → 对象指针（payload 段）
@@ -192,35 +192,12 @@ namespace RigiCompiler.Middleware.Emit
             throw new CompilerInternalException($"虚槽缺失: {target.Canonical}");
         }
 
-        // 接口 TypeSheet：构造接口用具化空壳（与 iMap 键同地址）；否则本类
+        // 接口 TypeSheet：恒取模板键 sheet。iMap 每个接口段都补模板
+        // 别名键（VTablePlanner.AppendInterfaceSegment），构造对象与泛型
+        // 空壳对象按模板键全称命中；具化空壳 sheet 与模板空壳 sheet 不同
+        // 地址，rigi_imap_entry 按裸指针相等查表会永不命中
         private static LLVMValueRef InterfaceSheetOf(ModuleBuilder.Session session,
-            MwMemberSymbol target, Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            MirOperand receiver)
-        {
-            var owner = target.Owner!;
-            if (receiver is MirLocalOperand local)
-            {
-                var recv = MwTypeKey.Normalize(slots[local.Name].Local.Type.Canonical);
-                if (session.TryGetTypeSheet(recv, out var sheet)
-                    && session.Symbols.FindTypeByRef(recv) == owner)
-                {
-                    return sheet;
-                }
-                var plan = session.Layout?.Find(recv);
-                if (plan != null)
-                {
-                    foreach (var (iface, _) in plan.IMap)
-                    {
-                        if ((iface == owner.Canonical || session.Symbols.FindTypeByRef(iface) == owner)
-                            && session.TryGetTypeSheet(iface, out sheet))
-                        {
-                            return sheet;
-                        }
-                    }
-                }
-            }
-            return session.TypeSheetFor(owner.Canonical);
-        }
+            MwMemberSymbol target) => session.TypeSheetFor(target.Owner!.Canonical);
 
         // 接口内槽序（接口计划的 VTableSlots = 接口虚成员序）
         private static int InterfaceSlotOf(ModuleBuilder.Session session, MwMemberSymbol target)

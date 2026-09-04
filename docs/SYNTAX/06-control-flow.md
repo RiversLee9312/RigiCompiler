@@ -197,7 +197,7 @@ pub func isReady(): bool
 
 执行 `yield pollingAlarm` 后，当前协程挂起。每当 Executor 再次给该等待任务一次调度机会时，运行时调用一次 `isReady()`：返回 `false` 时继续等待，返回 `true` 时才恢复 `yield` 后的代码。`isReady()` 必须同步、线程安全且不得阻塞或挂起。
 
-`core.coroutine.EventAlarm` 由事件源通过 callback 通知 Executor。执行 `yield eventAlarm` 后，协程保持挂起，直到 EventAlarm 发出通知；callback 只负责把协程重新发布到原 Executor，不直接执行用户代码。
+`core.coroutine.EventAlarm` 由事件源通过 callback 通知 Executor。执行 `yield eventAlarm` 后，协程保持挂起，直到 EventAlarm 发出通知；callback 只负责把协程重新发布到原 Executor，不直接执行用户代码。用户自定义 EventAlarm 子类无自有事件源时由运行时提供默认底座，子类经 `protected signal()` 触发通知（粘滞、重复触发幂等，`RUNTIME.md` §19.3）。
 
 标准睡眠函数为：
 

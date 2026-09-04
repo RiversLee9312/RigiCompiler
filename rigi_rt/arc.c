@@ -135,7 +135,12 @@ static void rigi_value_walk(void *ptr, const RigiTypeSheet *sheet, bool is_acqui
             uint64_t payload = *(const uint64_t *)(base + cursor + 8);
             if (is_acquire)
             {
-                (void)rigi_ref_acquire(type_id, payload);
+                uint64_t new_payload = rigi_ref_acquire(type_id, payload);
+                /* tag1 克隆语义（unique 裸块深拷贝）产生新块指针——嵌入槽
+                 * 必须回写新 payload，否则 memcpy 副本与原值共持同一块，
+                 * 双侧 release 即双释放/UAF（tag0/tag2 返回值不变，回写
+                 * 无害）。release 走查只读，无回写。 */
+                *(uint64_t *)(void *)(base + cursor + 8) = new_payload;
             }
             else
             {

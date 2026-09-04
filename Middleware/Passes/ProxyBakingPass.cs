@@ -893,8 +893,9 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 调用 + 结果装箱 .any（void → .any 零值胖引用；.any → 直通；
-        // 其余按值/引用形态 box/copy）
-        private static void EmitBoxedCall(MwContext context, MirFunction fn,
+        // 其余按值/引用形态 box/copy）。internal：刀6b Method wrapper
+        // .name 重路由 router（MethodProxyBakingPass）分支装箱复用
+        internal static void EmitBoxedCall(MwContext context, MirFunction fn,
             List<MirInst> insts, MwMemberSymbol target, List<MirOperand> args,
             MirType returnType, string outLocal)
         {

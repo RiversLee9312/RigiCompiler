@@ -106,6 +106,62 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // G4：泛型占位操作数的二元运算（T extends Bound 内 a + b 族）——
+    // 操作数静态类型含 .generic< 占位，编译期不知 operator 目标；发射
+    // 运行期按实际 typeid 派发（VM ExecuteBinary 同口径：内建标量
+    // 求值优先，否则按左操作数实际类型沿派生链找最具体 operator
+    // 实现，全部落空抛 core.NoSuchMethodException）。!= 调 equals
+    // 取反、</<=/>/>= 调 compareTo 按 case 判别（SYNTAX §13.2）
+    public sealed class MirGenericBinaryOp : MirInst
+    {
+        public BilBinaryOp Op { get; }
+        public MirOperand Left { get; }
+        public MirOperand Right { get; }
+        public MirType LeftType { get; }
+        public MirType RightType { get; }
+        public MirType ResultType { get; }
+        public string Target { get; }
+        // 异常边（派发落空/除零等可抛点；同 MirBinaryIntrinsic 口径）
+        public MirBlock? ExcTarget { get; }
+
+        internal MirGenericBinaryOp(BilBinaryOp op, MirOperand left, MirOperand right,
+            MirType leftType, MirType rightType, MirType resultType, string target,
+            MirBlock? excTarget = null)
+        {
+            Op = op;
+            Left = left;
+            Right = right;
+            LeftType = leftType;
+            RightType = rightType;
+            ResultType = resultType;
+            Target = target;
+            ExcTarget = excTarget;
+        }
+    }
+
+    // G4：泛型占位操作数的一元运算（-a / not a / !a 族，同上运行期派发）
+    public sealed class MirGenericUnaryOp : MirInst
+    {
+        public BilUnaryOp Op { get; }
+        public MirOperand Operand { get; }
+        public MirType OperandType { get; }
+        public MirType ResultType { get; }
+        public string Target { get; }
+        public MirBlock? ExcTarget { get; }
+
+        internal MirGenericUnaryOp(BilUnaryOp op, MirOperand operand,
+            MirType operandType, MirType resultType, string target,
+            MirBlock? excTarget = null)
+        {
+            Op = op;
+            Operand = operand;
+            OperandType = operandType;
+            ResultType = resultType;
+            Target = target;
+            ExcTarget = excTarget;
+        }
+    }
+
     // invoke.indirect / invoke.indirect.noret（BIL §15.3 callable 协议）：
     // 对 CallTarget 虚调用其 $$call；实参不含 receiver；CallTargetType
     // 为直译时从局部类型表附上的静态类型（参照 MirGetArray.CollectionType）
@@ -145,15 +201,21 @@ namespace RigiCompiler.Middleware.Mir
         // MW9a：异常边目标（同 MirInvokeIndirect.ExcTarget 口径）
         public MirBlock? ExcTarget { get; }
         public bool OperatorDispatch { get; }
+        // G1：泛型值类型宿主方法的接收者构造形态 canonical（类级 typeid
+        // 直传代入用；null = 非值类型泛型宿主/静态不可知，发射侧再按
+        // 接收者静态类型与 .generic.* 局部兜底）
+        public string? HostConstructedRef { get; }
 
         internal MirCall(MwMemberSymbol target, IReadOnlyList<MirOperand> args, string? result,
-            MirBlock? excTarget = null, bool operatorDispatch = false)
+            MirBlock? excTarget = null, bool operatorDispatch = false,
+            string? hostConstructedRef = null)
         {
             Target = target;
             Args = args;
             Result = result;
             ExcTarget = excTarget;
             OperatorDispatch = operatorDispatch;
+            HostConstructedRef = hostConstructedRef;
         }
     }
 
@@ -263,19 +325,28 @@ namespace RigiCompiler.Middleware.Mir
     // 遗1：无 init 声明 + 零实参的 enum（stdlib ComparisonResult 形态）
     // Init = null——仅写判别（VM NewCase 同口径：TryFindInit 未命中且
     // 零实参时不调 init；无 init 有实参 VM 运行期抛错，native 编译期
-    // 拒绝）
+    // 拒绝）。
+    // L1：new.wrapped.case（§14.4.2 有参 ..init.wrapper 的 enum case
+    // 构造）经 InitWrapper/WrapperArgs 携带 wrapper 实参（null/空 =
+    // 直译 new.case 形态）；发射序 = 判别 → ..init.wrapper → init
+    //（VM PushConstructorTail LIFO：wrapper 帧后压先执行，同口径）
     public sealed class MirNewCase : MirInst
     {
         public MwCaseSymbol Case { get; }
         public MwMemberSymbol? Init { get; }
+        public MwMemberSymbol? InitWrapper { get; }
+        public IReadOnlyList<MirOperand> WrapperArgs { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         public string Target { get; }
 
         internal MirNewCase(MwCaseSymbol caseSymbol, MwMemberSymbol? init,
-            IReadOnlyList<MirOperand> args, string target)
+            IReadOnlyList<MirOperand> args, string target,
+            MwMemberSymbol? initWrapper = null, IReadOnlyList<MirOperand>? wrapperArgs = null)
         {
             Case = caseSymbol;
             Init = init;
+            InitWrapper = initWrapper;
+            WrapperArgs = wrapperArgs ?? (IReadOnlyList<MirOperand>)System.Array.Empty<MirOperand>();
             Args = args;
             Target = target;
         }
@@ -670,6 +741,22 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
+    // getid.field field(F)（L1）：fieldid 槽占位物化（.fieldid → ptr）。
+    // indirect 族的字段符号在 lowering 期经 FlowBuilder 静态追踪解析，
+    // 运行时值无消费面——发射仅向槽写 null（对齐 VM VmFieldId 的
+    // 「符号携带体」角色，native 侧符号由 MIR 直译节点携带）
+    public sealed class MirGetFieldId : MirInst
+    {
+        public string FieldSymbol { get; }
+        public string Target { get; }
+
+        internal MirGetFieldId(string fieldSymbol, string target)
+        {
+            FieldSymbol = fieldSymbol;
+            Target = target;
+        }
+    }
+
     // Nullable\<T\> 装箱（值类型 T → 胖引用；引用 T 为恒等）
     public sealed class MirWrapNullable : MirInst
     {
@@ -893,6 +980,29 @@ namespace RigiCompiler.Middleware.Mir
     {
         internal MirCoroutineDone()
         {
+        }
+    }
+
+    // tainted→tainted 调用协议的 resume 直调（B-1 split 产出）：
+    // 原生栈下钻调 callee 的 resume fn（i32(ptr) C ABI， Emit 从
+    // frame 胖引用取 payload 半直传）。FrameSlot = callee frame 胖
+    // 引用槽（借用——callee resume 的 frame 参数同为借用约定，
+    // +1 由调用方 frame 的 callee 槽持有）；CodeSlot = i32
+    // RigiResumeCode 产出槽（0=SUSPENDED/1=YIELDED/2=DONE/3=FAILED，
+    // 调用方按码分流；FAILED 时 pending 已置位由调用方重抛）。
+    // 无 ExcTarget——callee resume 内部兜住全部异常（FAILED 码上传），
+    // 本指令自身不抛
+    public sealed class MirResumeCall : MirInst
+    {
+        public MwMemberSymbol ResumeFn { get; }
+        public string FrameSlot { get; }
+        public string CodeSlot { get; }
+
+        internal MirResumeCall(MwMemberSymbol resumeFn, string frameSlot, string codeSlot)
+        {
+            ResumeFn = resumeFn;
+            FrameSlot = frameSlot;
+            CodeSlot = codeSlot;
         }
     }
 

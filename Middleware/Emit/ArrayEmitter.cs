@@ -103,6 +103,13 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException($"get.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
+            // 泛型占位元素：运行时 stride 分派（数组头 elemSheet），
+            // 禁止按 16B 胖引用硬读（写路径按 typeSize 动态 stride）
+            if (TypeLayout.IsGenericPlaceholder(elementType))
+            {
+                EmitPlaceholderGet(session, builder, slots, inst);
+                return;
+            }
             var abi = ElementAbi(session, elementType);
             var obj = ObjectPointer(session, builder, slots, inst.Collection);
             var index = session.LoadLocal(builder, slots, inst.Index);
@@ -141,10 +148,16 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException($"set.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
-            if (TypeLayout.IsGenericPlaceholder(elementType)
-                && (TryStoreBakedScalar(session, builder, slots, inst)
-                    || TryStoreViaTypeId(session, builder, slots, inst)))
+            if (TypeLayout.IsGenericPlaceholder(elementType))
             {
+                if (TryStoreBakedScalar(session, builder, slots, inst)
+                    || TryStoreViaTypeId(session, builder, slots, inst))
+                {
+                    return;
+                }
+                // 无 .generic.T 槽的泛型上下文（如形参传入的 Array<T>）：
+                // 按数组头 elemSheet 运行时 stride 写，禁止落回 Reference ABI
+                EmitPlaceholderSet(session, builder, slots, inst);
                 return;
             }
             var abi = ElementAbi(session, elementType);
@@ -378,6 +391,9 @@ namespace RigiCompiler.Middleware.Emit
             return (ptr, sheet, flags, size);
         }
 
+        // 小内联元素（≤8B，payload 装 i64 bits）：String 虽带
+        // FlagInlineValue 但 size=16，其槽位与胖引用布局兼容，必须走
+        // 16B 胖槽直读直写（与写路径 TryStoreViaTypeId 的 ≤8 判定同口径）
         private static LLVMValueRef IsInlineElem(LLVMBuilderRef builder, LLVMValueRef flags,
             LLVMValueRef size)
         {
@@ -389,7 +405,7 @@ namespace RigiCompiler.Middleware.Emit
             var lo = builder.BuildICmp(LLVMIntPredicate.LLVMIntSGT, size,
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "arr.sz.lo");
             var hi = builder.BuildICmp(LLVMIntPredicate.LLVMIntSLE, size,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 16, true), "arr.sz.hi");
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 8, true), "arr.sz.hi");
             var nz = builder.BuildAnd(lo, hi, "arr.sz");
             return builder.BuildAnd(hasInline, nz, "arr.inline");
         }
@@ -458,24 +474,48 @@ namespace RigiCompiler.Middleware.Emit
             var elemSheet = TypeSheetPointer(session, builder, u8);
             var length = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)bytes.Length, true);
             var obj = EmitAlloc(session, builder, elemSheet, length);
-            if (bytes.Length > 0)
-            {
-                var arrayType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)bytes.Length);
-                var elements = new LLVMValueRef[bytes.Length];
-                for (var i = 0; i < bytes.Length; i++)
-                {
-                    elements[i] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, bytes[i], false);
-                }
-                var global = session.Module.AddGlobal(arrayType, "raw." + name);
-                global.Linkage = LLVMLinkage.LLVMInternalLinkage;
-                global.IsGlobalConstant = true;
-                global.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8, elements);
-                var zero = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false);
-                var data = LLVMValueRef.CreateConstInBoundsGEP2(arrayType, global, new[] { zero, zero });
-                session.EmitMemCopy(builder, OffsetPointer(builder, obj, TypeLayout.ArrayPrefixSize),
-                    data, bytes.Length);
-            }
+            CopyStaticBytes(session, builder, obj, bytes, name);
             builder.BuildStore(WrapArrayRef(session, builder, obj), destSlot);
+        }
+
+        // raw.hex/raw.bin → Span<u8>/SharedSpan<u8>（§19.3）：对象布局与
+        // 数组同构（RUNTIME §5），span_alloc 填头后同律拷入静态字节常量；
+        // Span vs SharedSpan 由目标类型头经 ResolveSpanSheet 区分
+        internal static void MaterializeU8Span(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef destSlot, MirType targetType,
+            byte[] bytes, string name)
+        {
+            var elemSheet = TypeSheetPointer(session, builder, MirType.Of(".u8"));
+            var length = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)bytes.Length, true);
+            var spanSheet = ResolveSpanSheet(session, builder, targetType, elemSheet);
+            var obj = EmitSpanAlloc(session, builder, spanSheet, elemSheet, length);
+            CopyStaticBytes(session, builder, obj, bytes, name);
+            builder.BuildStore(
+                CallEmitter.BuildFatReference(session, builder, spanSheet, obj), destSlot);
+        }
+
+        // 静态字节常量 → 连续缓冲区数据区（数组/Span 前缀同 ArrayPrefixSize）
+        private static void CopyStaticBytes(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef obj, byte[] bytes, string name)
+        {
+            if (bytes.Length == 0)
+            {
+                return;
+            }
+            var arrayType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)bytes.Length);
+            var elements = new LLVMValueRef[bytes.Length];
+            for (var i = 0; i < bytes.Length; i++)
+            {
+                elements[i] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, bytes[i], false);
+            }
+            var global = session.Module.AddGlobal(arrayType, "raw." + name);
+            global.Linkage = LLVMLinkage.LLVMInternalLinkage;
+            global.IsGlobalConstant = true;
+            global.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8, elements);
+            var zero = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false);
+            var data = LLVMValueRef.CreateConstInBoundsGEP2(arrayType, global, new[] { zero, zero });
+            session.EmitMemCopy(builder, OffsetPointer(builder, obj, TypeLayout.ArrayPrefixSize),
+                data, bytes.Length);
         }
 
         // ===== 分配 / 胖引用 =====
