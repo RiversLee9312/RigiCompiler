@@ -53,29 +53,44 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // interface 调用：rigi_imap_entry(obj, @typesheet.Iface, slot) 查
-        // base offset 后取槽 fnptr（fn 类型由 canonical 签名合成——接口
-        // 符号无 fn 体）
+        // base offset 后取槽 fnptr。接口方法带默认体时 fn 存在——泛型
+        // 方法的 §7.2 方法级 typeid 隐藏参数只登记在 fn .args（成员符号
+        // 参数段不含），合成签名会漏掉它们致 thunk 调用约定错配，故优先
+        // 取 fn 体类型编组（与 EmitVirtual 同口径）；无 fn 体（抽象）时
+        // 按 canonical 签名合成
         internal static void EmitInterface(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirCall call, MwMemberSymbol target)
         {
             var slot = InterfaceSlotOf(session, target);
             var ifaceSheet = InterfaceSheetOf(session, target);
-            var signature = CanonicalSignature.Parse(target.Canonical);
-            var fnType = MethodFunctionTypeOf(session, target, signature);
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
                 new[] { ObjectPointer(session, builder, slots, call.Args[0]), ifaceSheet,
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
-            var callResult = builder.BuildCall2(fnType, entry,
+            if (session.TryGetFunction(target.Canonical, out var callee))
+            {
+                var callResult = builder.BuildCall2(callee.Type, entry,
+                    CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
+                        call.Result, temps, boxed), "");
+                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
+                CallEmitter.StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
+                    callResult, call.Result, call.ExcTarget);
+                return;
+            }
+            var signature = CanonicalSignature.Parse(target.Canonical);
+            var fnType = MethodFunctionTypeOf(session, target, signature);
+            var abstractResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, call.Args, call.Result,
                     temps, boxed), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
             CallEmitter.StoreCoercedResult(session, builder, slots,
-                MirType.Of(signature.ReturnTypeRef), callResult, call.Result, call.ExcTarget);
+                MirType.Of(signature.ReturnTypeRef), abstractResult, call.Result, call.ExcTarget);
         }
 
         // callable 协议：对 CallTarget 虚调用 $$call（实参列表不含 receiver，此处补上）

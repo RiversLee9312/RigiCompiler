@@ -243,12 +243,15 @@ namespace RigiCompiler.Middleware.Mir
     // new type(T)（MW4 批 2，class）：rigi_alloc(TypeSheet) → 可选
     // ..init.wrapper（字段初始值缝合）→ init 调用 → 胖引用结果。
     // MW10 刀5：new.wrapped（§14.4.1 有参 ..init.wrapper 构造）经
-    // WrapperArgs 携带 wrapper 实参（空 = 无参 ..init.wrapper 或缺省）
+    // WrapperArgs 携带 wrapper 实参（空 = 无参 ..init.wrapper 或缺省）。
+    // L7：全链无 init 声明（含基类仅有参 init 的隐式默认构造形态）+
+    // 零实参 new —— Init = null，仅 alloc + ..init.wrapper 缝合（VM
+    // TryFindInit「无 init 声明 + 零实参仍构造」同口径）
     public sealed class MirNewObject : MirInst
     {
         public MwTypeSymbol Type { get; }
         public MwMemberSymbol? InitWrapper { get; }
-        public MwMemberSymbol Init { get; }
+        public MwMemberSymbol? Init { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         public IReadOnlyList<MirOperand> WrapperArgs { get; }
         public string Target { get; }
@@ -259,7 +262,7 @@ namespace RigiCompiler.Middleware.Mir
         public MirBlock? ExcTarget { get; }
 
         internal MirNewObject(MwTypeSymbol type, MwMemberSymbol? initWrapper,
-            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target,
+            MwMemberSymbol? init, IReadOnlyList<MirOperand> args, string target,
             IReadOnlyList<MirOperand>? wrapperArgs = null, MirBlock? excTarget = null)
         {
             Type = type;
@@ -301,15 +304,21 @@ namespace RigiCompiler.Middleware.Mir
     {
         public MwTypeSymbol Type { get; }
         public MwMemberSymbol? InitWrapper { get; }
-        public MwMemberSymbol Init { get; }
+        // L7：无 init 声明 + 零实参时可为 null（同 MirNewObject）
+        public MwMemberSymbol? Init { get; }
         public IReadOnlyList<MirOperand> Args { get; }
         // MW10 刀5：new.wrapped 的 wrapper 实参（同 MirNewObject）
         public IReadOnlyList<MirOperand> WrapperArgs { get; }
         public string Target { get; }
+        // R3：构造异常边（同 R2-d MirNewObject 口径）：init/..init.wrapper
+        // 内同步抛出沿本 fn 异常边走（对齐 VM 帧展开——此前 null 时
+        // pending 推迟到下一检查点，同 fn try 捕获形态 VM/native 错位）。
+        // 值类型构造原地落目标槽，无新建堆对象需释放
+        public MirBlock? ExcTarget { get; }
 
         internal MirNewValue(MwTypeSymbol type, MwMemberSymbol? initWrapper,
-            MwMemberSymbol init, IReadOnlyList<MirOperand> args, string target,
-            IReadOnlyList<MirOperand>? wrapperArgs = null)
+            MwMemberSymbol? init, IReadOnlyList<MirOperand> args, string target,
+            IReadOnlyList<MirOperand>? wrapperArgs = null, MirBlock? excTarget = null)
         {
             Type = type;
             InitWrapper = initWrapper;
@@ -317,6 +326,7 @@ namespace RigiCompiler.Middleware.Mir
             Args = args;
             WrapperArgs = wrapperArgs ?? (IReadOnlyList<MirOperand>)System.Array.Empty<MirOperand>();
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -358,6 +368,10 @@ namespace RigiCompiler.Middleware.Mir
         Is,
         Supers,
         With,
+        // R2-c：操作数是 .typeid 原值（TypeSheet*），判定其描述的类
+        // 型 is-a 目标（不包 Type<X> 元类型视图；仅 CoroutineSplit
+        // 的 new.indirect tainted init 臂使用，源级无对应形态）
+        IsTypeId,
     }
 
     public sealed class MirTypeCheck : MirInst

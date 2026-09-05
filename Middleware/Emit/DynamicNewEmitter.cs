@@ -611,8 +611,8 @@ namespace RigiCompiler.Middleware.Emit
             var sheet = BoxEmitter.TypeSheetOf(session, type);
             if (size <= BoxEmitter.InlineLimit)
             {
-                var inline = BoxEmitter.PackInlinePayload(session, builder, slots, localName,
-                    type, size);
+                var inline = BoxEmitter.PackInlinePayload(session, builder,
+                    slots[localName].Slot, type, size);
                 return BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagInline,
                     inline, "dynnew");
             }

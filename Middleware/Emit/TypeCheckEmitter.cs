@@ -17,9 +17,29 @@ namespace RigiCompiler.Middleware.Emit
         {
             var builder = session.Builder;
             var slots = session.Slots;
-            var fat = LoadAsFat(session, builder, slots, inst.Value);
-            var typeId = builder.BuildExtractValue(fat, 0, "ck.typeid");
-            var payload = builder.BuildExtractValue(fat, 1, "ck.payload");
+            LLVMValueRef typeId;
+            LLVMValueRef payload;
+            if (inst.Kind == MirTypeCheckKind.IsTypeId)
+            {
+                // R2-c：.typeid 原值直判（rigi_type_is 的 tag0/掩码路径
+                // 对裸 sheet 指针恒取自身）——不包 Type<X> 元类型视图；
+                // .typeid 槽的 LLVM 形态是 ptr，转 i64 入面
+                if (inst.Value is not MirLocalOperand typeIdLocal)
+                {
+                    throw new CompilerInternalException("type.check.istypeid 操作数必须是局部");
+                }
+                var rawTypeId = session.LoadLocal(builder, slots, typeIdLocal);
+                typeId = rawTypeId.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
+                    ? builder.BuildPtrToInt(rawTypeId, LLVMTypeRef.Int64, "ck.tid.bits")
+                    : rawTypeId;
+                payload = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false);
+            }
+            else
+            {
+                var fat = LoadAsFat(session, builder, slots, inst.Value);
+                typeId = builder.BuildExtractValue(fat, 0, "ck.typeid");
+                payload = builder.BuildExtractValue(fat, 1, "ck.payload");
+            }
             var target = TargetSheet(session, builder, slots, inst);
             var face = FaceNameOf(inst);
             var (fn, fnType) = CallEmitter.DeclareHelperFace(session, face, LLVMTypeRef.Int32,
@@ -77,6 +97,8 @@ namespace RigiCompiler.Middleware.Emit
             {
                 (MirTypeCheckKind.Is, false) => RuntimeFaces.TypeIs,
                 (MirTypeCheckKind.Is, true) => RuntimeFaces.TypeIsIndirect,
+                (MirTypeCheckKind.IsTypeId, false) => RuntimeFaces.TypeIs,
+                (MirTypeCheckKind.IsTypeId, true) => RuntimeFaces.TypeIsIndirect,
                 (MirTypeCheckKind.Supers, false) => RuntimeFaces.TypeSupers,
                 (MirTypeCheckKind.Supers, true) => RuntimeFaces.TypeSupersIndirect,
                 (MirTypeCheckKind.With, false) => RuntimeFaces.TypeWith,

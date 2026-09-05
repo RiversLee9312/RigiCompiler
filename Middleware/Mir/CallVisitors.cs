@@ -115,7 +115,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 throw new MwNotSupportedException($"MW5 暂不支持的构造类型形态: {typeRef}");
             }
-            MwMemberSymbol init;
+            MwMemberSymbol? init;
             try
             {
                 init = MirBuilder.ResolveInit(flow.Context.Symbols, template,
@@ -133,6 +133,15 @@ namespace RigiCompiler.Middleware.Mir
                     new BilSimpleMemberDeclaration(BilMemberKind.Method,
                         template.Canonical + "$init()@.void"),
                     template, isExternal: false);
+            }
+            catch (MwNotSupportedException) when (initArguments.Count == 0
+                && !SingletonPlanner.HasInitMember(template))
+            {
+                // L7 遗留：全链无 init 声明的零参 new（无显式 init 的子
+                // 类 / 基类仅有参 init 的隐式默认构造形态）——VM
+                // TryFindInit「无 init 声明 + 零实参仍构造」同口径：
+                // Init = null，构造 = alloc + 可选 ..init.wrapper 缝合
+                init = null;
             }
             // ..init.wrapper 解析：普通 new 只挂零参形态（有参形态上普通
             // new 由 verifier §14.4.1 拒绝）；new.wrapped 按 wrapper 实参
@@ -172,14 +181,22 @@ namespace RigiCompiler.Middleware.Mir
                 : (IReadOnlyList<MirOperand>)FlowBuilder.Locals(wrapperArguments);
             if (template.Declaration.Kind == BilTypeKind.Class)
             {
+                // R2-d：构造异常边随 try 作用域填充（wrapper/init 内
+                // 抛出沿本 fn 异常边走，对齐 VM 帧展开——此前 null
+                // 「pending 推迟到下一检查点」，同 fn try 内挂起
+                // init 抛出时 native 传播出 fn 而 VM 于 fn 捕获）
                 flow.Add(new MirNewObject(type, initWrapper, init,
-                    FlowBuilder.Locals(initArguments), target, wrappedArgs));
+                    FlowBuilder.Locals(initArguments), target, wrappedArgs,
+                    flow.Tries.CurrentExcTarget()));
                 return;
             }
             if (template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct)
             {
+                // R3：构造异常边随 try 作用域填充（同 R2-d MirNewObject
+                // 口径——值类型 init 同步抛出沿本 fn 异常边走）
                 flow.Add(new MirNewValue(type, initWrapper, init,
-                    FlowBuilder.Locals(initArguments), target, wrappedArgs));
+                    FlowBuilder.Locals(initArguments), target, wrappedArgs,
+                    flow.Tries.CurrentExcTarget()));
                 return;
             }
             throw new MwNotSupportedException($"MW4 new 暂不支持类型形态: {typeRef}");

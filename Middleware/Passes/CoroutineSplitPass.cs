@@ -66,8 +66,18 @@ namespace RigiCompiler.Middleware.Passes
     ///    用，EmitVirtualCallSplit）；init = 空 init 分配 + init
     ///    frame 下钻（EmitInitSplit）；§7.2 类级 typeid 落参合成
     ///   （PlanArgDrops）；plain fn 内 yield Alarm 放开（EmitPoll-
-    ///    Gate plain 失败尾）。保留边界：泛型宿主虚派发/$$call·间
-    ///    接·proxy 链/new.indirect 同模块 init 受控拒绝。
+    ///    Gate plain 失败尾）。R2 残留边界清偿：R2-a 泛型宿主虚
+    ///    派发（臂条件 = 模板空壳 + 全部闭合构造 sheet OR 链，类
+    ///    级 typeid 落参从接收者实例隐藏字段运行期读取）；R2-b
+    ///    $$call/invoke.indirect（callable 闭包同虚派发臂动态分
+    ///    流；闭包枚举改布局计划表直查——PlanKey 消同名不同元数
+    ///    模板撞键）；R2-c new.indirect × tainted class init（精
+    ///    确 sheet 臂：IsTypeId ∧ 派生排除，EmitNewIndirectSplit；
+    ///    值类型 init 无挂起协议补闸受控拒绝）；R2-d MirNewObject
+    ///    补 try 异常边（构造抛出同 fn 捕获双端对齐）。保留边界：
+    ///    proxy/wrapper 烘焙链（$.wrapped./$.mwrapped./$mw.）可达
+    ///    的 tainted fn、泛型占位实参 new.indirect × tainted
+    ///    init、嵌套占位构造的类级 typeid 实参。
     /// ⑦ 自检：split 后无残留 MirAwait/MirYieldBare/MirYieldAlarm
     ///    与未改写 tainted 调用；每挂起点恰一恢复 state；frame 字段
     ///    与保存槽集合一致。
@@ -387,9 +397,10 @@ namespace RigiCompiler.Middleware.Passes
         // 调用边反向传染调用方至不动点（链根恒为 main 或 async fn）。
         // B-2 传染边全集：直调 / super（恒直调）/ 值类型宿主运算符
         //（直调形态）/ 虚·interface·class 运算符派发（闭包内任一实
-        // 现 tainted 则整点升级——运行期目标静态不可钉死）；init 与
-        // $$call/间接调用形态保留受控拒绝（见 RejectUnsupported-
-        // TaintedShape 与下方 MirNewObject 臂）。
+        // 现 tainted 则整点升级——运行期目标静态不可钉死）；new init
+        // 经构造点协议收编。R2-b：invoke.indirect（$$call 闭包）同
+        // 虚派发口径传染；R2-c：new.indirect 按「tainted class init
+        // × 静态实参形精确匹配」传染（值类型 init 一律受控拒绝）。
         private HashSet<string> TaintAnalysis(MwContext context, MirModule mir)
         {
             var tainted = new HashSet<string>(System.StringComparer.Ordinal);
@@ -400,12 +411,12 @@ namespace RigiCompiler.Middleware.Passes
                 byCanonical[fn.Symbol.Canonical] = fn;
             }
             var queue = new Queue<string>();
-            // new.indirect 的运行期目标由 typeid 决定（保守边 = 全
-            // init 族）——模块含 new.indirect 时 tainted init 无法保
-            // 证全部构造点协议化，受控拒绝
-            var hasNewIndirect = mir.Functions.Any(fn =>
-                fn.Blocks.SelectMany(b => b.Instructions)
-                    .Any(i => i is MirNewIndirect));
+            // R2-c：new.indirect 保守边（运行期目标由 typeid 决定）
+            // 不再一刀切拒绝——class init 由调用点臂协议收编
+            //（EmitNewIndirectSplit）；值类型 init 无挂起协议（frame
+            // .this 借用形态与 sret/原地构造路径不兼容），凡 tainted
+            // 即拒（此前静态 new 形态静默语义错位——native exit 5
+            // 无输出 vs VM 正常——补闸）
             foreach (var fn in mir.Functions)
             {
                 if (!fn.IsAsync
@@ -422,10 +433,12 @@ namespace RigiCompiler.Middleware.Passes
                 var calleeCanonical = queue.Dequeue();
                 var calleeFn = byCanonical[calleeCanonical];
                 RejectUnsupportedTaintedShape(calleeFn);
-                if (hasNewIndirect && calleeFn.Symbol.HasKeyword(BilKeyword.Init))
+                if (calleeFn.Symbol.HasKeyword(BilKeyword.Init)
+                    && calleeFn.Symbol.Owner?.Declaration.Kind != BilTypeKind.Class)
                 {
+                    // R2-c：值类型 init 无挂起协议（见上注）
                     throw new MwNotSupportedException(
-                        "B-2 暂不支持含挂起点的 init 与 new.indirect 同模块共存（运行期构造目标不可钉死）: "
+                        "B-2 暂不支持含挂起点的值类型 init（值类型构造路径无挂起协议）: "
                         + calleeCanonical);
                 }
                 foreach (var caller in mir.Functions)
@@ -484,6 +497,29 @@ namespace RigiCompiler.Middleware.Passes
                             {
                                 infect = true;
                             }
+                            // R2-b：invoke.indirect（callable 协议
+                            // $$call 虚调用）同虚派发口径——$$call 闭
+                            // 包内任一实现 tainted 则调用方传染（站
+                            // 点协议化复用 EmitVirtualCallSplit 臂）
+                            if (!infect && inst is MirInvokeIndirect invoke
+                                && ClosurePairsOf(context,
+                                    IndirectCallOperatorOf(context, caller, invoke),
+                                    operatorDispatch: false)
+                                    .Any(p => tainted.Contains(p.ImplCanonical)))
+                            {
+                                infect = true;
+                            }
+                            // R2-c：new.indirect——模块内 tainted
+                            // class init 重载与站点静态实参形精确
+                            // 匹配（argc + 逐物化 sheet 代入的
+                            // canonical 恒等）则调用方传染（站点
+                            // 协议化见 EmitNewIndirectSplit）
+                            if (!infect && inst is MirNewIndirect newIndirect
+                                && IndirectInitRelevant(context, caller,
+                                    newIndirect, tainted))
+                            {
+                                infect = true;
+                            }
                         }
                     }
                     if (infect && tainted.Add(caller.Symbol.Canonical))
@@ -492,9 +528,86 @@ namespace RigiCompiler.Middleware.Passes
                     }
                 }
             }
+            RejectSyntheticSpineTainted(context, mir, tainted);
             return tainted;
         }
 
+        // R3：合成入口脊柱直调站点（非 MIR、不可协议化）的 taint 补闸。
+        // rigi_entry stub 同步直调 ..globals.init（main 前）、singleton
+        // 急切 get fn（同前）与 gexc drain 的 GlobalExceptionHandler.
+        // dispatch（Dispatcher 关停后）；未捕获异常 reporter 同步虚调
+        // getMessage（同在后段）。这些站点运行在调度器启动前/关停后，
+        // 挂起点无泵可恢复——tainted 即 ReplaceWithTrap 后脊柱照调
+        // 必崩（实证：trap 0x80000003 / AV），受控拒绝
+        private static void RejectSyntheticSpineTainted(MwContext context, MirModule mir,
+            HashSet<string> tainted)
+        {
+            // 先扫 getMessage 根因：脊柱 fn（如 dispatch 空注册表分支
+            // printErr(exc.getMessage())）常因虚调 tainted override 被
+            // 传染，报根因比报脊柱更准
+            foreach (var fn in mir.Functions)
+            {
+                if (tainted.Contains(fn.Symbol.Canonical) && IsExceptionGetMessage(context, fn))
+                {
+                    throw new MwNotSupportedException(
+                        "R3 暂不支持含挂起点的 core::Exception.getMessage override："
+                        + "native 未捕获异常 reporter 同步虚调 getMessage: "
+                        + fn.Symbol.Canonical);
+                }
+            }
+            foreach (var fn in mir.Functions)
+            {
+                if (!tainted.Contains(fn.Symbol.Canonical))
+                {
+                    continue;
+                }
+                var canonical = fn.Symbol.Canonical;
+                if (canonical.StartsWith("$..globals.init(", System.StringComparison.Ordinal))
+                {
+                    throw new MwNotSupportedException(
+                        "R3 暂不支持含挂起点（含经 lambda/indirect 传染）的全局初始值设定项："
+                        + "native 入口脊柱在调度器启动前同步直调 ..globals.init: " + canonical);
+                }
+                if (canonical.StartsWith("core::GlobalExceptionHandler$.static.dispatch(",
+                        System.StringComparison.Ordinal))
+                {
+                    throw new MwNotSupportedException(
+                        "R3 暂不支持含挂起点的全局异常处理器：native gexc drain 在 "
+                        + "Dispatcher 关停后同步直调 dispatch: " + canonical);
+                }
+                if (canonical.Contains(".mw.singleton.get(", System.StringComparison.Ordinal))
+                {
+                    throw new MwNotSupportedException(
+                        "R3 暂不支持含挂起点的 singleton init：native 入口脊柱在调度器"
+                        + "启动前急切同步构造 singleton: " + canonical);
+                }
+            }
+        }
+
+        // tainted fn 是否 core::Exception 派生链上的 getMessage override
+        //（reporter 脊柱虚调目标集）
+        private static bool IsExceptionGetMessage(MwContext context, MirFunction fn)
+        {
+            if (fn.Symbol.SignatureKey != "getMessage()")
+            {
+                return false;
+            }
+            var owner = fn.Symbol.Owner;
+            for (var depth = 0; owner != null && depth < 64; depth++)
+            {
+                if (owner.Canonical == "core::Exception")
+                {
+                    return true;
+                }
+                if (owner.Declaration.ExtendsType is not { } extendsRef)
+                {
+                    return false;
+                }
+                owner = context.Symbols.FindTypeByRef(BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(extendsRef)));
+            }
+            return false;
+        }
         // 虚派发站点判定（MirCall 的运行期目标非静态唯一）：显式
         // invoke 经 BindCall、intrinsic 运算符经 BindOperatorCall；
         // class 虚/interface iMap 两种形态
@@ -505,6 +618,32 @@ namespace RigiCompiler.Middleware.Passes
                 : Binding.ImplBinder.BindCall(call.Target);
             return binding is Binding.VirtualCallBinding
                 or Binding.InterfaceCallBinding;
+        }
+
+        // R2-b：invoke.indirect 的静态 $$call 目标解析（MIR 期
+        // 同 EmitIndirectInvoke 口径——实参/结果类型取调用点局部
+        // 静态类型，沿 extends 链唯一匹配；查不到属 Gate 漏检）
+        private static MwMemberSymbol IndirectCallOperatorOf(MwContext context,
+            MirFunction fn, MirInvokeIndirect invoke)
+        {
+            var argTypes = new List<string>(invoke.Args.Count);
+            foreach (var arg in invoke.Args)
+            {
+                if (arg is not MirLocalOperand local)
+                {
+                    throw new CompilerInternalException("invoke.indirect 实参非局部");
+                }
+                argTypes.Add(fn.FindLocal(local.Name).Type.Canonical);
+            }
+            var resultType = invoke.Result != null
+                ? fn.FindLocal(invoke.Result).Type.Canonical
+                : null;
+            return Binding.ImplBinder.BindIndirectCall(context.Symbols,
+                invoke.CallTargetType.Canonical, argTypes, resultType,
+                context.Module.Functions) is Binding.IndirectCallBinding binding
+                ? binding.CallOperator
+                : throw new CompilerInternalException(
+                    "invoke.indirect 的非预期绑定形态: " + invoke.CallTargetType.Canonical);
         }
 
         // 虚/interface 派发的「类 → 槽实现」闭包对（调用点动态分流
@@ -527,8 +666,12 @@ namespace RigiCompiler.Middleware.Passes
                 ? Binding.ImplBinder.BindOperatorCall(target)
                 : Binding.ImplBinder.BindCall(target);
             var query = context.DispatchQuery;
+            // 宿主槽表按 PlanKey 查询（同名不同元数模板 canonical
+            // 撞键——core::Func<1>/Func<2> 共享 "core::Func" 裸键，
+            // 先登记者占用；R2-b 合并模块形态实证槽表错配致闭包
+            // 为空）。VirtualCallEmitter.VirtualSlotOf 同口径
             var ownerSlots = target.Owner == null
-                ? null : query?.GetVTableSlots(target.Owner.Canonical);
+                ? null : query?.GetVTableSlots(GenericAbi.PlanKey(target.Owner));
             if (query != null && ownerSlots != null)
             {
                 var slot = -1;
@@ -542,39 +685,49 @@ namespace RigiCompiler.Middleware.Passes
                 }
                 if (slot >= 0)
                 {
+                    // R2-b：闭包枚举直走布局计划表（不经字符串查
+                    // 询口）——① 同名不同元数模板 canonical 撞键
+                    //（core::Func<1>/Func<2> 共享 "core::Func"），
+                    // 派生判定按 PlanKey 逐级比对（arity 正确）；
+                    // ② 跳过构造计划（臂类键恒为模板 canonical，
+                    // 构造实例沿构造基链命中模板臂——R2-a）
+                    var ownerPlanKey = GenericAbi.PlanKey(target.Owner!);
                     switch (binding)
                     {
                         case Binding.VirtualCallBinding:
-                            foreach (var classCanonical in query.AllClassCanonicals())
+                            foreach (var plan in context.Layout!.Plans)
                             {
-                                if (!query.DerivesFrom(classCanonical,
-                                        target.Owner!.Canonical))
+                                if (plan.Kind != TypeLayoutKind.Class
+                                    || Layout.ConstructedTypeCollector.IsConstructed(
+                                        plan.Symbol.Canonical)
+                                    || !DerivesFromTemplate(plan, ownerPlanKey)
+                                    || slot >= plan.VTableSlots.Count)
                                 {
                                     continue;
                                 }
-                                var slots = query.GetVTableSlots(classCanonical);
-                                if (slots != null)
-                                {
-                                    pairs.Add((classCanonical, slots[slot]));
-                                }
+                                pairs.Add((plan.Symbol.Canonical,
+                                    plan.VTableSlots[slot]));
                             }
                             break;
                         case Binding.InterfaceCallBinding:
-                            foreach (var classCanonical in query.AllClassCanonicals())
+                            foreach (var plan in context.Layout!.Plans)
                             {
-                                var imap = query.GetIMap(classCanonical);
-                                var slots = query.GetVTableSlots(classCanonical);
-                                if (imap == null || slots == null)
+                                if (plan.Kind != TypeLayoutKind.Class
+                                    || Layout.ConstructedTypeCollector.IsConstructed(
+                                        plan.Symbol.Canonical))
                                 {
                                     continue;
                                 }
+                                var imap = plan.IMap;
+                                var slots = plan.VTableSlots;
                                 foreach (var (ifaceType, baseOffset) in imap)
                                 {
-                                    if (ifaceType == target.Owner!.Canonical
-                                        || context.Symbols.FindTypeByRef(ifaceType)
-                                            == target.Owner)
+                                    if ((ifaceType == target.Owner!.Canonical
+                                            || context.Symbols.FindTypeByRef(ifaceType)
+                                                == target.Owner)
+                                        && baseOffset + slot < slots.Count)
                                     {
-                                        pairs.Add((classCanonical,
+                                        pairs.Add((plan.Symbol.Canonical,
                                             slots[baseOffset + slot]));
                                     }
                                 }
@@ -587,16 +740,322 @@ namespace RigiCompiler.Middleware.Passes
             return pairs;
         }
 
-        // 不可协议化形态拒绝：$$call 闭包体可经 invoke.indirect 触达
-        //（fn 指针面无法插挂起协议——运行期只有返回值通道）；wrapper/
-        // proxy 烘焙产物（$.wrapped./$.mwrapped./$mw. 前缀合成 fn）经
-        // wrapper 派发链/方法地址间接触达，同因拒绝。B-2 起虚成员
-        // 不再拒绝（调用点动态分流协议覆盖——EmitVirtualCallSplit）
+        // R2-b：arity 正确的模板派生判定——沿 BasePlan 链按
+        // PlanKey 比对（同名不同元数模板 canonical 撞键，裸
+        // canonical 比对会把 Func<1> 子类错配进 Func<2> 闭包）
+        private static bool DerivesFromTemplate(TypeLayoutPlan plan, string ownerPlanKey)
+        {
+            for (var current = plan; current != null; current = current.BasePlan)
+            {
+                if (GenericAbi.PlanKey(current.Symbol) == ownerPlanKey)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // ===== R2-c：new.indirect × tainted class init 臂协议 =====
+
+        // 模块内全部 class init 重载（懒建缓存；声明级形参类型 =
+        // CanonicalSignature 形参段，与 DynamicNewEmitter.CollectInits
+        // 同源）
+        private List<IndirectInitOverload>? _classInitOverloads;
+
+        private List<IndirectInitOverload> ClassInitOverloads(MwContext context,
+            MirModule mir)
+        {
+            if (_classInitOverloads != null)
+            {
+                return _classInitOverloads;
+            }
+            var list = new List<IndirectInitOverload>();
+            foreach (var fn in mir.Functions)
+            {
+                if (!fn.Symbol.HasKeyword(BilKeyword.Init)
+                    || fn.Symbol.Owner == null
+                    || fn.Symbol.Owner.Declaration.Kind != BilTypeKind.Class)
+                {
+                    continue;
+                }
+                var template = context.Symbols.FindTypeByRef(fn.Symbol.Owner.Canonical)
+                    ?? fn.Symbol.Owner;
+                var signature = CanonicalSignature.Parse(fn.Symbol.Canonical);
+                var declParams = new List<string>(signature.Parameters.Count);
+                foreach (var parameter in signature.Parameters)
+                {
+                    declParams.Add(parameter.TypeRef);
+                }
+                // 宿主声明级 ..init.wrapper（字段初始值缝合，可空；
+                // DynamicNewEmitter.CollectInits 同钥匙）
+                var wrapper = context.Symbols.FindMember(
+                    template.Declaration.Symbol + "$..init.wrapper()@.void");
+                list.Add(new IndirectInitOverload
+                {
+                    InitFn = fn,
+                    HostTemplate = template,
+                    DeclParamTypeRefs = declParams,
+                    Wrapper = wrapper,
+                });
+            }
+            _classInitOverloads = list;
+            return list;
+        }
+
+        // 重载的全部物化 sheet × 代入后形参列：非泛型宿主 = 本类计
+        // 划；泛型宿主 = 模块内全部闭合构造计划（开放模板 sheet 的
+        // 分发器恒 ret null——运行期不会选中任何 init，不入臂）。
+        // 形参代入镜像 DynamicNewEmitter.CollectInits（Substitute +
+        // Normalize）
+        private static List<(TypeLayoutPlan Plan, List<string> ParamTypes)> SheetsOf(
+            MwContext context, IndirectInitOverload overload)
+        {
+            if (overload.Sheets != null)
+            {
+                return overload.Sheets;
+            }
+            var sheets = new List<(TypeLayoutPlan, List<string>)>();
+            if (context.Layout != null)
+            {
+                foreach (var plan in context.Layout.Plans)
+                {
+                    if (plan.Kind != TypeLayoutKind.Class)
+                    {
+                        continue;
+                    }
+                    var canonical = plan.Symbol.Canonical;
+                    bool isSheetOfHost;
+                    if (overload.HostTemplate.Declaration.GenericParameters.Count == 0)
+                    {
+                        isSheetOfHost = canonical == overload.HostTemplate.Canonical;
+                    }
+                    else
+                    {
+                        isSheetOfHost =
+                            Layout.ConstructedTypeCollector.IsConstructed(canonical)
+                            && GenericAbi.IsClosedConstructed(canonical)
+                            && BilVerificationContext.StripTypeArguments(
+                                MwTypeKey.Normalize(canonical))
+                                == overload.HostTemplate.Canonical;
+                    }
+                    if (!isSheetOfHost)
+                    {
+                        continue;
+                    }
+                    var subst = Layout.ConstructedTypeCollector.BuildSubstitution(
+                        canonical, plan.Symbol.Declaration);
+                    var paramTypes = new List<string>(overload.DeclParamTypeRefs.Count);
+                    foreach (var declParam in overload.DeclParamTypeRefs)
+                    {
+                        paramTypes.Add(MwTypeKey.Normalize(
+                            Layout.ConstructedTypeCollector.Substitute(declParam, subst)));
+                    }
+                    sheets.Add((plan, paramTypes));
+                }
+            }
+            overload.Sheets = sheets;
+            return sheets;
+        }
+
+        // 站点静态实参形（argSheets 物化同源——发射期按实参局部静
+        // 态类型取 ArgToken）
+        private static List<string> IndirectStaticArgTypes(MirFunction fn,
+            MirNewIndirect inst)
+        {
+            var argTypes = new List<string>(inst.Args.Count);
+            foreach (var arg in inst.Args)
+            {
+                if (arg is not MirLocalOperand local)
+                {
+                    throw new CompilerInternalException("new.indirect 实参非局部");
+                }
+                argTypes.Add(fn.FindLocal(local.Name).Type.Canonical);
+            }
+            return argTypes;
+        }
+
+        private static bool IndirectArgsMatch(IReadOnlyList<string> siteArgTypes,
+            IReadOnlyList<string> paramTypes)
+        {
+            if (siteArgTypes.Count != paramTypes.Count)
+            {
+                return false;
+            }
+            for (var i = 0; i < siteArgTypes.Count; i++)
+            {
+                if (MwTypeKey.Normalize(siteArgTypes[i]) != paramTypes[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 站点相关性：存在 tainted class init 重载的某个物化 sheet
+        // 与站点静态实参形精确匹配 → true（调用方传染/站点协议化）。
+        // 占位实参（argSheets 运行期物化）且 argc 撞上任一 tainted
+        // 重载时匹配不可静态判定 → 受控拒绝
+        private bool IndirectInitRelevant(MwContext context, MirFunction fn,
+            MirNewIndirect inst, HashSet<string> tainted)
+        {
+            var overloads = ClassInitOverloads(context,
+                context.Mir
+                    ?? throw new CompilerInternalException("CoroutineSplit 要求 Mir 已挂载"));
+            var argTypes = IndirectStaticArgTypes(fn, inst);
+            var hasPlaceholder = argTypes.Any(t =>
+                t.Contains(".generic<", System.StringComparison.Ordinal));
+            var argcCollision = false;
+            foreach (var overload in overloads)
+            {
+                if (!tainted.Contains(overload.InitFn.Symbol.Canonical))
+                {
+                    continue;
+                }
+                foreach (var (_, paramTypes) in SheetsOf(context, overload))
+                {
+                    if (paramTypes.Count != argTypes.Count)
+                    {
+                        continue;
+                    }
+                    argcCollision = true;
+                    if (!hasPlaceholder && IndirectArgsMatch(argTypes, paramTypes))
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (argcCollision && hasPlaceholder)
+            {
+                throw new MwNotSupportedException(
+                    "B-2 暂不支持泛型占位实参的 new.indirect 与含挂起点 init 同模块"
+                    + "（实参 sheet 匹配运行期不可判定）: " + fn.Symbol.Canonical);
+            }
+            return false;
+        }
+
+        // 臂的派生排除 sheet：物化类计划中严格派生自臂 sheet 的全
+        // 部 sheet（精确化——typeid 命中派生 sheet 时其自身分发器
+        // 决定选择（无匹配即 NoSuchMethod），不得落本臂）
+        private static List<string> DerivedSheetsOf(MwContext context,
+            TypeLayoutPlan armPlan)
+        {
+            var sheets = new List<string>();
+            if (context.Layout == null)
+            {
+                return sheets;
+            }
+            foreach (var plan in context.Layout.Plans)
+            {
+                if (plan.Kind != TypeLayoutKind.Class
+                    || ReferenceEquals(plan, armPlan)
+                    || plan.Symbol.Canonical == armPlan.Symbol.Canonical)
+                {
+                    continue;
+                }
+                for (var current = plan.BasePlan; current != null; current = current.BasePlan)
+                {
+                    if (ReferenceEquals(current, armPlan))
+                    {
+                        sheets.Add(plan.Symbol.Canonical);
+                        break;
+                    }
+                }
+            }
+            return sheets;
+        }
+
+        // R2-c 站点协议信息回填（PrepareSplit 内、活性分析之前——
+        // callee frame 槽须进 fn.Locals）
+        private void PrepareIndirectInitSites(MwContext context, MirModule mir,
+            MirFunction fn, List<SuspensionPoint> points, HashSet<string> tainted)
+        {
+            foreach (var point in points)
+            {
+                if (point.IndirectInit == null)
+                {
+                    continue;
+                }
+                var inst = (MirNewIndirect)point.Inst;
+                var site = point.IndirectInit;
+                if (inst.TypeId is not MirLocalOperand typeIdLocal)
+                {
+                    throw new CompilerInternalException(
+                        "new.indirect 挂起点 typeid 非局部: " + fn.Symbol.Canonical);
+                }
+                site.TypeIdLocal = typeIdLocal.Name;
+                site.TargetLocal = inst.Target;
+                site.ExcTarget = inst.ExcTarget;
+                site.Original = inst;
+                var argTypes = IndirectStaticArgTypes(fn, inst);
+                var armIndex = 0;
+                foreach (var overload in ClassInitOverloads(context, mir))
+                {
+                    if (!tainted.Contains(overload.InitFn.Symbol.Canonical))
+                    {
+                        continue;
+                    }
+                    foreach (var (plan, paramTypes) in SheetsOf(context, overload))
+                    {
+                        if (!IndirectArgsMatch(argTypes, paramTypes))
+                        {
+                            continue;
+                        }
+                        var callee = overload.InitFn;
+                        var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(
+                            callee.Symbol.Canonical);
+                        var calleeLocal = "$mw.callee." + point.State + "." + armIndex;
+                        armIndex++;
+                        fn.AddLocal(new MirLocal(calleeLocal,
+                            MirType.Of(frameCanonical)));
+                        var entry = new CallSiteInfo
+                        {
+                            Callee = callee,
+                            CalleeLocal = calleeLocal,
+                            CalleeFrameCanonical = frameCanonical,
+                            ResumeSymbol = ProxyBakeSupport.SyntheticMember(
+                                "$mw.resume." + callee.Symbol.Canonical, owner: null),
+                            ResultFieldSymbol = null,
+                        };
+                        // 落参实参 = .this（臂内新建对象落定 Target
+                        // 槽）+ 用户实参；宿主构造形态 = 臂 sheet（闭
+                        // 合构造 → 类级 typeid 常量合成）
+                        var withThis = new List<MirOperand>
+                        {
+                            new MirLocalOperand(inst.Target),
+                        };
+                        withThis.AddRange(inst.Args);
+                        PlanArgDrops(context, fn, entry, callee, withThis,
+                            MwTypeKey.Normalize(plan.Symbol.Canonical));
+                        site.Arms.Add(new IndirectInitArm
+                        {
+                            AllocType = plan.Symbol,
+                            SheetCanonical = plan.Symbol.Canonical,
+                            InitWrapper = overload.Wrapper,
+                            ExclusionSheets = DerivedSheetsOf(context, plan),
+                            Impl = entry,
+                        });
+                    }
+                }
+                if (site.Arms.Count == 0)
+                {
+                    throw new CompilerInternalException(
+                        "new.indirect 挂起点无命中臂（相关性判定与建臂不一致）: "
+                        + fn.Symbol.Canonical);
+                }
+            }
+        }
+
+        // 不可协议化形态拒绝：wrapper/proxy 烘焙产物（$.wrapped./
+        // $.mwrapped./$mw. 前缀合成 fn）经 wrapper 派发链/方法地址
+        // 间接触达——router/trampoline 的通配 ABI 与值包转发形态无
+        // 挂起协议插点（运行期目标集随 wrapper 实例符号表动态决
+        // 定，静态闭包不可枚举），保留受控拒绝。R2-b 起 $$call 闭
+        // 包体不再拒绝（invoke.indirect 调用点动态分流协议覆盖，
+        // 同虚派发臂机制——EmitVirtualCallSplit）
         private static void RejectUnsupportedTaintedShape(MirFunction fn)
         {
             var canonical = fn.Symbol.Canonical;
-            if (canonical.Contains("$$call(", System.StringComparison.Ordinal)
-                || canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
+            if (canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
                 || canonical.Contains("$..init.", System.StringComparison.Ordinal)
                 || canonical.Contains(ProxyBakeSupport.WrappedInfix,
                     System.StringComparison.Ordinal)
@@ -604,7 +1063,7 @@ namespace RigiCompiler.Middleware.Passes
                     System.StringComparison.Ordinal))
             {
                 throw new MwNotSupportedException(
-                    "B-2 暂不支持间接调用/proxy 链可达的含挂起点 fn: " + canonical);
+                    "B-2 暂不支持 proxy/wrapper 烘焙链可达的含挂起点 fn: " + canonical);
             }
         }
 
@@ -625,6 +1084,51 @@ namespace RigiCompiler.Middleware.Passes
             internal VirtualSiteInfo? Virtual;
             // B-2：含挂起点 init 的构造挂起点（Inst 为 MirNewObject）
             internal InitSiteInfo? InitSite;
+            // R2-c：new.indirect × tainted class init 的构造挂起点
+            internal IndirectInitSiteInfo? IndirectInit;
+        }
+
+        // R2-c：new.indirect × tainted class init 的构造点协议信息。
+        // native 槽 0 分发器不继承 init（实证：派生类无自声明 init
+        // 时 new.indirect 抛 NoSuchMethod，双端一致）——运行期
+        // typeid 只有恰好是 tainted 重载宿主类（的某个闭合构造）
+        // sheet 时才可能选中该 init，故臂条件 = 精确 sheet 匹配：
+        // IsTypeId(臂 sheet) ∧ ¬IsTypeId(各派生物化 sheet)。命中
+        // 臂：以臂 sheet 的静态构造形态 MirNewObject 空 init 分配
+        //（init.wrapper 原位缝合字段初始值）→ Target 槽落定并回存
+        // 本层 frame → init frame（.this = 新建对象）下钻；DONE 直
+        // 落原后继（结果即 Target 槽）。全部臂未命中 → 默认臂落原
+        // MirNewIndirect（同步分发器路径——运行期目标必非 tainted
+        // init 或 NoSuchMethod，语义保持）
+        private sealed class IndirectInitSiteInfo
+        {
+            internal string TypeIdLocal = "";        // typeid 槽（分流链复读，强制活跃）
+            internal string TargetLocal = "";        // 原指令结果槽（臂内分配落点 + 回存 frame）
+            internal MirBlock? ExcTarget;            // 原指令异常边
+            internal MirNewIndirect Original = null!; // 默认臂复用原指令
+            internal List<IndirectInitArm> Arms = new();
+        }
+
+        // 单条 new.indirect 臂：一个物化 sheet × 一个 tainted init 重载
+        private sealed class IndirectInitArm
+        {
+            internal MwTypeSymbol AllocType = null!;  // 臂 sheet 的构造形态（MirNewObject 分配用）
+            internal string SheetCanonical = "";
+            internal MwMemberSymbol? InitWrapper;     // 宿主声明级 ..init.wrapper（可空）
+            internal List<string> ExclusionSheets = new(); // 派生物化 sheet（精确化排除项）
+            internal CallSiteInfo Impl = null!;
+        }
+
+        // R2-c：模块内 class init 重载描述（tainted 判定在调用点）；
+        // 声明级形参类型按物化 sheet 逐份代入（镜像 DynamicNewEmitter
+        // .CollectInits 的匹配语义：argc + ArgToken(canonical) 恒等）
+        private sealed class IndirectInitOverload
+        {
+            internal MirFunction InitFn = null!;
+            internal MwTypeSymbol HostTemplate = null!;
+            internal List<string> DeclParamTypeRefs = new();
+            internal MwMemberSymbol? Wrapper;
+            internal List<(TypeLayoutPlan Plan, List<string> ParamTypes)>? Sheets;
         }
 
         // 含挂起点 init 的构造点协议信息：分配与 init 下钻分离——
@@ -655,13 +1159,17 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 单条落参：直落 = 调用点实参槽；TypeIdConst = MirGetTypeId
-        // 常量 typeid；CallerTypeId = 调用方 .generic.* 局部转抄
+        // 常量 typeid；CallerTypeId = 调用方 .generic.* 局部转抄；
+        // ReceiverTypeIdField = 运行期从接收者实例隐藏 typeid 字段
+        //（#..generic.）读取（泛型宿主虚派发臂——静态构造形态被
+        // 接收者 cast 剥成裸模板时，真实构造实参恒在实例头隐藏槽）
         private sealed class ArgDrop
         {
             internal string FrameFieldSymbol = "";
             internal MirOperand? Operand;
             internal string? TypeIdTypeRef;
             internal string? CallerTypeIdLocal;
+            internal string? ReceiverTypeIdField;
         }
 
         // B-2 虚派发挂起点：闭包全类臂（最深派生优先——臂条件
@@ -674,7 +1182,7 @@ namespace RigiCompiler.Middleware.Passes
             internal string ReceiverLocal = "";      // 接收者槽（分流链复读，强制活跃）
             internal string? Result;                 // 原调用结果槽
             internal MirBlock? ExcTarget;            // 原调用异常边
-            internal MirCall OriginalCall = null!;   // 默认臂/非 tainted 臂复用原指令
+            internal MirInst OriginalCall = null!;   // 默认臂/非 tainted 臂复用原指令（MirCall/MirInvokeIndirect）
             internal List<VirtualArm> Arms = new();  // 全闭包类臂（最深派生优先）
         }
 
@@ -682,6 +1190,12 @@ namespace RigiCompiler.Middleware.Passes
         {
             internal string ClassCanonical = "";
             internal CallSiteInfo? Impl;             // 非 tainted 实现为 null（落原调用）
+            // R2-a：臂条件 type.is 目标集——首元素恒为类 canonical
+            //（非泛型 = 唯一元素；泛型类 = 模板空壳 + 模块内全部闭
+            // 合构造 sheet：实例头是构造 sheet 且其基链不含模板空
+            // 壳，单模板键判定恒 miss；开放占位 new 的实例仍携模
+            // 板空壳，故模板键保留在首位）
+            internal List<string> TypeRefs = null!;
         }
 
         // split 模式：Tasked = Task 包装（async fn 与 tainted main——
@@ -764,6 +1278,39 @@ namespace RigiCompiler.Middleware.Passes
                             State = points.Count + 1,
                             Inst = inst,
                             Virtual = new VirtualSiteInfo(),
+                        };
+                    }
+                    // R2-b：invoke.indirect 挂起点——$$call 闭包内任
+                    // 一实现 tainted 则整点升级（接收者 = CallTarget，
+                    // 虚派发臂协议同 MirCall 形态）
+                    if (point == null && inst is MirInvokeIndirect invoke
+                        && ClosurePairsOf(context,
+                            IndirectCallOperatorOf(context, fn, invoke),
+                            operatorDispatch: false)
+                            .Any(p => tainted.Contains(p.ImplCanonical)))
+                    {
+                        point = new SuspensionPoint
+                        {
+                            Block = block,
+                            InstIndex = i,
+                            State = points.Count + 1,
+                            Inst = inst,
+                            Virtual = new VirtualSiteInfo(),
+                        };
+                    }
+                    // R2-c：new.indirect 挂起点——模块内 tainted
+                    // class init 与站点静态实参形精确匹配则整点升
+                    // 级（精确 sheet 臂协议）
+                    if (point == null && inst is MirNewIndirect newIndirect
+                        && IndirectInitRelevant(context, fn, newIndirect, tainted))
+                    {
+                        point = new SuspensionPoint
+                        {
+                            Block = block,
+                            InstIndex = i,
+                            State = points.Count + 1,
+                            Inst = inst,
+                            IndirectInit = new IndirectInitSiteInfo(),
                         };
                     }
                     if (point != null)
@@ -936,6 +1483,27 @@ namespace RigiCompiler.Middleware.Passes
                         }
                     }
                 }
+                // R2-c：new.indirect 点的 typeid 槽（恢复分流链复
+                // 读）、Target 槽（臂内分配落点 + 回存）与各臂
+                // callee frame 槽恒活跃
+                if (point.IndirectInit != null)
+                {
+                    if (!point.LiveAfter.Contains(point.IndirectInit.TypeIdLocal))
+                    {
+                        point.LiveAfter.Add(point.IndirectInit.TypeIdLocal);
+                    }
+                    if (!point.LiveAfter.Contains(point.IndirectInit.TargetLocal))
+                    {
+                        point.LiveAfter.Add(point.IndirectInit.TargetLocal);
+                    }
+                    foreach (var arm in point.IndirectInit.Arms)
+                    {
+                        if (!point.LiveAfter.Contains(arm.Impl.CalleeLocal))
+                        {
+                            point.LiveAfter.Add(arm.Impl.CalleeLocal);
+                        }
+                    }
+                }
             }
         }
 
@@ -963,6 +1531,7 @@ namespace RigiCompiler.Middleware.Passes
             MirSetArray setArray => setArray.ExcTarget,
             MirNewIndirect newIndirect => newIndirect.ExcTarget,
             MirNewObject newObject => newObject.ExcTarget,
+            MirNewValue newValue => newValue.ExcTarget,
             MirGetField getField => getField.ExcTarget,
             MirAwait awaitInst => awaitInst.ExcTarget,
             _ => null,
@@ -1204,6 +1773,8 @@ namespace RigiCompiler.Middleware.Passes
             PrepareCallSites(context, mir, fn, points, tainted, mode);
             // B-2：虚派发挂起点建分流臂协议信息（同理先入 fn.Locals）
             PrepareVirtualCallSites(context, mir, fn, points, tainted);
+            // R2-c：new.indirect 挂起点建精确 sheet 臂协议信息（同理）
+            PrepareIndirectInitSites(context, mir, fn, points, tainted);
             AnalyzeLiveness(fn, points);
 
             // 保存槽集 = 全部参数 ∪ 类级 .generic.* 局部（恒活跃）∪ 各
@@ -1324,7 +1895,9 @@ namespace RigiCompiler.Middleware.Passes
                         };
                         withThis.AddRange(newObject.Args);
                         args = withThis;
-                        target = newObject.Init;
+                        // 挂起点判定（taint 分析）已保证 Init 非空
+                        //（Init = null 的无 init 构造无体可 taint）
+                        target = newObject.Init!;
                         hostConstructedRef = newObject.Type.Canonical;
                         break;
                     default:
@@ -1398,8 +1971,10 @@ namespace RigiCompiler.Middleware.Passes
         // B-2 虚派发挂起点协议信息回填：闭包全类臂（最深派生优先
         // 排序——type.is 子类判定下浅类臂不得遮蔽深类）；tainted
         // 实现臂建 callee frame 槽 + 落参计划（每实现一套，frame
-        // 类型随实现不同）；泛型宿主闭包受控拒绝（构造形态臂条件
-        // 需 construction 级派发知识，布局查询是模板键——容量外）
+        // 类型随实现不同）。R2-a：泛型宿主闭包放开（臂条件 OR 链
+        // 见 ArmTypeRefsOf）；R2-b：invoke.indirect 站点（$$call
+        // 闭包）同机制——接收者 = CallTarget，落参实参 = receiver
+        // + 调用点实参
         private void PrepareVirtualCallSites(MwContext context, MirModule mir,
             MirFunction fn, List<SuspensionPoint> points, HashSet<string> tainted)
         {
@@ -1409,24 +1984,58 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     continue;
                 }
-                var call = (MirCall)point.Inst;
-                var target = call.Target;
-                if (target.Owner!.Declaration.GenericParameters.Count > 0)
+                MwMemberSymbol target;
+                IReadOnlyList<MirOperand> callArgs;
+                MirOperand receiverOperand;
+                string? siteResult;
+                MirBlock? siteExcTarget;
+                string? hostConstructedRef;
+                bool operatorDispatch;
+                switch (point.Inst)
                 {
-                    throw new MwNotSupportedException(
-                        "B-2 暂不支持泛型宿主虚派发链上的挂起点: " + target.Canonical);
+                    case MirCall call:
+                        target = call.Target;
+                        callArgs = call.Args;
+                        receiverOperand = call.Args.Count > 0
+                            ? call.Args[0]
+                            : throw new CompilerInternalException(
+                                "虚派发挂起点缺接收者实参: " + call.Target.Canonical);
+                        siteResult = call.Result;
+                        siteExcTarget = call.ExcTarget;
+                        hostConstructedRef = call.HostConstructedRef;
+                        operatorDispatch = call.OperatorDispatch;
+                        break;
+                    case MirInvokeIndirect invoke:
+                        // R2-b：callable 协议——静态目标 = 沿 extends
+                        // 链解析的 $$call 成员；闭包臂同虚派发
+                        target = IndirectCallOperatorOf(context, fn, invoke);
+                        var withReceiver = new List<MirOperand> { invoke.CallTarget };
+                        withReceiver.AddRange(invoke.Args);
+                        callArgs = withReceiver;
+                        receiverOperand = invoke.CallTarget;
+                        siteResult = invoke.Result;
+                        siteExcTarget = invoke.ExcTarget;
+                        hostConstructedRef = null;
+                        operatorDispatch = false;
+                        break;
+                    default:
+                        throw new CompilerInternalException(
+                            "虚派发挂起点的非预期指令形态: " + point.Inst.GetType().Name);
                 }
-                var pairs = ClosurePairsOf(context, target, call.OperatorDispatch);
-                if (call.Args.Count == 0
-                    || call.Args[0] is not MirLocalOperand receiver)
+                // R2-a：泛型宿主闭包放开——臂条件 type.is 以模板键
+                // 判定类身份（泛型共享体实例头即模板 sheet 族，构造
+                // 实参不影响子类判定）；tainted 实现的类级 typeid 落
+                // 参由 PlanArgDrops 的实例隐藏字段回退供给
+                var pairs = ClosurePairsOf(context, target, operatorDispatch);
+                if (receiverOperand is not MirLocalOperand receiver)
                 {
                     throw new CompilerInternalException(
-                        "虚派发挂起点缺接收者实参: " + target.Canonical);
+                        "虚派发挂起点接收者非局部: " + target.Canonical);
                 }
                 point.Virtual.ReceiverLocal = receiver.Name;
-                point.Virtual.Result = call.Result;
-                point.Virtual.ExcTarget = call.ExcTarget;
-                point.Virtual.OriginalCall = call;
+                point.Virtual.Result = siteResult;
+                point.Virtual.ExcTarget = siteExcTarget;
+                point.Virtual.OriginalCall = point.Inst;
                 // 每 distinct tainted 实现一套协议信息
                 var implEntries = new Dictionary<string, CallSiteInfo>(
                     System.StringComparer.Ordinal);
@@ -1462,8 +2071,12 @@ namespace RigiCompiler.Middleware.Passes
                                         frameCanonical, ResultSlotName,
                                         callee.ReturnType.Canonical),
                             };
-                            PlanArgDrops(context, fn, entry, callee, call.Args,
-                                call.HostConstructedRef);
+                            PlanArgDrops(context, fn, entry, callee, callArgs,
+                                hostConstructedRef,
+                                // R2-a：虚派发臂的运行期 typeid 回退
+                                // 源 = 接收者实例（臂命中即 is-a 宿主，
+                                // 隐藏字段恒在）
+                                receiverOperand);
                             implEntries.Add(implCanonical, entry);
                         }
                     }
@@ -1471,6 +2084,7 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         ClassCanonical = classCanonical,
                         Impl = entry,
+                        TypeRefs = ArmTypeRefsOf(context, classCanonical),
                     });
                 }
                 // 最深派生优先（臂条件 type.is 是子类判定）：深度 =
@@ -1485,6 +2099,37 @@ namespace RigiCompiler.Middleware.Passes
                         "虚派发挂起点闭包内无 tainted 实现: " + target.Canonical);
                 }
             }
+        }
+
+        // R2-a：臂条件 type.is 目标集——非泛型类 = [类 canonical]；
+        // 泛型类 = [模板 canonical] + 模块内全部闭合构造 canonical
+        //（布局计划表枚举；实例头 sheet 只可能是模板空壳或某个已
+        // 物化闭合构造，构造链基链覆盖派生类实例——臂只需枚举臂
+        // 类自身的构造，派生构造实例沿其构造基链命中）
+        private static List<string> ArmTypeRefsOf(MwContext context,
+            string classCanonical)
+        {
+            var refs = new List<string> { classCanonical };
+            if (context.Layout == null)
+            {
+                return refs;
+            }
+            foreach (var plan in context.Layout.Plans)
+            {
+                var canonical = plan.Symbol.Canonical;
+                if (canonical == classCanonical
+                    || !Layout.ConstructedTypeCollector.IsConstructed(canonical))
+                {
+                    continue;
+                }
+                var stripped = BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(canonical));
+                if (stripped == classCanonical)
+                {
+                    refs.Add(canonical);
+                }
+            }
+            return refs;
         }
 
         private static int DepthOf(IMwDispatchQuery query, string classCanonical,
@@ -1509,7 +2154,7 @@ namespace RigiCompiler.Middleware.Passes
         // .generic.* 局部转抄；其余形态受控拒绝）
         private static void PlanArgDrops(MwContext context, MirFunction fn,
             CallSiteInfo site, MirFunction callee, IReadOnlyList<MirOperand> args,
-            string? hostConstructedRef)
+            string? hostConstructedRef, MirOperand? runtimeTypeIdReceiver = null)
         {
             var expected = new List<MirLocal>();
             var hiddenTypeIds = new List<MirLocal>();
@@ -1574,9 +2219,31 @@ namespace RigiCompiler.Middleware.Passes
                 : null;
             if (substitution == null)
             {
-                throw new MwNotSupportedException(
-                    "B-2 暂不支持宿主构造形态静态不可知的 tainted 调用（类级 typeid 无法合成）: "
-                    + callee.Symbol.Canonical);
+                // 泛型 class 宿主虚派发臂回退（R2-a）：静态构造形态
+                // 被接收者 cast 剥成裸模板不可知时，类级 typeid 改从
+                // 接收者实例隐藏 typeid 字段运行期读取（class 宿主
+                // 对象头恒藏构造实参 typeid；值类型宿主无对象头，
+                // 维持受控拒绝）
+                if (runtimeTypeIdReceiver == null
+                    || owner.Declaration.Kind != BilTypeKind.Class)
+                {
+                    throw new MwNotSupportedException(
+                        "B-2 暂不支持宿主构造形态静态不可知的 tainted 调用（类级 typeid 无法合成）: "
+                        + callee.Symbol.Canonical);
+                }
+                foreach (var parameter in hiddenTypeIds)
+                {
+                    site.Drops.Add(new ArgDrop
+                    {
+                        FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                            site.CalleeFrameCanonical, parameter.Name,
+                            parameter.Type.Canonical),
+                        ReceiverTypeIdField = GenericAbi.HiddenFieldSymbol(
+                            owner.Canonical,
+                            parameter.Name.Substring(".generic.".Length)),
+                    });
+                }
+                return;
             }
             foreach (var parameter in hiddenTypeIds)
             {
@@ -1976,6 +2643,13 @@ namespace RigiCompiler.Middleware.Passes
                     // 实现的调用块再下钻
                     resumeTarget = VirtualResumeDispatchId(point);
                 }
+                else if (point.IndirectInit != null)
+                {
+                    // R2-c：重回恢复分流链（IsTypeId 重判——typeid
+                    // 已从 frame 恢复，值不变必命中同臂）直落对应
+                    // 臂的调用块再下钻
+                    resumeTarget = IndirectInitResumeDispatchId(point);
+                }
                 else if (point.Inst is MirAwait)
                 {
                     resumeTarget = WaitBlockId(point);
@@ -2048,6 +2722,13 @@ namespace RigiCompiler.Middleware.Passes
                             headInsts, frameOp, stateFieldSymbol, taskFieldSymbol,
                             taskTypeRef, syms, EmitSave, I32Const, Fresh);
                     }
+                    else if (point.IndirectInit != null)
+                    {
+                        EmitNewIndirectSplit(context, mir, resumeFn, fn, point,
+                            currentId, headInsts, frameOp, stateFieldSymbol,
+                            taskFieldSymbol, taskTypeRef, syms, EmitSave, I32Const,
+                            Fresh);
+                    }
                     else if (point.Inst is MirAwait awaitInst)
                     {
                         EmitAwaitSplit(context, resumeFn, fn, point, awaitInst,
@@ -2098,6 +2779,9 @@ namespace RigiCompiler.Middleware.Passes
 
         private static string VirtualResumeDispatchId(SuspensionPoint point) =>
             point.Block.Id + ".call" + point.State + ".vrdisp";
+
+        private static string IndirectInitResumeDispatchId(SuspensionPoint point) =>
+            point.Block.Id + ".call" + point.State + ".nrdisp";
 
         private static string PollGateBlockId(SuspensionPoint point) =>
             point.Block.Id + ".pollgate" + point.State;
@@ -2337,6 +3021,211 @@ namespace RigiCompiler.Middleware.Passes
                     : new MirRetThrow()));
         }
 
+        // R2-c new.indirect × tainted class init 的构造改写（分发点
+        // 本身成为调用方挂起点；对齐 VM New 语义——分配 → init.wrapper
+        // 缝合 → init 调用；init 挂起 = 整条帧链挂起）：
+        //   head（原位置）：存活跃槽 + state=N → 精确 sheet 分流链；
+        //   分流链（首入/恢复共用生成器）：臂条件 IsTypeId(臂 sheet)
+        //     ∧ ¬IsTypeId(各派生排除 sheet)——分发器不继承 init，
+        //     排除派生后等价精确相等（typeid 恢复后不变必命中同臂）；
+        //   臂（首入）：以臂构造形态 MirNewObject 空 init 分配
+        //     （init.wrapper 原位缝合字段初始值）→ Target 槽落定并
+        //     回存本层 frame（head 的 emitSave 先于分流执行）→ 建
+        //     init frame（.this = Target）+ 落参 → callee 槽回存；
+        //   调用块（首入与恢复共用）：MirResumeCall 下钻 → 四码分流
+        //     （0/1 上传 / 2 DONE 直落原后继——结果即 Target 槽 /
+        //     3 取 pending 沿原 MirNewIndirect.ExcTarget 重抛——半
+        //     构造对象随本层托管槽配平释放）；
+        //   默认臂：原 MirNewIndirect 直落续行（同步分发器路径——
+        //     运行期目标必非 tainted init 或 NoSuchMethod，语义保持）。
+        // init frame 所有权归本层（callee 槽持 +1；resume 借用约定
+        // 不做最终 release）
+        private void EmitNewIndirectSplit(MwContext context, MirModule mir,
+            MirFunction resumeFn, MirFunction fn, SuspensionPoint point, string headId,
+            List<MirInst> headInsts, MirLocalOperand frameOp, string stateFieldSymbol,
+            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms,
+            System.Action<List<MirInst>, IReadOnlyList<string>> emitSave,
+            System.Func<int, string, MirLoadResource> i32Const,
+            System.Func<string, MirType, string> fresh)
+        {
+            var site = point.IndirectInit!;
+            var callId = CallBlockId(point);
+            var dispatchId = callId + ".ndisp";
+            var defaultId = callId + ".ndflt";
+            var propSuspendId = callId + ".nprops";
+            var propYieldId = callId + ".npropy";
+            var failId = callId + ".nfail";
+            var typeIdOp = new MirLocalOperand(site.TypeIdLocal);
+            var targetOp = new MirLocalOperand(site.TargetLocal);
+            var callerFrameCanonical = resumeFn.FindLocal(FrameParamName).Type.Canonical;
+            var targetFrameField = SyntheticTypePlanner.FrameFieldSymbol(
+                callerFrameCanonical, site.TargetLocal,
+                fn.FindLocal(site.TargetLocal).Type.Canonical);
+
+            emitSave(headInsts, point.LiveAfter);
+            var stateConst = fresh("$mw.state.c.", I32);
+            headInsts.Add(i32Const(point.State, stateConst));
+            headInsts.Add(new MirSetField(new MirLocalOperand(stateConst), frameOp,
+                stateFieldSymbol));
+            resumeFn.AddBlock(new MirBlock(headId, headInsts,
+                new MirBranch(dispatchId)));
+
+            var armBlockIds = new List<(string New, string Call, string Done)>();
+            for (var k = 0; k < site.Arms.Count; k++)
+            {
+                armBlockIds.Add((callId + ".nnew" + k, callId + ".ncall" + k,
+                    callId + ".ndone" + k));
+            }
+
+            // 分流链（首入/恢复共用生成器；resume=true 时臂直落调
+            // 用块、默认臂防御不可达——挂起前提即首入命中某臂，
+            // typeid 不变）
+            void EmitDispatchChain(string chainId, string checkPrefix, bool resume)
+            {
+                for (var k = 0; k < site.Arms.Count; k++)
+                {
+                    var arm = site.Arms[k];
+                    var checkId = k == 0 ? chainId : checkPrefix + (k - 1) + ".next";
+                    var hitId = resume ? armBlockIds[k].Call : armBlockIds[k].New;
+                    var missId = k + 1 < site.Arms.Count
+                        ? checkPrefix + k + ".next"
+                        : (resume ? "mw.state.bad" : defaultId);
+                    var armCond = fresh("$mw.nchk.", Bool);
+                    resumeFn.AddBlock(new MirBlock(checkId, new List<MirInst>
+                    {
+                        new MirTypeCheck(MirTypeCheckKind.IsTypeId, typeIdOp,
+                            arm.SheetCanonical, null, armCond),
+                    }, new MirCondBranch(new MirLocalOperand(armCond),
+                        arm.ExclusionSheets.Count == 0 ? hitId : checkId + ".x0",
+                        missId)));
+                    for (var x = 0; x < arm.ExclusionSheets.Count; x++)
+                    {
+                        var exCond = fresh("$mw.nchk.", Bool);
+                        var isLast = x + 1 >= arm.ExclusionSheets.Count;
+                        resumeFn.AddBlock(new MirBlock(checkId + ".x" + x,
+                            new List<MirInst>
+                            {
+                                new MirTypeCheck(MirTypeCheckKind.IsTypeId, typeIdOp,
+                                    arm.ExclusionSheets[x], null, exCond),
+                            }, new MirCondBranch(new MirLocalOperand(exCond), missId,
+                                isLast ? hitId : checkId + ".x" + (x + 1))));
+                    }
+                }
+            }
+            EmitDispatchChain(dispatchId, callId + ".nc", resume: false);
+            EmitDispatchChain(IndirectInitResumeDispatchId(point), callId + ".nrc",
+                resume: true);
+
+            // 默认臂：原 new.indirect 直落续行
+            resumeFn.AddBlock(new MirBlock(defaultId,
+                new List<MirInst> { site.Original },
+                new MirBranch(ContBlockId(point))));
+
+            // 每臂：分配 + 建 init frame + 落参（首入）→ 调用块四码
+            for (var k = 0; k < site.Arms.Count; k++)
+            {
+                var arm = site.Arms[k];
+                var ids = armBlockIds[k];
+                var impl = arm.Impl;
+                var calleeOp = new MirLocalOperand(impl.CalleeLocal);
+                var frameType = context.Symbols.FindType(impl.CalleeFrameCanonical)
+                    ?? throw new CompilerInternalException(
+                        "tainted init frame 未预注册: " + impl.CalleeFrameCanonical);
+                var frameInit = context.Symbols.FindMember(
+                    SyntheticTypePlanner.FrameInitCanonicalOf(impl.CalleeFrameCanonical))
+                    ?? throw new CompilerInternalException(
+                        "tainted init frame init 缺失: " + impl.CalleeFrameCanonical);
+                var newInsts = new List<MirInst>
+                {
+                    // 分配（空 init；init.wrapper/异常边原位——字段初
+                    // 始值缝合与半构造抛出语义同静态构造点）
+                    new MirNewObject(arm.AllocType, arm.InitWrapper,
+                        EmptyCtorInit(context, mir, arm.AllocType),
+                        new List<MirOperand>(), site.TargetLocal, null,
+                        site.ExcTarget),
+                    // Target 回存本层 frame（head 的 emitSave 先于分
+                    // 流执行，槽位尚为旧值——恢复块从本层 frame 恢复）
+                    new MirSetField(targetOp, frameOp, targetFrameField),
+                    new MirNewObject(frameType, null, frameInit,
+                        new List<MirOperand>(), impl.CalleeLocal),
+                };
+                foreach (var drop in impl.Drops)
+                {
+                    if (drop.Operand != null)
+                    {
+                        newInsts.Add(new MirSetField(drop.Operand, calleeOp,
+                            drop.FrameFieldSymbol));
+                    }
+                    else if (drop.TypeIdTypeRef != null)
+                    {
+                        var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                        newInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                        newInsts.Add(new MirSetField(new MirLocalOperand(tid),
+                            calleeOp, drop.FrameFieldSymbol));
+                    }
+                    else
+                    {
+                        newInsts.Add(new MirSetField(
+                            new MirLocalOperand(drop.CallerTypeIdLocal!), calleeOp,
+                            drop.FrameFieldSymbol));
+                    }
+                }
+                // callee 槽回存本层 frame（同 Target 回存理由）
+                newInsts.Add(new MirSetField(calleeOp, frameOp,
+                    SyntheticTypePlanner.FrameFieldSymbol(callerFrameCanonical,
+                        impl.CalleeLocal, impl.CalleeFrameCanonical)));
+                resumeFn.AddBlock(new MirBlock(ids.New, newInsts,
+                    new MirBranch(ids.Call)));
+
+                var code = fresh("$mw.call.code.", I32);
+                var codeTable = new BilSwitchTableResource(
+                    "$mw.coroutine.call." + _resourceCounter++, ".i32",
+                    new[] { "0", "1", "2", "3" });
+                context.Module.Resources.Add(codeTable);
+                resumeFn.AddBlock(new MirBlock(ids.Call, new List<MirInst>
+                {
+                    new MirResumeCall(impl.ResumeSymbol, impl.CalleeLocal, code),
+                }, new MirSwitch(new MirLocalOperand(code), codeTable,
+                    new[] { propSuspendId, propYieldId, ids.Done, failId },
+                    "mw.state.bad")));
+
+                // DONE：结果即 Target 槽（臂内已落定），直落原后继
+                resumeFn.AddBlock(new MirBlock(ids.Done, new List<MirInst>(),
+                    new MirBranch(ContBlockId(point))));
+            }
+
+            // SUSPENDED/YIELDED 上传（各臂调用块共用两块——上传码
+            // 是常量；Tasked 调用方先投影自身 Task Suspended）
+            void EmitPropBlock(string blockId, int resumeCode)
+            {
+                var propInsts = new List<MirInst>();
+                if (taskFieldSymbol != null)
+                {
+                    EmitTaskMark(context, propInsts, frameOp, taskFieldSymbol,
+                        taskTypeRef!, "markSuspended", fresh);
+                }
+                var propCode = fresh("$mw.code.", I32);
+                propInsts.Add(i32Const(resumeCode, propCode));
+                resumeFn.AddBlock(new MirBlock(blockId, propInsts,
+                    new MirRet(new MirLocalOperand(propCode))));
+            }
+            EmitPropBlock(propSuspendId, ResumeSuspended);
+            EmitPropBlock(propYieldId, ResumeYielded);
+
+            // FAILED（共用）：pending 已在 TLS（callee plain 垫尾保
+            // 持置位），取走重抛沿原构造异常边
+            var exc = fresh("$mw.call.exc.", Any);
+            var failInsts = new List<MirInst>
+            {
+                new MirTakePending(exc),
+                new MirThrow(new MirLocalOperand(exc), site.ExcTarget),
+            };
+            resumeFn.AddBlock(new MirBlock(failId, failInsts,
+                site.ExcTarget != null
+                    ? (MirTerminator)new MirBranch(site.ExcTarget.Id)
+                    : new MirRetThrow()));
+        }
+
         // B-2 虚/interface/class 运算符派发挂起点改写（调用点动态分
         // 流；对齐 VM 帧栈模型——运行期目标是谁，挂起/恢复语义就与
         // 直调该目标完全一致）：
@@ -2395,14 +3284,15 @@ namespace RigiCompiler.Middleware.Passes
             }
 
             // 分流链（首入/恢复共用生成器；resume=true 时 tainted 臂
-            // 直落调用块、默认臂防御不可达）
+            // 直落调用块、默认臂防御不可达）。R2-a：单臂多 type.is
+            // 目标（泛型类 = 模板空壳 + 各闭合构造 sheet）——同臂内
+            // 逐目标 OR，任一命中即进臂
             void EmitDispatchChain(string chainId, string checkPrefix, bool resume)
             {
                 for (var k = 0; k < site.Arms.Count; k++)
                 {
                     var arm = site.Arms[k];
                     var checkId = k == 0 ? chainId : checkPrefix + (k - 1) + ".next";
-                    var cond = fresh("$mw.vchk.", Bool);
                     string hitId;
                     string missId;
                     if (arm.Impl != null)
@@ -2420,11 +3310,18 @@ namespace RigiCompiler.Middleware.Passes
                     missId = k + 1 < site.Arms.Count
                         ? checkPrefix + k + ".next"
                         : (resume ? "mw.state.bad" : defaultId);
-                    resumeFn.AddBlock(new MirBlock(checkId, new List<MirInst>
+                    for (var t = 0; t < arm.TypeRefs.Count; t++)
                     {
-                        new MirTypeCheck(MirTypeCheckKind.Is, receiverOp,
-                            arm.ClassCanonical, null, cond),
-                    }, new MirCondBranch(new MirLocalOperand(cond), hitId, missId)));
+                        var cond = fresh("$mw.vchk.", Bool);
+                        var isLast = t + 1 >= arm.TypeRefs.Count;
+                        var thisCheckId = t == 0 ? checkId : checkId + ".t" + t;
+                        resumeFn.AddBlock(new MirBlock(thisCheckId, new List<MirInst>
+                        {
+                            new MirTypeCheck(MirTypeCheckKind.Is, receiverOp,
+                                arm.TypeRefs[t], null, cond),
+                        }, new MirCondBranch(new MirLocalOperand(cond), hitId,
+                            isLast ? missId : checkId + ".t" + (t + 1))));
+                    }
                 }
             }
             EmitDispatchChain(dispatchId, callId + ".vc", resume: false);
@@ -2464,6 +3361,16 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
                         newInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                        newInsts.Add(new MirSetField(new MirLocalOperand(tid),
+                            calleeOp, drop.FrameFieldSymbol));
+                    }
+                    else if (drop.ReceiverTypeIdField != null)
+                    {
+                        // R2-a：类级 typeid 运行期取自接收者实例隐
+                        // 藏字段（首入块执行，接收者槽仍活跃）
+                        var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                        newInsts.Add(new MirGetField(receiverOp,
+                            drop.ReceiverTypeIdField, tid));
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
                     }
@@ -3623,8 +4530,13 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 真实 Task init 判定（排除本 pass 合成的空 init）
-        private bool IsRealTaskInit(MwMemberSymbol init)
+        private bool IsRealTaskInit(MwMemberSymbol? init)
         {
+            // L7：Init = null（无 init 声明零参 new）必非 Task init
+            if (init == null)
+            {
+                return false;
+            }
             if (_taskEmptyInits.Values.Any(s => s.Canonical == init.Canonical))
             {
                 return false;

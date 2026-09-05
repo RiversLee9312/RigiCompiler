@@ -15,11 +15,39 @@ namespace RigiCompiler.Middleware.Layout
             IReadOnlyDictionary<string, IReadOnlyList<(string Method, string Wrapper)>>?
                 methodSlots = null)
         {
+            // R3：open rich struct 继承（SYNTAX §8：可继承的 struct 须
+            // open rich）——基类字段前缀式排布（与 ClassLayout 同口径：
+            // 基类字段在前、本类字段自基类 Size 续排、基类 refMap 位点
+            // 按绝对偏移回放——值类型无对象头，basePos 从 0 起），
+            // basePlan 链接入（TypeSheet.baseTypeId 链供 rigi_type_is）。
+            // enum struct 固定链不参与用户继承，不走此支
+            TypeLayoutPlan? basePlan = null;
+            if (!isEnum && type.Declaration.ExtendsType is { } baseRef
+                && symbols.FindTypeByRef(baseRef) is { IsExternal: false } baseType
+                && baseType.Declaration.Kind == BilTypeKind.Struct)
+            {
+                basePlan = LayoutEngine.Resolve(baseType, symbols, table, visiting, null,
+                    methodSlots);
+            }
             var fields = new List<FieldPlan>();
             // enum：偏移 0 恒 u32 隐藏判别字段（占 4B），实例字段续排
             var offset = isEnum ? 4 : 0;
             var alignment = isEnum ? 4 : 1;
             var refEntries = new List<RefMapBuilder.RefSite>();
+            if (basePlan != null)
+            {
+                fields.AddRange(basePlan.Fields);
+                offset = basePlan.Size;
+                alignment = basePlan.Alignment;
+                var basePos = 0L;
+                foreach (var entry in basePlan.RefMap)
+                {
+                    basePos += (long)TypeLayout.RefMapHopOf(entry) * LayoutEngine.ReferenceSlotSize;
+                    refEntries.Add(new RefMapBuilder.RefSite((int)basePos,
+                        TypeLayout.RefMapKindOf(entry), null));
+                    basePos += LayoutEngine.ReferenceSlotSize;
+                }
+            }
             foreach (var member in LayoutEngine.InstanceFields(type))
             {
                 var info = LayoutEngine.ClassifyFieldType(LayoutEngine.FieldTypeOf(member), symbols, table, visiting);
@@ -56,7 +84,7 @@ namespace RigiCompiler.Middleware.Layout
                 size, alignment, LayoutEngine.TypeFlagsOf(type), fields,
                 slots, System.Array.Empty<(string, int)>(),
                 RefMapBuilder.BuildRefMap(fields, refEntries, 0),
-                enumCases, null,
+                enumCases, basePlan,
                 ifaceClosure: VTablePlanner.CollectIfaceClosure(type.Canonical, type, symbols));
         }
 

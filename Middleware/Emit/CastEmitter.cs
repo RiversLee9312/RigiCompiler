@@ -81,6 +81,18 @@ namespace RigiCompiler.Middleware.Emit
                 EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
                 return;
             }
+            // R3：值类型沿 open struct 继承链向上转换（Child→Base）——
+            // VM TryCast TypesAssignable → Copy 恒过；native 内联槽按
+            // 静态类型定尺寸，结构性保留前缀（继承布局前缀式切片）。
+            // 此前落 EmitFail 无条件抛 CastException。已知残留差：经
+            // 具体类型航点后运行期身份（is 判定）不保留（胖 ABI 改造
+            // 超出本修复范围）
+            if (IsStructUpcast(session, sourceType, targetType))
+            {
+                ArcEmitter.EmitCopyRichValue(session, builder, slots[inst.Target].Slot,
+                    slots[source.Name].Slot, targetType);
+                return;
+            }
             EmitFail(session, builder, slots, inst, sourceType, targetType, resultType);
         }
 
@@ -258,6 +270,42 @@ namespace RigiCompiler.Middleware.Emit
                 return bits;
             }
             return builder.BuildTrunc(bits, destTy, "cast.f2i.t");
+        }
+
+        // R3：值类型向上转换判定——source 声明沿 extends 链可达 target
+        //（两侧剥构造实参取模板；同型/非值类型不算）
+        private static bool IsStructUpcast(ModuleBuilder.Session session, MirType source,
+            MirType target)
+        {
+            if (!session.IsInlineValueType(source, out _)
+                || !session.IsInlineValueType(target, out _))
+            {
+                return false;
+            }
+            var targetKey = Bil.BilVerificationContext.StripTypeArguments(
+                Symbols.MwTypeKey.Normalize(target.Canonical));
+            var sourceKey = Bil.BilVerificationContext.StripTypeArguments(
+                Symbols.MwTypeKey.Normalize(source.Canonical));
+            if (sourceKey == targetKey)
+            {
+                return false;
+            }
+            var sym = session.Symbols.FindTypeByRef(sourceKey);
+            for (var depth = 0; sym != null && depth < 64; depth++)
+            {
+                if (sym.Declaration.ExtendsType is not { } extendsRef)
+                {
+                    return false;
+                }
+                var baseKey = Bil.BilVerificationContext.StripTypeArguments(
+                    Symbols.MwTypeKey.Normalize(extendsRef));
+                if (baseKey == targetKey)
+                {
+                    return true;
+                }
+                sym = session.Symbols.FindTypeByRef(baseKey);
+            }
+            return false;
         }
 
         private static int FloatToIntKind(string key) => key switch

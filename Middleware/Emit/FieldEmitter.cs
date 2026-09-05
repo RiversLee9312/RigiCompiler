@@ -28,12 +28,17 @@ namespace RigiCompiler.Middleware.Emit
                     return;
                 }
                 var field = Resolve(session, inst.FieldSymbol);
-                var pointer = FieldPointer(session, builder, slots, inst.Object, field.Offset);
+                var placeholderHost = MaterializePlaceholderValueHost(session, builder, slots,
+                    inst.Object, inst.FieldSymbol, inst.ExcTarget);
+                var pointer = placeholderHost != null
+                    ? ByteGep(builder, placeholderHost.HostSlot, field.Offset)
+                    : FieldPointer(session, builder, slots, inst.Object, field.Offset);
                 var fieldType = FieldMirType(inst.FieldSymbol);
                 if (field.EmbeddedPlan != null)
                 {
                     ArcEmitter.EmitInitRichValue(session, builder, slots[inst.Target].Slot,
                         pointer, fieldType);
+                    placeholderHost?.Destroy(session, builder);
                     return;
                 }
                 var value = builder.BuildLoad2(FieldType(session, inst.FieldSymbol), pointer,
@@ -43,6 +48,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     BoxEmitter.UnboxToLocal(session, builder, slots, value, targetType,
                         inst.Target, fieldType, inst.ExcTarget);
+                    placeholderHost?.Destroy(session, builder);
                     return;
                 }
                 // MW12 清偿：借用字段（.capture.this / #.host@）的读侧不再
@@ -55,13 +61,16 @@ namespace RigiCompiler.Middleware.Emit
                     case ManagedSlotKind.FatReference:
                         builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, value,
                             "field.get"), slots[inst.Target].Slot);
-                        return;
+                        break;
                     case ManagedSlotKind.String:
                         builder.BuildStore(ArcEmitter.ProduceStringValue(session, builder, value),
                             slots[inst.Target].Slot);
-                        return;
+                        break;
+                    default:
+                        builder.BuildStore(value, slots[inst.Target].Slot);
+                        break;
                 }
-                builder.BuildStore(value, slots[inst.Target].Slot);
+                placeholderHost?.Destroy(session, builder);
             }
         }
 
@@ -70,10 +79,80 @@ namespace RigiCompiler.Middleware.Emit
             protected override void VisitCore(MirSetField inst, ModuleBuilder.Session session)
             {
                 var field = Resolve(session, inst.FieldSymbol);
-                var pointer = FieldPointer(session, session.Builder, session.Slots, inst.Object,
-                    field.Offset);
-                StoreAt(session, session.Builder, session.Slots, field, inst.FieldSymbol,
+                var slots = session.Slots;
+                var placeholderHost = MaterializePlaceholderValueHost(session, session.Builder,
+                    slots, inst.Object, inst.FieldSymbol, null);
+                var pointer = placeholderHost != null
+                    ? ByteGep(session.Builder, placeholderHost.HostSlot, field.Offset)
+                    : FieldPointer(session, session.Builder, slots, inst.Object, field.Offset);
+                StoreAt(session, session.Builder, slots, field, inst.FieldSymbol,
                     pointer, inst.Source);
+                // 占位宿主写回：临时槽（含本次写入）重装箱回源占位槽——
+                // VM 对占位接收者的字段写原地生效（调用方写回链依赖）
+                placeholderHost?.Writeback(session, session.Builder, slots);
+            }
+        }
+
+        // 占位槽作值类型宿主（.generic.* 槽装的内联值类型盒，如
+        // b.item.v 读写链——此前胖值 payload 直当对象指针寻址，tag0
+        // 内联盒必 AV）：拆箱到入口临时槽再按值类型宿主寻址；不符抛
+        // CastException（MW9b-G 口径，同 UnboxToLocal）。非此形态返回
+        // null（class 宿主/内联值类型槽走原路径）
+        private static PlaceholderValueHost? MaterializePlaceholderValueHost(
+            ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirOperand objectOperand, string fieldSymbol, MirBlock? excTarget)
+        {
+            if (objectOperand is not MirLocalOperand objectLocal
+                || !TypeLayout.IsGenericPlaceholder(slots[objectLocal.Name].Local.Type)
+                // 开放构造值类型（WPair<.generic<…>>）槽本身是内联值
+                // ABI（指针），不是胖盒——canonical 含占位但无需拆箱
+                || session.IsInlineValueType(slots[objectLocal.Name].Local.Type, out _))
+            {
+                return null;
+            }
+            var hash = fieldSymbol.IndexOf('#');
+            if (hash < 0)
+            {
+                return null;
+            }
+            var hostType = MirType.Of(fieldSymbol.Substring(0, hash));
+            if (!session.IsInlineValueType(hostType, out var plan))
+            {
+                return null;
+            }
+            var temp = LlvmEmitEnvironment.BuildEntryAlloca(builder,
+                LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "field.ph");
+            temp.Alignment = (uint)plan.Alignment;
+            var fat = session.LoadLocal(builder, slots, objectOperand);
+            BoxEmitter.UnboxToSlot(session, builder, fat, hostType, temp,
+                slots[objectLocal.Name].Local.Type, excTarget);
+            return new PlaceholderValueHost(objectLocal.Name, temp, hostType);
+        }
+
+        // 占位值类型宿主的临时槽载体：Get 读毕销毁；Set 写后重装箱
+        // 写回源占位槽再销毁
+        private sealed record PlaceholderValueHost(string SourceName, LLVMValueRef HostSlot,
+            MirType HostType)
+        {
+            internal void Destroy(ModuleBuilder.Session session, LLVMBuilderRef builder) =>
+                ArcEmitter.EmitDestroyRichValue(session, builder, HostSlot, HostType);
+
+            internal void Writeback(ModuleBuilder.Session session, LLVMBuilderRef builder,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots)
+            {
+                // R3：open struct 宿主——盒可能保子类型身份，原地补丁
+                // 写回（不重装箱切片；VM 占位槽原地生效同口径）
+                if (BoxEmitter.IsOpenStructType(session, HostType))
+                {
+                    BoxEmitter.EmitSubtypeBoxWriteback(session, builder, slots, SourceName,
+                        HostSlot, HostType);
+                    Destroy(session, builder);
+                    return;
+                }
+                ArcEmitter.MoveFatValue(session, builder, slots[SourceName].Slot,
+                    BoxEmitter.BoxFromSlot(session, builder, HostSlot, HostType));
+                Destroy(session, builder);
             }
         }
 

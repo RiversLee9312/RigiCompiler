@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -1338,6 +1338,159 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    const r = add\\<VNum>(new VNum(3), new VNum(4))\n" +
                 "    return r.n\n" +
+                "}\n"),
+            // 缺陷 1 回归（B-2 遗留）：值类型方法 + 泛型占位构造接收者
+            // ——place 链物化的接收者槽保持占位类型，native 调用点拆箱
+            // 适配（修复前胖值位模式直传当内联值指针用，读出垃圾）
+            // 缺陷 3 回归（MW12 遗留 pre-existing 0xC0000409）：
+            // RangeI32 for-loop——abstract 基类声明接口方法的 abstract
+            // override，具体子类实现；native vtable 接口实现段别名槽须
+            // 随 override 一并替换（修复前滞留抽象基员 null 槽，接口
+            // 派发经 baseTypeId 链命中段基址调空槽）
+            Case("RangeI32 for-loop（抽象基类 + 构造接口派发）",
+                "pub func main(): i32 {\n" +
+                "    var sum = 0\n" +
+                "    for (i in 0 to 4) {\n" +
+                "        sum = (sum + i)\n" +
+                "    }\n" +
+                "    if ((sum != 6)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 3 根因最小形态（非泛型）：abstract override + 子类
+            // 实现 + 接口派发
+            Case("接口派发：abstract override 别名槽随子类覆盖",
+                "pub interface IE {\n" +
+                "    func m(): i32\n" +
+                "}\n" +
+                "pub abstract class AbsN implements IE {\n" +
+                "    pub abstract override func m(): i32\n" +
+                "}\n" +
+                "pub class CN : AbsN {\n" +
+                "    pub override func m(): i32 { return 42 }\n" +
+                "}\n" +
+                "func callIt(e: IE): i32 { return e.m() }\n" +
+                "pub func main(): i32 {\n" +
+                "    if ((callIt(new CN()) != 42)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 3 根因最小形态（泛型抽象基类 + 构造接口，RangeEnumerator
+            // 同构）
+            Case("接口派发：泛型抽象基类 abstract override 子类覆盖",
+                "pub interface IE\\<T> {\n" +
+                "    func m(): i32\n" +
+                "}\n" +
+                "pub abstract class AbsG\\<T> implements IE\\<T> {\n" +
+                "    pub abstract override func m(): i32\n" +
+                "}\n" +
+                "pub class CG : AbsG\\<i32> {\n" +
+                "    pub override func m(): i32 { return 42 }\n" +
+                "}\n" +
+                "func callIt(e: IE\\<i32>): i32 { return e.m() }\n" +
+                "pub func main(): i32 {\n" +
+                "    if ((callIt(new CG()) != 42)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 2 回归（L7 遗留）：全链无 init 声明的零参 new —
+            // native 构造面不再报「new/super 无匹配 init」（VM
+            // TryFindInit「无 init 声明 + 零实参仍构造」同口径）
+            Case("无 init 子类：零参构造（全链无 init）",
+                "pub open class Base {\n" +
+                "}\n" +
+                "pub class Sub : Base {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Sub()\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 2 回归：多层继承全链无 init
+            Case("无 init 子类：三层继承链零参构造",
+                "pub open class A {\n" +
+                "}\n" +
+                "pub open class B : A {\n" +
+                "}\n" +
+                "pub class C : B {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new C()\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 2 回归：基类仅有参 init + 字段带声明初始值——子类
+            // 隐式默认构造不调基类 init 体，字段初值由 ..init.wrapper
+            // 缝合（§9.3/§9.7）
+            Case("无 init 子类：基类仅有参 init 字段初值缝合",
+                "pub open class Base {\n" +
+                "    pub var x: i32 = 5\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub class Sub : Base {\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Sub()\n" +
+                "    if ((s.x != 5)) { return 1 }\n" +
+                "    var t = new Base(9)\n" +
+                "    if ((t.x != 9)) { return 2 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            Case("占位接收者：值类型方法经泛型宿主字段链直调",
+                "pub struct VNum {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func doubled(): i32 { return (this.v + this.v) }\n" +
+                "}\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n" +
+                "func useIt\\<T extends VNum>(b: Box\\<T>): i32 { return b.item.doubled() }\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = useIt\\<VNum>(new Box\\<VNum>(new VNum(21)))\n" +
+                "    if ((r != 42)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 1 回归：变异方法经占位接收者——callee 对 this 的修
+            // 改须重装箱写回占位槽，再经写回链落进宿主字段（VM 原地
+            // 生效语义）
+            Case("占位接收者：值类型变异方法写回",
+                "pub struct VNum {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub func bump() { this.v = (this.v + 1) }\n" +
+                "}\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n" +
+                "func useIt\\<T extends VNum>(b: Box\\<T>) { b.item.bump() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box\\<VNum>(new VNum(21))\n" +
+                "    useIt\\<VNum>(b)\n" +
+                "    if ((b.item.v != 22)) { return 1 }\n" +
+                "    return 42\n" +
+                "}\n"),
+            // 缺陷 1 回归：占位值类型宿主上的字段读写（.generic.* 槽
+            // 装的内联值类型盒——修复前胖值 payload 直当对象指针寻
+            // 址，tag0 内联盒必 AV）
+            Case("占位接收者：值类型宿主字段读写",
+                "pub struct VNum {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n" +
+                "func readIt\\<T extends VNum>(b: Box\\<T>): i32 {\n" +
+                "    var x = b.item\n" +
+                "    return x.v\n" +
+                "}\n" +
+                "func writeIt\\<T extends VNum>(b: Box\\<T>) { b.item.v = 9 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box\\<VNum>(new VNum(21))\n" +
+                "    const r = readIt\\<VNum>(b)\n" +
+                "    if ((r != 21)) { return 1 }\n" +
+                "    writeIt\\<VNum>(b)\n" +
+                "    if ((b.item.v != 9)) { return 2 }\n" +
+                "    return 42\n" +
                 "}\n"),
             // 落空负例（BIL 级）：界承诺的 operator 在实际类型上缺失——
             // VM 抛「没有用户 operator plus：Plain」；native 沿候选链全
@@ -5616,6 +5769,452 @@ namespace RigiCompiler.Tests
                 "    } catch (e: core.RuntimeException) {\n" +
                 "        Console.println(\"caught:\" + e.getMessage())\n" +
                 "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-a㉕ 泛型宿主虚派发链挂起点：臂条件扩展为「模板空
+            // 壳 + 模块内全部闭合构造 sheet」OR 链（泛型实例头是构
+            // 造 sheet，其基链不含模板空壳）；类级 typeid 落参从接
+            // 收者实例隐藏字段运行期读取（静态构造形态被接收者
+            // cast 剥成裸模板）——Box<i32> 模板臂走协议 7、
+            // DerivedBox<i32> 普通臂落原虚调用 51、IntBox（非泛型
+            // 派生自 Box<i32>）经构造基链命中 106
+            Case("栈式跨界 泛型宿主虚派发动态分流",
+                "import core.io.Console\n" +
+                "pub open class Box\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub open func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class DerivedBox\\<T> : Box\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        return n * 10\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class IntBox : Box\\<i32> {\n" +
+                "    pub init() { }\n" +
+                "    pub override func step(n: i32): i32 {\n" +
+                "        yield\n" +
+                "        return n + 100\n" +
+                "    }\n" +
+                "}\n" +
+                "func drive(b: Box\\<i32>, n: i32): i32 {\n" +
+                "    return b.step(n) + 1\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = drive(new Box\\<i32>(), 5)\n" +
+                "    var b = drive(new DerivedBox\\<i32>(), 5)\n" +
+                "    var c = drive(new IntBox(), 5)\n" +
+                "    Console.println((((a.toString() + \",\") + b.toString()) + \",\") + c.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-a㉖ 泛型宿主挂起实现使用 T（类级 typeid 运行期读
+            // 取实证）：id(v: T): T 的 .generic.T 落参取自接收者实
+            // 例隐藏 typeid 字段——i32 与 String 两种构造各经模板
+            // 臂协议恢复后正确拆箱/装箱
+            Case("栈式跨界 泛型宿主挂起实现运行期 typeid",
+                "import core.io.Console\n" +
+                "pub open class Box\\<T> {\n" +
+                "    pub init() { }\n" +
+                "    pub open func id(v: T): T {\n" +
+                "        yield\n" +
+                "        return v\n" +
+                "    }\n" +
+                "}\n" +
+                "func driveId(b: Box\\<i32>, v: i32): i32 {\n" +
+                "    return b.id(v) + 1\n" +
+                "}\n" +
+                "func driveStr(b: Box\\<String>, v: String): String {\n" +
+                "    return b.id(v) + \"!\"\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(driveId(new Box\\<i32>(), 41).toString())\n" +
+                "    Console.println(driveStr(new Box\\<String>(), \"ok\"))\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-b㉗ invoke.indirect 挂起点（callable 协议 $$call
+            // 闭包动态分流，同虚派发臂机制）：含 yield 的 lambda 经
+            // fn 值变量调用走 tainted 臂协议 42
+            Case("栈式跨界 lambda 间接调用挂起",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = func{(x: i32): i32 -> {\n" +
+                "        yield\n" +
+                "        return@_ x + 1\n" +
+                "    }}\n" +
+                "    var r = f(41)\n" +
+                "    Console.println(r.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-b㉘ invoke.indirect 混合闭包：Func<i32,i32> 形参
+            // 站点——tainted lambda（slow）走协议臂 7，普通 lambda
+            //（fast）落默认臂原 invoke.indirect 51；async lambda
+            // 回归（Task 通道不受影响）41
+            Case("栈式跨界 间接调用混合闭包动态分流",
+                "import core.io.Console\n" +
+                "func apply(f: Func\\<i32, i32>, x: i32): i32 {\n" +
+                "    return f(x) + 1\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var slow = func{(x: i32): i32 -> {\n" +
+                "        yield\n" +
+                "        return@_ x + 1\n" +
+                "    }}\n" +
+                "    var fast = func{(x: i32): i32 -> (x * 10)}\n" +
+                "    var a = apply(slow, 5)\n" +
+                "    var b = apply(fast, 5)\n" +
+                "    Console.println((a.toString() + \",\") + b.toString())\n" +
+                "    const g = func{async (): i32 -> 41}\n" +
+                "    const n = await g()\n" +
+                "    Console.println(n.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-b㉙ 捕获 lambda 挂起：捕获 delta 的两个闭包实例
+            // 各自建 frame 下钻（callee frame 含 .capture.this 借用
+            // 字段），结果 15,105
+            Case("栈式跨界 捕获 lambda 间接调用挂起",
+                "import core.io.Console\n" +
+                "func makeAdder(delta: i32): Func\\<i32, i32> {\n" +
+                "    return func{(x: i32): i32 -> {\n" +
+                "        yield\n" +
+                "        return@_ x + delta\n" +
+                "    }}\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var add10 = makeAdder(10)\n" +
+                "    var add100 = makeAdder(100)\n" +
+                "    Console.println((add10(5).toString() + \",\") + add100(5).toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-c㉚ new.indirect × tainted class init（分发点本身
+            // 成为调用方挂起点）：精确 sheet 臂（IsTypeId ∧ 派生排
+            // 除）命中 → 空 init 分配 + init frame 下钻，恢复后 41
+            Case("栈式跨界 new.indirect init 内挂起",
+                "import core.io.Console\n" +
+                "pub class Slow {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) {\n" +
+                "        yield\n" +
+                "        x = v\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Slow)\n" +
+                "    var o = new t(41)\n" +
+                "    Console.println(o.x.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-c㉛ new.indirect 混合目标矩阵：tainted init 臂（41）
+            // / 默认臂普通 init（82）/ 派生类自声明 init 经派生排除
+            // 落默认臂（141）/ 无匹配 init NoSuchMethod（nomatch）/
+            // tainted init 恢复后抛出沿构造异常边被同 fn 捕获
+            Case("栈式跨界 new.indirect 混合目标矩阵",
+                "import core.io.Console\n" +
+                "pub open class Slow {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) {\n" +
+                "        yield\n" +
+                "        x = v\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Fast {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v * 2 }\n" +
+                "}\n" +
+                "pub class Derived : Slow {\n" +
+                "    pub init(v: i32) { x = v + 100 }\n" +
+                "}\n" +
+                "pub class NoInit : Slow {\n" +
+                "}\n" +
+                "pub class Boom {\n" +
+                "    pub init(v: i32) {\n" +
+                "        yield\n" +
+                "        throw new core.RuntimeException(\"boom-\" + v.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t1 = typeOf(Slow)\n" +
+                "    var o1 = new t1(41)\n" +
+                "    Console.println(o1.x.toString())\n" +
+                "    var t2 = typeOf(Fast)\n" +
+                "    var o2 = new t2(41)\n" +
+                "    Console.println(o2.x.toString())\n" +
+                "    var t3 = typeOf(Derived)\n" +
+                "    var o3 = new t3(41)\n" +
+                "    Console.println(o3.x.toString())\n" +
+                "    try {\n" +
+                "        var t4 = typeOf(NoInit)\n" +
+                "        var o4 = new t4(41)\n" +
+                "        Console.println(o4.x.toString())\n" +
+                "    } catch (e: core.NoSuchMethodException) {\n" +
+                "        Console.println(\"nomatch\")\n" +
+                "    }\n" +
+                "    try {\n" +
+                "        var t5 = typeOf(Boom)\n" +
+                "        var o5 = new t5(7)\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught:\" + e.getMessage())\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-c㉜ new.indirect 在 async 调用方（Tasked 协议）+
+            // 泛型宿主构造 sheet 臂（类级 typeid 按臂构造形态常量
+            // 合成）——9 / 42
+            Case("栈式跨界 new.indirect async 调用方与泛型宿主",
+                "import core.io.Console\n" +
+                "pub class Slow {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) {\n" +
+                "        yield\n" +
+                "        x = v\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Box\\<T> {\n" +
+                "    pub var v: T\n" +
+                "    pub init(x: T) {\n" +
+                "        yield\n" +
+                "        v = x\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var t = typeOf(Slow)\n" +
+                "    var o = new t(9)\n" +
+                "    Console.println(o.x.toString())\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    var proto = new Box\\<i32>(1)\n" +
+                "    var tb = typeOf(proto)\n" +
+                "    var b: Box\\<i32> = new tb(42)\n" +
+                "    Console.println(b.v.toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R2-d㉝ 同 fn try 内构造抛出双端对齐：MirNewObject
+            // 补 ExcTarget 异常边（历史「pending 推迟到下一检查点」
+            // 形态消除）——① 同步 init 抛出立即沿 try 边捕获
+            //（caught-sync）；② 挂起 init 恢复后 FAILED 沿构造异
+            // 常边进本 fn 捕获（caught-fin），finally 次序对齐 VM
+            Case("栈式跨界 try 内构造抛出双端对齐",
+                "import core.io.Console\n" +
+                "pub class SyncBoom {\n" +
+                "    pub init(v: i32) {\n" +
+                "        throw new core.RuntimeException(\"sync-\" + v.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class Boom {\n" +
+                "    pub init(v: i32) {\n" +
+                "        yield\n" +
+                "        throw new core.RuntimeException(\"boom-\" + v.toString())\n" +
+                "    }\n" +
+                "}\n" +
+                "func makeSync(): i32 {\n" +
+                "    try {\n" +
+                "        var o = new SyncBoom(3)\n" +
+                "        return 1\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught-sync\")\n" +
+                "        return 2\n" +
+                "    }\n" +
+                "}\n" +
+                "func makeFinally(): i32 {\n" +
+                "    try {\n" +
+                "        var o = new Boom(9)\n" +
+                "        return 1\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught-fin\")\n" +
+                "        return 2\n" +
+                "    } finally(_) {\n" +
+                "        Console.println(\"finally\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(makeSync().toString())\n" +
+                "    Console.println(makeFinally().toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R3-㊱ 泛型接口方法 iMap 派发：默认体的 fn 定义携带 §7.2
+            // 方法级 typeid 隐藏参数，thunk fn 类型必须以 fn 体为准
+            //（合成签名会漏 typeid 参数，调用约定错配）。① 无挂起点
+            //（默认体路径，r=42）
+            Case("泛型接口方法 iMap 派发（默认体）",
+                "import core.io.Console\n" +
+                "pub interface IMapper {\n" +
+                "    func map\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "pub class IntBox implements IMapper {\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "func runIt(m: IMapper): i32 {\n" +
+                "    var r = m.map\\<i32>(42)\n" +
+                "    return (r as i32)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m: IMapper = new IntBox()\n" +
+                "    Console.println(\"r=\" + runIt(m).toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ② 无挂起点（类 override 覆盖默认体，r=43）
+            Case("泛型接口方法 iMap 派发（override）",
+                "import core.io.Console\n" +
+                "pub interface IMapper {\n" +
+                "    func map\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "pub class IntBox implements IMapper {\n" +
+                "    pub init() {}\n" +
+                "    pub override func map\\<T>(x: T): T { return (((x as i32) + 1) as T) }\n" +
+                "}\n" +
+                "func runIt(m: IMapper): i32 {\n" +
+                "    var r = m.map\\<i32>(42)\n" +
+                "    return (r as i32)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m: IMapper = new IntBox()\n" +
+                "    Console.println(\"r=\" + runIt(m).toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // ③ 含挂起点：async 调用方内 iMap 派发泛型接口方法
+            //（统一切分路径同 emitter，调用约定一致）
+            Case("泛型接口方法 iMap 派发（含挂起点）",
+                "import core.io.Console\n" +
+                "pub interface IMapper {\n" +
+                "    func map\\<T>(x: T): T { return x }\n" +
+                "}\n" +
+                "pub class IntBox implements IMapper {\n" +
+                "    pub init() {}\n" +
+                "}\n" +
+                "async func one(): i32 { return 1 }\n" +
+                "async func runIt(): i32 {\n" +
+                "    var m: IMapper = new IntBox()\n" +
+                "    var t = one()\n" +
+                "    var k = await t\n" +
+                "    var r = m.map\\<i32>((41 + k))\n" +
+                "    Console.println(\"r=\" + (r as i32).toString())\n" +
+                "    return 0\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = runIt()\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R3-㊲ MirNewValue 补 ExcTarget（同 R2-d MirNewObject
+            // 口径）：值类型 init 同步抛出沿本 fn try 异常边捕获
+            //（修复前 pending 推迟致异常逃逸出 fn，native exit=1
+            // 而 VM 于 fn 内捕获）
+            Case("值类型 init 同步抛出同 fn try 捕获",
+                "import core.io.Console\n" +
+                "pub struct VBoom {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) {\n" +
+                "        throw new core.RuntimeException(\"vboom\")\n" +
+                "    }\n" +
+                "}\n" +
+                "func make(): i32 {\n" +
+                "    try {\n" +
+                "        var o = new VBoom(3)\n" +
+                "        return 1\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "        return 2\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    Console.println(make().toString())\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R3-㊳ open struct 继承链：占位接收者子类型盒拆箱（R1
+            // 边界清偿）——ValueTypeLayout 补 struct 继承布局（基类
+            // 字段前缀/尺寸/refMap/basePlan 链），拆箱守卫改 rigi_type_is
+            // 协变链，写回原地补丁保身份（42/still-child 双端一致）
+            Case("占位接收者：open struct 子类型盒变异写回",
+                "import core.io.Console\n" +
+                "pub open rich struct Base {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub func bump() { v = (v + 1) }\n" +
+                "}\n" +
+                "pub rich struct Child : Base {\n" +
+                "    pub init(x: i32) { super(x) }\n" +
+                "}\n" +
+                "pub class Box2\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n" +
+                "func useIt\\<T extends Base>(b: Box2\\<T>) { b.item.bump() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box2\\<Child>(new Child(41))\n" +
+                "    useIt\\<Child>(b)\n" +
+                "    Console.println(b.item.v.toString())\n" +
+                "    if (b.item is Child) {\n" +
+                "        Console.println(\"still-child\")\n" +
+                "    } else {\n" +
+                "        Console.println(\"sliced\")\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R3-㊴ 子类型盒 + 变异方法抛异常：异常路径不写回（VM copy
+            // 语义——部分变异不可见）且身份保留（caught/41/still-child）
+            Case("占位接收者：子类型盒异常路径不写回",
+                "import core.io.Console\n" +
+                "pub open rich struct Base {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub func boom() {\n" +
+                "        v = 99\n" +
+                "        throw new core.RuntimeException(\"boom\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub rich struct Child : Base {\n" +
+                "    pub init(x: i32) { super(x) }\n" +
+                "}\n" +
+                "pub class Box2\\<T> {\n" +
+                "    pub var item: T\n" +
+                "    pub init(_ -> item)\n" +
+                "}\n" +
+                "func useIt\\<T extends Base>(b: Box2\\<T>) {\n" +
+                "    try {\n" +
+                "        b.item.boom()\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        Console.println(\"caught\")\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box2\\<Child>(new Child(41))\n" +
+                "    useIt\\<Child>(b)\n" +
+                "    Console.println(b.item.v.toString())\n" +
+                "    if (b.item is Child) {\n" +
+                "        Console.println(\"still-child\")\n" +
+                "    } else {\n" +
+                "        Console.println(\"sliced\")\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // R3-㊵ 值类型沿 open struct 继承链向上转换：cast 不再无条件
+            // 抛 CastException（此前 EmitFail 判死），前缀切片数据对齐
+            // VM（42）。已知残留差：经具体类型航点（Base 槽）后运行期
+            // 身份不保留（native 内联值 ABI 槽按静态类型定尺寸；VM 值
+            // 自我描述恒保身份）——故此用例只断言数据路径
+            Case("open struct 值类型向上转换数据路径",
+                "import core.io.Console\n" +
+                "pub open rich struct Base {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(x: i32) { v = x }\n" +
+                "    pub func bump() { v = (v + 1) }\n" +
+                "}\n" +
+                "pub rich struct Child : Base {\n" +
+                "    pub init(x: i32) { super(x) }\n" +
+                "}\n" +
+                "pub class Holder\\<T> {\n" +
+                "    pub var x: T\n" +
+                "    pub init(v: T) { x = v }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var h = new Holder\\<Base>(new Child(41))\n" +
+                "    h.x.bump()\n" +
+                "    Console.println(h.x.v.toString())\n" +
                 "    return 0\n" +
                 "}\n"),
             // ⑧ async 无挂起点 fn（统一切分后直跑到底）

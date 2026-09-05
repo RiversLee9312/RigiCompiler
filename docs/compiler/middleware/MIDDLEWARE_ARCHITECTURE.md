@@ -471,19 +471,43 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   cast/copy 剥成裸模板时沿产出链回溯构造形态）。⑥ plain fn 内
   yield Alarm 放开：恢复闸失败尾 plain 分叉（pending 保持置位
   ret FAILED 沿链上传，对齐 VM 帧栈逐层展开；Tasked 仍走 Task
-  FAILED 终态序列）。⑦ using dispose 可挂起（§17.3）：dispose
-  虚派发臂同②协议化。B-2 保留的受控拒绝边界：泛型宿主虚派发
-  链挂起点（构造形态臂条件需 construction 级派发知识，布局查询
-  是模板键）；$$call/invoke.indirect 与 wrapper/proxy 烘焙链
+  FAILED 终态序列）。  ⑦ using dispose 可挂起（§17.3）：dispose
+  虚派发臂同②协议化。R2 残留边界清偿：⑧ 泛型宿主虚派发链
+  挂起点——臂条件 type.is 扩展为「模板空壳 + 模块内全部闭合
+  构造 sheet」OR 链（泛型实例头是构造 sheet，其基链不含模板
+  空壳，单模板键判定恒 miss；开放占位 new 的实例携模板空壳
+  故模板键保留首位）；tainted 实现的类级 typeid 落参改从接收
+  者实例隐藏 typeid 字段（#..generic.）运行期读取（class 宿主
+  对象头恒藏构造实参 typeid，静态构造形态被接收者 cast 剥成
+  裸模板亦不影响）。⑨ $$call/invoke.indirect——callable 协议
+  闭包按②同机制动态分流（接收者 = CallTarget；静态目标 =
+  BindIndirectCall 沿 extends 链解析的 $$call 成员）；闭包枚
+  举改布局计划表直查 + PlanKey 派生判定（同名不同元数模板
+  canonical 撞键——core::Func\<1\>/Func\<2\> 共享裸键，字符串
+  查询口径实证槽表错配致闭包为空）。⑩ new.indirect × tainted
+  class init——分发点本身成为调用方挂起点：实证 native 槽 0
+  分发器不继承 init（派生类无自声明 init 时 new.indirect 抛
+  NoSuchMethod，双端一致），故臂条件 = 精确 sheet 匹配
+  （MirTypeCheckKind.IsTypeId 原值直判 ∧ 派生物化 sheet 排除
+  链）；命中臂以臂构造形态空 init 分配（init.wrapper 原位缝
+  合）→ Target 槽落定回存 frame → init frame 下钻，DONE 直落
+  原后继；相关性按「站点静态实参形 ↔ 重载逐物化 sheet 代入
+  形参」精确判定（argc + canonical 恒等，镜像分发器 ArgToken
+  匹配语义）。⑪ MirNewObject 补 try 异常边（CallVisitors 降
+  new 时填充 CurrentExcTarget——历史「pending 推迟到下一检
+  查点」形态消除；init 下钻 FAILED 沿该 fn 的 try 异常边走，
+  同 fn try 内挂起 init 抛出双端捕获点对齐；同步 init 抛出同
+  获立即传播语义）。保留的受控拒绝边界（消息文本已改准确 +
+  MiddlewareTests 负例钉住）：proxy/wrapper 烘焙链
   （$.wrapped./$.mwrapped./$mw. 前缀合成 fn）可达的 tainted fn
-  （fn 指针面只有返回值通道，无法插挂起协议）；含挂起点的 init
-  与 new.indirect 同模块（运行期构造目标不可钉死）；实参与可见
-  形参不对应的未知隐藏参数形态；嵌套占位构造的类级 typeid 实参。
-  另记可观察错位（VM 参考行为的不对称怪癖，未对齐）：挂起的
-  init 在同一 fn 的 try 内抛出时 VM 于该 fn 捕获，native 将异常
-  传播出该 fn——根因是 MirNewObject 不带 try 异常边（历史形态
-  「pending 推迟到下一检查点」）与 VM 恢复路径帧展开的差异，
-  对齐需 lowering 契约变更（容量外）。
+  ——router/trampoline 通配 ABI 的值包转发形态无挂起协议插
+  点，运行期目标集随 wrapper 实例符号表动态决定，静态闭包不
+  可枚举；含挂起点的值类型 init——值类型构造路径无挂起协议
+  （frame .this 借用形态与 sret/原地构造不兼容；此前静态 new
+  形态静默语义错位——native exit 5 无输出 vs VM 正常——补
+  闸）；泛型占位实参的 new.indirect × tainted init（实参
+  sheet 运行期物化，匹配不可静态判定）；实参与可见形参不对
+  应的未知隐藏参数形态；嵌套占位构造的类级 typeid 实参。
 - Alarm / 多 Worker / 取消入口随 MW11c 转向定稿（coroutine.c 内以
   「MW11c」标注加锁点，实体已按并发语义设计——C11 原子 CAS、Task 闸、
   Executor 锁）；按转向，这些 C 侧实体按本节首段保留/重构清单迁移进

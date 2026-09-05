@@ -104,7 +104,19 @@ namespace RigiCompiler.Middleware.Layout
                 if (inherited >= 0 && (member.HasKeyword(BilKeyword.Override)
                     || member.IsOperatorMember))
                 {
-                    slots[inherited] = member.Canonical;
+                    // 连同 canonical 相同的别名槽一并替换：接口实现段会
+                    // 对同一基类成员追加别名槽（iMap 段基址 + 段内槽序
+                    // 寻址），只换首槽会让别名槽滞留抽象基员（无体 → 发
+                    // 射 null），接口派发经 baseTypeId 链命中段基址后调
+                    // 用空槽（RangeEnumeratorI32.moveNext 形态，AV）
+                    var overriddenSlot = slots[inherited];
+                    for (var i = 0; i < slots.Count; i++)
+                    {
+                        if (slots[i] == overriddenSlot)
+                        {
+                            slots[i] = member.Canonical;
+                        }
+                    }
                 }
                 else
                 {

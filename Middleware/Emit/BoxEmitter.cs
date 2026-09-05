@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
@@ -56,7 +57,10 @@ namespace RigiCompiler.Middleware.Emit
         internal static bool NeedsUnbox(ModuleBuilder.Session session, MirType from, MirType to) =>
             TypeLayout.IsGenericPlaceholder(from)
             && !TypeLayout.IsGenericPlaceholder(to)
-            && IsBoxableValue(session, to);
+            && IsBoxableValue(session, to)
+            // 开放构造值类型（WPair<.generic<…>>）仍是内联值 ABI（指
+            // 针），不是胖盒——canonical 含占位但槽非 16B 胖值
+            && !session.IsInlineValueType(from, out _);
 
         private static bool IsBoxableValue(ModuleBuilder.Session session, MirType type) =>
             MirBuilder.IsScalarOrString(type) || session.IsInlineValueType(type, out _);
@@ -75,13 +79,19 @@ namespace RigiCompiler.Middleware.Emit
         // 值类型/String → 16B 胖值（泛型槽 / .any 共用）
         internal static LLVMValueRef BoxFromLocal(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string sourceName)
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string sourceName) =>
+            BoxFromSlot(session, builder, slots[sourceName].Slot,
+                slots[sourceName].Local.Type);
+
+        // BoxFromLocal 的槽指针形态（无 MIR 局部的临时槽装箱用）
+        internal static LLVMValueRef BoxFromSlot(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef sourceSlot, MirType sourceType)
         {
-            var sourceType = slots[sourceName].Local.Type;
             // TypeId 装箱视图 = Type<payload> 构造 sheet（运行期边界，对齐 VM TypeRef）
             if (TypeLayout.IsTypeId(sourceType))
             {
-                var described = session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+                var described = builder.BuildLoad2(
+                    TypeLayout.MapType(session.Context, sourceType), sourceSlot, "box.tidld");
                 var view = ResolveTypeIdViewSheet(session, builder, described, sourceType);
                 var bits = builder.BuildPtrToInt(described, LLVMTypeRef.Int64, "box.tid");
                 return PackFat(session, builder, view, TagInline, bits, "box");
@@ -92,12 +102,12 @@ namespace RigiCompiler.Middleware.Emit
             LLVMValueRef payload;
             if (tag == TagInline)
             {
-                payload = PackInlinePayload(session, builder, slots, sourceName, sourceType, size);
+                payload = PackInlinePayload(session, builder, sourceSlot, sourceType, size);
             }
             else
             {
                 var block = Malloc(session, builder, size);
-                session.EmitMemCopy(builder, block, slots[sourceName].Slot, size);
+                session.EmitMemCopy(builder, block, sourceSlot, size);
                 ArcEmitter.EmitValueAcquire(session, builder, block, sourceType);
                 payload = builder.BuildPtrToInt(block, LLVMTypeRef.Int64, "box.payload");
             }
@@ -118,8 +128,24 @@ namespace RigiCompiler.Middleware.Emit
         internal static void UnboxToLocal(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             LLVMValueRef fat, MirType targetType, string target, MirType fromType,
+            MirBlock? excTarget) =>
+            UnboxToSlot(session, builder, fat, targetType, slots[target].Slot, fromType,
+                excTarget);
+
+        // UnboxToLocal 的槽指针形态（无 MIR 局部的临时槽拆箱用：占位
+        // 接收者/占位值类型宿主的调用点适配）
+        internal static void UnboxToSlot(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            LLVMValueRef fat, MirType targetType, LLVMValueRef targetSlot, MirType fromType,
             MirBlock? excTarget)
         {
+            // R3：open struct 目标可含子类型盒（VM 动态解析可过）——
+            // 中枢转协变链守卫 + 前缀拷贝（所有调用点同口径）
+            if (IsOpenStructType(session, targetType))
+            {
+                UnboxSubtypeToTemp(session, builder, fat, targetType, targetSlot, fromType,
+                    excTarget);
+                return;
+            }
             var size = ValueByteSize(session, targetType);
             var expectedTag = size <= InlineLimit ? TagInline : TagHeapValue;
             var sheet = TypeSheetOf(session, targetType);
@@ -151,14 +177,148 @@ namespace RigiCompiler.Middleware.Emit
 
             if (expectedTag == TagInline)
             {
-                UnpackInline(session, builder, slots, payload, targetType, size, target);
+                UnpackInline(session, builder, payload, targetType, size, targetSlot);
             }
             else
             {
                 var block = builder.BuildIntToPtr(payload, PointerType(), "unbox.block");
-                session.EmitMemCopy(builder, slots[target].Slot, block, size);
-                ArcEmitter.EmitValueAcquire(session, builder, slots[target].Slot, targetType);
+                session.EmitMemCopy(builder, targetSlot, block, size);
+                ArcEmitter.EmitValueAcquire(session, builder, targetSlot, targetType);
             }
+        }
+
+        // ===== R3：open struct 子类型盒的协变拆箱 =====
+
+        // open struct 判定（可含子类型 → 占位拆箱守卫须走协变链而非
+        // 精确 sheet）：构造形先剥实参取模板
+        internal static bool IsOpenStructType(ModuleBuilder.Session session, MirType type)
+        {
+            if (!session.IsInlineValueType(type, out _))
+            {
+                return false;
+            }
+            var sym = session.Symbols.FindTypeByRef(
+                Bil.BilVerificationContext.StripTypeArguments(
+                    MwTypeKey.Normalize(type.Canonical)));
+            if (sym == null || sym.Declaration.Kind != Bil.BilTypeKind.Struct)
+            {
+                return false;
+            }
+            foreach (var modifier in sym.Declaration.Modifiers)
+            {
+                if (modifier is Bil.BilKeywordModifier keyword
+                    && keyword.Keyword == Bil.BilKeyword.Open)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 子类型盒拆到目标类型尺寸的临时槽（占位接收者 .this 适配用）：
+        // 盒保实际子类型 sheet，精确匹配会误抛 CastException（VM 动态
+        // 解析可过）——守卫 = tag 值盒 + rigi_type_is 协变链；temp 取
+        // 目标类型尺寸前缀（继承布局前缀式，ClassLayout 基类字段在前）。
+        // inline 盒（≤8B）payload 低位字节即值位（rich 前缀含 ref 必
+        // 超 8B 走 heap，inline 恒无引用计数字段）；heap 盒 payload 即
+        // 堆块指针。heap 路径对 temp 登记前缀引用（RichTemp 销毁配平）
+        internal static void UnboxSubtypeToTemp(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef fat, MirType targetType,
+            LLVMValueRef targetSlot, MirType fromType, MirBlock? excTarget)
+        {
+            var size = ValueByteSize(session, targetType);
+            var sheet = TypeSheetOf(session, targetType);
+            var typeId = builder.BuildExtractValue(fat, 0, "unbox.sub.typeid");
+            var payload = builder.BuildExtractValue(fat, 1, "unbox.sub.payload");
+            var tag = builder.BuildLShr(typeId,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TagShift, false), "unbox.sub.tag");
+            var (isFn, isType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.TypeIs,
+                LLVMTypeRef.Int32, new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64, PointerType() });
+            var isHit = builder.BuildCall2(isType, isFn, new[] { typeId, payload, sheet },
+                "unbox.sub.is");
+            var mismatch = builder.BuildOr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, tag,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TagHeapValue, false),
+                    "unbox.sub.tagbad"),
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, isHit,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, true), "unbox.sub.isbad"),
+                "unbox.sub.bad");
+            EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
+            var fn = session.CurrentFunction;
+            var inlineBlock = fn.AppendBasicBlock("unbox.sub.inline");
+            var heapBlock = fn.AppendBasicBlock("unbox.sub.heap");
+            var mergeBlock = fn.AppendBasicBlock("unbox.sub.merge");
+            builder.BuildCondBr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TagInline, false),
+                    "unbox.sub.isinline"),
+                inlineBlock, heapBlock);
+            builder.PositionAtEnd(inlineBlock);
+            var bits = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64,
+                "unbox.sub.bits");
+            builder.BuildStore(payload, bits);
+            session.EmitMemCopy(builder, targetSlot, bits, size);
+            builder.BuildBr(mergeBlock);
+            builder.PositionAtEnd(heapBlock);
+            var block = builder.BuildIntToPtr(payload, PointerType(), "unbox.sub.block");
+            session.EmitMemCopy(builder, targetSlot, block, size);
+            ArcEmitter.EmitValueAcquire(session, builder, targetSlot, targetType);
+            builder.BuildBr(mergeBlock);
+            builder.PositionAtEnd(mergeBlock);
+        }
+
+        // 子类型盒的 .this 写回（身份保留，VM 占位槽原地生效同口径）：
+        // 不重装箱（重装箱会切成目标类型、丢子类型尾字段与运行期身份），
+        // 原地补丁——inline 盒覆写 payload 低位字节（无引用）；heap 盒
+        // 前缀「旧引用归还 → 拷入 → 新引用登记」（RC 配平：temp 的拆箱
+        // 时 acquire 随 RichTemp 销毁，盒对新前缀自持一份）。异常路径
+        // 随 pending/展开绕过本写回（VM copy 语义——部分变异不可见）
+        internal static void EmitSubtypeBoxWriteback(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            string sourceName, LLVMValueRef tempSlot, MirType valueType)
+        {
+            var size = ValueByteSize(session, valueType);
+            var fat = session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+            var typeId = builder.BuildExtractValue(fat, 0, "wb.sub.typeid");
+            var payload = builder.BuildExtractValue(fat, 1, "wb.sub.payload");
+            var tag = builder.BuildLShr(typeId,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TagShift, false), "wb.sub.tag");
+            var fn = session.CurrentFunction;
+            var inlineBlock = fn.AppendBasicBlock("wb.sub.inline");
+            var heapBlock = fn.AppendBasicBlock("wb.sub.heap");
+            var mergeBlock = fn.AppendBasicBlock("wb.sub.merge");
+            builder.BuildCondBr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, TagInline, false),
+                    "wb.sub.isinline"),
+                inlineBlock, heapBlock);
+            builder.PositionAtEnd(inlineBlock);
+            var mask = size >= 8
+                ? unchecked((ulong)-1)
+                : (1UL << (8 * size)) - 1UL;
+            var tempBits = BitsFromSlot(session, builder, tempSlot, size);
+            var kept = builder.BuildAnd(payload,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, ~mask, false), "wb.sub.keep");
+            var patch = builder.BuildAnd(tempBits,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, mask, false), "wb.sub.patch");
+            var newPayload = builder.BuildOr(kept, patch, "wb.sub.pl");
+            var newFat = LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(session.Context));
+            newFat = builder.BuildInsertValue(newFat, typeId, 0, "wb.sub.t0");
+            newFat = builder.BuildInsertValue(newFat, newPayload, 1, "wb.sub.t1");
+            builder.BuildStore(newFat, slots[sourceName].Slot);
+            builder.BuildBr(mergeBlock);
+            builder.PositionAtEnd(heapBlock);
+            var block = builder.BuildIntToPtr(payload, PointerType(), "wb.sub.block");
+            if (session.IsInlineValueType(valueType, out var plan) && plan.RefMapCount > 0)
+            {
+                ArcEmitter.EmitDestroyRichValue(session, builder, block,
+                    ArcEmitter.SheetOf(session, valueType));
+            }
+            session.EmitMemCopy(builder, block, tempSlot, size);
+            ArcEmitter.EmitValueAcquire(session, builder, block, valueType);
+            builder.BuildBr(mergeBlock);
+            builder.PositionAtEnd(mergeBlock);
         }
 
         // ===== pack / unpack =====
@@ -177,15 +337,14 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         internal static LLVMValueRef PackInlinePayload(ModuleBuilder.Session session,
-            LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            string sourceName, MirType sourceType, int size)
+            LLVMBuilderRef builder, LLVMValueRef sourceSlot, MirType sourceType, int size)
         {
             if (session.IsInlineValueType(sourceType, out _))
             {
-                return BitsFromSlot(session, builder, slots[sourceName].Slot, size);
+                return BitsFromSlot(session, builder, sourceSlot, size);
             }
-            var value = session.LoadLocal(builder, slots, new MirLocalOperand(sourceName));
+            var value = builder.BuildLoad2(
+                TypeLayout.MapType(session.Context, sourceType), sourceSlot, "box.val");
             // .typeid 布局 = ptr；payload = TypeSheet* 位模式
             if (TypeLayout.IsTypeId(sourceType))
             {
@@ -195,24 +354,23 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         private static void UnpackInline(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            LLVMValueRef payload, MirType targetType, int size, string target)
+            LLVMValueRef payload, MirType targetType, int size, LLVMValueRef targetSlot)
         {
             if (session.IsInlineValueType(targetType, out _))
             {
                 var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "unbox.bits");
                 builder.BuildStore(payload, tmp);
-                session.EmitMemCopy(builder, slots[target].Slot, tmp, size);
+                session.EmitMemCopy(builder, targetSlot, tmp, size);
                 return;
             }
             if (TypeLayout.IsTypeId(targetType))
             {
                 builder.BuildStore(builder.BuildIntToPtr(payload, PointerType(), "unbox.tid"),
-                    slots[target].Slot);
+                    targetSlot);
                 return;
             }
             builder.BuildStore(UnboxScalarBits(builder, payload, targetType),
-                slots[target].Slot);
+                targetSlot);
         }
 
         // 动态 new 实参：引用/.any/占位走胖槽直通；值类型走 tag 编解码

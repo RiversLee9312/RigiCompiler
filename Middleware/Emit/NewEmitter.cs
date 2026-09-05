@@ -19,14 +19,19 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var builder = session.Builder;
                 var slots = session.Slots;
-                var init = session.FunctionOf(inst.Init.Canonical);
-                var expected = CallEmitter.ExpectedCallParams(init.Mir);
+                // L7：Init = null（全链无 init 声明的零参 new）——无实参
+                // 可编组，构造 = alloc + 可选 ..init.wrapper
+                var expected = inst.Init != null
+                    ? CallEmitter.ExpectedCallParams(session.FunctionOf(inst.Init.Canonical).Mir)
+                    : null;
                 var temps = new List<ArcEmitter.RichTemp>();
                 var boxed = new List<ArcEmitter.FatTemp>();
                 var userArgs = new LLVMValueRef[inst.Args.Count];
                 for (var i = 0; i < inst.Args.Count; i++)
                 {
-                    var expectType = i + 1 < expected.Count ? expected[i + 1].Type : null;
+                    var expectType = expected != null && i + 1 < expected.Count
+                        ? expected[i + 1].Type
+                        : null;
                     userArgs[i] = CallEmitter.CoerceArg(session, builder, slots, inst.Args[i],
                         expectType, aliasThis: false, temps, boxed);
                 }
@@ -73,13 +78,17 @@ namespace RigiCompiler.Middleware.Emit
                 var boxed = new List<ArcEmitter.FatTemp>();
                 // G1：泛型值类型 init 形参可为占位（胖值槽）——实参加工与
                 // class 路径同口径（ExpectedCallParams 已剔类级 typeid，
-                // 下标 +1 跳过 .this）
-                var initExpected = CallEmitter.ExpectedCallParams(
-                    session.FunctionOf(inst.Init.Canonical).Mir);
+                // 下标 +1 跳过 .this）；L7：Init = null 时无实参可编组
+                var initExpected = inst.Init != null
+                    ? CallEmitter.ExpectedCallParams(
+                        session.FunctionOf(inst.Init.Canonical).Mir)
+                    : null;
                 var userArgs = new LLVMValueRef[inst.Args.Count];
                 for (var i = 0; i < inst.Args.Count; i++)
                 {
-                    var expectType = i + 1 < initExpected.Count ? initExpected[i + 1].Type : null;
+                    var expectType = initExpected != null && i + 1 < initExpected.Count
+                        ? initExpected[i + 1].Type
+                        : null;
                     userArgs[i] = CallEmitter.CoerceArg(session, builder, slots, inst.Args[i],
                         expectType, aliasThis: false, temps, boxed);
                 }
@@ -105,6 +114,14 @@ namespace RigiCompiler.Middleware.Emit
                     inst.Type.Canonical, inst.InitWrapper, inst.Init, userArgs, wrapperArgs);
                 ArcEmitter.DestroyRichTemps(session, builder, temps);
                 ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                // 构造异常边（R3，同 MirNewObject 口径）：wrapper/init
+                // 内抛出（pending 非空）→ 沿边走；值类型原地落槽，
+                // 无新建堆对象需释放。无边（无 try 作用域）保持历史
+                // 「pending 推迟到下一检查点」形态
+                if (inst.ExcTarget != null)
+                {
+                    ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
+                }
             }
         }
 
@@ -139,7 +156,7 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMValueRef EmitAllocAndInit(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            string typeCanonical, MwMemberSymbol? initWrapper, MwMemberSymbol init,
+            string typeCanonical, MwMemberSymbol? initWrapper, MwMemberSymbol? init,
             LLVMValueRef[] userArgs, LLVMValueRef[]? wrapperArgs = null)
         {
             var sheet = session.TypeSheetFor(typeCanonical);
@@ -152,6 +169,12 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var wrapperCallArgs = AppendReceiver(fat, wrapperArgs);
                 builder.BuildCall2(wrapper.Type, wrapper.Value, wrapperCallArgs, "");
+            }
+            // L7：无 init 声明 + 零实参（Init = null）——alloc + wrapper
+            // 缝合即完成构造（VM TryFindInit 零实参空 init 同口径）
+            if (init == null)
+            {
+                return fat;
             }
             var emitted = session.FunctionOf(init.Canonical);
             var initArgs = new LLVMValueRef[userArgs.Length + 1];

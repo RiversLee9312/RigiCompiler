@@ -1064,19 +1064,19 @@ namespace RigiCompiler.Middleware.Mir
                     constructedTypeRef: typeRef).Canonical);
             }
             catch (MwNotSupportedException) when (arguments.Count == 0
-                && type.Declaration.Kind == BilTypeKind.EnumStruct
-                && !type.Members.Any(m => m.HasKeyword(BilKeyword.Init)))
-            {
-                // 遗1：无 init 声明 + 零实参的 enum（stdlib ComparisonResult
-                // 形态）——仅写判别，无 init 边（VM NewCase 同口径）
-            }
-            catch (MwNotSupportedException) when (arguments.Count == 0
                 && SingletonPlanner.IsSingleton(type)
                 && !SingletonPlanner.HasInitMember(type))
             {
                 // 刀5：无 init 声明的 singleton（..globals.host 形态）——
                 // 无 BIL 边（合成空 init 由 SingletonLoweringPass 落地
                 // MIR，不占可达闭包）
+            }
+            catch (MwNotSupportedException) when (arguments.Count == 0
+                && !SingletonPlanner.HasInitMember(type))
+            {
+                // 遗1/L7：无 init 声明 + 零实参（stdlib ComparisonResult
+                // 形态 / 全链无 init 的子类零参 new）——无 init 边，仅
+                // alloc + 可选 ..init.wrapper（VM TryFindInit 同口径）
             }
             var initWrapper = context.Symbols.FindMember(type.Canonical + "$..init.wrapper()@.void");
             if (initWrapper != null)

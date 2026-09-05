@@ -142,9 +142,28 @@ namespace RigiCompiler.Middleware.Emit
         {
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
+            var receiverWritebacks = new List<ReceiverWriteback>();
             var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result, temps,
-                boxed, hostConstructedRef);
+                boxed, hostConstructedRef, excTarget, receiverWritebacks);
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
+            // 占位接收者拆箱临时槽的 .this 写回（别名语义：callee 对
+            // this 的修改重装箱回源占位槽——VM 占位槽原地生效同口径；
+            // callee 抛异常时经 pending 检查跳过写回，与调用方写回链
+            // 语句不执行同口径）
+            foreach (var writeback in receiverWritebacks)
+            {
+                if (writeback.SubtypeIdentity)
+                {
+                    // R3：open struct 子类型盒身份保留写回（原地补丁，
+                    // 不重装箱切片）
+                    BoxEmitter.EmitSubtypeBoxWriteback(session, builder, slots,
+                        writeback.SourceName, writeback.TempSlot, writeback.ValueType);
+                    continue;
+                }
+                ArcEmitter.MoveFatValue(session, builder, slots[writeback.SourceName].Slot,
+                    BoxEmitter.BoxFromSlot(session, builder, writeback.TempSlot,
+                        writeback.ValueType));
+            }
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, excTarget);
@@ -188,6 +207,13 @@ namespace RigiCompiler.Middleware.Emit
 
         // ===== 调用辅助 =====
 
+        // 占位接收者拆箱调用的 this 写回登记（SourceName = 源占位槽，
+        // TempSlot = 拆箱临时槽，ValueType = 具体值类型；SubtypeIdentity
+        // = open struct 协变拆箱（R3）——写回原地补丁保子类型身份，
+        // 不重装箱切片）
+        internal sealed record ReceiverWriteback(string SourceName, LLVMValueRef TempSlot,
+            MirType ValueType, bool SubtypeIdentity = false);
+
         // 调用实参编组（MW4 批 3 值类型 ABI）：值类型返回 → 隐藏 out 首参
         //（调用方供槽；noret 丢弃则开临时槽）；值类型参数 → memcpy 副本传
         // 指针（callee 改参数不影响调用方，VM Copy 同口径）；值类型 .this
@@ -197,7 +223,8 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirFunction calleeMir, IReadOnlyList<MirOperand> args, string? result,
             List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
-            string? hostConstructedRef = null)
+            string? hostConstructedRef = null, MirBlock? excTarget = null,
+            List<ReceiverWriteback>? receiverWritebacks = null)
         {
             var hasOut = session.IsInlineValueType(calleeMir.ReturnType, out var outPlan);
             var thisAliases = calleeMir.Parameters.Count > 0
@@ -228,7 +255,8 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     var expectType = i < expected.Count ? expected[i].Type : null;
                     values.Add(CoerceArg(session, builder, slots, args[i],
-                        expectType, thisAliases && i == 0, temps, boxed));
+                        expectType, thisAliases && i == 0, temps, boxed, excTarget,
+                        receiverWritebacks));
                 }
                 return values.ToArray();
             }
@@ -243,7 +271,8 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 var expectType = argIndex < expected.Count ? expected[argIndex].Type : null;
                 values.Add(CoerceArg(session, builder, slots, args[argIndex],
-                    expectType, thisAliases && argIndex == 0, temps, boxed));
+                    expectType, thisAliases && argIndex == 0, temps, boxed, excTarget,
+                    receiverWritebacks));
                 argIndex++;
             }
             return values.ToArray();
@@ -440,7 +469,8 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirOperand arg, MirType? expected, bool aliasThis,
-            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
+            MirBlock? excTarget = null, List<ReceiverWriteback>? receiverWritebacks = null)
         {
             if (arg is MirLocalOperand local && expected != null)
             {
@@ -453,8 +483,60 @@ namespace RigiCompiler.Middleware.Emit
                         builder.BuildExtractValue(fat, 1, "boxarg.pl")));
                     return fat;
                 }
+                // 占位 → 具体值（B-2 遗留：值类型方法 + 泛型占位构造接收
+                // 者——place 链物化的接收者槽保持占位类型，前端不打
+                // cast；此前胖值位模式直传 callee 当内联值指针用，读
+                // 出垃圾/AV）。拆箱到临时槽适配；.this 别名语义额外登
+                // 记调用后重装箱写回（VM 占位槽原地生效同口径）；不符
+                // 抛 CastException（MW9b-G 口径）
+                if (BoxEmitter.NeedsUnbox(session, actual, expected))
+                {
+                    return UnboxArg(session, builder, slots, local, expected, actual,
+                        aliasThis, temps, excTarget, receiverWritebacks);
+                }
             }
             return MarshalArg(session, builder, slots, arg, aliasThis, temps);
+        }
+
+        // 占位实参拆箱编组：值类型 → 拆到入口临时槽传指针（含引用内容
+        // 时登记 RichTemp 随调用收尾销毁）；标量/String → 拆到临时槽
+        // 后装载传值
+        private static LLVMValueRef UnboxArg(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirLocalOperand local, MirType expected, MirType actual, bool aliasThis,
+            List<ArcEmitter.RichTemp> temps, MirBlock? excTarget,
+            List<ReceiverWriteback>? receiverWritebacks)
+        {
+            var fat = session.LoadLocal(builder, slots, local);
+            if (session.IsInlineValueType(expected, out var plan))
+            {
+                var temp = LlvmEmitEnvironment.BuildEntryAlloca(builder,
+                    LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)plan.Size), "call.unbox");
+                temp.Alignment = (uint)plan.Alignment;
+                // R3：open struct 目标可含子类型盒——UnboxToSlot 中枢
+                // 已转协变链守卫（VM 动态解析同口径）；此处只需为写回
+                // 登记身份保留标记（原地补丁，不重装箱切片）
+                var subtypeIdentity = BoxEmitter.IsOpenStructType(session, expected);
+                BoxEmitter.UnboxToSlot(session, builder, fat, expected, temp, actual,
+                    excTarget);
+                if (plan.RefMapCount > 0)
+                {
+                    temps.Add(new ArcEmitter.RichTemp(temp, ArcEmitter.SheetOf(session, expected),
+                        plan.Size));
+                }
+                if (aliasThis)
+                {
+                    receiverWritebacks?.Add(new ReceiverWriteback(local.Name, temp, expected,
+                        subtypeIdentity));
+                }
+                return temp;
+            }
+            var scalarTemp = LlvmEmitEnvironment.BuildEntryAlloca(builder,
+                TypeLayout.MapType(session.Context, expected), "call.unbox.s");
+            BoxEmitter.UnboxToSlot(session, builder, fat, expected, scalarTemp, actual, excTarget);
+            return builder.BuildLoad2(TypeLayout.MapType(session.Context, expected), scalarTemp,
+                "call.unbox.ld");
         }
 
         // 单实参编组（值类型 → InitRichValue 副本传指针；aliasThis = 值类型

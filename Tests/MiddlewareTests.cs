@@ -220,6 +220,7 @@ namespace RigiCompiler.Tests
             ("TestCoroutineLowering", TestCoroutineLowering),
             ("TestSyntheticFrameTypePlan", TestSyntheticFrameTypePlan),
             ("TestCoroutineSplit", TestCoroutineSplit),
+            ("TestCoroutineSplitRejection", TestCoroutineSplitRejection),
             ("TestCoroutineYieldAlarm", TestCoroutineYieldAlarm),
             ("TestCoroutineEmit", TestCoroutineEmit),
             ("TestExceptionEmission", TestExceptionEmission),
@@ -1254,6 +1255,69 @@ namespace RigiCompiler.Tests
                 coldFactory == null ? "<null>" : string.Join(",",
                     coldFactory.Blocks.SelectMany(b => b.Instructions)
                         .OfType<MirNewObject>().Select(n => n.Type.Canonical)));
+        }
+
+        // ===== R2 残留边界负例：保留受控拒绝的形态钉住 =====
+
+        private static void TestCoroutineSplitRejection()
+        {
+            // R2-b：proxy/wrapper 烘焙链（$.mwrapped.）触达含挂起点
+            // fn——受控拒绝（router/trampoline 通配 ABI 的值包转发形
+            // 态无挂起协议插点，运行期目标集随 wrapper 实例符号表动
+            // 态决定，静态闭包不可枚举）；$$call/invoke.indirect 已
+            // 放开（NativeE2E「栈式跨界 lambda 间接调用挂起」对拍）
+            var wrapperCaught = false;
+            try
+            {
+                PipelineFromSource(
+                    "@WrapperTarget(.Method)\n" +
+                    "pub wrapper Timed {\n" +
+                    "    pub init()\n" +
+                    "    operator .proxy.call\\<TReturn>(x: i32): TReturn {\n" +
+                    "        var r = inner(x)\n" +
+                    "        return (((r as i32) + 1) as TReturn)\n" +
+                    "    }\n" +
+                    "}\n" +
+                    "pub func main(): i32 {\n" +
+                    "    var f = func{ @Timed (x: i32): i32 -> {\n" +
+                    "        yield\n" +
+                    "        return@_ x + 1\n" +
+                    "    }}\n" +
+                    "    return f(41)\n" +
+                    "}\n", "coro.reject.wrapper.bil");
+            }
+            catch (MwNotSupportedException ex)
+            {
+                wrapperCaught = ex.Message.Contains("proxy/wrapper 烘焙链");
+            }
+            TestHarness.CheckTrue("R2-b proxy 链 tainted 受控拒绝", wrapperCaught);
+
+            // R2-c：值类型 init 含挂起点——受控拒绝（值类型构造路
+            // 径无挂起协议：frame .this 借用形态与 sret/原地构造不
+            // 兼容；此前静态 new 形态静默语义错位——native exit 5
+            // 无输出 vs VM 正常——补闸）。class init 已放开
+            //（NativeE2E「栈式跨界 new.indirect init 内挂起」对拍）
+            var structCaught = false;
+            try
+            {
+                PipelineFromSource(
+                    "pub struct S {\n" +
+                    "    pub var x: i32\n" +
+                    "    pub init(v: i32) {\n" +
+                    "        yield\n" +
+                    "        x = v\n" +
+                    "    }\n" +
+                    "}\n" +
+                    "pub func main(): i32 {\n" +
+                    "    var s = new S(41)\n" +
+                    "    return s.x\n" +
+                    "}\n", "coro.reject.structinit.bil");
+            }
+            catch (MwNotSupportedException ex)
+            {
+                structCaught = ex.Message.Contains("值类型 init");
+            }
+            TestHarness.CheckTrue("R2-c 值类型 init tainted 受控拒绝", structCaught);
         }
 
         // ===== MW11b 棒3：yield Alarm 切分形态 + probe 合成 fn =====
@@ -3956,7 +4020,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("get fn 真构造带异常边（init 抛出置回在途）",
                 construct.ExcTarget != null
                 && construct.ExcTarget.Id == "mw.sg.fail"
-                && construct.Init.Canonical == "S$init()@.void");
+                && construct.Init!.Canonical == "S$init()@.void");
             TestHarness.CheckTrue("get fn 环检测抛异常",
                 getInsts.OfType<MirThrow>().Any()
                 && getInsts.OfType<MirNewObject>().Any(n =>
@@ -6266,6 +6330,71 @@ namespace RigiCompiler.Tests
             {
                 Directory.Delete(dir, recursive: true);
             }
+
+            // R3：合成入口脊柱直调站点（非 MIR、不可协议化）的 taint
+            // 补闸——脊柱运行于调度器启动前/关停后，挂起点无泵可恢复，
+            // tainted 必崩（实证 trap/AV），受控拒绝
+            // ① 全局异常处理器 lambda 含 yield（invoke.indirect 传染
+            //    dispatch，entry stub gexc drain 直调）
+            ExpectMwNotSupportedFromSource(
+                "pub class Res implements core.IDisposable {\n" +
+                "    pub init() { }\n" +
+                "    pub override func dispose() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    core.GlobalExceptionHandler.register(func{ (e: core.Exception) -> {\n" +
+                "        yield\n" +
+                "    } })\n" +
+                "    const r = new Res()\n" +
+                "    return 0\n" +
+                "}\n",
+                "全局异常处理器",
+                "R3 全局异常处理器含挂起点受控拒绝");
+            // ② 全局初始值设定项调 tainted fn（..globals.init 脊柱直调）
+            ExpectMwNotSupportedFromSource(
+                "var g: i32 = slowCall()\n" +
+                "func slowCall(): i32 {\n" +
+                "    var f = func{(x: i32): i32 -> {\n" +
+                "        yield\n" +
+                "        return@_ x + 1\n" +
+                "    }}\n" +
+                "    return f(41)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    return g\n" +
+                "}\n",
+                "全局初始值设定项",
+                "R3 全局初始值含挂起点受控拒绝");
+            // ③ singleton init 含 yield（急切 get fn 脊柱直调）
+            ExpectMwNotSupportedFromSource(
+                "pub shared singleton class S {\n" +
+                "    pub var v: i32\n" +
+                "    pub init() {\n" +
+                "        yield\n" +
+                "        v = 42\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new S()\n" +
+                "    return 0\n" +
+                "}\n",
+                "singleton init",
+                "R3 singleton init 含挂起点受控拒绝");
+            // ④ Exception.getMessage override 含 yield（reporter 脊柱
+            //    虚调；优先报根因而非被传染的 dispatch 脊柱）
+            ExpectMwNotSupportedFromSource(
+                "pub class SlowExc : core.Exception {\n" +
+                "    pub init() { }\n" +
+                "    pub override func getMessage(): String {\n" +
+                "        yield\n" +
+                "        return \"slow\"\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    throw new SlowExc()\n" +
+                "}\n",
+                "getMessage override",
+                "R3 getMessage override 含挂起点受控拒绝");
         }
 
         // ===== 空模块 .o 发射 =====
