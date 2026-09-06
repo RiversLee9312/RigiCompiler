@@ -111,6 +111,8 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             var resolved = ResolveTypeRef(context, coroutine, targetType);
+            if (BilVerificationContext.NormalizeTypeRef(resolved) == "core::ValueType")
+                return context.IsValueType(ActualType(value));
             return context.Types.TypesAssignable(ActualType(value), resolved);
         }
 

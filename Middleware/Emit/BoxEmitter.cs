@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections.Generic;
 using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
@@ -55,7 +54,9 @@ namespace RigiCompiler.Middleware.Emit
             && !session.IsInlineValueType(to, out _);
 
         internal static bool NeedsUnbox(ModuleBuilder.Session session, MirType from, MirType to) =>
-            TypeLayout.IsGenericPlaceholder(from)
+            // 合成接口可承载值接收者；其胖槽解箱与泛型槽使用同一编组路径。
+            (TypeLayout.IsGenericPlaceholder(from)
+                || session.Layout?.Find(from.Canonical)?.Kind == TypeLayoutKind.Interface)
             && !TypeLayout.IsGenericPlaceholder(to)
             && IsBoxableValue(session, to)
             // 开放构造值类型（WPair<.generic<…>>）仍是内联值 ABI（指
@@ -97,7 +98,7 @@ namespace RigiCompiler.Middleware.Emit
                 return PackFat(session, builder, view, TagInline, bits, "box");
             }
             var size = ValueByteSize(session, sourceType);
-            var sheet = TypeSheetOf(session, sourceType);
+            var sheet = ResolveValueSheet(session, builder, sourceType);
             var tag = size <= InlineLimit ? TagInline : TagHeapValue;
             LLVMValueRef payload;
             if (tag == TagInline)
@@ -539,6 +540,45 @@ namespace RigiCompiler.Middleware.Emit
                 return sheet;
             }
             return session.TypeSheetFor(type.Canonical);
+        }
+
+        // 泛型值没有对象头，实例方法里的 this 仍是模板静态类型。
+        // 装箱时利用现有类级 typeid 参数选择已具化 sheet，保留值的真实类型。
+        private static LLVMValueRef ResolveValueSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirType type)
+        {
+            var selected = builder.BuildBitCast(TypeSheetOf(session, type), PointerType(), "box.sheet");
+            var template = session.Symbols.FindTypeByRef(type.Canonical);
+            if (template == null || !GenericAbi.IsValueTypeOwner(template)
+                || template.Declaration.GenericParameters.Count == 0
+                || GenericAbi.IsClosedConstructed(type.Canonical)) return selected;
+            var sourceArgs = ConstructedTypeCollector.TypeArgumentsOf(type.Canonical);
+            foreach (var plan in session.Layout!.Plans)
+            {
+                if (!GenericAbi.IsClosedConstructed(plan.Symbol.Canonical)
+                    || plan.Symbol.Declaration != template.Declaration) continue;
+                var actualArgs = ConstructedTypeCollector.TypeArgumentsOf(plan.Symbol.Canonical);
+                LLVMValueRef match = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1, false);
+                var usable = true;
+                for (var i = 0; i < actualArgs.Count; i++)
+                {
+                    var name = template.Declaration.GenericParameters[i];
+                    if (sourceArgs.Count > i && !GenericAbi.TryPlaceholderName(sourceArgs[i], out name))
+                    {
+                        usable = false;
+                        break;
+                    }
+                    if (!session.Slots.ContainsKey(".generic." + name)) { usable = false; break; }
+                    var current = session.LoadLocal(builder, session.Slots, new MirLocalOperand(".generic." + name));
+                    var want = builder.BuildBitCast(session.TypeSheetFor(actualArgs[i]), PointerType(), "box.arg.sheet");
+                    match = builder.BuildAnd(match, builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
+                        current, want, "box.arg.eq"), "box.args.eq");
+                }
+                if (usable) selected = builder.BuildSelect(match,
+                    builder.BuildBitCast(session.TypeSheetFor(plan.Symbol.Canonical), PointerType(), "box.actual.sheet"),
+                    selected, "box.sheet.select");
+            }
+            return selected;
         }
 
         // TypeId 运行期类型 = Type<payload>：按已收集的构造 sheet 选视图。

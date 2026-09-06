@@ -56,7 +56,8 @@ namespace RigiCompiler.Middleware.Emit
                 global.IsGlobalConstant = true;
                 sheetGlobals.Add(key, global);
                 session.RegisterTypeSheet(key, global);
-                if (key != plan.Symbol.Canonical && !sheetGlobals.ContainsKey(plan.Symbol.Canonical))
+                if (key != plan.Symbol.Canonical && !sheetGlobals.ContainsKey(plan.Symbol.Canonical)
+                    && ReferenceEquals(layout.Find(plan.Symbol.Canonical), plan))
                 {
                     sheetGlobals.Add(plan.Symbol.Canonical, global);
                     session.RegisterTypeSheet(plan.Symbol.Canonical, global);
@@ -124,7 +125,7 @@ namespace RigiCompiler.Middleware.Emit
                             continue;
                         }
                         entries[i] = session.TryGetFunction(plan.VTableSlots[i], out var emitted)
-                            ? emitted.Value
+                            ? FatValueSlotAbi.Entry(session, plan, i, emitted.Value)
                             : nullPointer;
                     }
                     vTable = AddConstantGlobal(module,

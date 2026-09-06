@@ -72,7 +72,8 @@ namespace RigiCompiler
             // companion 统一设计）。wrapper cell 化的字段（CellStorage，
             // 含 companion 落地）不在此列——其初值随 cell/companion init
             // 求值；实例字段归 ..init.field.*（阶段 1.7）
-            SynthesizeGlobalFieldInitializers();
+            // 普通字段可能在函数体绑定中被 placeOf 提升；初始化器在提升
+            // 集合落定后合成，避免同一存储既写原字段又初始化 Cell。
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
             WalkSkeleton((fn, symbol, fileCtx, owner) =>
             {
@@ -110,6 +111,7 @@ namespace RigiCompiler
                 }
                 BindBody(fn, symbol, fileCtx, owner);
             }, BindAccessorBodies);
+            SynthesizeGlobalFieldInitializers();
             // lambda 对象模型（SYNTAX §5.2）：每个 lambda 的隐藏类 init 体与
             // $$call 体全部汇入函数体列表（捕获与否不再有区别——闭包经
             // init 的 Cell 参数传入，P4 降级为普通 new + invoke）

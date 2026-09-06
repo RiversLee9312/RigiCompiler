@@ -220,7 +220,7 @@ namespace RigiCompiler
                             ProcessBlock(seqBlock.Body, region, ctx, env, true), seqBlock.IsVolatile,
                             seqBlock.BreakId);
                         output.AddRange(FinishRegion(region, node, ctx, env));
-                        // 逃逸型值块表达式（seq 表达式体全路径向外逃逸，
+                        // 逃逸型值块表达式（含非 void lambda 的直接值块体，
                         // 或 pattern 路径的 switch 表达式——其 if 链外包的
                         // seq region Origin 即 BoundSwitchExpression）：
                         // P3 已证全路径向外逃逸，本 region 不存在「正常
@@ -233,7 +233,8 @@ namespace RigiCompiler
                         // 协议指令，砍了即坏 BIL（写回动态不可达由 hint /
                         // 终止指令向 verifier 证明，保留零代价）
                         if (!isLoopJudge
-                            && (seqBlock.Origin is BoundSeqExpression { Body.ValueType: null }
+                            && (seqBlock.Origin is BoundValueBlock { ValueType: null }
+                            || seqBlock.Origin is BoundSeqExpression { Body.ValueType: null }
                             || (seqBlock.Origin is BoundSwitchExpression patternSwitch
                                 && EscapesOnAllPaths(patternSwitch))))
                         {

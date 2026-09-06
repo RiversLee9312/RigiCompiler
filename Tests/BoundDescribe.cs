@@ -96,6 +96,7 @@ namespace RigiCompiler.Tests
                 BoundTryStatement tryStmt => Try(tryStmt),
                 BoundSeqStatement seqStmt =>
                     $"{(seqStmt.IsVolatile ? "SeqVolatile" : "Seq")}" +
+                    $"{(seqStmt.IsUnsafe ? "Unsafe" : "")}" +
                     $"{(seqStmt.Label != null ? "@" + seqStmt.Label : "")}" +
                     $"({(seqStmt.UsingBindings.Count == 0 ? "" : string.Join(", ", seqStmt.UsingBindings.Select(Using)))}{Block(seqStmt.Body)})",
                 // M61：return@语句seq（不携带值，Target.Label 必非 null）
@@ -140,7 +141,8 @@ namespace RigiCompiler.Tests
             var type = valueBlock.ValueType != null ? TypeShort.Of(valueBlock.ValueType) : "-";
             var implicitMark = valueBlock.IsImplicitValue ? ", implicit" : "";
             var volatileMark = valueBlock.IsVolatile ? ", volatile" : "";
-            return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}{volatileMark}, " +
+            var unsafeMark = valueBlock.IsUnsafe ? ", unsafe" : "";
+            return $"ValueBlock({valueBlock.Label}, {type}{implicitMark}{volatileMark}{unsafeMark}, " +
                 $"{Block(valueBlock.Block)})";
         }
 
@@ -260,6 +262,8 @@ namespace RigiCompiler.Tests
                     typeOf.TargetType != null
                         ? $"TypeOf(type {TypeShort.Of(typeOf.TargetType)}, {TypeShort.Of(typeOf.Type)})"
                         : $"TypeOf({Expr(typeOf.Operand)}, {TypeShort.Of(typeOf.Type)})",
+                BoundPlaceOfExpression placeOf =>
+                    $"PlaceOf({Expr(placeOf.Operand)}, {(placeOf.Storage == null ? "object" : "cell")})",
                 _ => $"<{expr.GetType().Name}>",
             };
         }

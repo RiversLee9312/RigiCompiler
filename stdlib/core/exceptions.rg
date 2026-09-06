@@ -27,6 +27,13 @@ pub open class RuntimeException : core.Exception {
     pub open override func getMessage(): String { return message }
 }
 
+// 只读 Cell 或 Object 身份不提供可替换值槽的能力。
+pub class ImmutablePlaceException : RuntimeException {
+    pub init() { message = "目标 Place 不可写" }
+    pub init(text: String) { message = text }
+    pub override func getMessage(): String { return message }
+}
+
 pub open class IOException : RuntimeException {
     pub init(text: String) { message = text }
     pub override func getMessage(): String { return message }

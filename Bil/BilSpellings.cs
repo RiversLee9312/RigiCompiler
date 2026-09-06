@@ -22,6 +22,11 @@ namespace RigiCompiler.Bil
         // ..toParcel / ..fromParcel 是 ..ISerializable 的实现槽；
         // ..init.serializable 是特权构造（token 实参，不依赖用户 init）。
         public const string ToParcelMethodName = "..toParcel";
+        public const string EncodeGraphMethodName = "..encode.graph";
+        public const string DecodeGraphMethodName = "..decode.graph";
+        public const string GraphIdKey = "..id";
+        public const string GraphReferenceKey = "..ref";
+        public const string GraphPayloadKey = "..data";
         public const string FromParcelMethodName = "..fromParcel";
         public const string InitSerializableMethodName = "..init.serializable";
         public const string SerializableIfaceName = "..ISerializable";
@@ -146,6 +151,7 @@ namespace RigiCompiler.Bil
             {
                 BilBlockModifier.Entrypoint => "entrypoint",
                 BilBlockModifier.Volatile => "volatile",
+                BilBlockModifier.Unsafe => "unsafe",
                 _ => throw new CompilerInternalException("未知 BilBlockModifier: " + modifier),
             };
         }
@@ -186,6 +192,7 @@ namespace RigiCompiler.Bil
                 BilKeyword.CompilerGenerated => "compiler-generated",
                 BilKeyword.Override => "override",
                 BilKeyword.Async => "async",
+                BilKeyword.Unsafe => "unsafe",
                 _ => throw new CompilerInternalException("未知 BilKeyword: " + keyword),
             };
         }

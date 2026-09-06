@@ -270,6 +270,10 @@ namespace RigiCompiler.Middleware.Emit
                     continue;
                 }
                 var expectType = argIndex < expected.Count ? expected[argIndex].Type : null;
+                // 值接口分流已确定闭合宿主；this 解箱必须核对该构造 sheet，
+                // 不能退回方法声明的裸模板 sheet。
+                if (thisAliases && argIndex == 0 && hostConstructedRef != null)
+                    expectType = MirType.Of(hostConstructedRef);
                 values.Add(CoerceArg(session, builder, slots, args[argIndex],
                     expectType, thisAliases && argIndex == 0, temps, boxed, excTarget,
                     receiverWritebacks));
@@ -284,12 +288,13 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             CanonicalSignature signature, IReadOnlyList<MirOperand> args, string? result,
-            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed)
+            List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
+            bool coerceParameters = false)
         {
             var returnType = MirType.Of(signature.ReturnTypeRef);
             var hasOut = session.IsInlineValueType(returnType, out var outPlan);
             return MarshalArgsCore(session, builder, slots, args, result, hasOut, outPlan,
-                thisAliases: false, temps, boxed, returnType);
+                thisAliases: false, temps, boxed, returnType, coerceParameters ? signature : null);
         }
 
         private static LLVMValueRef[] MarshalArgsCore(ModuleBuilder.Session session,
@@ -298,7 +303,7 @@ namespace RigiCompiler.Middleware.Emit
             IReadOnlyList<MirOperand> args, string? result,
             bool hasOut, Layout.TypeLayoutPlan outPlan, bool thisAliases,
             List<ArcEmitter.RichTemp> temps, List<ArcEmitter.FatTemp> boxed,
-            MirType returnType)
+            MirType returnType, CanonicalSignature? signature = null)
         {
             var values = new LLVMValueRef[args.Count + (hasOut ? 1 : 0)];
             if (hasOut)
@@ -316,7 +321,9 @@ namespace RigiCompiler.Middleware.Emit
             for (var i = 0; i < args.Count; i++)
             {
                 values[i + (hasOut ? 1 : 0)] = CoerceArg(session, builder, slots, args[i],
-                    null, thisAliases && i == 0, temps, boxed);
+                    signature != null && i > 0 && i <= signature.Parameters.Count
+                        ? MirType.Of(signature.Parameters[i - 1].TypeRef) : null,
+                    thisAliases && i == 0, temps, boxed);
             }
             return values;
         }

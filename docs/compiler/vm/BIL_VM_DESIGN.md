@@ -75,6 +75,10 @@ Bil/
 
 ### 3.2 复合与运行时类型值
 
+- `.handle` 使用 `VmObject` 的专用强引用 target 与 kind/mutable 元数据；这些槽不进入字段或 wrapper 隐藏字段枚举。CLR 对象图保持目标存活；Handle 无 dispose 追踪。Place 的普通字段持有与 Handle 独立，释放 Place 后 Handle 仍有效。
+
+泛型宿主的 `$$call` 匹配先按实际 receiver 代入参数类型，宿主 hidden typeid 由入帧逻辑注入，不计入显式实参数量；方法级 hidden typeid 仍来自调用点。嵌套 Nullable 等类型的内建别名须递归归一化，null 与非空元素按 Nullable 可赋值规则匹配。
+
 - `VmObject`：运行时类型引用（指向 BilModule 中的类型声明，canonical 符号名
   为身份）+ 字段字典（字段符号 → VmValue）。class 为引用语义。
 - 值类型（struct / 内建值类型）：赋值、传参、返回时**深拷贝**；`VmObject`
@@ -288,3 +292,7 @@ GC 类设施（GCAlarm 等）永不进表：BIL 禁止对 GC 机制与实现作�
 - 不扩展 §22.5 hook 表（除非 BIL 标准修订）。
 - 不为 VM 改变 BIL 指令语义；发现规范歧义时先修规范或提决议，不在
   VM 内私自解释。
+
+消息队列由标准库单份 Rigi 代码执行：安全 AtomicList 持消息，队列 Mutex 保护 capability、cursor、水位与EOS；VM 不维护消息注册表或专用队列 hook。listener 以 Place 比较对象身份并由 Task.run(executor) 派发，参见 RUNTIME §27。
+
+运行期资源生命周期：活动协程由调度登记册强持，终态改弱登记；Task 与尚待结算的 waiter 强持结果状态，已观察失败和已消费启动规格撤出登记。VmObject 为通用原生gate保存独立原子所有权快照，终结器仅操作线程安全登记册及 SemaphoreSlim，绝不读解释器槽。ResumeLog 默认关闭，仅测试显式开启。死锁检测以全执行段 active 计数和活动 epoch 校验扫描一致性，包含终态唤醒收尾窗口。

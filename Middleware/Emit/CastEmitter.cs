@@ -71,6 +71,9 @@ namespace RigiCompiler.Middleware.Emit
             if (targetType.IsAnyOrObject)
             {
                 var fat = LoadSourceFat(session, builder, slots, source.Name, sourceType);
+                // 引用视图转换产生独立持有；新装箱值已拥有其胖值。
+                if (SourceIsFat(session, sourceType))
+                    fat = ArcEmitter.ProduceFatValue(session, builder, fat, "cast.acq");
                 StoreConverted(session, builder, slots, inst, sourceType, resultType, fat);
                 return;
             }
@@ -128,8 +131,9 @@ namespace RigiCompiler.Middleware.Emit
             var hitTid = builder.BuildLoad2(LLVMTypeRef.Int64, outTid, "cast.htid");
             var hitPl = builder.BuildLoad2(LLVMTypeRef.Int64, outPl, "cast.hpl");
             var hitFat = PackBits(session, builder, hitTid, hitPl, "cast.hf");
-            // 已是胖引用的源：结果共享，需 acquire；值类型新装箱：唯一所有权
-            if (SourceIsFat(session, sourceType))
+            // 只有胖结果才持有转换后的盒子。拆箱会自行复制并持有内部值，
+            // 若先 acquire 胖值，会额外复制一个无人释放的堆盒。
+            if (SourceIsFat(session, sourceType) && IsFatResult(session, resultType))
             {
                 hitFat = ArcEmitter.ProduceFatValue(session, builder, hitFat, "cast.acq");
             }
@@ -345,6 +349,9 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException("cast 缺目标类型");
             }
+            if (session.Symbols.FindTypeByRef(inst.TargetTypeRef) is { } template
+                && template.Declaration.GenericParameters.Count > 0)
+                return NewEmitter.MaterializeClassSheet(session, builder, slots, inst.TargetTypeRef);
             return TypeSheetOf(session, MirType.Of(inst.TargetTypeRef));
         }
 

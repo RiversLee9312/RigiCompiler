@@ -505,13 +505,76 @@ void rigi_any_to_string(rigi_string *out, const void *anySlot)
  * 唯一——调用纪律要求被身份化的对象此刻仍被引用）。标量 payload 无身份
  * 语义（值装箱），本面不拒绝但调用方不应依赖。
  */
-int64_t rigi_object_id(const void *anySlot)
+/* Place 身份比较只返回布尔值；两边的普通 ARC 引用保证目标仍存活。 */
+uint8_t rigi_place_same_target(const void *left, const void *right)
 {
-    uint64_t payload;
-    if (anySlot == NULL)
-    {
-        return 0;
-    }
-    memcpy(&payload, (const char *)anySlot + 8, sizeof(payload));
-    return (int64_t)payload;
+    uint64_t leftPayload, rightPayload;
+    if (left == NULL || right == NULL) return 0;
+    memcpy(&leftPayload, (const char *)left + 8, sizeof(leftPayload));
+    memcpy(&rightPayload, (const char *)right + 8, sizeof(rightPayload));
+    return leftPayload == rightPayload;
+}
+
+/* Handle 固定 ABI：头 16B、隐藏胖 target 16B、可写能力位 16B。
+ * target 是唯一 refMap 项；普通析构、循环扫描与 teardown 复用 ARC
+ * 的既有扫描器，不能再添加第二条 release 路径。 */
+static void *rigi_handle_object(const void *value)
+{
+    uint64_t type_id, payload;
+    memcpy(&type_id, value, 8);
+    memcpy(&payload, (const char *)value + 8, 8);
+    const RigiTypeSheet *sheet = (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
+    if ((type_id >> RIGI_TAG_SHIFT) != RIGI_TAG_OBJECT || payload == 0
+        || sheet == NULL || sheet->typeInfoId == NULL
+        || sheet->typeInfoId->name.len != 7
+        || memcmp(sheet->typeInfoId->name.data, ".handle", 7) != 0) abort();
+    return (void *)(uintptr_t)payload;
+}
+
+void rigi_handle_make(void *out, const RigiTypeSheet *sheet, const void *target, int32_t kind, uint8_t mutable)
+{
+    uint64_t target_type, target_payload;
+    memcpy(&target_type, target, 8);
+    memcpy(&target_payload, (const char *)target + 8, 8);
+    if (sheet == NULL || sheet->typeSize != 48 || sheet->refMapSize != 1
+        || sheet->refMap[0] != 0 || (sheet->typeFlags & RIGI_TYPE_SHARED) == 0
+        || (target_type >> RIGI_TAG_SHIFT) != RIGI_TAG_OBJECT || target_payload == 0) abort();
+    void *object = rigi_alloc(sheet);
+    target_payload = rigi_ref_acquire(target_type, target_payload);
+    memcpy((char *)object + 16, &target_type, 8);
+    memcpy((char *)object + 24, &target_payload, 8);
+    *((uint8_t *)object + 32) = mutable;
+    memcpy((char *)object + 36, &kind, 4);
+    uint64_t type_id = (uint64_t)(uintptr_t)sheet | ((uint64_t)RIGI_TAG_OBJECT << RIGI_TAG_SHIFT);
+    uint64_t payload = (uint64_t)(uintptr_t)object;
+    memcpy(out, &type_id, 8);
+    memcpy((char *)out + 8, &payload, 8);
+}
+
+void rigi_handle_target(void *out, const void *value)
+{
+    const char *object = (const char *)rigi_handle_object(value);
+    uint64_t type_id, payload;
+    memcpy(&type_id, object + 16, 8);
+    memcpy(&payload, object + 24, 8);
+    payload = rigi_ref_acquire(type_id, payload);
+    memcpy(out, &type_id, 8);
+    memcpy((char *)out + 8, &payload, 8);
+}
+
+uint8_t rigi_handle_is_mutable(const void *value)
+{
+    return *((const uint8_t *)rigi_handle_object(value) + 32);
+}
+
+int32_t rigi_handle_kind(const void *value)
+{
+    int32_t kind;
+    memcpy(&kind, (const char *)rigi_handle_object(value) + 36, 4);
+    return kind;
+}
+
+uint8_t rigi_handle_type_is_value(const RigiTypeSheet *sheet)
+{
+    return sheet != NULL && (sheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0;
 }

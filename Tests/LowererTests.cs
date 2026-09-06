@@ -57,6 +57,7 @@ namespace RigiCompiler.Tests
             TestForLoopLowering();
             TestSwitchLowering();
             TestThrowLowering();
+            TestThrowLambdaLowering();
             TestElseIfChainTransform();
             TestCastLowering();
             TestTryLowering();
@@ -130,6 +131,22 @@ namespace RigiCompiler.Tests
             return (unit, bound, Lowerer.Lower(unit, bound));
         }
 
+        private static void TestThrowLambdaLowering()
+        {
+            var (unit, _, bodies) = LowerUnitWithStdlib("""
+                pub func main(): i32 {
+                    const fail = func{ ():i32 -> { throw new core.RuntimeException("callback") }}
+                    return 0
+                }
+                """);
+            CheckNoErrors("直接 throw lambda 降级无诊断", unit);
+            var call = bodies.Single(b => b.Method.Owner?.LambdaClosure is { } closure
+                && ReferenceEquals(b.Method, closure.Call)
+                && closure.ValueBlock is { ValueType: null });
+            TestHarness.CheckTrue("全逃逸 lambda 不读取不存在的结果",
+                call.Body.Statements.Count == 1
+                && call.Body.Statements[0] is LoweredSeqBlock { Origin: BoundValueBlock { ValueType: null } });
+        }
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
             TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,

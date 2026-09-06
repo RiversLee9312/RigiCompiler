@@ -82,6 +82,15 @@ namespace RigiCompiler
 
         public TypeSymbol GetConstructedType(TypeSymbol definition, IReadOnlyList<SemanticSymbol> typeArguments)
         {
+            // §3.4：泛型 T? 代入已经可空的 T 时仍是同一层可空视图。
+            // 在统一驻留边界归一，保证字段、返回值与方法实参替换口径一致。
+            if (ReferenceEquals(definition, Bootstrap.NullableDefinition)
+                && typeArguments.Count == 1
+                && typeArguments[0] is TypeSymbol nullable
+                && ReferenceEquals(nullable.ConstructedFrom, definition))
+            {
+                return nullable;
+            }
             // 实参列表复制一份：驻留键与符号共用同一数组，杜绝调用方事后改写
             var args = new SemanticSymbol[typeArguments.Count];
             for (int i = 0; i < args.Length; i++)

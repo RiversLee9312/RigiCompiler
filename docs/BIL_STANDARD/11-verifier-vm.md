@@ -69,6 +69,10 @@
   出环点及 `continue` 至条件的交集——`break` 跳过的赋值不计入循环后；
   有 finally 时出环点叠 finally 赋值。正向 loop 出口仍取进入态（body 可能零次）。
 
+try 的正常出口与命中自身 token 的跳转出口分别保存，经过 finally 后再合并。
+throw 不流入正常续点；finally 自身抛出时丢弃原跳转，外层 break/continue 则继续转发。
+异常槽在所有 finally 进入路径上已赋值。
+
 分支合并口径：if 双分支独立分析、出口取交集；switch 恒执行且仅执行
 一个分支（default 恒在），出口取全分支（含 default）交集（与 §21.8
 「switch 全分支交」一致），分支臂内的写入对 switch 之后的读取可见。

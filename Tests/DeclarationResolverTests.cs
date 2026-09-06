@@ -1951,13 +1951,20 @@ namespace RigiCompiler.Tests
             CheckP2Error("List<未修饰 class> 字段报错", badListPlain,
                 "List 元素不可序列化");
 
-            var (badMapKey, _) = ResolveUnitWithStdlib(
+            var (scalarMapKey, _) = ResolveUnitWithStdlib(
                 "import core.serialization.Serializable\n" +
                 "import core.collections.Map\n" +
                 "@Serializable\n" +
                 "class Box { pub var m: Map\\<i32, i32> }\n");
-            CheckP2Error("Map 键非 String 报错", badMapKey,
-                "Map 的键类型必须是 String");
+            CheckNoErrors("Map 可序列化标量键合法", scalarMapKey);
+            var (badMapKey, _) = ResolveUnitWithStdlib(
+                "import core.serialization.Serializable\n" +
+                "import core.collections.Map\n" +
+                "class Other { }\n" +
+                "@Serializable\n" +
+                "class Box { pub var m: Map\\<Other, i32> }\n");
+            CheckP2Error("Map 不可序列化键报错", badMapKey,
+                "Map 键不可序列化");
             TestHarness.CheckTrue("Map 键诊断建议 @Temporary",
                 badMapKey.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("可改用 @Temporary")));

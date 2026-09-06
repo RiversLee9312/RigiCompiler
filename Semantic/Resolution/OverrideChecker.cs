@@ -29,6 +29,12 @@ namespace RigiCompiler
                 if (view.HasErrorType) continue;
 
                 var matches = FindInheritedMatches(host, view, env.Unit.Symbols);
+                // 覆写不能增加调用者的危险操作义务，否则经安全基类可绕过检查。
+                if ((method.IsUnsafe || host.IsUnsafe)
+                    && matches.Any(m => !m.Method.IsUnsafe && m.Method.Owner?.IsUnsafe != true))
+                {
+                    env.Error(fn.Span, $"'{method.Name}': unsafe implementation cannot override a safe member");
+                }
                 // async 一致性（§9.2.1，bug A1）：IsAsync 不同的继承成员既不
                 // 是合法覆写目标，也不允许静默隐藏——否则 sync 签名被 async
                 // 实现「满足」，调用点静态类型 T 而运行期实得 Task\<T\>

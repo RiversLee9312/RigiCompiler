@@ -95,7 +95,8 @@ namespace RigiCompiler.Middleware.Mir
             var rightType = flow.TypeOf(inst.Right.Name);
             var operatorName = ImplBinder.UserBinaryOperatorName(inst.Op);
             var target = inst.Target.Name;
-            if (leftType.Canonical.Contains(".generic<", System.StringComparison.Ordinal))
+            // 构造宿主即使含开放实参仍有确定 operator；仅顶层占位需运行期搜索。
+            if (Layout.GenericAbi.TryPlaceholderName(leftType.Canonical, out _))
             {
                 flow.Add(new MirGenericBinaryOp(inst.Op,
                     flow.Local(inst.Left), flow.Local(inst.Right), leftType, rightType,
@@ -132,8 +133,7 @@ namespace RigiCompiler.Middleware.Mir
             MirType operandType)
         {
             var operatorName = ImplBinder.UserUnaryOperatorName(inst.Op);
-            if (operandType.Canonical.Contains(".generic<",
-                    System.StringComparison.Ordinal))
+            if (Layout.GenericAbi.TryPlaceholderName(operandType.Canonical, out _))
             {
                 // G4：占位操作数一元运算——运行期按实际 typeid 派发
                 flow.Add(new MirGenericUnaryOp(inst.Op, flow.Local(inst.Operand),

@@ -16,7 +16,8 @@ namespace RigiCompiler.Middleware.Layout
                 methodSlots = null)
         {
             // 基类计划（本地 class 基类可解析时；内建/外部基类无字段布局）。
-            // 泛型继承 extends B<T> 经 FindTypeByRef 命中模板 B
+            // 开放 B<T> 复用模板；闭合 B<Value> 必须保留独立基类身份，
+            // 否则普通子类（含隐藏 Cell）运行时祖先链会漏掉该闭合类型。
             TypeLayoutPlan? basePlan = null;
             if (type.Declaration.ExtendsType is { } baseRef
                 && symbols.FindTypeByRef(baseRef) is { IsExternal: false } baseType
@@ -24,6 +25,9 @@ namespace RigiCompiler.Middleware.Layout
             {
                 basePlan = LayoutEngine.Resolve(baseType, symbols, table, visiting, bodies,
                     methodSlots);
+                if (GenericAbi.IsClosedConstructed(baseRef))
+                    basePlan = ConstructedLayout.ResolveConstructed(baseRef, symbols, table, visiting, bodies)
+                        ?? basePlan;
             }
 
             // 字段：基类字段在前，本类字段从基类 Size（含头、已 16 对齐）续排
@@ -46,6 +50,18 @@ namespace RigiCompiler.Middleware.Layout
                 offset += GenericAbi.TypeIdSlotSize;
             }
             var refEntries = new List<RefMapBuilder.RefSite>();
+            if (type.Canonical == ".handle")
+            {
+                // 隐藏 target 仅进入 GC refMap，不进入 Fields/反射枚举。
+                // 普通 ARC 析构与 macroGC trace/teardown 共用该唯一扫描槽，
+                // 因而不另设可调用的 target release 面。
+                offset = LayoutEngine.AlignUp(offset, LayoutEngine.ReferenceSlotSize);
+                refEntries.Add(new RefMapBuilder.RefSite(offset,
+                    TypeLayout.RefMapKindFatRef, null));
+                offset += LayoutEngine.ReferenceSlotSize;
+                // 独立可写能力标志，不是用户字段，也不参与引用扫描。
+                offset += LayoutEngine.ReferenceSlotSize;
+            }
             // MW9b-G：基类托管位点一并回放进本类 refMap——rigi_destruct
             // 只扫对象自身 sheet 的 refMap（不走 baseTypeId 链），继承的
             // String/胖引用字段漏收会在析构时泄漏（core 异常子类继承
@@ -84,6 +100,13 @@ namespace RigiCompiler.Middleware.Layout
             HiddenStoragePlanner.AppendHostSlots(type, symbols, table, visiting, fields,
                 refEntries, ref offset, methodSlots);
             var size = LayoutEngine.AlignUp(offset, LayoutEngine.ReferenceSlotSize);
+            if (IsTask(type.Declaration.Symbol))
+            {
+                // Task 保存异常的内部拥有边；复用 Handle 隐藏 target 的
+                // refMap 路径，不暴露为语言字段或序列化字段。
+                refEntries.Add(new RefMapBuilder.RefSite(size, TypeLayout.RefMapKindFatRef, null));
+                size += LayoutEngine.ReferenceSlotSize;
+            }
 
             // vtable：槽 0 分发器 → 基类槽继承（override 复用基槽）→
             // 本类自有槽 → interface 实现段
@@ -147,5 +170,8 @@ namespace RigiCompiler.Middleware.Layout
                 System.Array.Empty<(MwCaseSymbol, uint)>(), basePlan, hiddenSlots,
                 ifaceClosure);
         }
+
+        internal static bool IsTask(string declaration) =>
+            declaration == "core.coroutine::Task" || declaration == "core.coroutine::Task<TReturn>";
     }
 }

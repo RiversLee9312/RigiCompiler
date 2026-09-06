@@ -398,9 +398,10 @@ namespace RigiCompiler
         {
             var seqBlock = (LoweredSeqBlock)node;
             var seqId = "seq" + ctx.BlockIds.NextSeq();
-            var seqBilBlock = seqBlock.IsVolatile
-                ? new BilBlock(seqId, BilBlockModifier.Volatile)
-                : new BilBlock(seqId);
+            var modifiers = new List<BilBlockModifier>();
+            if (seqBlock.IsVolatile) modifiers.Add(BilBlockModifier.Volatile);
+            if (seqBlock.IsUnsafe) modifiers.Add(BilBlockModifier.Unsafe);
+            var seqBilBlock = new BilBlock(seqId, modifiers.ToArray());
             target.Instructions.Add(new CallBlockInstruction(seqBilBlock,
                 BilOp.Var(seqBlock.BreakId.Name))
             { Origin = seqBlock });

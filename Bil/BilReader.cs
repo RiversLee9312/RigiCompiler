@@ -696,6 +696,7 @@ namespace RigiCompiler.Bil
                     {
                         "entrypoint" => BilBlockModifier.Entrypoint,
                         "volatile" => BilBlockModifier.Volatile,
+                        "unsafe" => BilBlockModifier.Unsafe,
                         _ => throw Error($"未知 block 修饰符 \"{mod}\""),
                     });
                 }
@@ -1135,6 +1136,7 @@ namespace RigiCompiler.Bil
                 case "compiler-generated": return new BilKeywordModifier(BilKeyword.CompilerGenerated);
                 case "override": return new BilKeywordModifier(BilKeyword.Override);
                 case "async": return new BilKeywordModifier(BilKeyword.Async);
+                case "unsafe": return new BilKeywordModifier(BilKeyword.Unsafe);
             }
             if (TryUnwrap(word, "operator(", out var name))
                 return new BilOperatorModifier(name);

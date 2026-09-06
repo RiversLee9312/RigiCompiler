@@ -81,6 +81,8 @@ struct RigiTypeInfo
     int32_t wrapperCount;
     const RigiTypeSheet *const *ifaceClosure;
     int32_t ifaceClosureCount;
+    const RigiTypeSheet *nullableElement; /* 具化 Nullable<T> 的元素 sheet，其余为 NULL */
+    void (*destroyNative)(void *object); /* 原生资源所有权终结；不得进入 GC fence */
 };
 
 /* 对象头 16B：[0..8) TypeSheet* + [8..12) RC u32 + [12..16) 位打包域
@@ -107,7 +109,7 @@ void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *ele
 void *rigi_span_alloc(const RigiTypeSheet *spanSheet, const RigiTypeSheet *elemSheet,
     int32_t len);
 
-/* local 域：非原子 RC（单线程所有权） */
+/* local 域：语言共享限制不变；异常图可跨 waiter，RC 同样使用原子计数。 */
 void rigi_acquire_local(void *object);
 void rigi_release_local(void *object);
 
@@ -124,6 +126,8 @@ void rigi_value_release(void *ptr, const RigiTypeSheet *sheet);
 /* String ARC：data 为块基址 + 8；NULL / IMMORTAL 跳过 */
 void rigi_string_acquire(const char *data);
 void rigi_string_release(const char *data);
+/* 仅供已持有 GC 停世界独占权的回收路径使用。 */
+static void rigi_string_release_unfenced(const char *data);
 char *rigi_string_new(int64_t len);   /* 分配 rc=1 字符串块，返回 data 指针 */
 
 /* region 协议（MW7a；MW12 起 fence 真协议在 macrogc.c：gc_flag 非 IDLE
@@ -136,6 +140,7 @@ void rigi_region_exit(void);
  * → rigi_gexc_report_undisposed 入队 undisposed 事件。绝不代跑 dispose、
  * 不延迟释放、不复活；三销毁入口共用 */
 void rigi_dispose_check(void *object, const RigiTypeSheet *desc);
+void rigi_native_resources_destroy(void *object, const RigiTypeSheet *desc);
 
 /* MW12b：dispose 进入即置位 disposed 位（生成代码在 IDisposable.dispose
  * 实现槽目标的 prologue 调用；调用了但抛异常也算负责过）。对象可能

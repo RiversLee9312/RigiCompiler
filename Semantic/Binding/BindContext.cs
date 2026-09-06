@@ -22,6 +22,7 @@ namespace RigiCompiler
             Frame = new BindFunctionFrame(method, fileCtx, declaringType, isDefaultValueContext,
                 lookupHost, banEnclosingTypeParameters);
             IsLambda = isLambda;
+            IsUnsafe = method.IsUnsafe && !isDefaultValueContext;
             This = thisSymbol ?? (Frame.HasThis && declaringType != null
                 ? new ThisSymbol(declaringType) : null);
             LambdaThisType = lambdaThisType;
@@ -47,6 +48,8 @@ namespace RigiCompiler
         public FlowState Flow { get; } = new FlowState();
 
         public bool IsLambda { get; }
+        // 函数/lambda 各自建立上下文，嵌套 seq 进入后必须恢复。
+        public bool IsUnsafe { get; set; }
         public HashSet<SemanticSymbol> CapturedSymbols { get; } = new HashSet<SemanticSymbol>();
         public HashSet<ParameterSymbol> LambdaParameters { get; } = new HashSet<ParameterSymbol>();
         public ThisSymbol? This { get; }

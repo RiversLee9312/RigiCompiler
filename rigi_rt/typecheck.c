@@ -51,6 +51,11 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
     {
         return 0;
     }
+    /* 内建基元/默认值类型不携带显式基类 sheet 链，ValueType 根由
+     * 统一布局位判定；与 VM 的值类型分类一致。 */
+    if (target->typeInfoId != NULL && target->typeInfoId->name.len == 15
+        && memcmp(target->typeInfoId->name.data, "core::ValueType", 15) == 0)
+        return (actual->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0;
     for (type = actual; type != NULL; type = type->baseTypeId)
     {
         if (type == target || rigi_info_has_iface(type->typeInfoId, target))
@@ -63,6 +68,9 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
 
 int32_t rigi_type_is(uint64_t type_id, uint64_t payload, const RigiTypeSheet *target)
 {
+    if (target != NULL && target->typeInfoId != NULL
+        && target->typeInfoId->nullableElement != NULL)
+        return rigi_type_is(type_id, payload, target->typeInfoId->nullableElement);
     return rigi_sheet_is(rigi_actual_sheet(type_id, payload), target);
 }
 
@@ -374,6 +382,15 @@ static void rigi_rewrite_view(uint64_t src_tid, uint64_t src_pl,
     const RigiTypeSheet *target, uint64_t *out_tid, uint64_t *out_pl)
 {
     uint64_t tag = src_tid >> RIGI_TAG_SHIFT;
+    /* 值没有对象头保存实际类型；Any/接口视图必须保留原 sheet，
+     * 否则后续派发与 ARC 会误把接口空壳当作值布局。 */
+    if (tag != RIGI_TAG_OBJECT && target != NULL
+        && (target->typeFlags & RIGI_TYPE_INLINE_VALUE) == 0)
+    {
+        *out_tid = src_tid;
+        *out_pl = src_pl;
+        return;
+    }
     *out_tid = ((uint64_t)(uintptr_t)target & RIGI_SHEET_MASK)
         | (tag << RIGI_TAG_SHIFT);
     *out_pl = src_pl;
@@ -389,6 +406,19 @@ int32_t rigi_try_cast(uint64_t src_type_id, uint64_t src_payload,
     if (out_type_id == NULL || out_payload == NULL)
     {
         return 0;
+    }
+    /* Nullable<T> 只接纳 null 或可转换为元素 T 的值，保留原胖值表示。 */
+    if (target != NULL && target->typeInfoId != NULL
+        && target->typeInfoId->nullableElement != NULL)
+    {
+        if (src_type_id == 0 && src_payload == 0)
+        {
+            *out_type_id = 0;
+            *out_payload = 0;
+            return 1;
+        }
+        return rigi_try_cast(src_type_id, src_payload,
+            target->typeInfoId->nullableElement, out_type_id, out_payload);
     }
     /* null 胖引用：引用目标放行（零胖引用），值类型失败 */
     if (src_type_id == 0 && src_payload == 0)

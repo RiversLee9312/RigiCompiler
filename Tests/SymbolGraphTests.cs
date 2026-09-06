@@ -25,6 +25,12 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("不同实参不同实例",
                 !ReferenceEquals(nullableI32a, graph.GetNullable(b.Int64)));
 
+            TestHarness.CheckTrue("可空实参不重复包装",
+                ReferenceEquals(nullableI32a, graph.GetNullable(nullableI32a)));
+            TestHarness.CheckTrue("泛型索引返回代入保持单层可空",
+                ReferenceEquals(nullableI32a, graph.Substitute(
+                    b.ArrayDefinition.Methods.Single(m => m.Name == "getAtIndex").ReturnType,
+                    b.ArrayDefinition, graph.GetConstructedType(b.ArrayDefinition, nullableI32a))));
             // 构造类型属性传播
             TestHarness.CheckTrue("构造类型 ConstructedFrom",
                 ReferenceEquals(nullableI32a.ConstructedFrom, b.NullableDefinition));
@@ -35,6 +41,15 @@ namespace RigiCompiler.Tests
                 ReferenceEquals(nullableI32a.BaseType, b.Object));
             TestHarness.CheckTrue("构造类型非 ValueType 分支", !nullableI32a.IsValueTypeBranch);
 
+            // 接口赋值必须走传递闭包，且不放宽无关接口或反向赋值。
+            var ia = new TypeSymbol("IA", TypeKind.Interface, b.Core);
+            var ib = new TypeSymbol("IB", TypeKind.Interface, b.Core);
+            ib.Interfaces.Add(ia);
+            var impl = new TypeSymbol("Impl", TypeKind.Class, b.Core, baseType: b.Object);
+            impl.Interfaces.Add(ib);
+            TestHarness.CheckTrue("传递接口可赋值", SymbolLookup.IsAssignable(impl, ia, graph));
+            TestHarness.CheckTrue("无关接口仍不可赋值", !SymbolLookup.IsAssignable(b.Object, ia, graph));
+            TestHarness.CheckTrue("接口不得反向赋实现类", !SymbolLookup.IsAssignable(ia, impl, graph));
             // ===== bootstrap 层级（SYNTAX §3.1）=====
             TestHarness.CheckTrue("Any 无基类", b.Any.BaseType == null);
             TestHarness.CheckTrue("Object <: Any", ReferenceEquals(b.Object.BaseType, b.Any));

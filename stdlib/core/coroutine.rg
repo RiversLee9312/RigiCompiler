@@ -1,4 +1,4 @@
-﻿// Rigi 标准库：core.coroutine 协程类型面（MW11c，SYNTAX §4.5/§7.5、
+// Rigi 标准库：core.coroutine 协程类型面（MW11c，SYNTAX §4.5/§7.5、
 // RUNTIME §17–§20）。
 // MW11c 架构转向已落地：Task/Dispatcher 调度逻辑在 Rigi 世界（§17.4），
 // native 只留 Worker/协程句柄/定时器/同步锁/TLS/时钟原语。VM 与 native
@@ -148,9 +148,9 @@ pub shared class Task {
     // spawn-into 复用（Task↔协程 1:1，§18.4）；VM 不用（VM 直建）
     priv var coldHandle: i64 = (0 as i64)
     // failureNodeId：native 失败注册表节点 id（0 = 未登记/已摘除——
-    // 失败异常对象本体存 native 注册表：shared class 不得持 local
-    // Exception 字段；VM 半场恒 0，registerWaiter 按 0 跳过摘除）。
-    // await 观察后即摘除（registerWaiter）
+    // 异常由 native 隐藏 refMap 槽持有，不增加 shared class 的 local
+    // Exception 语言字段；VM 半场恒 0，registerWaiter 跳过 native 标记）。
+    // await 仅放报告引用；Task 隐藏拥有槽保留到对象回收
     priv var failureNodeId: i64 = (0 as i64)
 
     // 热 Task 运行时附着（eager spawn，§18.1）：运行时桥建对象后调用，
@@ -192,7 +192,7 @@ pub shared class Task {
         observed = true
         if (stateCode == 3) { return 1 }
         if (stateCode == 4) {
-            // 观察即从 native 未观察失败注册表摘除（native 半场；VM
+            // 观察即放掉 native 未观察报告引用（native 半场；VM
             // 侧 failureNodeId 恒 0 跳过）。先登记 waiter 再失败时
             // observed 已为 true，仍须 drop
             if (failureNodeId != (0 as i64)) {
@@ -347,7 +347,7 @@ pub shared class Task\<TReturn> {
         observed = true
         if (stateCode == 3) { return 1 }
         if (stateCode == 4) {
-            // 观察即从 native 未观察失败注册表摘除（native 半场；VM
+            // 观察即放掉 native 未观察报告引用（native 半场；VM
             // 侧 failureNodeId 恒 0 跳过）。先登记 waiter 再失败时
             // observed 已为 true，仍须 drop
             if (failureNodeId != (0 as i64)) {
@@ -467,14 +467,17 @@ priv shared class SleepAlarm : EventAlarm {
 // 改写 enter + 本类 release 真体（判定与挂起在同一 gate 临界区内）
 pub shared class Mutex {
     // 持有令牌：acquire 的返回物，防无锁释放；无公开构造入口。
-    // ownerToken = 属主 Mutex 的 gate 句柄（进程内唯一身份），
+    // ownerToken = 属主 Mutex 的 gate 句柄（由强 owner 保证存活期身份），
     // 字段默认可见性（编译单元内）供 Mutex.releaseNext 校验
     pub shared class Lock {
+        // 令牌仍可被使用时保活属主，禁止原生 gate 地址被回收后复用。
+        priv const owner: Mutex
         internal var ownerToken: i64
         internal var released: bool
 
-        protected init(owner: i64) {
-            ownerToken = owner
+        protected init(owner: Mutex) {
+            this.owner = owner
+            ownerToken = owner.gate
             released = false
         }
     }
@@ -492,7 +495,7 @@ pub shared class Mutex {
     // 锁空闲立即取得；竞争挂起进 FIFO 等待队列（不占 Worker）
     pub async func acquire(): Lock {
         enter()
-        return new Lock(gate)
+        return new Lock(this)
     }
 
     // VM 桥接管（方法 hook）：gate 临界区内 tryEnter 判定，竞争则把
@@ -756,9 +759,10 @@ priv shared singleton class Dispatcher {
     priv var computeQueue: I64Queue
     priv var ioQueue: I64Queue
     priv var live: i32
-    // Compute/IO 的 Worker 句柄与懒建标记（started 先于 worker 写入，
+    // Compute/IO 的 Worker 句柄与懒建标记（gate 内完成登记后置 started，
     // 0 是合法主 Worker 句柄，故不能以 0 当「未建」哨兵）
-    priv var computeWorker: i64
+    priv var computeWorkers: Array\<i64>
+    priv var computeIdle: Array\<bool>
     priv var computeStarted: bool
     priv var ioWorker: i64
     priv var ioStarted: bool
@@ -769,7 +773,8 @@ priv shared singleton class Dispatcher {
         computeQueue = new I64Queue()
         ioQueue = new I64Queue()
         live = 0
-        computeWorker = (0 as i64)
+        computeWorkers = core.collections.arrayOf\<i64>(0)
+        computeIdle = core.collections.arrayOf\<bool>(0)
         computeStarted = false
         ioWorker = (0 as i64)
         ioStarted = false
@@ -792,19 +797,25 @@ priv shared singleton class Dispatcher {
         const empty = (live == 0)
         const wakeCompute = empty and computeStarted
         const wakeIo = empty and ioStarted
-        const compute = computeWorker
+        const compute = computeWorkers
         const io = ioWorker
         rigi_sync_mutex_release(gate)
         if (empty) {
             rigi_worker_enqueue((0 as i64), (1 as i64))
-            if (wakeCompute) { rigi_worker_enqueue(compute, (1 as i64)) }
+            if (wakeCompute) {
+                var i: i32 = 0
+                while (i < compute.length) {
+                    rigi_worker_enqueue((compute[i] as i64), (1 as i64))
+                    i = i + 1
+                }
+            }
             if (wakeIo) { rigi_worker_enqueue(io, (1 as i64)) }
         }
     }
 
     // 未观察失败清单：native 半场在 rigi_rt 注册表（生成代码 DONE
     // 垫尾经 rigi_failure_record 登记、await 观察经 Task.
-    // registerWaiter → rigi_failure_drop 摘除、rigi_entry 汇总经
+    // registerWaiter → rigi_failure_drop 标记观察、rigi_entry 汇总经
     // rigi_failure_take_unobserved 取走）；VM 半场在 VmDispatch.
     // _failed——双端各自承载，语义同口径（main 失败 > 未观察失败）
 
@@ -816,7 +827,7 @@ priv shared singleton class Dispatcher {
         const worker = rigi_tls_current_context()
         rigi_sync_mutex_acquire(gate)
         var lane: i32 = 0
-        if (computeStarted and (worker == computeWorker)) {
+        if (computeStarted and (computeIndex(worker) >= 0)) {
             lane = 1
         } else {
             if (ioStarted and (worker == ioWorker)) {
@@ -838,11 +849,28 @@ priv shared singleton class Dispatcher {
         rigi_sync_mutex_acquire(gate)
         if (lane == 1) {
             if (not computeStarted) {
-                computeWorker = rigi_worker_create((0 as i64))
+                const count = rigi_worker_parallelism()
+                computeWorkers = core.collections.arrayOf\<i64>(count)
+                computeIdle = core.collections.arrayOf\<bool>(count)
+                var i: i32 = 0
+                while (i < count) {
+                    computeWorkers[i] = rigi_worker_create((0 as i64))
+                    computeIdle[i] = true
+                    i = i + 1
+                }
                 computeStarted = true
             }
             computeQueue.push(handle)
-            worker = computeWorker
+            // 空闲标记与队列由同一 gate 保护；一个发布只认领一枚空闲 Worker。
+            worker = (-1 as i64)
+            var i: i32 = 0
+            while (i < computeWorkers.length) {
+                if ((worker == (-1 as i64)) and (computeIdle[i] as bool)) {
+                    computeIdle[i] = false
+                    worker = (computeWorkers[i] as i64)
+                }
+                i = i + 1
+            }
         } else {
             if (lane == 2) {
                 if (not ioStarted) {
@@ -857,7 +885,31 @@ priv shared singleton class Dispatcher {
             }
         }
         rigi_sync_mutex_release(gate)
-        rigi_worker_enqueue(worker, (1 as i64))
+        if (worker != (-1 as i64)) { rigi_worker_enqueue(worker, (1 as i64)) }
+    }
+
+    // 仅在 gate 内调用；Worker 身份不成为用户语义。
+    priv func computeIndex(worker: i64): i32 {
+        var i: i32 = 0
+        while (i < computeWorkers.length) {
+            if ((computeWorkers[i] as i64) == worker) { return i }
+            i = i + 1
+        }
+        return -1
+    }
+
+    // 完成执行段后原子地检查余项/登记空闲。若发布抢先入队则自唤醒，
+    // 若登记抢先则发布者认领本 Worker，两个顺序均不会丢失唤醒。
+    priv func prepareComputeWait(worker: i64) {
+        rigi_sync_mutex_acquire(gate)
+        const index = computeIndex(worker)
+        var again = false
+        if (index >= 0) {
+            again = not computeQueue.isEmpty()
+            computeIdle[index] = not again
+        }
+        rigi_sync_mutex_release(gate)
+        if (again) { rigi_worker_enqueue(worker, (1 as i64)) }
     }
 
     // 终态 waiter 批量重发布（Task 终态桥在临界区外逐个发布到
@@ -887,7 +939,7 @@ priv shared singleton class Dispatcher {
     priv func nextFor(worker: i64): i64 {
         rigi_sync_mutex_acquire(gate)
         var handle = (0 as i64)
-        if (computeStarted and (worker == computeWorker)) {
+        if (computeStarted and (computeIndex(worker) >= 0)) {
             handle = computeQueue.tryPop()
         } else {
             if (ioStarted and (worker == ioWorker)) {
@@ -928,6 +980,7 @@ priv shared singleton class Dispatcher {
                     rigi_coroutine_destroy(handle)
                 }
             }
+            prepareComputeWait(worker)
         }
     }
 }
@@ -943,6 +996,11 @@ priv func laneOfExecutor(executor: Executor?): i32 {
 }
 
 // ===== native 原语面（§17.4；MW11c 棒2 只声明，棒3 落地 rigi_rt）=====
+
+// Worker 原语：环境可用并行度；覆盖参数范围由两宿主统一校验。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("worker_parallelism")
+priv native func rigi_worker_parallelism(): i32
 
 // Worker 原语：创建/销毁/入队任务与跨线程唤醒/park
 @NativeLibrary("rigi_rt")
@@ -1077,8 +1135,8 @@ priv native func rigi_poll_clear(handle: i64)
 // 摘除 = await 观察失败 Task 时由 registerWaiter 调
 // rigi_failure_drop；汇总 = rigi_entry 的
 // rigi_failure_take_unobserved（Emitter helper，不进 stdlib）。
-// 注册表承载失败异常本体（shared class 不得持 local Exception
-// 字段），Task 仅存节点 id
+// 注册表保留未观察报告引用；Task 的 native 隐藏 refMap 槽拥有异常，
+// 不新增语言字段或放宽 shared class 字段限制
 @NativeLibrary("rigi_rt")
 @NativeSymbol("failure_record")
 priv native func rigi_failure_record(exc: Any): i64

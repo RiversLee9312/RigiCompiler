@@ -59,6 +59,7 @@ namespace RigiCompiler.Tests
             TestCast();
             TestTry();
             TestSeq();
+            TestUnsafeContexts();
             TestSeqExit();
             TestStringInterpolation();
             TestSafeAccess();
@@ -125,6 +126,7 @@ namespace RigiCompiler.Tests
             TestNamedImportValueConsumption();
             TestMw11cCoroutineShapes();
             TestMw11dSerializationFront();
+            TestPlaceOfStorage();
             return TestHarness.Summary("Binder");
         }
 

@@ -112,7 +112,8 @@ namespace RigiCompiler.Middleware.Emit
                 builder.BuildBr(blocks[excTarget.Id]);
                 return;
             }
-            var thunkReturn = session.CurrentFunction.TypeOf.ReturnType;
+            // opaque pointer 的 TypeOf 不是函数类型，须读取函数全局值类型。
+            var thunkReturn = LlvmBitcode.FunctionTypeOf(session.CurrentFunction).ReturnType;
             if (thunkReturn.Kind == LLVMTypeKind.LLVMVoidTypeKind)
             {
                 builder.BuildRetVoid();

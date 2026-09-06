@@ -8,7 +8,7 @@
 `func`, `var`, `const`, `class`, `struct`, `interface`, `enum`, `wrapper`, `operator`, `init`, `namespace`, `import`
 
 ### 修饰符关键字
-`pub`, `priv`, `protected`, `internal`, `open`, `abstract`, `singleton`, `static`, `ext`, `override`, `named`, `rich`, `shared`, `async`, `native`
+`pub`, `priv`, `protected`, `internal`, `open`, `abstract`, `singleton`, `static`, `ext`, `override`, `named`, `rich`, `shared`, `async`, `native`, `unsafe`
 
 ### 控制流关键字
 `if`, `else`, `switch`, `default`, `for`, `in`, `to`, `while`, `do`, `break`, `continue`, `return`, `yield`, `try`, `catch`, `finally`, `throw`

@@ -28,6 +28,9 @@ typedef struct RigiLocalBind
 
 typedef struct RigiCoHandle
 {
+#ifdef RIGI_HAS_LIBUV
+    uv_mutex_t execution_gate; /* 执行段锁；挂起返回前释放，不能跨段持有。 */
+#endif
     RigiResumeFn resume;
     void *frame;
     _Atomic int64_t lane;
@@ -59,6 +62,9 @@ int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame)
         abort();
     }
     h = (RigiCoHandle *)rigi_track_malloc(sizeof(RigiCoHandle));
+#ifdef RIGI_HAS_LIBUV
+    if (uv_mutex_init(&h->execution_gate) != 0) abort();
+#endif
     h->resume = (RigiResumeFn)(uintptr_t)resume_fn;
     h->frame = (void *)(uintptr_t)frame;
     atomic_init(&h->lane, 0);
@@ -73,6 +79,11 @@ int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame)
 int64_t rigi_coroutine_resume(int64_t handle)
 {
     RigiCoHandle *h = rigi_ch_of(handle, "rigi_coroutine_resume");
+#ifdef RIGI_HAS_LIBUV
+    /* yield/事件可以在旧段尾返回前发布下一段。锁只串行同一句柄，
+     * 不进入 ARC region，等待不会计作 GC 正在操作引用的参与者。 */
+    uv_mutex_lock(&h->execution_gate);
+#endif
     void *previous = rigi_tls_get_coroutine();
     RigiResumeCode code;
     /* TLS 当前协程槽 set/clear 包围执行段（嵌套恢复保存/还原外层，
@@ -82,6 +93,10 @@ int64_t rigi_coroutine_resume(int64_t handle)
     code = h->resume(h->frame);
     rigi_stat_note_resume_end();
     rigi_tls_set_coroutine(previous);
+#ifdef RIGI_HAS_LIBUV
+    /* 解锁后不再访问 h：下一段可能立即完成并销毁句柄。 */
+    uv_mutex_unlock(&h->execution_gate);
+#endif
     return (int64_t)code;
 }
 
@@ -95,6 +110,9 @@ void rigi_coroutine_destroy(int64_t handle)
         rigi_poll_clear(handle);
     }
     rigi_ch_locals_clear(h);
+#ifdef RIGI_HAS_LIBUV
+    uv_mutex_destroy(&h->execution_gate);
+#endif
     rigi_track_free(h);
     rigi_stat_note_destroy();
 }
@@ -128,6 +146,11 @@ int64_t rigi_coroutine_current(void)
  * 保持置位，恢复块 pending 查询据此进入探测分支） */
 static void rigi_ch_poll_fired(void *ctx)
 {
+    RigiCoHandle *h = (RigiCoHandle *)ctx;
+    int64_t timer = h->poll_timer;
+    /* 到期时仍在 timer 属主线程，先摘除旧 timer 再允许协程迁移。 */
+    h->poll_timer = 0;
+    if (timer != 0) rigi_timer_destroy(timer);
     rigi_dispatch_publish((int64_t)(uintptr_t)ctx);
 }
 

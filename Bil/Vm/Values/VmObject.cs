@@ -89,6 +89,17 @@ namespace RigiCompiler.Bil.Vm
         internal volatile bool DisposedMarked;
         internal bool IsDisposalTracked => _undisposedTracker != null;
 
+        // capability 强引用不属于用户字段或 wrapper 隐藏字段枚举。
+        // VM 的对象图由 CLR 保活；引用随 Handle 自身回收，无 dispose 面。
+        internal VmValue? HandleTarget { get; set; }
+        internal bool HandleMutable { get; set; }
+        internal int HandleKind { get; set; }
+        // 通用原生资源所有权快照；终结器不读取解释器字段槽。
+        internal System.Action<long, long>? NativeResourceRelease { get; set; }
+        private long _nativeGate;
+        private long _nativeCoroutine;
+        internal VmCoroutine? TaskRuntimeState { get; set; }
+
         public override string TypeRef => _slots.TypeRef;
         public bool IsValueType => _valueType;
         public VmValue? Host
@@ -122,6 +133,9 @@ namespace RigiCompiler.Bil.Vm
         // 只跑一次，天然防重复上报
         ~VmObject()
         {
+            NativeResourceRelease?.Invoke(
+                System.Threading.Interlocked.Exchange(ref _nativeGate, 0),
+                System.Threading.Interlocked.Exchange(ref _nativeCoroutine, 0));
             if (_undisposedTracker != null && !DisposedMarked)
             {
                 _undisposedTracker.Enqueue(TypeRef);
@@ -147,6 +161,13 @@ namespace RigiCompiler.Bil.Vm
         public void WriteField(string fieldSymbol, VmValue value)
         {
             _slots.WriteField(fieldSymbol, value);
+            if (NativeResourceRelease != null && value is VmI64 handle)
+            {
+                if (fieldSymbol.EndsWith("#gate@.i64", System.StringComparison.Ordinal))
+                    System.Threading.Interlocked.Exchange(ref _nativeGate, handle.Value);
+                else if (fieldSymbol.EndsWith("#handle@.i64", System.StringComparison.Ordinal))
+                    System.Threading.Interlocked.Exchange(ref _nativeCoroutine, handle.Value);
+            }
         }
 
         public bool TryReadHidden(string key, out VmValue value)

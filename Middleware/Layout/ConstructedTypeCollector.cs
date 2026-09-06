@@ -21,6 +21,8 @@ namespace RigiCompiler.Middleware.Layout
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var order = new List<string>();
             var queue = new Queue<string>();
+            foreach (var typeRef in ConstructedCallCollector.Collect(context))
+                Enqueue(typeRef, seen, order, queue);
 
             foreach (var function in context.Module.Functions)
             {

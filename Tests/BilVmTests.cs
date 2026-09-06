@@ -4659,7 +4659,7 @@ namespace RigiCompiler.Tests
         // 验证器/VM 全链路可消化（dist _repro_func2param 形态扩展为实调）
         private static void TestClosedGenericParamSymbolEndToEnd()
         {
-            var (unit, module, text) = BilTestHarness.EmitBilUnit(
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "pub func take2(f: core.Func\\<i32, i32>): i32 {\n" +
                 "    return f(1)\n" +
                 "}\n" +
@@ -4677,7 +4677,8 @@ namespace RigiCompiler.Tests
                 string.Join(", ", module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
                     .Select(d => d.Symbol)));
             // BilWriter 文本经 BilReader 回读 + 验证器零错误（VM 装载前置）
-            var reparsed = BilReader.Read(text);
+            // 展示黄金会把全部 UUID 归一成同名；实际回读必须保留各闭包身份。
+            var reparsed = BilReader.Read(BilWriter.Write(module));
             BilTestHarness.CheckBilValid("回读模块验证器零错误", reparsed);
             var result = BilVm.Run(reparsed);
             CheckOk("回读模块 VM 运行", result);

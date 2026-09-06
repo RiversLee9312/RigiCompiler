@@ -242,6 +242,7 @@ namespace RigiCompiler
             }
             if (pool.Count == 1)
             {
+                UnsafeGates.CheckMethod(pool[0].Method, node, ctx, env);
                 var single = CallFacility.BindArguments(pool[0].Method, arguments, scope, node.Span,
                     ctx, env, pool[0].ParameterTypes);
                 return single == null ? null : (pool[0].Method, single, pool[0].ReturnType,
@@ -263,6 +264,7 @@ namespace RigiCompiler
             }
             if (mapped.Count == 1)
             {
+                UnsafeGates.CheckMethod(mapped[0].View.Method, node, ctx, env);
                 var only = CallFacility.BindArguments(mapped[0].View.Method, arguments, scope,
                     node.Span, ctx, env, mapped[0].View.ParameterTypes);
                 return only == null ? null : (mapped[0].View.Method, only,
@@ -320,6 +322,7 @@ namespace RigiCompiler
                 return null;
             }
             var winner = winners[0];
+            UnsafeGates.CheckMethod(winner.View.Method, node, ctx, env);
             return Materialize(winner.View, winner.Mapping, boundArgs, arguments, scope,
                 node.Span, ctx, env) is { } finalArgs
                 ? (winner.View.Method, finalArgs, winner.View.ReturnType,
@@ -335,7 +338,7 @@ namespace RigiCompiler
             IReadOnlyList<SemanticSymbol> TypeArguments)? ResolveBound(
             ASTNode node, List<MethodSymbol> candidates,
             IReadOnlyList<BoundExpression> boundArgs,
-            BindEnvironment env, TypeSymbol? receiverType)
+            BindEnvironment env, TypeSymbol? receiverType, BindContext ctx)
         {
             var pool = candidates.Where(m => m.GenericParameters.Count == 0)
                 .Select(m => ViewOf(m, null, receiverType, env))
@@ -393,6 +396,7 @@ namespace RigiCompiler
             }
             if (applicable.Count == 1)
             {
+                UnsafeGates.CheckMethod(applicable[0].View.Method, node, ctx, env);
                 return (applicable[0].View.Method, applicable[0].View.ReturnType,
                     applicable[0].View.TypeArguments);
             }
@@ -417,6 +421,7 @@ namespace RigiCompiler
                 env.Error(node.Span, $"Call to '{pool[0].Method.Name}' is ambiguous between: {sigs}");
                 return null;
             }
+            UnsafeGates.CheckMethod(winners[0].View.Method, node, ctx, env);
             return (winners[0].View.Method, winners[0].View.ReturnType,
                 winners[0].View.TypeArguments);
         }
@@ -822,40 +827,9 @@ namespace RigiCompiler
         private static bool SatisfiesConstraints(IReadOnlyList<SemanticSymbol> typeArgs,
             MethodSymbol candidate, BindEnvironment env)
         {
-            var generics = FixedGenericParameters(candidate);
-            for (int i = 0; i < generics.Count && i < typeArgs.Count; i++)
-            {
-                var argument = typeArgs[i];
-                if (argument is ErrorTypeSymbol) continue;
-                if (SymbolLookup.ContainsGenericParameter(argument)) continue;
-                foreach (var constraint in generics[i].Constraints)
-                {
-                    var bound = constraint.Bound;
-                    if (bound == null || SymbolLookup.ContainsGenericParameter(bound)) continue;
-                    var satisfied = constraint.Kind switch
-                    {
-                        GenericConstraintKind.Extends =>
-                            SymbolLookup.IsAssignable(argument, bound, env),
-                        GenericConstraintKind.Supers =>
-                            SymbolLookup.IsAssignable(bound, argument, env),
-                        GenericConstraintKind.With => bound is TypeSymbol wrapper
-                            && HasWrapperApplied(argument, wrapper),
-                        _ => true,
-                    };
-                    if (!satisfied) return false;
-                }
-            }
-            return true;
-        }
-
-        // with 判定：wrapper 在实参的 wrapper 应用集合中（构造类型回退定义；
-        // 镜像 GenericConstraints 的私有实现——静默过滤无法复用其落诊断入口）
-        private static bool HasWrapperApplied(SemanticSymbol argument, TypeSymbol wrapper)
-        {
-            var definition = argument as TypeSymbol;
-            if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
-            return definition != null
-                && definition.AppliedWrappers.Any(w => ReferenceEquals(w.WrapperDefinition, wrapper));
+            // 静默诊断槽复用同一门禁，推断调用不能绕过安全容器能力证明。
+            return GenericConstraints.CheckArguments(typeArgs, FixedGenericParameters(candidate),
+                null, env.Unit.Symbols, static (_, _) => { });
         }
 
         // 结构映射（静默）：mapping[实参序] = 形参序；null = 结构不适用。

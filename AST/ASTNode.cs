@@ -41,6 +41,9 @@ namespace RigiCompiler
 
     public class RootASTNode : ASTNode
     {
+        // 只能由内嵌标准库加载器授予；文件名或用户声明不能伪造编译器特权。
+        internal bool IsCompilerLibrary { get; set; }
+
         // 顶层条目容器：全局声明、import、namespace（以及测试驱动的顶层字面量表达式）
         [ChildAstNode] public List<ASTNode> Declarations = new List<ASTNode>();
 

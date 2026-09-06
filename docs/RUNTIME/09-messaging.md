@@ -7,7 +7,7 @@
 ## 27.1 分层总览
 
 ```text
-Native / VM transport（五原语 + Parcel 搬运）
+VM / Native：仅执行安全 Atomic 容器与协程基础原语
     ↓
 MessageQueue      mechanism：句柄生命周期、capability 校验、深复制、
                   broadcast 存储/cursor、post/next 异步等待、EOS
@@ -19,8 +19,7 @@ Receiver          Reader 的 push View + listener 派发 policy
 Messenger         发送 capability 的语言层对象（持 Owner）
 ```
 
-核心原则：native/VM 只负责 mechanism；listener 集合、Executor 选择、
-cursor 管理等 policy 全部在 Rigi stdlib（`stdlib/core/messaging.rg`）。
+核心原则：队列日志、capability、cursor、EOS 与 listener/Executor 管理均由单份 Rigi 标准库实现（`stdlib/core/messaging.rg`），没有 MQ 专用 native/VM 注册表。
 高层策略（bounded/priority/drop/batch/debounce/ack）**故意不实现**——
 未来需要时在 Rigi 层组合，native 不做通用 broker。
 
@@ -37,16 +36,22 @@ MessageQueue.post\<T with Serializable>(handle, item)        // async
 MessageQueue.next\<T with Serializable>(handle): Task<QueueItem\<T>>  // async
 ```
 
-`QueueHandle\<T>` 是不透明 capability token（`id: i64` 进程内单调递增
-**不复用**——规避 stale handle/ABA；`type: QueueHandleType`）。
+QueueHandle\<T> 是直接 shared 对象 capability。构造与状态均为私有，
+没有可读写 id/type；释放时断开 queue 链接，旧对象不能复活队列。
 `QueueItem\<T>`：`isEos: bool` + `item: T?`——EOS 只由 `isEos` 判定
 （T 可能允许 null，不得用 `item == null` 判 EOS）。
 
-序列化在 Rigi 层完成：post 先 `toParcel`、next 后 `fromParcel`，
-native/VM 只搬运 Parcel 胖引用（§19 深复制契约 = toParcel/fromParcel
-往返，无别名快照）。
+post 先深复制，安全 AtomicList 再保存独立消息；每个 next 取得独立复制。
+默认拒绝循环引用，MQ 不隐式开启 graph mode。所有状态改变在同一队列
+Mutex 临界区线性化，普通 func 也可 await，五 API 签名保持不变。
 
-### 27.2.1 capability 矩阵（native/VM 双层强制）
+消息日志由有界 AtomicList 段组成。reader 保存绝对序号和当前段缓存，
+跨段时向前推进，branch 从当前队尾开始。最慢 live reader 的水位越过
+整段后立即断开旧段；释放 reader 同时清除其缓存，全部排空后清空段链。
+分段避免单个巨大 backing 数组因临时引用释放而反复超过 GC 候选门槛，
+不改变 GC 规则或消息复制边界。
+
+### 27.2.1 capability 矩阵（Rigi 单份校验）
 
 | 源句柄 | 派生 Owner | 派生 Sender | 派生 Reader | post | next |
 |---|---:|---:|---:|---:|---:|
@@ -55,7 +60,7 @@ native/VM 只搬运 Parcel 胖引用（§19 深复制契约 = toParcel/fromParce
 | Reader | ✗ | ✗ | ✓ | ✗ | ✓ |
 
 违规一律抛 `core.IllegalStateException`（双端同文，错误文本由 Rigi 包装层
-统一翻译）。其它句柄安全不变量（§22 落点）：句柄类型与操作匹配检查；
+统一给出）。其它句柄安全不变量（§22 落点）：句柄类型与操作匹配检查；
 已释放句柄不可用；重复释放确定性失败；Owner 唯一（`create_queue` 返回
 唯一 Owner，不可再派生）；sealed 队列不可再派生 Sender；句柄泛型消息
 类型与底层队列一致（类型系统在调用面强制）。
@@ -79,7 +84,9 @@ Reader 独立 drain；Reader 消费到自己应见的队尾后 `next()` 返回 E
 每 Reader 独立 cursor。一个 Reader 的 `next()` 不消耗、不推进其它
 Reader。迟来 Reader（branch/新建）从队尾起订。消息回收由最慢存活
 Reader 的 cursor watermark 决定；Reader 释放 = 不再要求队列为它保留
-历史。
+历史。物理日志采用绝对 base/head/tail 与每段最多 64 条消息的 AtomicList 段链。
+最慢存活 Reader 的水位越过整段后，迭代断开已消费段；Reader 跨段时更新缓存，
+释放时清除缓存。完全 drain 或无 Reader 时清空段链，不逐条删除队首。
 
 ### 27.2.4 顺序与接受点
 
@@ -93,15 +100,14 @@ Reader 的 cursor watermark 决定；Reader 释放 = 不再要求队列为它保
 
 同一 Reader 句柄同时最多一个 outstanding `next()`；违规抛
 IllegalStateException（同一 Reader 本质是顺序 cursor；要并发独立消费
-请 `branch()`）。登记在 native/VM 的 `mq_next_enter/exit` 边界。
+请 `branch()`）。由队列锁保护的 reader.inNext 登记；异常与 release 路径均受同一锁协调。
 
 ### 27.2.6 VM / Native parity（§26 口径）
 
 双端在以下可观察行为上逐字节一致并有 NativeE2E 对拍钉死：capability
 校验与错误文本、Owner 唯一、派生规则、post 接受点、broadcast 顺序、
 Reader 独立性、branch 语义、release 后行为、EOS 条件、深复制快照、
-listener 最终看到的消息顺序。事件唤醒：挂起的 next 由「先信号后销毁」
-保证在句柄释放时被唤醒走错误路径退出。
+listener 最终看到的消息顺序。固定 wake Mutex 保证挂起的 next 在句柄释放时被唤醒走错误路径退出。
 
 ## 27.3 Reader（接收侧核心抽象，§12）
 
@@ -143,9 +149,8 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable>
   listener 的 Executor 派发（冷 Task + `run(executor)` 既有通道）；
   EOS 或 dispose 停泵。dispose 与挂起 next 的竞态：reader 句柄释放会
   signal 挂起点，pump 捕获「句柄已释放」IllegalStateException 静默退出。
-- **listener identity（§14）**：callback 对象自身即身份。语言层无引用
-  相等 `==`（lambda 隐藏类无 operator equals；toString 同位点相等非
-  身份——playground 实证），身份键经对象身份原语取（§27.6）。
+- **listener identity（§14）**：callback 对象自身即身份。统一擦除为 Object
+  视图后，用临时 Place 相等比较实际 target；所有 Place 经 seq using dispose。
   重复注册幂等（同一 callback 只登记一次）；removeListener 未注册为
   无操作；setExecutor 未注册抛 IllegalStateException；getExecutor 未注册
   返回默认 IOExecutor。
@@ -153,12 +158,11 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable>
   IOExecutor**（不做「捕获注册时 Executor」）。listener 明确承担持续
   CPU 重活时 `setExecutor(l, new ComputeExecutor())` 显式换。
 - **native 层绝不直接执行 callback**（§15.1 架构天然满足：native 只见
-  Parcel；callback 只经 Rigi 层 Task + run(executor) 执行）。
+  callback 只经 Rigi 层 Task + run(executor) 执行）。
 - 生命周期隔离（§13.2）：dispose 一个 View 不级联兄弟——Receiver.dispose
   只释放内部 Reader；它 createReader 出去的 Reader 在队列活着时继续工作。
 - 并发纪律：listener/Executor 表可被多 lane 触碰（listener 在 IO/Compute
-  lane 跑、用户在 Main 调 addListener）——表访问经 native 同步 Mutex
-  临界区保护（不得跨挂起点持有；与语言级异步 Mutex 严格区分），派发在
+  lane 跑、用户在 Main 调 addListener）——表访问经标准 Mutex 临界区保护，派发在
   临界区外做快照后逐个起冷 Task。
 
 ## 27.5 Messenger（发送 capability 对象，§16）
@@ -180,22 +184,18 @@ Messenger 的 API——结构性保证（无相应方法，编译期拒绝；e2e
 `mw11dd_reader_no_create_sender` 钉死）。dispose 不级联已派生的
 Reader/Receiver（它们持自己的句柄）。
 
-## 27.6 对象身份原语（mechanism 下沉的唯一新增面）
+## 27.6 对象身份
 
-`rigi_rt object_id(value: Any): i64`（native `rigi_object_id`：Any 槽
-payload 即对象身份；VM hook：`VmAny` 拆包取 payload 的宿主引用稳定身份
-哈希）。服务对象身份键场景（当前唯一消费者：Receiver listener 表）。
-这是 mechanism 不是 policy；语言层仍无引用相等 `==`。标量 payload 无
-身份语义（值装箱），调用方不应依赖。
+listener 比较只使用安全 placeOf 和 Place equality，不暴露地址、不生成整数身份键。
 
 ## 27.7 与协程底座的复用（交叉引用）
 
-- pump 与 listener 派发复用 §17–§18 的冷 Task / `run(executor)` /
-  Dispatcher lane 通道，不另设调度面；
-- 挂起等待复用 §19.3 EventAlarm 握手（队列「消息可得」事件包装为
-  EventAlarm 子类）；
-- listener 表同步复用 §17.4 的 native 同步 Mutex 原语（messaging.rg
-  文件级 priv 重声明，与 Dispatcher 内部同一 C 函数/VM hook）。
+- pump/listener 复用 Task.run(executor)，默认 IOExecutor，每 listener 可覆盖。
+- 空 next 在队列锁内占用 reader 的固定 wake Mutex 并保存令牌，解队列锁后
+  再 acquire 挂起。post/seal/release 在队列锁内摘除令牌并释放，早于等待
+  的 signal 也不会丢失；恢复后释放二次 acquire 的令牌并重新检查队列。
+- 同一 Reader 只有一个 outstanding next，多个 post 不会重复释放同一令牌。
+- listener 表以标准 Mutex 保护；锁内复制 callback/executor 快照，锁外派发。
 
 ## 27.8 非目标（§29 落点）
 
@@ -222,3 +222,11 @@ MW11d-D 落地时钉死的两个泛型运行时限定点（对库作者透明，
 泛型实参同口径跳过（声明侧不可判，构造点 `CheckInstantiationLimits`
 重跑代入检查兜底）——泛型 async 基础设施（send→post、dispatch→
 listener 的 GP 值转发）经此通道组合。
+
+## 27.10 可选压力入口与观测口径
+
+运行 pwsh tools/Run-MqStress.ps1 显式执行压力测试，默认四个 sender 各 62500 次 post、四个独立 reader，共 250000 次受理和 1000000 次 delivery。每个 reader 校验各 sender 连续序号，最后逐项比较四份完整顺序，排空后再次验证 EOS。使用 -PerSender 500 可缩小为 8000 次 delivery；百万负载不会进入 test --all。
+
+pwsh tools/Run-MqStress.ps1 -Resources 单独验证确定积压：10000 条各自动态构造的约 1 KiB 字符串消息，快读者读取 6000 条后释放慢读者，验证部分 compact 后余下 4000 条，随后完全排空。采样后仍操作已释放 capability，保证回收观测时这些对象确实保持存活。五轮队列分支、seal/release、双 listener 与 executor 覆盖、view 释放隔离均有行为断言，运行期 gate 数量与字节台账另有回收断言。
+
+入口默认先 build，以更新内嵌标准库和 C 运行时；-UseExistingBuild 仅供明确已构建的验证阶段。计时和 RSS 只覆盖最终 exe 执行，编译不计入；watchdog 关闭 stdin 并管理完整进程树。任意 stderr 或非零退出都视为失败，台账与测量写入 playground。报告的是批次耗时、delivery 吞吐与进程峰值 RSS，不声称单消息 p99；运行期 live bytes/gates 与退出 MEMTRACK 分别验证，不以 RSS 代替日志回收证据。

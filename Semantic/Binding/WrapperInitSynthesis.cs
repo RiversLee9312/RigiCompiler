@@ -646,6 +646,9 @@ namespace RigiCompiler
                     if (typeOf.Operand != null)
                         ScanExpression(typeOf.Operand, initializing, env);
                     return;
+                case BoundPlaceOfExpression placeOf:
+                    ScanExpression(placeOf.Operand, initializing, env);
+                    return;
                 case BoundVarArgsArgument varArgs:
                     foreach (var value in varArgs.Values)
                         ScanExpression(value, initializing, env);

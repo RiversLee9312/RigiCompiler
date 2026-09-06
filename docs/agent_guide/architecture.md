@@ -482,7 +482,10 @@ RigiCompiler/
 │                                #   GlobalExceptionHandler 全局异常通道，§25.2/MW12b）
 │                                #   + serialization.rg（core.serialization：@Serializable/
 │                                #   @SerializationBase/@Temporary/@Terminal + Parcel，SYNTAX §20）
-│                                #   + messaging.rg（core.messaging：MessageQueue 五原语 +
+│                                #   + place.rg（Place 身份与 Handle 能力，unsafe 边界）
+│                                #   + atomic.rg（Atomic + AtomicStruct，复用 Mutex）
+│                                #   + atomic_collections.rg（安全异步 AtomicArray/List/Map 与独立快照）
+│                                #   + messaging.rg（core.messaging：纯 Rigi MessageQueue + 安全 AtomicList/Mutex +
 │                                #   Reader/Receiver/Messenger 高层 API，RUNTIME §27）
 ├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 development.md 测试策略）
 │   ├── AstDescribe.cs           # 统一 AST 描述器（全部套件共用）
@@ -521,6 +524,13 @@ RigiCompiler/
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构 | ⭐⭐⭐ |
 
 ---
+
+Place/Handle 的编译链入口为 `Semantic/Binding/Visitors/PlaceOfVisitor.cs`
+与 `Semantic/Binding/UnsafeGates.cs`；稳定存储复用既有 Cell 工厂。
+`Lowering/Rewriters/PlaceOfRewriter.cs` 构造 Place，
+`Lowering/Rewriters/HandleCallLowering.cs` 投影能力调用；
+`Bil/BilVerifier.Unsafe.cs` 验证权限及保留构造入口。原生侧复用普通引用
+计数与对象图扫描管理 `.handle` 的隐藏目标，不建立独立 MQ 注册表。
 
 ## 4. 核心设计决策（改动代码前必须理解）
 

@@ -50,12 +50,15 @@ namespace RigiCompiler.Bil
             var context = new BilVerificationContext(module);
             VerifyLexicalAndStructure(module, errors);
             VerifyDeclarations(context, errors);
+            VerifyCapabilityDeclarations(context, errors);
             foreach (var function in module.Functions)
             {
                 var functionContext = new BilFunctionContext(context, function);
                 VerifyFunctionSignature(functionContext, errors);
                 VerifyFunctionTypes(functionContext, errors);
                 VerifyFunctionFlow(functionContext, errors);
+                VerifyUnsafeContexts(functionContext, errors);
+                VerifyCapabilityOperations(functionContext, errors);
             }
             return errors;
         }

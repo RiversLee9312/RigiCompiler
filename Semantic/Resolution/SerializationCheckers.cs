@@ -247,6 +247,9 @@ namespace RigiCompiler
         {
             reason = "";
             if (fieldType is null or ErrorTypeSymbol) return true;
+            if (fieldType is TypeSymbol { ConstructedFrom: { } nullable, TypeArguments: { Count: 1 } arguments }
+                && ReferenceEquals(nullable, symbols.Bootstrap.NullableDefinition))
+                return IsStaticallySerializable(arguments[0], serializable, serializationBase, symbols, out reason);
             if (fieldType is GenericParameterSymbol gp)
             {
                 foreach (var constraint in gp.Constraints)
@@ -285,10 +288,9 @@ namespace RigiCompiler
             }
             if (IsMap(fieldType, symbols, out var mapKey, out var mapValue))
             {
-                if (!IsString(mapKey, symbols))
+                if (!IsStaticallySerializable(mapKey, serializable, serializationBase, symbols, out var keyReason))
                 {
-                    var keyName = mapKey?.Name ?? "<未知>";
-                    reason = $"Map 的键类型必须是 String，当前为 '{keyName}'（可改用 @Temporary）";
+                    reason = $"Map 键不可序列化：{keyReason}，可改用 @Temporary 切断该字段";
                     return false;
                 }
                 if (IsStaticallySerializable(mapValue, serializable, serializationBase,

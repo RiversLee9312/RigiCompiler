@@ -1643,7 +1643,7 @@ namespace RigiCompiler.Tests
                     .Any(d => d.Symbol.Contains("..init.wrapper()")));
 
             var initFn = module.Functions.Single(f =>
-                f.Symbol.Contains("$init()") && f.Symbol.Contains("..cell.."));
+                f.Symbol.StartsWith(cell.Symbol + "$init()"));
             BilTestHarness.CheckFnShape("全局字段 cell 无参 init 只写 value",
                 module, initFn.Symbol,
                 ".vars { .i32 .t0 }\n" +

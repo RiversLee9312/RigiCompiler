@@ -226,7 +226,39 @@ namespace RigiCompiler.Tests
             ("TestExceptionEmission", TestExceptionEmission),
             ("TestRefMapMw7a", TestRefMapMw7a),
             ("TestDynamicNew", TestDynamicNew),
+            ("TestCapabilityConstructedCalls", () => TestCapabilityConstructedCalls()),
         };
+
+        private static void TestCapabilityConstructedCalls(
+            [System.Runtime.CompilerServices.CallerFilePath] string path = "")
+        {
+            var source = File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!,
+                "e2e", "rigi", "capability_generic_cells.rg"));
+            var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+            var collected = ConstructedTypeCollector.Collect(new MwContext(module));
+            foreach (var type in new[] { "i32", "i64", "u32", "u16", "u64", "i8" })
+                TestHarness.CheckTrue("实际调用闭合 Cell<" + type + ">",
+                    collected.Contains("core::Cell<core::" + type + ">"),
+                    string.Join(", ", collected.Where(t => t.StartsWith("core::Cell<"))));
+            TestHarness.CheckTrue("未调用 grow 不扩张构造闭包",
+                !collected.Contains("Box<Box<core::i32>>"));
+            var (_, inherited, _) = BilTestHarness.EmitBilUnit(
+                "pub open class Base\\<T> { pub var value:T\n pub init(_ -> value) }\n" +
+                "pub class Derived:Base\\<i32> { pub var marker:i32=9\n pub init(v:i32) { super(v) } }\n" +
+                "pub func main():i32 { const d = new Derived(27)\n return 0 }\n");
+            var inheritedContext = new MwContext(inherited);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(inheritedContext);
+            TestHarness.CheckTrue("普通子类保留闭合泛型基类身份",
+                inheritedContext.Layout!.Find("Derived")?.BasePlan?.Symbol.Canonical == "Base<core::i32>");
+            var derived = inheritedContext.Layout.Find("Derived")!;
+            var template = inheritedContext.Layout.Find("Base")!;
+            TestHarness.CheckTrue("闭合基类不改变继承字段与隐藏typeid偏移",
+                template.Fields.All(field => derived.Fields.Any(inheritedField => inheritedField.Symbol == field.Symbol
+                    && inheritedField.Offset == field.Offset && inheritedField.Size == field.Size
+                    && inheritedField.IsHiddenTypeId == field.IsHiddenTypeId)));
+            TestHarness.CheckTrue("派生字段排在完整基类布局之后",
+                derived.Fields.Single(field => field.Symbol.Contains("#marker@")).Offset >= template.Size);
+        }
 
         // ===== Gate 门禁 =====
 
@@ -302,8 +334,9 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("放行模块函数数", result.Module!.Functions.Count == 1);
 
             // 编译器真实产物过门禁（复用中端全管线驱动，杜绝手编样例漂移）
-            var (_, _, emittedText) = BilTestHarness.EmitBilUnit(
+            var (_, emittedTextModule, emittedText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 { return 0 }\n");
+            emittedText = BilWriter.Write(emittedTextModule);
             var emitted = BilGate.Accept(emittedText, "emitted.bil");
             TestHarness.CheckTrue("编译器产物过门禁", emitted.IsAccepted,
                 string.Join("; ", emitted.Errors.Take(3)));
@@ -354,12 +387,13 @@ namespace RigiCompiler.Tests
         private static void TestMirConstruction()
         {
             // 编译器真实产物（println 全链）经文本往返 + 门禁后进 MIR
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    Console.println(\"hello\")\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "mir.bil");
             TestHarness.CheckTrue("MIR 输入门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -413,10 +447,11 @@ namespace RigiCompiler.Tests
         private static void TestMirControlFlow()
         {
             // if/else → CondBranch + 双分支 ret + 不可达汇聚块 unreachable 收尾
-            var (_, _, ifText) = BilTestHarness.EmitBilUnit(
+            var (_, ifTextModule, ifText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    if (1 < 2) { return 1 } else { return 2 }\n" +
                 "}\n");
+            ifText = BilWriter.Write(ifTextModule);
             var gate = BilGate.Accept(ifText, "if.bil");
             TestHarness.CheckTrue("if 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -435,12 +470,13 @@ namespace RigiCompiler.Tests
                 merge.Terminator is MirUnreachable);
 
             // while → entry Br(judge)；judge CondBranch(cond, body, exit)；body Br(judge)
-            var (_, _, loopText) = BilTestHarness.EmitBilUnit(
+            var (_, loopTextModule, loopText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 0\n" +
                 "    while (x < 3) { x = x + 1 }\n" +
                 "    return x\n" +
                 "}\n");
+            loopText = BilWriter.Write(loopTextModule);
             gate = BilGate.Accept(loopText, "loop.bil");
             TestHarness.CheckTrue("while 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -461,7 +497,7 @@ namespace RigiCompiler.Tests
                     .Terminator is MirRet { Value: not null });
 
             // do-while → loop.rev：entry Br(body)；judge CondBranch(cond, body, exit)
-            var (_, _, revText) = BilTestHarness.EmitBilUnit(
+            var (_, revTextModule, revText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 0\n" +
                 "    do {\n" +
@@ -469,6 +505,7 @@ namespace RigiCompiler.Tests
                 "    } while (x < 3)\n" +
                 "    return x\n" +
                 "}\n");
+            revText = BilWriter.Write(revTextModule);
             gate = BilGate.Accept(revText, "rev.bil");
             TestHarness.CheckTrue("do-while 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -483,7 +520,7 @@ namespace RigiCompiler.Tests
                 && rev.ElseTarget.StartsWith("mw.loop.end.", StringComparison.Ordinal));
 
             // switch → MirSwitch + item/default 各自成块
-            var (_, _, switchText) = BilTestHarness.EmitBilUnit(
+            var (_, switchTextModule, switchText) = BilTestHarness.EmitBilUnit(
                 "pub func classify(x: i32): i32 {\n" +
                 "    switch (x) {\n" +
                 "        (1) -> { return 1 }\n" +
@@ -494,6 +531,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return classify(1)\n" +
                 "}\n");
+            switchText = BilWriter.Write(switchTextModule);
             gate = BilGate.Accept(switchText, "switch.bil");
             TestHarness.CheckTrue("switch 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -511,7 +549,7 @@ namespace RigiCompiler.Tests
                 && classify.Blocks.Single(b => b.Id == sw.ItemTargets[1]).Terminator is MirRet);
 
             // break@outer → MirBranch 指向外层 loop 出口；continue → 内层 judge
-            var (_, _, breakText) = BilTestHarness.EmitBilUnit(
+            var (_, breakTextModule, breakText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 0\n" +
                 "    while (x < 10) named outer {\n" +
@@ -524,6 +562,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return x\n" +
                 "}\n");
+            breakText = BilWriter.Write(breakTextModule);
             gate = BilGate.Accept(breakText, "break.bil");
             TestHarness.CheckTrue("嵌套标签循环门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -542,7 +581,8 @@ namespace RigiCompiler.Tests
 
         private static MirModule BuildMirModule(string source, string fileName)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, fileName);
             TestHarness.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -1538,7 +1578,8 @@ namespace RigiCompiler.Tests
 
         private static MirFunction BuildMainMir(string source, string fileName)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, fileName);
             TestHarness.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -1948,7 +1989,7 @@ namespace RigiCompiler.Tests
 
             // 实例方法派发细分（VM 同口径）：class → 虚调用；interface →
             // iMap 派发；init → 直调
-            var (_, _, classText) = BilTestHarness.EmitBilUnit(
+            var (_, classTextModule, classText) = BilTestHarness.EmitBilUnit(
                 "pub interface Named { func name(): String }\n" +
                 "pub open class Base { pub init() { } pub open func who(): i32 { return 1 } }\n" +
                 "pub class Derived : Base implements Named {\n" +
@@ -1957,6 +1998,7 @@ namespace RigiCompiler.Tests
                 "    pub override func name(): String { return \"d\" }\n" +
                 "}\n" +
                 "pub func main(): i32 { return 0 }\n");
+            classText = BilWriter.Write(classTextModule);
             var classGate = BilGate.Accept(classText, "bindclass.bil");
             TestHarness.CheckTrue("派发用例门禁放行", classGate.IsAccepted,
                 string.Join("; ", classGate.Errors));
@@ -2052,13 +2094,14 @@ namespace RigiCompiler.Tests
         private static void TestNullResourceEmission()
         {
             // 真实前端路径：var s: String? = null + == null 检查
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "import core.io.Console\n" +
                 "pub func main(): i32 {\n" +
                 "    var s: String? = null\n" +
                 "    if (s == null) { Console.println(\"null\") }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "null.bil");
             TestHarness.CheckTrue("null 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2084,12 +2127,13 @@ namespace RigiCompiler.Tests
             // 真实前端全管线路径：i32 除法 → divisor==0 条件分支 →
             // rigi_alloc + init() + rigi_exc_raise + br 传播垫；有符号窄
             // 宽度 MIN/-1 回绕的取负选择
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 42\n" +
                 "    var z = 0\n" +
                 "    return (x / z)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "div.bil");
             TestHarness.CheckTrue("除零用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2168,7 +2212,8 @@ namespace RigiCompiler.Tests
 
         private static RigiCompiler.Middleware.Layout.LayoutPlanTable BuildLayout(string source)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "layout.bil");
             TestHarness.CheckTrue("布局用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2307,7 +2352,7 @@ namespace RigiCompiler.Tests
         {
             // 真实前端路径 + 全管线（MirBuild + Layout）：Node 的
             // TypeSheet/vtable/refMap 全局锚点
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub class Node {\n" +
                 "    pub var value: i32\n" +
                 "    pub var next: Node?\n" +
@@ -2315,8 +2360,10 @@ namespace RigiCompiler.Tests
                 "    pub func get(): i32 { return value }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
+                "    const optional: Node? = null\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "sheet.bil");
             TestHarness.CheckTrue("TypeSheet 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2337,6 +2384,13 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("TypeInfo typeInfoId 非 null",
                 !ll.Contains("@typesheet.Node = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } " +
                     "{ ptr null,"), ll);
+            TestHarness.CheckTrue("Nullable 具化 sheet 保留元素信息",
+                ll.Contains("typesheet.core::Nullable$Node$")
+                && ll.Split('\n').Any(line => line.StartsWith("@\"typeinfo.core::Nullable$Node$\" =")
+                    && line.EndsWith("ptr @typesheet.Node, ptr null }")), ll);
+            TestHarness.CheckTrue("TypeInfo 元素字段不改变旧字段位置",
+                TypeSheetAbi.InfoFieldNullableElement == 6
+                && TypeSheetAbi.InfoFieldNativeDestructor == 7 && TypeSheetAbi.InfoFieldCount == 8);
             // 槽 0 = 分发器；get 不可达仍为 null
             TestHarness.CheckTrue("vtable 全局锚点",
                 ll.Contains("@typesheet.vtable.Node = internal constant [2 x ptr] " +
@@ -2356,7 +2410,7 @@ namespace RigiCompiler.Tests
 
         private static void TestTypeCheckEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub open class Animal {\n" +
                 "    pub init() { }\n" +
                 "}\n" +
@@ -2390,6 +2444,7 @@ namespace RigiCompiler.Tests
                 "    if (isIndirect\\<Dog>(d)) { }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "typeck.bil");
             TestHarness.CheckTrue("type.check 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2444,7 +2499,7 @@ namespace RigiCompiler.Tests
 
         private static void TestWrapperStorageEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var level: i32\n" +
@@ -2488,6 +2543,7 @@ namespace RigiCompiler.Tests
                 "    var c = callEntity(s)\n" +
                 "    return a\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.store.bil");
             TestHarness.CheckTrue("wrapper 存储用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2524,7 +2580,7 @@ namespace RigiCompiler.Tests
 
         private static void TestProxyBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged\\<TTarget> {\n" +
                 "    pub init()\n" +
@@ -2542,6 +2598,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.doSomething(5)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.proxy.bil");
             TestHarness.CheckTrue("proxy 烘焙用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2586,7 +2643,7 @@ namespace RigiCompiler.Tests
         // 路径的 get.wrapper/get.wrapper.field 值拷贝语义不回归
         private static void TestProxyRingReceiverAddrEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Counting {\n" +
                 "    pub var calls: i32\n" +
@@ -2628,6 +2685,7 @@ namespace RigiCompiler.Tests
                 "    var z = h.name:Tag.label\n" +
                 "    return (((a + b) + e))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.addr.bil");
             TestHarness.CheckTrue("环 receiver 取址用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2708,7 +2766,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
                 "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
                 "}\n";
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 wrappers +
                 "pub class Hero {\n" +
                 "    @A\n" +
@@ -2727,6 +2785,7 @@ namespace RigiCompiler.Tests
                 "    var b = h.hp\n" +
                 "    return ((a + b))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.value.bil");
             TestHarness.CheckTrue("Value 链用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -2787,8 +2846,10 @@ namespace RigiCompiler.Tests
 
             // cell：wrapped 局部的 getValue/setValue 壳化成链，使用点
             // invoke core::Cell$getValue/setValue 不动
-            var cellGet = Fn("$getValue");
-            var cellSet = Fn("$setValue");
+            var cellGet = functions.Single(f => f.Symbol.Canonical.StartsWith("..cell..")
+                && f.Symbol.Canonical.Contains("$getValue"));
+            var cellSet = functions.Single(f => f.Symbol.Canonical.StartsWith("..cell..")
+                && f.Symbol.Canonical.Contains("$setValue"));
             TestHarness.CheckTrue("cell getValue 壳：终态调用 + 环调用",
                 calls(cellGet).Any(c => c.Target.Canonical.Contains("$value$.wrapped.get"))
                 && calls(cellGet).Count(c =>
@@ -2829,7 +2890,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.get\\<TValue>(value: TValue): TValue { return value }\n" +
                 "    operator .proxy.set\\<TValue>(value: TValue) { inner(value) }\n" +
                 "}\n";
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 valueWrapper +
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Counting {\n" +
@@ -2896,6 +2957,7 @@ namespace RigiCompiler.Tests
                 "    var r2 = p.raw\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.entityfield.bil");
             TestHarness.CheckTrue("Entity 字段链用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3013,7 +3075,7 @@ namespace RigiCompiler.Tests
                 "    operator .proxy.set.*\\<TValue>(symbol: String, value: TValue) {\n" +
                 "        inner(symbol=symbol, value=value)\n" +
                 "    }\n";
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper A {\n" + wrapper + "}\n" +
                 "@WrapperTarget(.Entity)\n" +
@@ -3032,6 +3094,7 @@ namespace RigiCompiler.Tests
                 "    var s = new S3()\n" +
                 "    return s.ping()\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.entityrouter.bil");
             TestHarness.CheckTrue("router 字段分支用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3078,7 +3141,7 @@ namespace RigiCompiler.Tests
         //（$.setr.，终态仍指原字段），miss 落原字段终态；零 MirInnerCall
         private static void TestSetRingInnerRerouteDispatchEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper WA {\n" +
                 "    pub init()\n" +
@@ -3106,6 +3169,7 @@ namespace RigiCompiler.Tests
                 "    e.hp = 7\n" +
                 "    return e.hp\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.setreroute.bil");
             TestHarness.CheckTrue("set 重路由分派用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3168,7 +3232,7 @@ namespace RigiCompiler.Tests
         // 分派辅助
         private static void TestSetRingInnerRerouteLinearWhenNoBranches()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Audit {\n" +
                 "    pub init()\n" +
@@ -3186,6 +3250,7 @@ namespace RigiCompiler.Tests
                 "    e.hp = 7\n" +
                 "    return e.hp\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.setreroute.linear.bil");
             TestHarness.CheckTrue("线性守恒用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3211,7 +3276,7 @@ namespace RigiCompiler.Tests
         // 可烘焙成员，miss 抛 NoSuchMethodException）
         private static void TestWildcardProxyBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Router {\n" +
                 "    pub init()\n" +
@@ -3236,6 +3301,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.ping(41)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.wildcard.bil");
             TestHarness.CheckTrue("wildcard 烘焙用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3332,7 +3398,7 @@ namespace RigiCompiler.Tests
         // 透传，无独立类型包渠道）
         private static void TestGenericWildcardBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Router {\n" +
                 "    pub init()\n" +
@@ -3354,6 +3420,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.pick\\<i32>(41)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.generic.wildcard.bil");
             TestHarness.CheckTrue("泛型 wildcard 烘焙用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3428,7 +3495,7 @@ namespace RigiCompiler.Tests
         // 只合成 router(H,2)
         private static void TestMixedSpecificWildcardBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper WOuter {\n" +
                 "    pub init()\n" +
@@ -3455,6 +3522,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.ping(41)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.mixed.bil");
             TestHarness.CheckTrue("混合链用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3511,7 +3579,7 @@ namespace RigiCompiler.Tests
         // 分派属 ImplBinder 既有空白，此处只断言 MIR 烘焙形状）
         private static void TestOperatorAndSameLayerProxyBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Mix {\n" +
                 "    pub init()\n" +
@@ -3567,6 +3635,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return ((s.ping(1) + s.pong(2)))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.opr.bil");
             TestHarness.CheckTrue("运算符烘焙用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3628,7 +3697,7 @@ namespace RigiCompiler.Tests
         // 同口径）；内建标量运算保持 MirBinaryIntrinsic 原形状
         private static void TestUserOperatorDispatchEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub class Vec {\n" +
                 "    pub var x: i32\n" +
                 "    pub init(_ -> x) { }\n" +
@@ -3660,6 +3729,7 @@ namespace RigiCompiler.Tests
                 "    var m3 = m1 + m2\n" +
                 "    return c.x\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "user.opr.bil");
             TestHarness.CheckTrue("用户运算符用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3736,7 +3806,7 @@ namespace RigiCompiler.Tests
         // §14.9 重申约束等价的同一口径）
         private static void TestWrapperIndexInheritanceClosure()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged { pub init() }\n" +
                 "@WrapperTarget(.Entity)\n" +
@@ -3755,6 +3825,7 @@ namespace RigiCompiler.Tests
                 "@Third\n" +
                 "pub class Leaf : Mid { pub init() }\n" +
                 "pub func main(): i32 { return 0 }\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.index.closure.bil");
             TestHarness.CheckTrue("闭包索引用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3795,7 +3866,7 @@ namespace RigiCompiler.Tests
         // 各恰含一枚原名拷入的基类槽且偏移与 Base 一致
         private static void TestHiddenSlotEntityDedupAcrossHierarchy()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged {\n" +
                 "    pub var hits: i32\n" +
@@ -3813,6 +3884,7 @@ namespace RigiCompiler.Tests
                 "@Extra\n" +
                 "pub class Leaf : Mid { pub init() }\n" +
                 "pub func main(): i32 { return 0 }\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.slot.dedup.bil");
             TestHarness.CheckTrue("槽去重用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3862,7 +3934,7 @@ namespace RigiCompiler.Tests
         // 宿主亦预建零分支 router）；无残留 MirInnerCall/call??? 调用
         private static void TestCallWildcardLoweringEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Router {\n" +
                 "    pub init()\n" +
@@ -3888,6 +3960,7 @@ namespace RigiCompiler.Tests
                 "    var c = new Child()\n" +
                 "    return (c.fetchUserById(42) as i32)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.callwildcard.bil");
             TestHarness.CheckTrue("call??? 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -3962,7 +4035,7 @@ namespace RigiCompiler.Tests
         // get fn 三态/缓存/异常边形状 + new 改写 + Singletons 条目挂载
         private static void TestSingletonLoweringEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub shared singleton class S {\n" +
                 "    pub var v: i32\n" +
                 "    pub init() { v = 7 }\n" +
@@ -3972,6 +4045,7 @@ namespace RigiCompiler.Tests
                 "    var b = new S()\n" +
                 "    return b.v\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "singleton.bil");
             TestHarness.CheckTrue("singleton 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4057,13 +4131,14 @@ namespace RigiCompiler.Tests
         // ..globals.init → main
         private static void TestSingletonEntryStubOrder()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "var g: i32 = 40\n" +
                 "pub shared singleton class S {\n" +
                 "    pub var v: i32\n" +
                 "    pub init() { v = 7 }\n" +
                 "}\n" +
                 "pub func main(): i32 { return new S().v }\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "singleton.entry.bil");
             TestHarness.CheckTrue("入口序用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4093,7 +4168,7 @@ namespace RigiCompiler.Tests
         // $.mwrapped.，环 inner 直调 $.mwrapped.（接收者 = 宿主本体）
         private static void TestMethodProxyBakingEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    pub init()\n" +
@@ -4112,6 +4187,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.fetch(21)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.method.bil");
             TestHarness.CheckTrue("Method wrapper 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4161,7 +4237,7 @@ namespace RigiCompiler.Tests
         // inner 环 → $.mwrapped.（outer→inner 声明序 = 安装序）
         private static void TestMethodProxyBakingDoubleLayer()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper A {\n" +
                 "    pub init()\n" +
@@ -4182,6 +4258,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.fetch(42)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.method2.bil");
             TestHarness.CheckTrue("双层 Method wrapper 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4216,7 +4293,7 @@ namespace RigiCompiler.Tests
         // 环 ABI 返回 .any、trampoline 拆回原返回类型
         private static void TestMethodProxyBakingWildcard()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    pub init()\n" +
@@ -4234,6 +4311,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.fetch(41)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.methodwc.bil");
             TestHarness.CheckTrue("wildcard Method wrapper 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4302,7 +4380,7 @@ namespace RigiCompiler.Tests
         // 缺名支返 .any 零值胖引用（VM 缺名补 VmNull 同口径）
         private static void TestMethodProxyWildcardUnpackByName()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    pub init()\n" +
@@ -4321,6 +4399,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return (s.add(1, 2) + s.sub(3, 4))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.methodwc.names.bil");
             TestHarness.CheckTrue("按名还原用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4386,7 +4465,7 @@ namespace RigiCompiler.Tests
         // ..lambda..UUID$$call fn）
         private static void TestMethodProxyBakingHostForms()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub shared wrapper Timed {\n" +
                 "    pub init()\n" +
@@ -4403,6 +4482,7 @@ namespace RigiCompiler.Tests
                 "    var fn = func{ @Timed (x: i32): i32 -> (x + 3) }\n" +
                 "    return ((Calc.total(1) + heavy(1)) + fn(1))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.methodhosts.bil");
             TestHarness.CheckTrue("宿主形态用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4461,7 +4541,7 @@ namespace RigiCompiler.Tests
         // get.wrapper.method.addr），$.mwrapped. = 最深层原始体
         private static void TestMethodProxyEntityComposition()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Ent {\n" +
                 "    pub init()\n" +
@@ -4482,6 +4562,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.work()\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.compose.bil");
             TestHarness.CheckTrue("Entity×Method 组合用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4533,7 +4614,7 @@ namespace RigiCompiler.Tests
         // 层原始体），链末 miss 抛 NoSuchMethodException
         private static void TestMethodProxyWildcardReroute()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Timed {\n" +
                 "    pub init()\n" +
@@ -4552,6 +4633,7 @@ namespace RigiCompiler.Tests
                 "    var s = new Service()\n" +
                 "    return s.fetch(1)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.reroute.bil");
             TestHarness.CheckTrue("改写 .name 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4600,7 +4682,7 @@ namespace RigiCompiler.Tests
         // 烘焙 → $.wrapped.；无 wrapper 烘焙的基类方法保持原名槽不动
         private static void TestSuperCallBypassesWrapperBaking()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "@WrapperTarget(.Method)\n" +
                 "pub wrapper Met {\n" +
                 "    pub init()\n" +
@@ -4642,6 +4724,7 @@ namespace RigiCompiler.Tests
                 "    return ((new ChildM().work() + new ChildE().ping())\n" +
                 "        + new ChildN().plain())\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "super.bypass.bil");
             TestHarness.CheckTrue("super 绕链用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4684,7 +4767,7 @@ namespace RigiCompiler.Tests
         // ===== getid.var + typeid 装箱 .any（MW8a）=====
         private static void TestGetTypeIdVarEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub open class Animal {\n" +
                 "    pub init() { }\n" +
                 "}\n" +
@@ -4706,6 +4789,7 @@ namespace RigiCompiler.Tests
                 "    if (7 is g) { }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "typeof.var.bil");
             TestHarness.CheckTrue("getid.var 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4736,7 +4820,7 @@ namespace RigiCompiler.Tests
 
         private static void TestTypeIdConstructedSheets()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var t = typeOf(42)\n" +
                 "    var boxed: Any = t\n" +
@@ -4745,6 +4829,7 @@ namespace RigiCompiler.Tests
                 "    if (t is Type\\<String>) { }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "typeid.constructed.bil");
             TestHarness.CheckTrue("构造 typeid 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4780,7 +4865,7 @@ namespace RigiCompiler.Tests
         private static void TestObjectPathEmission()
         {
             // 真实前端路径 + 全管线：基类槽装派生实例的虚调用
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub open class Base {\n" +
                 "    pub init() { }\n" +
                 "    pub open func who(): i32 { return 1 }\n" +
@@ -4793,6 +4878,7 @@ namespace RigiCompiler.Tests
                 "    var b: Base = new Derived()\n" +
                 "    return (b.who())\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "obj.bil");
             TestHarness.CheckTrue("对象用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4829,7 +4915,7 @@ namespace RigiCompiler.Tests
         private static void TestValuePathEmission()
         {
             // 真实前端路径 + 全管线：struct 构造/方法与 enum case/判别
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub struct Point {\n" +
                 "    pub var x: i32\n" +
                 "    pub var y: i32\n" +
@@ -4851,6 +4937,7 @@ namespace RigiCompiler.Tests
                 "    if (d is .East) { return s }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "value.bil");
             TestHarness.CheckTrue("值类型用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4893,7 +4980,7 @@ namespace RigiCompiler.Tests
         private static void TestStaticEmission()
         {
             // 真实前端路径 + 全管线：全局字段 + class static + 初值缝合
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub var gCounter: i32 = 41\n" +
                 "pub class Config {\n" +
                 "    pub static var level: i32 = 3\n" +
@@ -4902,6 +4989,7 @@ namespace RigiCompiler.Tests
                 "    gCounter = (gCounter + Config.level)\n" +
                 "    return gCounter\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "static.bil");
             TestHarness.CheckTrue("静态用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -4944,7 +5032,7 @@ namespace RigiCompiler.Tests
 
         private static void TestArrayPathEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "import core.collections.*\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = arrayOf\\<i32>(3)\n" +
@@ -4953,6 +5041,7 @@ namespace RigiCompiler.Tests
                 "    var y = a[9] if? -1\n" +
                 "    return ((x + y) + a.length)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "arr.bil");
             TestHarness.CheckTrue("数组用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5030,7 +5119,7 @@ namespace RigiCompiler.Tests
 
         private static void TestSpanPathEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "import core.collections.*\n" +
                 "pub func main(): i32 {\n" +
                 "    var a = spanOf\\<i32>(3)\n" +
@@ -5038,6 +5127,7 @@ namespace RigiCompiler.Tests
                 "    var x = a[0] if? 0\n" +
                 "    return (x + a.length)\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "span.bil");
             TestHarness.CheckTrue("Span 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5313,11 +5403,12 @@ namespace RigiCompiler.Tests
         private static void TestInvokeIndirect()
         {
             // MIR 直译：lambda 经变量调用 → MirInvokeIndirect 字段齐全
-            var (_, _, lambdaText) = BilTestHarness.EmitBilUnit(
+            var (_, lambdaTextModule, lambdaText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var fn = func{(x: i32): i32 -> (x + 1)}\n" +
                 "    return fn(41)\n" +
                 "}\n");
+            lambdaText = BilWriter.Write(lambdaTextModule);
             var lambdaGate = BilGate.Accept(lambdaText, "ind.lambda.bil");
             TestHarness.CheckTrue("lambda 间接调用门禁放行", lambdaGate.IsAccepted,
                 string.Join("; ", lambdaGate.Errors));
@@ -5333,13 +5424,14 @@ namespace RigiCompiler.Tests
                 lambdaInst != null && lambdaInst.CallTargetType.Canonical.Length > 0);
 
             // noret：Action 语句调用 Result=null
-            var (_, _, actionText) = BilTestHarness.EmitBilUnit(
+            var (_, actionTextModule, actionText) = BilTestHarness.EmitBilUnit(
                 "pub func sink(v: i32) { }\n" +
                 "pub func main(): i32 {\n" +
                 "    var act = func{() -> { sink(1) }}\n" +
                 "    act()\n" +
                 "    return 0\n" +
                 "}\n");
+            actionText = BilWriter.Write(actionTextModule);
             var actionGate = BilGate.Accept(actionText, "ind.action.bil");
             TestHarness.CheckTrue("Action noret 门禁放行", actionGate.IsAccepted,
                 string.Join("; ", actionGate.Errors));
@@ -5350,7 +5442,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("noret Result=null", noret is { Result: null });
 
             // 绑定分流：用户类 operator call → IndirectCallBinding.CallOperator
-            var (_, _, userText) = BilTestHarness.EmitBilUnit(
+            var (_, userTextModule, userText) = BilTestHarness.EmitBilUnit(
                 "pub class Doubler {\n" +
                 "    pub init() { }\n" +
                 "    pub operator call(x: i32): i32 { return (x * 2) }\n" +
@@ -5359,6 +5451,7 @@ namespace RigiCompiler.Tests
                 "    var d = new Doubler()\n" +
                 "    return d(21)\n" +
                 "}\n");
+            userText = BilWriter.Write(userTextModule);
             var userGate = BilGate.Accept(userText, "ind.user.bil");
             TestHarness.CheckTrue("用户 operator call 门禁放行", userGate.IsAccepted,
                 string.Join("; ", userGate.Errors));
@@ -5385,7 +5478,7 @@ namespace RigiCompiler.Tests
 
             // 泛型 $$call：typeid 前缀平铺在实参前部（VM FindCallTarget 尚未
             // 吃此前缀，E2E 对拍降级；Middleware 绑定/发射覆盖）
-            var (_, _, genText) = BilTestHarness.EmitBilUnit(
+            var (_, genTextModule, genText) = BilTestHarness.EmitBilUnit(
                 "pub class Mapper {\n" +
                 "    pub init() { }\n" +
                 "    pub operator call\\<T>(x: T): T { return x }\n" +
@@ -5394,6 +5487,7 @@ namespace RigiCompiler.Tests
                 "    var f = new Mapper()\n" +
                 "    return f\\<i32>(42)\n" +
                 "}\n");
+            genText = BilWriter.Write(genTextModule);
             var genGate = BilGate.Accept(genText, "ind.generic.bil");
             TestHarness.CheckTrue("泛型 $$call 门禁放行", genGate.IsAccepted,
                 string.Join("; ", genGate.Errors));
@@ -5561,7 +5655,7 @@ namespace RigiCompiler.Tests
 
         private static void TestBoxAnyEmission()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    var x = 42\n" +
                 "    var a = x as Any\n" +
@@ -5572,6 +5666,7 @@ namespace RigiCompiler.Tests
                 "    if (t == \"hi\") { return y }\n" +
                 "    return 0\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "box.any.bil");
             TestHarness.CheckTrue("Box Any 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5641,7 +5736,8 @@ namespace RigiCompiler.Tests
 
         private static string EmitLlFromSource(string source, string label)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, label);
             TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5653,7 +5749,8 @@ namespace RigiCompiler.Tests
 
         private static void ExpectMwNotSupportedFromSource(string source, string needle, string label)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             ExpectMwNotSupportedFromBil(text, needle, label);
         }
 
@@ -5773,7 +5870,7 @@ namespace RigiCompiler.Tests
                 collected.Count(c => c == "A<core::i32>") == 1);
 
             // 具化计划：隐藏 typeid + 胖值槽 + vtable=模板 fn
-            var (_, _, srcText) = BilTestHarness.EmitBilUnit(
+            var (_, srcTextModule, srcText) = BilTestHarness.EmitBilUnit(
                 "pub class Box2\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(v: T) { this.v = v }\n" +
@@ -5783,6 +5880,7 @@ namespace RigiCompiler.Tests
                 "    var b = new Box2\\<i32>(7)\n" +
                 "    return b.get()\n" +
                 "}\n");
+            srcText = BilWriter.Write(srcTextModule);
             var gate = BilGate.Accept(srcText, "c2a.bil");
             TestHarness.CheckTrue("构造类型源门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -5822,7 +5920,7 @@ namespace RigiCompiler.Tests
             // G1：泛型值类型构造（原受控拒绝翻正）——具化计划复用模板
             // 布局（占位字段 = 16B 胖值槽）、无对象头隐藏 typeid 槽、
             // 类级 typeid 随 init 调用直传（§7.2 序、构造实参 TypeSheet 常量）
-            var (_, _, structText) = BilTestHarness.EmitBilUnit(
+            var (_, structTextModule, structText) = BilTestHarness.EmitBilUnit(
                 "pub struct Wrap\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub init(_ -> v)\n" +
@@ -5832,6 +5930,7 @@ namespace RigiCompiler.Tests
                 "    var w = new Wrap\\<i32>(1)\n" +
                 "    return w.get()\n" +
                 "}\n");
+            structText = BilWriter.Write(structTextModule);
             var structGate = BilGate.Accept(structText, "g1.struct.bil");
             TestHarness.CheckTrue("泛型 struct 源门禁放行", structGate.IsAccepted,
                 string.Join("; ", structGate.Errors));
@@ -5999,10 +6098,8 @@ namespace RigiCompiler.Tests
                 "构造类型形态",
                 "G2 构造 wrapper new 保留受控拒绝");
 
-            // G4 边界：泛型宿主的 operator 命中占位派发候选集 → 编译期
-            // 受控拒绝（构造 sheet 无法反解类型实参/模板身份；VM 按
-            // 字符串 TypeRef 运行期解析——分歧记录见 GenericOpEmitter）
-            ExpectMwNotSupportedFromSource(
+            // G4：存在未构造的泛型 operator 宿主不应拒绝实际 Num 调用。
+            var genericCandidateSource =
                 "pub interface Addable {\n" +
                 "    operator plus(another: Addable): Addable\n" +
                 "}\n" +
@@ -6026,16 +6123,26 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    const r = add\\<Num>(new Num(1), new Num(2))\n" +
                 "    return 0\n" +
-                "}\n",
-                "候选 operator 宿主为泛型类型",
-                "G4 泛型宿主 operator 候选受控拒绝");
+                "}\n";
+            var (_, genericCandidateModule, _) = BilTestHarness.EmitBilUnit(genericCandidateSource);
+            var genericCandidateGate = BilGate.Accept(BilWriter.Write(genericCandidateModule), "generic-candidate.bil");
+            TestHarness.CheckTrue("G4 泛型 class 候选源码门禁放行", genericCandidateGate.IsAccepted,
+                string.Join("; ", genericCandidateGate.Errors));
+            var genericCandidateContext = new MwContext(genericCandidateModule);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(genericCandidateContext);
+            using var genericCandidateLlvm = ModuleBuilder.Build(genericCandidateContext, genericCandidateContext.Mir!);
+            TestHarness.CheckTrue("G4 未构造泛型宿主不阻断实际 operator 派发",
+                genericCandidateLlvm.PrintToString().Contains("typesheet.Num"));
+            ExpectMwNotSupportedFromSource(
+                genericCandidateSource.Replace("pub class GBox", "pub rich struct GBox"),
+                "候选 operator 宿主为泛型类型", "G4 泛型值类型 operator 宿主仍受控拒绝");
         }
 
         // ===== 构造接口 iMap + VirtualSlotOf 精确化（MW5 c2-b）=====
 
         private static void TestConstructedDispatch()
         {
-            var (_, _, ifaceSrc) = BilTestHarness.EmitBilUnit(
+            var (_, ifaceSrcModule, ifaceSrc) = BilTestHarness.EmitBilUnit(
                 "pub interface IBox\\<T> {\n" +
                 "    func get(): T\n" +
                 "    func tag(): i32\n" +
@@ -6050,6 +6157,7 @@ namespace RigiCompiler.Tests
                 "    var b: IBox\\<i32> = new Box3\\<i32>(1)\n" +
                 "    return b.tag()\n" +
                 "}\n");
+            ifaceSrc = BilWriter.Write(ifaceSrcModule);
             var ifaceGate = BilGate.Accept(ifaceSrc, "c2b.imap.bil");
             TestHarness.CheckTrue("构造接口源门禁放行", ifaceGate.IsAccepted,
                 string.Join("; ", ifaceGate.Errors));
@@ -6083,7 +6191,7 @@ namespace RigiCompiler.Tests
                 ifaceLl.Contains("typesheet.imap.Box3$core::i32$")
                 && ifaceLl.Contains("typesheet.IBox$core::i32$"), ifaceLl);
 
-            var (_, _, virtSrc) = BilTestHarness.EmitBilUnit(
+            var (_, virtSrcModule, virtSrc) = BilTestHarness.EmitBilUnit(
                 "pub open class PairV\\<T> {\n" +
                 "    pub init() { }\n" +
                 "    pub open func foo(): i32 { return 1 }\n" +
@@ -6098,6 +6206,7 @@ namespace RigiCompiler.Tests
                 "    var x: PairV\\<i32> = new PairD\\<i32>()\n" +
                 "    return (x.foo() + x.bar())\n" +
                 "}\n");
+            virtSrc = BilWriter.Write(virtSrcModule);
             var virtGate = BilGate.Accept(virtSrc, "c2b.virt.bil");
             TestHarness.CheckTrue("双虚泛型类门禁放行", virtGate.IsAccepted,
                 string.Join("; ", virtGate.Errors));
@@ -6147,13 +6256,14 @@ namespace RigiCompiler.Tests
 
         private static void TestVargsKwargs()
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "func sum(nums: i32...): i32 { return nums.length }\n" +
                 "func show(opts: named String...): i32 { return opts.length }\n" +
                 "func collect\\<TArgs...>(values: TArgs...): i32 { return values.length }\n" +
                 "pub func main(): i32 {\n" +
                 "    return ((sum(1, 2) + show(a = \"x\")) + collect(1, \"s\"))\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "vargs.bil");
             TestHarness.CheckTrue("包签名用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -6247,10 +6357,11 @@ namespace RigiCompiler.Tests
         private static void TestNotSupported()
         {
             // try 已过门禁且 MIR 面随 MW9a 落地：MirBuilder 展开不再受控拒绝
-            var (_, _, text) = BilTestHarness.EmitBilUnit(
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 {\n" +
                 "    try { return 1 } catch (e: core.RuntimeException) { return 2 }\n" +
                 "}\n");
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "try.bil");
             TestHarness.CheckTrue("try 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
@@ -6496,7 +6607,8 @@ namespace RigiCompiler.Tests
 
         private static MwContext PipelineFromSource(string source, string file)
         {
-            var (_, _, text) = BilTestHarness.EmitBilUnit(source);
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
+            text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, file);
             TestHarness.CheckTrue(file + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors.Take(3)));

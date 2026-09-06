@@ -83,7 +83,7 @@ namespace RigiCompiler.Tests
                 LoweredThrowStatement throwStmt => $"Throw({Expr(throwStmt.Exception)})",
                 LoweredTryStatement tryStmt => Try(tryStmt),
                 LoweredSeqBlock seqBlock =>
-                    $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}({Block(seqBlock.Body)}, " +
+                    $"{(seqBlock.IsVolatile ? "SeqVolatile" : "Seq")}{(seqBlock.IsUnsafe ? "Unsafe" : "")}({Block(seqBlock.Body)}, " +
                     $"{seqBlock.BreakId.Name})",
                 // Stage B：source-level exit 标记（调试兜底——
                 // StructuredExitRouting pass 后不得残留；硬不变量测试

@@ -155,6 +155,18 @@ namespace RigiCompiler.Middleware.Mir
                     excTarget));
                 return;
             }
+            // 方法接收者的构造类 → 自身裸声明是 ABI 视图投影，须保留
+            // 对象原有具化身份；不能把调用方同名 T 误当作接收者的实参。
+            if (ConstructedTypeCollector.IsConstructed(sourceType.Canonical)
+                && targetType.Canonical.IndexOf('<') < 0
+                && flow.Context.Symbols.FindTypeByRef(sourceType.Canonical) is { } sourceClass
+                && sourceClass.Declaration.Kind == BilTypeKind.Class
+                && flow.Context.Symbols.FindTypeByRef(targetType.Canonical)?.Declaration
+                    == sourceClass.Declaration)
+            {
+                flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
+                return;
+            }
             if (TypeLayout.IsGenericPlaceholder(sourceType))
             {
                 flow.Add(new MirCast(flow.Local(inst.Source), inst.Target.Name,
@@ -208,7 +220,7 @@ namespace RigiCompiler.Middleware.Mir
                 flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
                 return;
             }
-            if (MirBuilder.IsScalarOrString(sourceType)
+            if (sourceType.IsAnyOrObject || MirBuilder.IsScalarOrString(sourceType)
                 || MirBuilder.IsScalarOrString(targetType)
                 || TypeLayout.IsTypeId(sourceType) || TypeLayout.IsTypeId(targetType)
                 || flow.IsUserValueType(sourceType) || flow.IsUserValueType(targetType))

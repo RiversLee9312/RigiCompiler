@@ -57,6 +57,7 @@ namespace RigiCompiler
                         // 继承多态三标记写符号（§9.2.1；位置合法性归 ModifierChecker，
                         // 覆写关系归 OverrideChecker）
                         method.IsOpen = fn.Modifiers.Contains(Keywords.OPEN);
+                        method.IsUnsafe = fn.Modifiers.Contains(Keywords.UNSAFE);
                         method.IsAbstract = fn.Modifiers.Contains(Keywords.ABSTRACT);
                         method.IsOverride = fn.Modifiers.Contains(Keywords.OVERRIDE);
                         AddEntry(fn, method, ctx, declaringType, InContainer(method, declaringType, ctx), env);
@@ -72,6 +73,7 @@ namespace RigiCompiler
             // open/abstract/singleton 标记位写符号（供可继承性判定与后续 pass 消费）
             var modifiers = ResolveEnvironment.ModifiersOf(node);
             type.IsOpen = modifiers.Contains(Keywords.OPEN);
+            type.IsUnsafe = modifiers.Contains(Keywords.UNSAFE);
             type.IsAbstract = modifiers.Contains(Keywords.ABSTRACT);
             type.IsSingleton = modifiers.Contains(Keywords.SINGLETON);
             // 访问级别写符号（SYNTAX §16；BIL 发射与 S8 使用点访问控制消费）

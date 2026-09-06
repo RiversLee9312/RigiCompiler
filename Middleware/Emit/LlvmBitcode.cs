@@ -15,6 +15,10 @@ namespace RigiCompiler.Middleware.Emit
         // 安全封装只暴露值句柄，指针编组收敛于本类）
         public static LLVMValueRef UndefOf(LLVMTypeRef type) => LLVM.GetUndef(type);
 
+        // opaque pointer 下函数的真实类型不能从 Value.TypeOf 反推。
+        public static LLVMTypeRef FunctionTypeOf(LLVMValueRef function) =>
+            LLVM.GlobalGetValueType(function);
+
         // 读取 bitcode 文件并合并进目标模块；失败抛 MwNotSupportedException
         //（rigi_rt 编译产物损坏属环境/工具链问题，非编译器 bug）
         public static void MergeBitcodeFileInto(LLVMModuleRef module, string bitcodePath)

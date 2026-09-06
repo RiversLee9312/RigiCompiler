@@ -31,6 +31,7 @@
 .any
 .object
 .valuetype
+.handle
 .breakid
 ```
 
@@ -39,6 +40,7 @@
 - `.void` 只能用作无结果方法的返回类型，不得声明普通变量；
 - `.breakid` 是结构化控制 capability，不是普通整数和值类型；
 - `.any`、`.object`、`.valuetype` 是 Rigi 根类型的标准 BIL 别名；
+- `.handle` 是 `Handle\<T>` / `MutableHandle\<T>` 的固定能力投影，绝无 `.handle<T>` 形态。模块必须提供唯一、无泛型、无成员的 `class shared unsafe compiler-generated` 声明。源码的逻辑 T 由私有泛型 helper 的方法 typeid 保留，不进入 Handle 布局。禁止普通 `new`、动态构造、继承与伪造字段。
 - `.string` 是**非 rich 值类型**（`SYNTAX.md` §3.1.2），赋值兼容与复制按值类型规则处理，不属于 `.object` 分支。它的物理表示是运行时特权裸缓冲区；BIL 与 BIL VM 一律按值语义（深拷贝）理解 `.string`，不得假设任何共享缓冲区、驻留或 copy-on-write 优化的存在——与「BIL 不得假设特定 GC 模型」同理。
 
 ### 6.3 标准类型构造
@@ -103,6 +105,10 @@
 source-level 子类型赋值必须由 frontend 生成显式 `cast`，即使该 cast 在 Middleware 中最终只改写视图 typeid 或被优化消除。
 
 ### 6.6 特权类型
+
+`Place<T>` 保留普通 local class 表示，保留构造参数必须为 `(target: Any, kind: i32)` 或 `(storage: Any, value: Any, kind: i32)`。kind 是常量 0（Object）、1（Cell）、2（ReadonlyCell）；验证器追溯单写 cast 临时的原类型，Object 分支须可证明是引用对象，值分支须沿继承链命中对应 Cell 根，拒绝临时 ValueType 装箱。动态泛型分支由实际 value 判对象/值，仍持有原 storage。
+
+Handle 的 `load/asMutable/store` 调用落为 `core::$handle_load<T>`、`core::$handle_asMutable<T>`、`core::$handle_store<T>` 普通私有 unsafe 函数。创建、取目标、取种类、可写位与类型分类的 `handle_*` native 入口使用固定保留签名，只有这些 helper 与 `Place.expose` 可调用；隐藏 target release 不是 BIL/native 方法。VM 与 Middleware 必须拒绝动态构造 Place/Handle，不能用 typeid 绕过保留构造入口。
 
 `Box\<T>`、`Span\<T>` 等编译器/运行时特权类型在 BIL 中是正常语义类型，但 BIL 不复制其 Native 物理布局。
 

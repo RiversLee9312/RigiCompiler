@@ -93,6 +93,7 @@ namespace RigiCompiler.Middleware.Runtime
             };
         }
 
+        // 消息队列不占原生面：单份 Rigi 标准库仅组合安全容器与协程基础设施。
         // native 声明 (lib, symbol) → C 符号（RUNTIME §26 的库解析留白在
         // Middleware 定稿）：rigi_rt 面 C 名 = rigi_ + symbol（既有约定）；
         // 任意用户库（L6 起放行）C 名 = symbol 原文，链接输入经

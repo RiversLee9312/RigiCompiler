@@ -72,7 +72,7 @@ namespace RigiCompiler.Tests
                     return (new BilVmResult("", "", null,
                         new VmException("编译失败，跳过 VM")), null!);
                 }
-                var vm = new BilVm(module);
+                var vm = new BilVm(module) { TraceResumes = true };
                 var result = vm.Run();
                 return (result, vm.LastContext!.Dispatch);
             }
@@ -126,28 +126,18 @@ namespace RigiCompiler.Tests
                 + string.Join(",", snapshot) + "]");
         }
 
-        // 全部非 main 协程的恢复段都落在指定 Worker（跨 Executor 继承/
-        // 启动断言用——句柄空间与 mutex/worker 共享计数器，不写死编号）
-        private static void CheckNonMainOnWorker(string label, VmDispatch dispatch,
-            long worker, int expectedCoroutines)
+        // Compute 内允许跨 Worker 迁移；换绑只要求第一个恢复段在 Main。
+        private static void CheckComputeResumes(string label, VmDispatch dispatch,
+            long handle, bool startsOnMain)
         {
-            var others = dispatch.ResumeLog.Keys
-                .Where(h => h != dispatch.MainHandle).ToArray();
-            TestHarness.CheckTrue(label + "（协程数）",
-                others.Length == expectedCoroutines,
-                "期望 " + expectedCoroutines + " 实际 [" + string.Join(",", others) + "]");
-            foreach (var handle in others)
-            {
-                long[] snapshot;
-                lock (dispatch.ResumeLog[handle])
-                {
-                    snapshot = dispatch.ResumeLog[handle].ToArray();
-                }
-                TestHarness.CheckTrue(label + "（协程 " + handle + " 全部段在 Worker "
-                        + worker + "）",
-                    snapshot.Length > 0 && snapshot.All(w => w == worker),
-                    "实际 [" + string.Join(",", snapshot) + "]");
-            }
+            var log = dispatch.ResumeLog[handle];
+            long[] snapshot;
+            lock (log) snapshot = log.ToArray();
+            var workers = WorkerHandles(dispatch).Where(w => w != 0).ToHashSet();
+            TestHarness.CheckTrue(label, snapshot.Length == 2
+                && (startsOnMain ? snapshot[0] == 0 : workers.Contains(snapshot[0]))
+                && workers.Contains(snapshot[1]),
+                "实际 [" + string.Join(",", snapshot) + "]");
         }
 
         // 全部非 main 协程的恢复段都不落在主 Worker（0）——跨 Executor
@@ -334,11 +324,11 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute Worker 懒建（主 + Compute 两 Worker）",
-                workers.Length == 2 && workers[0] == 0,
+            TestHarness.CheckTrue("Compute Worker 池按可用并行度懒建",
+                workers.Length == (VmDispatch.ComputeParallelism() + 1) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
-            CheckResumeWorkers("冷 Task 两恢复段都在 Compute Worker",
-                dispatch, SoleNonMainHandle(dispatch), workers[1], workers[1]);
+            CheckComputeResumes("冷 Task 两恢复段都在 Compute Worker 集合",
+                dispatch, SoleNonMainHandle(dispatch), false);
             CheckResumeWorkers("main 留在主 Worker", dispatch, dispatch.MainHandle, 0, 0);
         }
 
@@ -390,10 +380,10 @@ namespace RigiCompiler.Tests
             }
             var workers = WorkerHandles(dispatch);
             TestHarness.CheckTrue("换绑触发 Compute Worker 懒建",
-                workers.Length == 2 && workers[0] == 0,
+                workers.Length == (VmDispatch.ComputeParallelism() + 1) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
-            CheckResumeWorkers("首段主 Worker、换绑后恢复段在 Compute Worker",
-                dispatch, SoleNonMainHandle(dispatch), 0, workers[1]);
+            CheckComputeResumes("首段主 Worker、换绑后恢复段在 Compute Worker 集合",
+                dispatch, SoleNonMainHandle(dispatch), true);
         }
 
         // §18.1 继承：Compute 上的协程 eager spawn 的子协程继承 Compute
@@ -420,10 +410,10 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute Worker 懒建", workers.Length == 2,
+            TestHarness.CheckTrue("Compute Worker 懒建", workers.Length == (VmDispatch.ComputeParallelism() + 1),
                 "workers=[" + string.Join(",", workers) + "]");
-            CheckNonMainOnWorker("冷 Task 与其 eager 子协程都继承/落在 Compute Worker",
-                dispatch, workers[1], 2);
+            CheckNonMainOffMain("冷 Task 与其 eager 子协程都继承/落在 Compute Worker 集合",
+                dispatch, 2);
         }
 
         // ===== C. TaskState 投影（§18.2）=====
@@ -717,8 +707,8 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute 与 IO Worker 均懒建（共三 Worker）",
-                workers.Length == 3 && workers[0] == 0,
+            TestHarness.CheckTrue("Compute 池与 IO Worker 均懒建",
+                workers.Length == (VmDispatch.ComputeParallelism() + 2) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
             CheckNonMainOffMain("两 Task 都不在 Main Worker 执行", dispatch, 2);
         }

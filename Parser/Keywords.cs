@@ -66,6 +66,7 @@ namespace RigiCompiler
         public const string WITH = "with";
         public const string NEW = "new";
         public const string TYPEOF = "typeOf";
+        public const string PLACEOF = "placeOf";
         public const string AWAIT = "await";
         // ===== 类型关键字（§19）=====
         public const string EXTENDS = "extends";
@@ -82,6 +83,7 @@ namespace RigiCompiler
         public const string USING = "using";
         // ===== 非 §19 的上下文词汇 =====
         public const string VOLATILE = "volatile";      // seq 块修饰（§6）
+        public const string UNSAFE = "unsafe";          // 显式危险操作上下文
         public const string OUT = "out";                // 泛型型变（§3.6）
         public const string VALUE = "value";            // 属性访问器参数（§9.4）
         public const string GET = "get";                // 属性访问器（§9.4）
@@ -108,7 +110,7 @@ namespace RigiCompiler
         // 字符串运算符数组（运算符关键字）
         public static readonly string[] StringOperators =
         {
-            AND, OR, NOT, IS, SUPERS, AS, WITH, NEW, TYPEOF, AWAIT
+            AND, OR, NOT, IS, SUPERS, AS, WITH, NEW, TYPEOF, PLACEOF, AWAIT
         };
 
         // 其他关键字数组（§19 其他关键字 + 模块关键字：保留字拦截用）
@@ -122,7 +124,7 @@ namespace RigiCompiler
         public static readonly string[] DeclarationDescriptors =
         {
             PUB, PRIV, PROTECTED, INTERNAL, OPEN, ABSTRACT, SINGLETON,
-            STATIC, EXT, OVERRIDE, RICH, SHARED, ASYNC, NATIVE
+            STATIC, EXT, OVERRIDE, RICH, SHARED, ASYNC, NATIVE, UNSAFE
         };
 
         // 类型关键字（class, struct, interface, wrapper, enum）

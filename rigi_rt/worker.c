@@ -98,6 +98,25 @@ int64_t rigi_time_now(void)
 static _Atomic int64_t rigi_stat_live = 0;
 static _Atomic int64_t rigi_stat_running = 0;
 static _Atomic int64_t rigi_stat_armed = 0;
+static _Atomic int64_t rigi_stat_workers = 0;
+static _Atomic int64_t rigi_stat_timer_bytes = 0;
+
+/* 独立计量定时器底座的保留量，资源压力可区分它与 MQ 对象。 */
+int64_t rigi_timer_live_bytes(void)
+{
+    return atomic_load_explicit(&rigi_stat_timer_bytes, memory_order_relaxed);
+}
+
+/* 压力入口观测：返回真实的辅助 Worker 数，不把主线程/GC 算作 Compute。 */
+int64_t rigi_worker_live_count(void)
+{
+    return atomic_load_explicit(&rigi_stat_workers, memory_order_relaxed);
+}
+
+int64_t rigi_worker_running_count(void)
+{
+    return atomic_load_explicit(&rigi_stat_running, memory_order_relaxed);
+}
 
 /* cohandle.c 钩子（库内面，worker.h 声明） */
 void rigi_stat_note_create(void)
@@ -127,6 +146,20 @@ void rigi_stat_note_resume_end(void)
 /* ================================================================== */
 #ifdef RIGI_HAS_LIBUV
 
+/* 默认使用全部可用处理器；显式覆盖严格限制在 1..254，非法值回退默认。 */
+int32_t rigi_worker_parallelism(void)
+{
+    unsigned int count = uv_available_parallelism();
+    const char *setting = getenv("RIGI_COMPUTE_WORKERS");
+    if (setting != NULL && *setting >= '0' && *setting <= '9')
+    {
+        char *end;
+        long parsed = strtol(setting, &end, 10);
+        if (*end == '\0' && parsed >= 1 && parsed <= 254) return (int32_t)parsed;
+    }
+    return (int32_t)(count > 254 ? 254 : (count > 0 ? count : 1));
+}
+
 /* 任务交接 FIFO 节点（gate 锁内进出；台账配对） */
 typedef struct RigiWorkNode
 {
@@ -151,6 +184,8 @@ struct RigiWorker
     _Atomic int async_ready;      /* wake 句柄已 uv_async_init 且未 close */
     uv_async_t wake;              /* 跨线程唤醒句柄（仅属主线程初始化） */
     RigiTimer *live_timers;       /* 本 Worker 存活定时器链（仅属主线程） */
+    RigiTimer *closing_timers;    /* 登记册闸保护；析构交接给属主 */
+    int alarms_closing;           /* 登记册闸保护；shutdown 封闭交接 */
     struct RigiWorker *next_live; /* 全局 live 链（atexit 兜底依据） */
 };
 
@@ -177,8 +212,10 @@ struct RigiTimer
     int64_t rings_remaining;      /* -1 = 无限 */
     int armed_counted;            /* 已计入 rigi_stat_armed（看门狗） */
     int manual;                   /* 1 = 无 uv_timer 的手动 EventAlarm */
-    int auto_reset;               /* 1 = wait 消费 signaled（消息队列） */
     struct RigiTimer *next_live;
+    struct RigiTimer *next_registered;
+    struct RigiTimer *next_close;
+    int64_t identity;             /* 单调身份，不复用已失效句柄 */
 };
 
 struct RigiSem
@@ -200,12 +237,13 @@ static uv_mutex_t rigi_worker_registry_gate;
 static RigiWorker *rigi_worker_live = NULL;
 static RigiSem *rigi_sem_live = NULL;
 static RigiSyncMutexRt *rigi_smutex_live = NULL;
-/* 第四条链（L8）：用户 EventAlarm 粘滞底座（rigi_event_create_sticky
- * 产物）。消息队列手动事件（auto_reset）由队列回收显式 destroy，
- * 不进本链；粘滞底座无属主销毁通道，统一随进程退出释放（memtrack
- * 零泄漏口径；RigiTimer.next_live 复用——手动事件不入 Worker
- * live_timers 链，槽位空闲） */
+static _Atomic int64_t rigi_smutex_count = 0;
+/* 第四条链：全部 timer/手动事件的身份登记册。对象析构或属主
+ * shutdown 摘除；next_registered 与属主 live 链独立，禁止裸指针
+ * 句柄在退出后地址复用时误认新底座。 */
 static RigiTimer *rigi_event_live = NULL;
+static int64_t rigi_alarm_identity = 0;
+static void rigi_worker_close_alarms(RigiWorker *worker);
 
 static void rigi_worker_cleanup(void);
 
@@ -219,7 +257,7 @@ extern void rigi_dispatch_publish(int64_t handle);
 /* 主 Worker（句柄 0）内建实例：无线程，TLS 当前上下文恒 0（主线程
  * 未附着）；loop/看门狗随首个定时器/park 懒建 */
 static RigiWorker rigi_main_worker_storage;
-static int rigi_main_worker_ready = 0;
+static _Atomic int rigi_main_worker_ready = 0;
 
 static void rigi_registry_once(void)
 {
@@ -241,11 +279,11 @@ static void rigi_worker_registry_ensure(void)
 /* 主 Worker 实例懒建（双检 + 登记册闸；无主初始化竞态） */
 static RigiWorker *rigi_main_worker_ensure(void)
 {
-    if (!rigi_main_worker_ready)
+    if (!atomic_load_explicit(&rigi_main_worker_ready, memory_order_acquire))
     {
         rigi_worker_registry_ensure();
         uv_mutex_lock(&rigi_worker_registry_gate);
-        if (!rigi_main_worker_ready)
+        if (!atomic_load_explicit(&rigi_main_worker_ready, memory_order_acquire))
         {
             memset(&rigi_main_worker_storage, 0,
                 sizeof(rigi_main_worker_storage));
@@ -256,7 +294,7 @@ static RigiWorker *rigi_main_worker_ensure(void)
                     "（环境耗尽）\n");
                 abort();
             }
-            rigi_main_worker_ready = 1;
+            atomic_store_explicit(&rigi_main_worker_ready, 1, memory_order_release);
         }
         uv_mutex_unlock(&rigi_worker_registry_gate);
     }
@@ -328,6 +366,7 @@ int64_t rigi_sync_mutex_create(void)
     uv_mutex_lock(&rigi_worker_registry_gate);
     rt->next_live = rigi_smutex_live;
     rigi_smutex_live = rt;
+    atomic_fetch_add_explicit(&rigi_smutex_count, 1, memory_order_relaxed);
     uv_mutex_unlock(&rigi_worker_registry_gate);
     return (int64_t)(uintptr_t)rt;
 }
@@ -354,23 +393,31 @@ void rigi_sync_mutex_release(int64_t mutex)
 
 void rigi_sync_mutex_destroy(int64_t mutex)
 {
-    RigiSyncMutexRt *rt = rigi_smutex_of(mutex, "rigi_sync_mutex_destroy");
+    RigiSyncMutexRt *rt = (RigiSyncMutexRt *)(uintptr_t)mutex;
     RigiSyncMutexRt **link;
+    int found = 0;
+    if (rt == NULL) { return; }
     uv_mutex_lock(&rigi_worker_registry_gate);
     for (link = &rigi_smutex_live; *link != NULL; link = &(*link)->next_live)
     {
         if (*link == rt)
         {
             *link = rt->next_live;
+            found = 1;
             break;
         }
     }
     uv_mutex_unlock(&rigi_worker_registry_gate);
+    /* shutdown 可能先清扫登记册；迟到的对象析构不得再次解引用旧地址。 */
+    if (!found) { return; }
+    atomic_fetch_sub_explicit(&rigi_smutex_count, 1, memory_order_relaxed);
     uv_mutex_destroy(&rt->mutex);
     rigi_track_free(rt);
 }
 
 /* ---- Worker ---- */
+int64_t rigi_sync_mutex_live_count(void)
+{ return atomic_load_explicit(&rigi_smutex_count, memory_order_relaxed); }
 
 int rigi_worker_stop_requested(RigiWorker *worker)
 {
@@ -385,11 +432,10 @@ uv_loop_t *rigi_worker_loop(RigiWorker *worker)
         ? atomic_load_explicit(&worker->loop, memory_order_acquire) : NULL;
 }
 
-/* 跨线程唤醒回调：无操作——async 句柄仅作 uv_run 的唤醒源（alarm.c
- * polling 退避 timer 同款先例：callback 不执行用户代码） */
+/* 跨线程唤醒回调在属主线程接收内部关闭请求，不执行用户代码。 */
 static void rigi_worker_wake_cb(uv_async_t *handle)
 {
-    (void)handle;
+    rigi_worker_close_alarms((RigiWorker *)handle->data);
 }
 
 /* 懒建 loop + wake 句柄（仅属主线程；首个 timer/唤醒需求时调用）。
@@ -414,6 +460,7 @@ uv_loop_t *rigi_worker_loop_ensure(RigiWorker *worker)
         fprintf(stderr, "rigi_rt: uv_async_init 失败（环境耗尽）\n");
         abort();
     }
+    worker->wake.data = worker;
     atomic_store_explicit(&worker->async_ready, 1, memory_order_release);
     atomic_store_explicit(&worker->loop, &worker->loop_storage,
         memory_order_release);
@@ -427,17 +474,21 @@ uv_loop_t *rigi_worker_loop_ensure(RigiWorker *worker)
  * 先 stop+post 再 join，join 返回即线程体全毕） */
 static void rigi_worker_loop_teardown(RigiWorker *worker)
 {
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    worker->alarms_closing = 1;
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    rigi_worker_close_alarms(worker);
     if (rigi_worker_loop(worker) == NULL)
     {
         return;
     }
+    /* 与 enqueue 的 async_send 同闸，禁止检查 ready 后撞上 uv_close。 */
+    uv_mutex_lock(&worker->gate);
     atomic_store_explicit(&worker->loop, NULL, memory_order_release);
+    int close_wake = atomic_exchange_explicit(&worker->async_ready, 0, memory_order_acq_rel);
+    if (close_wake != 0) uv_close((uv_handle_t *)&worker->wake, NULL);
+    uv_mutex_unlock(&worker->gate);
     rigi_worker_timer_sweep(worker); /* timer.c 内部钩子（无残余为空转） */
-    if (atomic_exchange_explicit(&worker->async_ready, 0,
-            memory_order_acq_rel) != 0)
-    {
-        uv_close((uv_handle_t *)&worker->wake, NULL);
-    }
     /* timer/async 全闭，loop 无活跃句柄，flush 单迭代即返、绝不阻塞 */
     uv_run(&worker->loop_storage, UV_RUN_DEFAULT);
     uv_loop_close(&worker->loop_storage);
@@ -563,6 +614,8 @@ int64_t rigi_timer_create(int64_t owner, int64_t delay_ms,
     uv_loop_t *loop = rigi_worker_loop_ensure(w);
     RigiTimer *timer =
         (RigiTimer *)rigi_track_malloc(sizeof(RigiTimer));
+    atomic_fetch_add_explicit(&rigi_stat_timer_bytes, sizeof(RigiTimer), memory_order_relaxed);
+    memset(timer, 0, sizeof(*timer));
     timer->owner = w;
     timer->cb = (RigiTimerCallback)(uintptr_t)callback_fn;
     timer->ctx = (void *)(uintptr_t)ctx;
@@ -570,7 +623,6 @@ int64_t rigi_timer_create(int64_t owner, int64_t delay_ms,
     timer->waiters = NULL;
     timer->signaled = 0;
     timer->manual = 0;
-    timer->auto_reset = 0;
     /* 响铃形态：ctx = 重复配置（0 单次 / -1 无限 / n 有限次数） */
     timer->rings_remaining = callback_fn == 0
         ? (ctx == 0 ? 1 : ctx) : 0;
@@ -595,7 +647,31 @@ int64_t rigi_timer_create(int64_t owner, int64_t delay_ms,
     uv_timer_start(&timer->handle, rigi_timer_fire_cb,
         (uint64_t)(delay_ms > 0 ? delay_ms : 0),
         (uint64_t)(repeat_ms > 0 ? repeat_ms : 0));
-    return (int64_t)(uintptr_t)timer;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    if (rigi_alarm_identity == INT64_MAX) abort();
+    timer->identity = ++rigi_alarm_identity;
+    timer->next_registered = rigi_event_live;
+    rigi_event_live = timer;
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    return timer->identity;
+}
+
+/* 查找/摘除只比较不复用的身份，不解引用调用方可能过期的句柄。
+ * 调用方持登记册闸；摘除后底座的释放权唯一归接收者。 */
+static RigiTimer *rigi_alarm_find(int64_t identity, int remove)
+{
+    RigiTimer **link;
+    for (link = &rigi_event_live; *link != NULL;
+        link = &(*link)->next_registered)
+    {
+        if ((*link)->identity == identity)
+        {
+            RigiTimer *timer = *link;
+            if (remove) *link = timer->next_registered;
+            return timer;
+        }
+    }
+    return NULL;
 }
 
 static RigiTimer *rigi_timer_of(int64_t timer, const char *face)
@@ -606,7 +682,10 @@ static RigiTimer *rigi_timer_of(int64_t timer, const char *face)
         fprintf(stderr, "rigi_rt: %s 收到空句柄（编译器 bug）\n", face);
         abort();
     }
-    t = (RigiTimer *)(uintptr_t)timer;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    t = rigi_alarm_find(timer, 0);
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    if (t == NULL) return NULL;
     rigi_timer_owner_check(t->owner, face);
     return t;
 }
@@ -614,15 +693,29 @@ static RigiTimer *rigi_timer_of(int64_t timer, const char *face)
 void rigi_timer_cancel(int64_t timer)
 {
     RigiTimer *t = rigi_timer_of(timer, "rigi_timer_cancel");
-    if (!t->closed)
+    if (t != NULL && !t->closed)
     {
         uv_timer_stop(&t->handle);
     }
 }
 
-void rigi_timer_destroy(int64_t timer)
+static void rigi_timer_closed_cb(uv_handle_t *handle)
 {
-    RigiTimer *t = rigi_timer_of(timer, "rigi_timer_destroy");
+    RigiTimer *t = (RigiTimer *)handle->data;
+    /* 残余 waiter 节点清扫（正常路径响铃已排空；防御） */
+    while (t->waiters != NULL)
+    {
+        RigiAlarmWaitNode *next = t->waiters->next;
+        rigi_track_free(t->waiters);
+        t->waiters = next;
+    }
+    uv_mutex_destroy(&t->gate);
+    rigi_track_free(t);
+    atomic_fetch_sub_explicit(&rigi_stat_timer_bytes, sizeof(RigiTimer), memory_order_relaxed);
+}
+
+static void rigi_timer_close(RigiTimer *t)
+{
     RigiTimer **link;
     if (t->closed)
     {
@@ -645,26 +738,39 @@ void rigi_timer_destroy(int64_t timer)
         atomic_fetch_sub_explicit(&rigi_stat_armed, 1,
             memory_order_relaxed);
     }
-    /* stop + close + NOWAIT flush（alarm.c 先例）：close 回调在 flush
-     * 的 closing 阶段同步跑完，此后内嵌 timer 内存才可释放。绝不能
-     * UV_RUN_DEFAULT——async 句柄仍活会阻塞 */
+    /* close 回调负责释放，允许从 timer 回调内销毁；禁止递归 uv_run。 */
     uv_timer_stop(&t->handle);
-    uv_close((uv_handle_t *)&t->handle, NULL);
-    uv_run(rigi_worker_loop_ensure(t->owner), UV_RUN_NOWAIT);
-    /* 残余 waiter 节点清扫（正常路径响铃已排空；防御） */
-    while (t->waiters != NULL)
+    uv_close((uv_handle_t *)&t->handle, rigi_timer_closed_cb);
+}
+
+void rigi_timer_destroy(int64_t timer)
+{
+    RigiTimer *t = rigi_timer_of(timer, "rigi_timer_destroy");
+    if (t == NULL) return;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    rigi_alarm_find(timer, 1);
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    rigi_timer_close(t);
+}
+
+static void rigi_worker_close_alarms(RigiWorker *worker)
+{
+    RigiTimer *timer;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    timer = worker->closing_timers;
+    worker->closing_timers = NULL;
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    while (timer != NULL)
     {
-        RigiAlarmWaitNode *next = t->waiters->next;
-        rigi_track_free(t->waiters);
-        t->waiters = next;
+        RigiTimer *next = timer->next_close;
+        rigi_timer_close(timer);
+        timer = next;
     }
-    uv_mutex_destroy(&t->gate);
-    rigi_track_free(t);
 }
 
 /* EventAlarm waiter 登记（契约见 worker.h）：闸内「查 signaled +
  * 登记」原子完成（§19.3）；定时器句柄有效性由生成代码侧的 Alarm
- * 对象持有保证（块在响铃后不回收，收尾清扫统一释放） */
+ * 对象持有保证（挂起帧保活；响铃后仍保留到对象析构） */
 int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
 {
     RigiTimer *t;
@@ -675,18 +781,15 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
             "yield EventAlarm 分流应先经 EventAlarm.ensureHandle 懒建底座）\n");
         abort();
     }
-    t = (RigiTimer *)(uintptr_t)timer;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    t = rigi_alarm_find(timer, 0);
+    if (t == NULL) { uv_mutex_unlock(&rigi_worker_registry_gate); return 0; }
     uv_mutex_lock(&t->gate);
+    uv_mutex_unlock(&rigi_worker_registry_gate);
     registered = 0;
     if (t->signaled)
     {
-        /* 手动事件（MW11d-C auto_reset）：粘滞 signaled 被本次 wait
-         * 消费复位，下次 wait 重新阻塞；定时器 signaled 是响铃终态，
-         * 不清（迟到 yield 仍读得到） */
-        if (t->auto_reset)
-        {
-            t->signaled = 0;
-        }
+        /* 已触发事件是粘滞终态。 */
     }
     else
     {
@@ -701,20 +804,13 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
     return registered;
 }
 
-/* 手动 EventAlarm（MW11d-C 消息队列「消息可得」）：复用 RigiTimer
- * 台账块（gate/waiters/signaled 与 rigi_alarm_wait 握手兼容），但
- * 零 uv 接触——无 owner 绑定、无 uv_timer、不进 live 链；signal/
- * destroy 允许任意线程调用（gate 保护；waiter 重发布走
- * rigi_dispatch_publish 跨线程安全通道，同 rigi_timer_alarm_ring
- * 「闸外逐个发布」纪律）。armed 计入/归还看门狗口径与定时器一致。
- * L8 起两形态：auto_reset=1 消息队列（wait 消费 signaled）/
- * auto_reset=0 用户 EventAlarm 子类默认底座（粘滞，§19.3）。 */
-static int64_t rigi_event_create_impl(int auto_reset)
+/* 用户粘滞事件复用定时器等待登记，signal后保持ready。 */
+static RigiTimer *rigi_event_create_impl(void)
 {
     RigiTimer *ev = (RigiTimer *)rigi_track_malloc(sizeof(RigiTimer));
+    atomic_fetch_add_explicit(&rigi_stat_timer_bytes, sizeof(RigiTimer), memory_order_relaxed);
     memset(ev, 0, sizeof(*ev));
     ev->manual = 1;
-    ev->auto_reset = auto_reset;
     if (uv_mutex_init(&ev->gate) != 0)
     {
         fprintf(stderr, "rigi_rt: uv_mutex_init 失败（环境耗尽）\n");
@@ -722,28 +818,24 @@ static int64_t rigi_event_create_impl(int auto_reset)
     }
     ev->armed_counted = 1;
     atomic_fetch_add_explicit(&rigi_stat_armed, 1, memory_order_relaxed);
-    return (int64_t)(uintptr_t)ev;
-}
-
-int64_t rigi_event_create(void)
-{
-    return rigi_event_create_impl(1);
+    return ev;
 }
 
 /* 用户 EventAlarm 子类默认底座（L8，§19.3）：手动事件粘滞形态——
  * signal 恒置已触发（迟到 wait 立即消费且不清 signaled），重复
- * signal 幂等；stdlib EventAlarm.ensureHandle 懒建。无属主销毁通道，
- * 挂登记册第四条链随进程退出统一释放 */
+ * signal 幂等；stdlib EventAlarm.ensureHandle 懒建，内部析构摘册
+ * 释放；atexit 仅兜底仍存活的底座。 */
 int64_t rigi_event_create_sticky(void)
 {
-    int64_t ev = rigi_event_create_impl(0);
-    RigiTimer *e = (RigiTimer *)(uintptr_t)ev;
+    RigiTimer *e = rigi_event_create_impl();
     rigi_worker_registry_ensure();
     uv_mutex_lock(&rigi_worker_registry_gate);
-    e->next_live = rigi_event_live;
+    if (rigi_alarm_identity == INT64_MAX) abort();
+    e->identity = ++rigi_alarm_identity;
+    e->next_registered = rigi_event_live;
     rigi_event_live = e;
     uv_mutex_unlock(&rigi_worker_registry_gate);
-    return ev;
+    return e->identity;
 }
 
 void rigi_event_signal(int64_t ev)
@@ -755,19 +847,13 @@ void rigi_event_signal(int64_t ev)
         fprintf(stderr, "rigi_rt: rigi_event_signal 收到空句柄（编译器 bug）\n");
         abort();
     }
-    e = (RigiTimer *)(uintptr_t)ev;
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    e = rigi_alarm_find(ev, 0);
+    if (e == NULL) { uv_mutex_unlock(&rigi_worker_registry_gate); return; }
     uv_mutex_lock(&e->gate);
+    uv_mutex_unlock(&rigi_worker_registry_gate);
     waiters = e->waiters;
     e->waiters = NULL;
-    if (e->auto_reset)
-    {
-        if (waiters == NULL)
-        {
-            /* 无 waiter：置粘滞 signaled，下一个 wait 立即消费（auto_reset） */
-            e->signaled = 1;
-        }
-    }
-    else
     {
         /* 粘滞形态（L8 用户 EventAlarm 底座，§19.3）：signal 即终态
          * ——恒置 signaled（有 waiter 也置，重复 signal 幂等）；此后
@@ -791,14 +877,8 @@ void rigi_event_signal(int64_t ev)
     }
 }
 
-void rigi_event_destroy(int64_t ev)
+static void rigi_event_free(RigiTimer *e)
 {
-    RigiTimer *e;
-    if (ev == 0)
-    {
-        return;
-    }
-    e = (RigiTimer *)(uintptr_t)ev;
     uv_mutex_lock(&e->gate);
     if (e->closed)
     {
@@ -822,11 +902,47 @@ void rigi_event_destroy(int64_t ev)
     uv_mutex_unlock(&e->gate);
     uv_mutex_destroy(&e->gate);
     rigi_track_free(e);
+    atomic_fetch_sub_explicit(&rigi_stat_timer_bytes, sizeof(RigiTimer), memory_order_relaxed);
 }
 
-/* 残余定时器清扫（Worker 线程体收尾钩子）：全部 stop + close +
- * NOWAIT flush + 释放；此刻入口 fn 已返回，正常路径 Rigi 侧已逐一
- * destroy，残余即防御清扫（保台账配对） */
+/* 内部对象析构：不进入 ARC/GC fence，不执行用户代码。
+ * 非属主线程仅交接关闭请求；shutdown 封闭后由 sweep 接管。
+ * 登记册闸先于 worker 闸，退出与入队因此不会留下悬挂指针。 */
+void rigi_alarm_release(int64_t identity)
+{
+    RigiTimer *timer;
+    if (identity == 0) return;
+    rigi_worker_registry_ensure();
+    uv_mutex_lock(&rigi_worker_registry_gate);
+    timer = rigi_alarm_find(identity, 1);
+    if (timer != NULL && !timer->manual)
+    {
+        RigiWorker *owner = timer->owner;
+        if (!owner->alarms_closing)
+        {
+            timer->next_close = owner->closing_timers;
+            owner->closing_timers = timer;
+            uv_mutex_lock(&owner->gate);
+            uv_sem_post(&owner->sem);
+            if (rigi_worker_loop(owner) != NULL
+                && atomic_load_explicit(&owner->async_ready, memory_order_acquire))
+                uv_async_send(&owner->wake);
+            uv_mutex_unlock(&owner->gate);
+        }
+        timer = NULL;
+    }
+    uv_mutex_unlock(&rigi_worker_registry_gate);
+    if (timer != NULL) rigi_event_free(timer);
+}
+
+void rigi_event_destroy(int64_t ev)
+{
+    rigi_alarm_release(ev);
+}
+
+/* 属主已封闭析构交接并排空队列：直接以 live 链中的记录关闭。
+ * shutdown 可以先于静态槽/终轮 GC 析构，摘除身份后晚到释放查空。
+ * close 回调统一释放，外层 teardown 冲刷，不递归 uv_run。 */
 void rigi_worker_timer_sweep(RigiWorker *worker)
 {
     RigiTimer *timer = worker != NULL ? worker->live_timers : NULL;
@@ -834,31 +950,13 @@ void rigi_worker_timer_sweep(RigiWorker *worker)
     {
         return;
     }
-    worker->live_timers = NULL;
     while (timer != NULL)
     {
         RigiTimer *next = timer->next_live;
-        if (!timer->closed)
-        {
-            timer->closed = 1;
-            uv_timer_stop(&timer->handle);
-            uv_close((uv_handle_t *)&timer->handle, NULL);
-        }
-        if (timer->armed_counted)
-        {
-            timer->armed_counted = 0;
-            atomic_fetch_sub_explicit(&rigi_stat_armed, 1,
-                memory_order_relaxed);
-        }
-        uv_run(&worker->loop_storage, UV_RUN_NOWAIT);
-        while (timer->waiters != NULL)
-        {
-            RigiAlarmWaitNode *node = timer->waiters;
-            timer->waiters = node->next;
-            rigi_track_free(node);
-        }
-        uv_mutex_destroy(&timer->gate);
-        rigi_track_free(timer);
+        uv_mutex_lock(&rigi_worker_registry_gate);
+        rigi_alarm_find(timer->identity, 1);
+        uv_mutex_unlock(&rigi_worker_registry_gate);
+        rigi_timer_close(timer);
         timer = next;
     }
 }
@@ -902,6 +1000,7 @@ int64_t rigi_worker_create(int64_t entry_fn)
     uv_mutex_lock(&rigi_worker_registry_gate);
     worker->next_live = rigi_worker_live;
     rigi_worker_live = worker;
+    atomic_fetch_add_explicit(&rigi_stat_workers, 1, memory_order_relaxed);
     uv_mutex_unlock(&rigi_worker_registry_gate);
     return (int64_t)(uintptr_t)worker;
 }
@@ -936,13 +1035,13 @@ void rigi_worker_enqueue(int64_t worker, int64_t task)
         w->head = node;
     }
     w->tail = node;
-    uv_mutex_unlock(&w->gate);
     uv_sem_post(&w->sem);
     if (rigi_worker_loop(w) != NULL
         && atomic_load_explicit(&w->async_ready, memory_order_acquire) != 0)
     {
         uv_async_send(&w->wake);
     }
+    uv_mutex_unlock(&w->gate);
 }
 
 /* 死锁看门狗（仅主 Worker，棒5a；VM WorkerPark 的 IsDeadlocked 显败
@@ -1006,6 +1105,9 @@ int64_t rigi_worker_park(int64_t worker)
     RigiWorker *w = rigi_worker_of(worker, "rigi_worker_park");
     RigiWorkNode *node;
     int64_t token = 0;
+    /* 有连续 runnable 时仍泵一次既有 loop，避免定时器被 token 饿死。 */
+    uv_loop_t *ready_loop = rigi_worker_loop(w);
+    if (ready_loop != NULL) uv_run(ready_loop, UV_RUN_NOWAIT);
     for (;;)
     {
         uv_loop_t *loop;
@@ -1084,6 +1186,7 @@ void rigi_worker_destroy(int64_t worker)
     /* 优雅退出：stop 置位 → 双通道唤醒（park 的 sem_wait 与 uv_run 各
      * 一路）→ join。入口 fn 返回后线程体已自拆 loop，join 后无线程
      * 再触碰任何 uv 句柄 */
+    uv_mutex_lock(&w->gate);
     atomic_store_explicit(&w->stop_requested, 1, memory_order_release);
     uv_sem_post(&w->sem);
     if (rigi_worker_loop(w) != NULL
@@ -1091,6 +1194,7 @@ void rigi_worker_destroy(int64_t worker)
     {
         uv_async_send(&w->wake);
     }
+    uv_mutex_unlock(&w->gate);
     uv_thread_join(&w->thread);
     /* 摘全局 live 链 */
     uv_mutex_lock(&rigi_worker_registry_gate);
@@ -1099,6 +1203,7 @@ void rigi_worker_destroy(int64_t worker)
         if (*link == w)
         {
             *link = w->next_live;
+            atomic_fetch_sub_explicit(&rigi_stat_workers, 1, memory_order_relaxed);
             break;
         }
     }
@@ -1118,7 +1223,7 @@ void rigi_worker_destroy(int64_t worker)
 void rigi_main_worker_shutdown(void)
 {
     RigiWorker *w;
-    if (!rigi_main_worker_ready)
+    if (!atomic_load_explicit(&rigi_main_worker_ready, memory_order_acquire))
     {
         return;
     }
@@ -1155,15 +1260,19 @@ static void rigi_worker_cleanup(void)
     {
         rigi_sync_mutex_destroy((int64_t)(uintptr_t)rigi_smutex_live);
     }
-    while (rigi_event_live != NULL)
+    for (;;)
     {
-        RigiTimer *next = rigi_event_live->next_live;
+        int64_t identity;
+        /* 终轮 GC 可能仍在摘册；只在闸内读取身份，闸外幂等释放。 */
+        uv_mutex_lock(&rigi_worker_registry_gate);
+        identity = rigi_event_live != NULL ? rigi_event_live->identity : 0;
+        uv_mutex_unlock(&rigi_worker_registry_gate);
+        if (identity == 0) break;
         /* 同 rigi_event_destroy 路径（幂等 + 残余 waiter 防御清扫 +
          * armed 归还 + 台账配对）；粘滞底座不得再被引用（进程退出中） */
-        rigi_event_destroy((int64_t)(uintptr_t)rigi_event_live);
-        rigi_event_live = next;
+        rigi_alarm_release(identity);
     }
-    uv_mutex_destroy(&rigi_worker_registry_gate);
+    /* 静态登记册闸保留到进程结束，供随后 atexit 对象析构安全查空。 */
 }
 
 #else /* !RIGI_HAS_LIBUV：原语面降级诊断 abort（alarm.c 同纪律） */
@@ -1220,12 +1329,15 @@ void rigi_sync_mutex_destroy(int64_t mutex)
 {
     (void)mutex;
 }
+int64_t rigi_sync_mutex_live_count(void) { return 0; }
 
 int rigi_worker_stop_requested(RigiWorker *worker)
 {
     (void)worker;
     return 1;
 }
+
+int32_t rigi_worker_parallelism(void) { return 1; }
 
 int64_t rigi_worker_create(int64_t entry_fn)
 {
@@ -1296,17 +1408,11 @@ int32_t rigi_alarm_wait(int64_t timer, int64_t waiter)
 
 /* 手动 EventAlarm 降级形态：无协程原语即无 waiter 场景（Worker/
  * alarm_wait 均 abort），只保粘滞 signaled 单线程语义供同步路径 */
-int64_t rigi_event_create(void)
+int64_t rigi_event_create_sticky(void)
 {
     int *flag = (int *)rigi_track_malloc(sizeof(int));
     *flag = 0;
     return (int64_t)(uintptr_t)flag;
-}
-
-/* 降级形态不区分 auto_reset/粘滞（waiter 面 abort，signaled 语义同形） */
-int64_t rigi_event_create_sticky(void)
-{
-    return rigi_event_create();
 }
 
 void rigi_event_signal(int64_t ev)
@@ -1327,6 +1433,11 @@ void rigi_event_destroy(int64_t ev)
 
 void rigi_main_worker_shutdown(void)
 {
+}
+
+void rigi_alarm_release(int64_t identity)
+{
+    rigi_event_destroy(identity);
 }
 
 #endif /* RIGI_HAS_LIBUV */

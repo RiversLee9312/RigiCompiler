@@ -162,31 +162,32 @@ namespace RigiCompiler
             SymbolGraph? symbols = null)
         {
             var result = new List<MethodSymbol>();
-            CollectInstanceMethods(result, type, name);
+            CollectInstanceMethods(result, type, name, symbols);
             AppendInterfaceMembers(result, type, name, symbols, operatorsOnly: false,
                 parameterCount: -1);
             return result;
         }
 
         private static void CollectInstanceMethods(List<MethodSymbol> result, TypeSymbol type,
-            string name)
+            string name, SymbolGraph? symbols)
         {
             for (var t = type; t != null; t = t.BaseType)
             {
                 CollectMethodsFromOwner(result, t.ConstructedFrom ?? t, name,
-                    operatorsOnly: false, parameterCount: -1);
+                    operatorsOnly: false, parameterCount: -1, type, symbols);
             }
         }
 
         private static void CollectMethodsFromOwner(List<MethodSymbol> result, TypeSymbol owner,
-            string name, bool operatorsOnly, int parameterCount)
+            string name, bool operatorsOnly, int parameterCount, TypeSymbol receiver, SymbolGraph? symbols)
         {
             foreach (var method in owner.Methods.Where(m => m.Name == name && !m.IsStatic
                 && (operatorsOnly
                     ? m.Kind == MethodKind.Operator && m.Parameters.Count == parameterCount
                     : m.Kind is MethodKind.Regular or MethodKind.Operator)))
             {
-                if (result.Any(derived => derived.IsOverride && SignaturesEqual(derived, method)))
+                if (result.Any(derived => derived.IsOverride && SignatureForReceiver(derived, receiver, symbols)
+                    .Matches(SignatureForReceiver(method, receiver, symbols))))
                 {
                     continue;
                 }
@@ -207,7 +208,7 @@ namespace RigiCompiler
                 foreach (var iface in OverrideChecker.InterfaceClosure(type, symbols))
                 {
                     CollectMethodsFromOwner(result, iface.ConstructedFrom ?? iface, name,
-                        operatorsOnly, parameterCount);
+                        operatorsOnly, parameterCount, type, symbols);
                 }
                 return;
             }
@@ -242,25 +243,22 @@ namespace RigiCompiler
             }
         }
 
-        // 签名严格相等（参数类型序列 + 返回类型，引用相等——OverrideChecker
-        // 同口径；构造宿主代入实参后的精确比较归 S9，比较失败退回不去重，
-        // 行为与遮蔽规则引入前一致）
-        private static bool SignaturesEqual(MethodSymbol a, MethodSymbol b)
+        // 覆写槽比较复用声明检查的签名视图：先代入 receiver 的闭合宿主，
+        // 再比较方法泛型元数及同构参数，不能拿基类模板 T 与派生 i32 比引用。
+        private static OverrideChecker.SignatureView SignatureForReceiver(MethodSymbol method,
+            TypeSymbol receiver, SymbolGraph? symbols)
         {
-            if (a.Parameters.Count != b.Parameters.Count)
+            if (symbols != null)
             {
-                return false;
-            }
-            for (int i = 0; i < a.Parameters.Count; i++)
-            {
-                if (!ReferenceEquals(a.Parameters[i].Type, b.Parameters[i].Type))
+                for (var t = receiver; t != null; t = t.BaseType)
                 {
-                    return false;
+                    var owner = t.ConstructedFrom ?? t;
+                    if (ReferenceEquals(owner, method.Owner))
+                        return OverrideChecker.SignatureView.Of(method, owner, t, symbols);
                 }
             }
-            return ReferenceEquals(a.ReturnType, b.ReturnType);
+            return OverrideChecker.SignatureView.Raw(method);
         }
-
         // 实例字段查找：同链（仅实例字段；构造类型回退泛型定义，同 FindInstanceMethods）
         public static FieldSymbol? FindInstanceField(TypeSymbol type, string name)
         {
@@ -283,7 +281,7 @@ namespace RigiCompiler
             for (var t = type; t != null; t = t.BaseType)
             {
                 CollectMethodsFromOwner(result, t.ConstructedFrom ?? t, name,
-                    operatorsOnly: true, parameterCount);
+                    operatorsOnly: true, parameterCount, type, symbols);
             }
             AppendInterfaceMembers(result, type, name, symbols, operatorsOnly: true,
                 parameterCount);
@@ -528,21 +526,11 @@ namespace RigiCompiler
             for (var t = fromType; t != null; t = t.BaseType)
             {
                 if (TypesAssignableWithVariance(t, toType, symbols, visiting)) return true;
-                var def = t.ConstructedFrom ?? t;
-                foreach (var iface in def.Interfaces)
-                {
-                    if (TypesAssignableWithVariance(iface, toType, symbols, visiting))
-                    {
-                        return true;
-                    }
-                    if (t.ConstructedFrom != null
-                        && TypesAssignableWithVariance(
-                            SubstituteHost(iface, def, t, symbols), toType, symbols,
-                            visiting))
-                    {
-                        return true;
-                    }
-                }
+            }
+            // 接口赋值与成员查找共用闭包：逐层代入闭合宿主，包含传递继承。
+            foreach (var iface in OverrideChecker.InterfaceClosure(fromType, symbols))
+            {
+                if (TypesAssignableWithVariance(iface, toType, symbols, visiting)) return true;
             }
             return false;
         }

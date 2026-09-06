@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -20,8 +20,8 @@ namespace RigiCompiler.Tests
                 && module.Metadata[0].Key == "module"
                 && module.Metadata[0].Type == BilScalarType.String
                 && module.Metadata[0].LiteralText == "\"hello\"");
-            TestHarness.CheckTrue("Resources 恰 74 条且含 \"Hello, world!\" 标量资源",
-                module.Resources.Count == 74
+            TestHarness.CheckTrue("Resources 恰 105 条且含 \"Hello, world!\" 标量资源",
+                module.Resources.Count == 105
                 && module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String
                     && s.LiteralText == "\"Hello, world!\""));
@@ -181,7 +181,7 @@ namespace RigiCompiler.Tests
             // + R_34 = "same"——"same" 不重复登记；return 0 与基线 i32 0
             // 同键去重
             TestHarness.CheckTrue("相同字面量只登记一个资源",
-                module.Resources.Count == 74
+                module.Resources.Count == 105
                 && module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
@@ -232,81 +232,111 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（一元与比较）", module);
             // 两处 5 共用同一资源（stdlib 基线 34 条在前：用户 5
             // 与基线 #10 同键去重，尾部 null 是 Task<TReturn> 初值）
-            BilTestHarness.CheckResShape("资源（5 去重）", module,
-                
+BilTestHarness.CheckResShape("资源（5 去重）", module,
                 "#0 = string \"\\n\"\n" +
-                "#1 = bool false\n" +
-                "#2 = i32 1\n" +
-                "#3 = bool true\n" +
-                "#4 = i32 8\n" +
-                "#5 = i32 0\n" +
-                "#6 = null type(.generic<$.generic.T>)\n" +
-                "#7 = i32 2\n" +
-                "#8 = null type(.generic<$.generic.V>)\n" +
-                "#9 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
-                "#10 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
-                "#11 = i32 3\n" +
-                "#12 = i32 4\n" +
-                "#13 = i32 5\n" +
-                "#14 = null type(core.coroutine::I64Queue)\n" +
-                "#15 = catch-table {  }\n" +
-                "#16 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
-                "#17 = catch-table {  }\n" +
-                "#18 = catch-table {  }\n" +
-                "#19 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
-                "#20 = null type(.generic<$.generic.TValue>)\n" +
-                "#21 = catch-table {  }\n" +
+                "#1 = i32 1\n" +
+                "#2 = i32 0\n" +
+                "#3 = catch-table {  }\n" +
+                "#4 = catch-table {  }\n" +
+                "#5 = catch-table {  }\n" +
+                "#6 = i32 2\n" +
+                "#7 = string \"Map 快照键值长度必须相等\"\n" +
+                "#8 = bool false\n" +
+                "#9 = null type(.generic<$.generic.V>)\n" +
+                "#10 = null type(.generic<$.generic.K>)\n" +
+                "#11 = null type(core::AtomicMapSnapshot<.generic<$.generic.K>, .generic<$.generic.V>>)\n" +
+                "#12 = null type(.generic<$.generic.T>)\n" +
+                "#13 = null type(core::AtomicSnapshot<.generic<$.generic.T>>)\n" +
+                "#14 = bool true\n" +
+                "#15 = i32 8\n" +
+                "#16 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#17 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#18 = i32 3\n" +
+                "#19 = i32 4\n" +
+                "#20 = i32 5\n" +
+                "#21 = null type(core.coroutine::I64Queue)\n" +
                 "#22 = catch-table {  }\n" +
-                "#23 = null type(core.coroutine::Executor)\n" +
-                "#24 = i32 -1\n" +
-                "#25 = string \"无法将 \"\n" +
-                "#26 = string \" 转换为 \"\n" +
-                "#27 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#28 = string \"整数除以零\"\n" +
-                "#29 = string \"数组下标越界：\"\n" +
-                "#30 = string \"（长度 \"\n" +
-                "#31 = string \"）\"\n" +
-                "#32 = string \"对象在销毁前从未调用 dispose()：\"\n" +
-                "#33 = string \"core::UndisposedResourceException: \"\n" +
-                "#34 = catch-table {  }\n" +
-                "#35 = null type(.generic<$.generic.TMessage>)\n" +
-                "#36 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
-                "#37 = i32 -2\n" +
-                "#38 = string \"MessageQueue: 句柄重复释放\"\n" +
-                "#39 = i32 -3\n" +
-                "#40 = string \"MessageQueue: 不能派生 Owner\"\n" +
-                "#41 = i32 -4\n" +
-                "#42 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
-                "#43 = i32 -5\n" +
-                "#44 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
-                "#45 = i32 -6\n" +
-                "#46 = string \"MessageQueue: 该句柄不能 post\"\n" +
-                "#47 = i32 -7\n" +
-                "#48 = string \"MessageQueue: 该句柄不能 next\"\n" +
-                "#49 = i32 -8\n" +
-                "#50 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
-                "#51 = i32 -9\n" +
-                "#52 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
-                "#53 = i32 -10\n" +
-                "#54 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
-                "#55 = string \"MessageQueue: 非法操作\"\n" +
-                "#56 = catch-table {  }\n" +
-                "#57 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
-                "#58 = catch-table {  }\n" +
-                "#59 = catch-table {  }\n" +
-                "#60 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#23 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#24 = catch-table {  }\n" +
+                "#25 = catch-table {  }\n" +
+                "#26 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#27 = null type(.generic<$.generic.TValue>)\n" +
+                "#28 = catch-table {  }\n" +
+                "#29 = catch-table {  }\n" +
+                "#30 = i32 -1\n" +
+                "#31 = null type(core.coroutine::Executor)\n" +
+                "#32 = string \"目标 Place 不可写\"\n" +
+                "#33 = string \"无法将 \"\n" +
+                "#34 = string \" 转换为 \"\n" +
+                "#35 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#36 = string \"整数除以零\"\n" +
+                "#37 = string \"数组下标越界：\"\n" +
+                "#38 = string \"（长度 \"\n" +
+                "#39 = string \"）\"\n" +
+                "#40 = string \"对象在销毁前从未调用 dispose()：\"\n" +
+                "#41 = string \"core::UndisposedResourceException: \"\n" +
+                "#42 = null type(core.messaging::QueueReaderState<.generic<$.generic.TMessage>>)\n" +
+                "#43 = catch-table {  }\n" +
+                "#44 = null type(core.messaging::QueueState<.generic<$.generic.TMessage>>)\n" +
+                "#45 = i32 -3\n" +
+                "#46 = i32 -4\n" +
+                "#47 = i32 -9\n" +
+                "#48 = i32 -5\n" +
+                "#49 = catch-table {  }\n" +
+                "#50 = i32 -2\n" +
+                "#51 = catch-table {  }\n" +
+                "#52 = i32 -6\n" +
+                "#53 = i32 -8\n" +
+                "#54 = catch-table {  }\n" +
+                "#55 = i32 -7\n" +
+                "#56 = i32 -10\n" +
+                "#57 = null type(.generic<$.generic.TMessage>)\n" +
+                "#58 = null type(core.messaging::QueueLogSegment<.generic<$.generic.TMessage>>)\n" +
+                "#59 = null type(core.coroutine::Mutex.Lock)\n" +
+                "#60 = i32 64\n" +
                 "#61 = catch-table {  }\n" +
-                "#62 = catch-table {  }\n" +
-                "#63 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
-                "#64 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
-                "#65 = catch-table {  }\n" +
-                "#66 = null type(.generic<$.generic.TField>)\n" +
-                "#67 = null type(.any)\n" +
-                "#68 = string \"Parcel 中不存在键：\"\n" +
-                "#69 = i32 999999\n" +
-                "#70 = string \"TimeStamp.nanoseconds 越界：\"\n" +
-                "#71 = string \"（范围 0..999999）\"\n" +
-                "#72 = null type(.generic<$.generic.TReturn>)");
+                "#62 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
+                "#63 = string \"MessageQueue: 句柄重复释放\"\n" +
+                "#64 = string \"MessageQueue: 不能派生 Owner\"\n" +
+                "#65 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
+                "#66 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
+                "#67 = string \"MessageQueue: 该句柄不能 post\"\n" +
+                "#68 = string \"MessageQueue: 该句柄不能 next\"\n" +
+                "#69 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
+                "#70 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
+                "#71 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
+                "#72 = string \"MessageQueue: 非法操作\"\n" +
+                "#73 = catch-table {  }\n" +
+                "#74 = catch-table {  }\n" +
+                "#75 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#76 = catch-table {  }\n" +
+                "#77 = catch-table {  }\n" +
+                "#78 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#79 = catch-table {  }\n" +
+                "#80 = catch-table {  }\n" +
+                "#81 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
+                "#82 = catch-table {  }\n" +
+                "#83 = catch-table {  }\n" +
+                "#84 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
+                "#85 = catch-table {  }\n" +
+                "#86 = catch-table {  }\n" +
+                "#87 = null type(.any)\n" +
+                "#88 = i64 0\n" +
+                "#89 = string \"检测到环引用，需显式启用 loopedRefEnabled\"\n" +
+                "#90 = i64 1\n" +
+                "#91 = string \"无效或重复的序列化节点编号\"\n" +
+                "#92 = string \"序列化引用指向不存在的节点\"\n" +
+                "#93 = string \"无效的序列化引用编号\"\n" +
+                "#94 = null type(.generic<$.generic.TField>)\n" +
+                "#95 = string \"Parcel 中不存在键：\"\n" +
+                "#96 = i32 999999\n" +
+                "#97 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#98 = string \"（范围 0..999999）\"\n" +
+                "#99 = null type(.generic<$.generic.TReturn>)\n" +
+                "#100 = catch-table {  }\n" +
+                "#101 = string \"..ref\"\n" +
+                "#102 = string \"..id\"\n" +
+                "#103 = string \"..data\"");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .i32 a, .i32 n, .bool b, .i32 .t0, .i32 .t1, .i32 .t2, .bool .t3 }\n" +
                 "load res(#0) $.t0\n" +
@@ -426,85 +456,115 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（标量资源）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（标量资源）", module);
-            BilTestHarness.CheckResShape("Resources 全形态", module,
-                
+BilTestHarness.CheckResShape("Resources 全形态", module,
                 "#0 = string \"\\n\"\n" +
-                "#1 = bool false\n" +
-                "#2 = i32 1\n" +
-                "#3 = bool true\n" +
-                "#4 = i32 8\n" +
-                "#5 = i32 0\n" +
-                "#6 = null type(.generic<$.generic.T>)\n" +
-                "#7 = i32 2\n" +
-                "#8 = null type(.generic<$.generic.V>)\n" +
-                "#9 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
-                "#10 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
-                "#11 = i32 3\n" +
-                "#12 = i32 4\n" +
-                "#13 = i32 5\n" +
-                "#14 = null type(core.coroutine::I64Queue)\n" +
-                "#15 = catch-table {  }\n" +
-                "#16 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
-                "#17 = catch-table {  }\n" +
-                "#18 = catch-table {  }\n" +
-                "#19 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
-                "#20 = null type(.generic<$.generic.TValue>)\n" +
-                "#21 = catch-table {  }\n" +
+                "#1 = i32 1\n" +
+                "#2 = i32 0\n" +
+                "#3 = catch-table {  }\n" +
+                "#4 = catch-table {  }\n" +
+                "#5 = catch-table {  }\n" +
+                "#6 = i32 2\n" +
+                "#7 = string \"Map 快照键值长度必须相等\"\n" +
+                "#8 = bool false\n" +
+                "#9 = null type(.generic<$.generic.V>)\n" +
+                "#10 = null type(.generic<$.generic.K>)\n" +
+                "#11 = null type(core::AtomicMapSnapshot<.generic<$.generic.K>, .generic<$.generic.V>>)\n" +
+                "#12 = null type(.generic<$.generic.T>)\n" +
+                "#13 = null type(core::AtomicSnapshot<.generic<$.generic.T>>)\n" +
+                "#14 = bool true\n" +
+                "#15 = i32 8\n" +
+                "#16 = string \"Task 只允许启动一次：对已完成启动的 Task 调用 run\"\n" +
+                "#17 = string \"冷 Task body 无法 spawn-into：无匹配闭包\"\n" +
+                "#18 = i32 3\n" +
+                "#19 = i32 4\n" +
+                "#20 = i32 5\n" +
+                "#21 = null type(core.coroutine::I64Queue)\n" +
                 "#22 = catch-table {  }\n" +
-                "#23 = null type(core.coroutine::Executor)\n" +
-                "#24 = i32 -1\n" +
-                "#25 = string \"无法将 \"\n" +
-                "#26 = string \" 转换为 \"\n" +
-                "#27 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
-                "#28 = string \"整数除以零\"\n" +
-                "#29 = string \"数组下标越界：\"\n" +
-                "#30 = string \"（长度 \"\n" +
-                "#31 = string \"）\"\n" +
-                "#32 = string \"对象在销毁前从未调用 dispose()：\"\n" +
-                "#33 = string \"core::UndisposedResourceException: \"\n" +
-                "#34 = catch-table {  }\n" +
-                "#35 = null type(.generic<$.generic.TMessage>)\n" +
-                "#36 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
-                "#37 = i32 -2\n" +
-                "#38 = string \"MessageQueue: 句柄重复释放\"\n" +
-                "#39 = i32 -3\n" +
-                "#40 = string \"MessageQueue: 不能派生 Owner\"\n" +
-                "#41 = i32 -4\n" +
-                "#42 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
-                "#43 = i32 -5\n" +
-                "#44 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
-                "#45 = i32 -6\n" +
-                "#46 = string \"MessageQueue: 该句柄不能 post\"\n" +
-                "#47 = i32 -7\n" +
-                "#48 = string \"MessageQueue: 该句柄不能 next\"\n" +
-                "#49 = i32 -8\n" +
-                "#50 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
-                "#51 = i32 -9\n" +
-                "#52 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
-                "#53 = i32 -10\n" +
-                "#54 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
-                "#55 = string \"MessageQueue: 非法操作\"\n" +
-                "#56 = catch-table {  }\n" +
-                "#57 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
-                "#58 = catch-table {  }\n" +
-                "#59 = catch-table {  }\n" +
-                "#60 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#23 = string \"Mutex.release：令牌不属于此 Mutex 或已释放\"\n" +
+                "#24 = catch-table {  }\n" +
+                "#25 = catch-table {  }\n" +
+                "#26 = string \"Timer.RepeatOption.Repeat：repeatCount 必须 > 0\"\n" +
+                "#27 = null type(.generic<$.generic.TValue>)\n" +
+                "#28 = catch-table {  }\n" +
+                "#29 = catch-table {  }\n" +
+                "#30 = i32 -1\n" +
+                "#31 = null type(core.coroutine::Executor)\n" +
+                "#32 = string \"目标 Place 不可写\"\n" +
+                "#33 = string \"无法将 \"\n" +
+                "#34 = string \" 转换为 \"\n" +
+                "#35 = string \"new.indirect 目标不可构造：不匹配任何 init：\"\n" +
+                "#36 = string \"整数除以零\"\n" +
+                "#37 = string \"数组下标越界：\"\n" +
+                "#38 = string \"（长度 \"\n" +
+                "#39 = string \"）\"\n" +
+                "#40 = string \"对象在销毁前从未调用 dispose()：\"\n" +
+                "#41 = string \"core::UndisposedResourceException: \"\n" +
+                "#42 = null type(core.messaging::QueueReaderState<.generic<$.generic.TMessage>>)\n" +
+                "#43 = catch-table {  }\n" +
+                "#44 = null type(core.messaging::QueueState<.generic<$.generic.TMessage>>)\n" +
+                "#45 = i32 -3\n" +
+                "#46 = i32 -4\n" +
+                "#47 = i32 -9\n" +
+                "#48 = i32 -5\n" +
+                "#49 = catch-table {  }\n" +
+                "#50 = i32 -2\n" +
+                "#51 = catch-table {  }\n" +
+                "#52 = i32 -6\n" +
+                "#53 = i32 -8\n" +
+                "#54 = catch-table {  }\n" +
+                "#55 = i32 -7\n" +
+                "#56 = i32 -10\n" +
+                "#57 = null type(.generic<$.generic.TMessage>)\n" +
+                "#58 = null type(core.messaging::QueueLogSegment<.generic<$.generic.TMessage>>)\n" +
+                "#59 = null type(core.coroutine::Mutex.Lock)\n" +
+                "#60 = i32 64\n" +
                 "#61 = catch-table {  }\n" +
-                "#62 = catch-table {  }\n" +
-                "#63 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
-                "#64 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
-                "#65 = catch-table {  }\n" +
-                "#66 = null type(.generic<$.generic.TField>)\n" +
-                "#67 = null type(.any)\n" +
-                "#68 = string \"Parcel 中不存在键：\"\n" +
-                "#69 = i32 999999\n" +
-                "#70 = string \"TimeStamp.nanoseconds 越界：\"\n" +
-                "#71 = string \"（范围 0..999999）\"\n" +
-                "#72 = f64 0.5\n" +
-                "#73 = f32 0.1\n" +
-                "#74 = char 'A'\n" +
-                "#75 = null type(.string)\n" +
-                "#76 = null type(.generic<$.generic.TReturn>)");
+                "#62 = string \"MessageQueue: 句柄已释放或不存在\"\n" +
+                "#63 = string \"MessageQueue: 句柄重复释放\"\n" +
+                "#64 = string \"MessageQueue: 不能派生 Owner\"\n" +
+                "#65 = string \"MessageQueue: 不能从该句柄派生 Sender\"\n" +
+                "#66 = string \"MessageQueue: 不能从该句柄派生 Reader\"\n" +
+                "#67 = string \"MessageQueue: 该句柄不能 post\"\n" +
+                "#68 = string \"MessageQueue: 该句柄不能 next\"\n" +
+                "#69 = string \"MessageQueue: 队列已 sealed，不能 post\"\n" +
+                "#70 = string \"MessageQueue: 队列已 sealed，不能派生 Sender\"\n" +
+                "#71 = string \"MessageQueue: 同一 Reader 同时只能有一个 outstanding next\"\n" +
+                "#72 = string \"MessageQueue: 非法操作\"\n" +
+                "#73 = catch-table {  }\n" +
+                "#74 = catch-table {  }\n" +
+                "#75 = string \"Receiver.addListener：Receiver 已 dispose\"\n" +
+                "#76 = catch-table {  }\n" +
+                "#77 = catch-table {  }\n" +
+                "#78 = string \"Receiver.setExecutor：listener 未注册\"\n" +
+                "#79 = catch-table {  }\n" +
+                "#80 = catch-table {  }\n" +
+                "#81 = catch-table { type(core::IllegalStateException) -> blk(try0-catch0) }\n" +
+                "#82 = catch-table {  }\n" +
+                "#83 = catch-table {  }\n" +
+                "#84 = null type(core.messaging::Receiver<.generic<$.generic.TMessage>>)\n" +
+                "#85 = catch-table {  }\n" +
+                "#86 = catch-table {  }\n" +
+                "#87 = null type(.any)\n" +
+                "#88 = i64 0\n" +
+                "#89 = string \"检测到环引用，需显式启用 loopedRefEnabled\"\n" +
+                "#90 = i64 1\n" +
+                "#91 = string \"无效或重复的序列化节点编号\"\n" +
+                "#92 = string \"序列化引用指向不存在的节点\"\n" +
+                "#93 = string \"无效的序列化引用编号\"\n" +
+                "#94 = null type(.generic<$.generic.TField>)\n" +
+                "#95 = string \"Parcel 中不存在键：\"\n" +
+                "#96 = i32 999999\n" +
+                "#97 = string \"TimeStamp.nanoseconds 越界：\"\n" +
+                "#98 = string \"（范围 0..999999）\"\n" +
+                "#99 = f64 0.5\n" +
+                "#100 = f32 0.1\n" +
+                "#101 = char 'A'\n" +
+                "#102 = null type(.string)\n" +
+                "#103 = null type(.generic<$.generic.TReturn>)\n" +
+                "#104 = catch-table {  }\n" +
+                "#105 = string \"..ref\"\n" +
+                "#106 = string \"..id\"\n" +
+                "#107 = string \"..data\"");
             BilTestHarness.CheckFnShape("main 指令与 .vars", module, "$main()@.i32",
                 ".vars { .bool b, .f64 d, .f32 f, .char c, .nullable<.string> s, " +
                 ".bool .t0, .f64 .t1, .f32 .t2, .char .t3, .nullable<.string> .t4, .i32 .t5 }\n" +

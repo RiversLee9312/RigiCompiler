@@ -250,6 +250,9 @@ namespace RigiCompiler
                 case BoundTypeOfExpression typeOf:
                     if (typeOf.Operand != null) WalkExpression(typeOf.Operand, env);
                     break;
+                case BoundPlaceOfExpression placeOf:
+                    WalkExpression(placeOf.Operand, env);
+                    break;
                 case BoundVarArgsArgument varArgs:
                     foreach (var value in varArgs.Values) WalkExpression(value, env);
                     foreach (var (_, value) in varArgs.NamedValues) WalkExpression(value, env);

@@ -15,7 +15,8 @@ namespace RigiCompiler
         public static List<LoweredExpression>? LowerArguments(
             IReadOnlyList<BoundExpression> arguments, IReadOnlyList<ParameterSymbol>? parameters,
             LowerContext ctx, LowerEnvironment env, EvalOrderGuard? guard = null,
-            TypeSymbol? parameterConstructedHost = null)
+            TypeSymbol? parameterConstructedHost = null, MethodSymbol? parameterMethod = null,
+            IReadOnlyList<SemanticSymbol>? methodTypeArguments = null)
         {
             var own = guard == null;
             guard ??= new EvalOrderGuard(ctx);
@@ -36,6 +37,13 @@ namespace RigiCompiler
                 // 否则转换目标在当前帧是悬空 .generic 引用（声明类型的泛型
                 // 参数名与调用帧不同名时 native 运行期必崩，VM 按名碰巧解析）
                 var declaredParamType = parameters?[i].Type;
+                // 合成调用可保留声明方法；按符号身份代入方法实参，避免
+                // Nullable<T> 中的方法 T 被调用者同名宿主 T 捕获。
+                if (declaredParamType != null && parameterMethod != null
+                    && methodTypeArguments?.Count == parameterMethod.GenericParameters.Count
+                    && methodTypeArguments.Count > 0)
+                    declaredParamType = SymbolLookup.SubstituteType(declaredParamType,
+                        parameterMethod.GenericParameters, methodTypeArguments, env.Unit.Symbols);
                 if (parameterConstructedHost is { ConstructedFrom: not null }
                     && declaredParamType != null)
                 {

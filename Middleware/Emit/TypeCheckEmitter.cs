@@ -88,7 +88,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException("type.check 缺目标类型");
             }
-            return session.TypeSheetFor(inst.TargetTypeRef);
+            return NewEmitter.MaterializeClassSheet(session, builder, slots, inst.TargetTypeRef);
         }
 
         private static string FaceNameOf(MirTypeCheck inst)

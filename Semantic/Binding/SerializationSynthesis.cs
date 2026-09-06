@@ -90,13 +90,13 @@ namespace RigiCompiler
             TypeSymbol parcel, ASTNode syntax, out TypeSymbol iface, out TypeSymbol token)
         {
             iface = ns.Types.FirstOrDefault(t => t.Name == BilSpellings.SerializableIfaceName)
-                ?? CreateIface(ns, parcel);
+                ?? CreateIface(env, ns, parcel);
             token = ns.Types.FirstOrDefault(t => t.Name == BilSpellings.SerializableTokenName)
                 ?? CreateToken(env, ns, syntax);
             return true;
         }
 
-        private static TypeSymbol CreateIface(NamespaceSymbol ns, TypeSymbol parcel)
+        private static TypeSymbol CreateIface(BindEnvironment env, NamespaceSymbol ns, TypeSymbol parcel)
         {
             var iface = new TypeSymbol(BilSpellings.SerializableIfaceName, TypeKind.Interface,
                 ns: ns)
@@ -121,8 +121,22 @@ namespace RigiCompiler
                 IsSynthetic = true,
             };
             fromParcel.Parameters.Add(new ParameterSymbol("parcel", parcel));
+            var flag = ns.Methods.First(m => m.Name == "deepCopy").Parameters[1];
+            toParcel.Parameters.Add(flag);
+            fromParcel.Parameters.Add(flag);
             iface.Methods.Add(toParcel);
             iface.Methods.Add(fromParcel);
+            var runtime = ns.Types.First(t => t.Name == "SerializationGraphContext");
+            foreach (var name in new[] { BilSpellings.EncodeGraphMethodName, BilSpellings.DecodeGraphMethodName })
+            {
+                var method = new MethodSymbol(name, MethodKind.Regular, owner: iface,
+                    returnType: name == BilSpellings.EncodeGraphMethodName ? parcel : env.B.Any)
+                { Accessibility = Accessibility.Public, IsAbstract = true, IsSynthetic = true };
+                if (name == BilSpellings.DecodeGraphMethodName)
+                    method.Parameters.Add(new ParameterSymbol("parcel", parcel));
+                method.Parameters.Add(new ParameterSymbol("context", runtime));
+                iface.Methods.Add(method);
+            }
             ns.Types.Add(iface);
             return iface;
         }
@@ -205,6 +219,16 @@ namespace RigiCompiler
         private static void EnsureHostMethods(TypeSymbol type, TypeSymbol iface, TypeSymbol token,
             TypeSymbol parcel, ASTNode syntax)
         {
+            // 所有公开与私有递归槽从统一接口签名复制，避免泛型动态派发形状漂移。
+            foreach (var slot in iface.Methods)
+            {
+                if (type.Methods.Any(m => m.Name == slot.Name)) continue;
+                var implementation = new MethodSymbol(slot.Name, MethodKind.Regular,
+                    owner: type, returnType: slot.ReturnType)
+                { Accessibility = Accessibility.Public, HasBody = true, IsSynthetic = true, IsOverride = true };
+                implementation.Parameters.AddRange(slot.Parameters);
+                type.Methods.Add(implementation);
+            }
             if (!type.Interfaces.Contains(iface))
             {
                 type.Interfaces.Add(iface);
@@ -263,6 +287,7 @@ namespace RigiCompiler
             FillInitSerializable(ctx);
             FillToParcel(ctx);
             FillFromParcel(ctx);
+            FillPublicToParcel(ctx);
         }
 
         private static void FillInitSerializable(SynthContext ctx)
@@ -276,7 +301,8 @@ namespace RigiCompiler
 
         private static void FillToParcel(SynthContext ctx)
         {
-            var method = ctx.Host.Methods.First(m => m.Name == BilSpellings.ToParcelMethodName);
+            var method = ctx.Host.Methods.First(m => m.Name == BilSpellings.EncodeGraphMethodName);
+            ctx.Runtime = new BoundValueReferenceExpression(ctx.Syntax, method.Parameters[0], ctx.RuntimeType);
             var locals = new List<LocalSymbol>();
             var statements = new List<BoundStatement>();
             var parcelLocal = new LocalSymbol("p", ctx.Parcel, isConst: false);
@@ -308,7 +334,8 @@ namespace RigiCompiler
 
         private static void FillFromParcel(SynthContext ctx)
         {
-            var method = ctx.Host.Methods.First(m => m.Name == BilSpellings.FromParcelMethodName);
+            var method = ctx.Host.Methods.First(m => m.Name == BilSpellings.DecodeGraphMethodName);
+            ctx.Runtime = new BoundValueReferenceExpression(ctx.Syntax, method.Parameters[1], ctx.RuntimeType);
             var locals = new List<LocalSymbol>();
             var statements = new List<BoundStatement>();
             var parcelParam = method.Parameters[0];
@@ -330,6 +357,9 @@ namespace RigiCompiler
                         new BoundThisExpression(ctx.Syntax, selfType), field, fieldType!),
                     decoded));
             }
+            // 值类型 this 是独立副本，返回填充后的值；类返回同一个已登记壳。
+            statements.Add(new BoundReturnStatement(ctx.Syntax,
+                Cast(ctx, new BoundThisExpression(ctx.Syntax, selfType), ctx.Env.B.Any)));
             ctx.Env.SyntheticCellBodies.Add(new BoundFunctionBody(method, locals,
                 new BoundBlock(ctx.Syntax, statements)));
         }
@@ -341,37 +371,17 @@ namespace RigiCompiler
                 && m.GenericParameters.Count == 1);
             if (method == null) return;
             if (env.SyntheticCellBodies.Any(b => ReferenceEquals(b.Method, method))) return;
-            var tParam = method.GenericParameters[0];
-            var parcelParam = method.Parameters[0];
-            var locals = new List<LocalSymbol>();
-            var tokenLocal = new LocalSymbol("tok", token, isConst: false);
-            var instLocal = new LocalSymbol("inst", tParam, isConst: false);
-            locals.Add(tokenLocal);
-            locals.Add(instLocal);
-            var tokenInit = token.Methods.First(m => m.Kind == MethodKind.Init);
-            var fromParcel = iface.Methods.First(m => m.Name == BilSpellings.FromParcelMethodName);
-            var statements = new List<BoundStatement>
-            {
-                new BoundLocalDeclarationStatement(syntax, tokenLocal,
-                    new BoundNewExpression(syntax, token, tokenInit,
-                        Array.Empty<BoundExpression>())),
-                new BoundLocalDeclarationStatement(syntax, instLocal,
-                    new BoundDynamicNewExpression(syntax, null, tParam,
-                        new List<BoundExpression>
-                        {
-                            new BoundValueReferenceExpression(syntax, tokenLocal, token),
-                        }, tParam)),
-                new BoundCallStatement(syntax, fromParcel,
-                    new List<BoundExpression>
-                    {
-                        new BoundValueReferenceExpression(syntax, parcelParam, parcel),
-                    },
-                    new BoundValueReferenceExpression(syntax, instLocal, tParam)),
-                new BoundReturnStatement(syntax,
-                    new BoundValueReferenceExpression(syntax, instLocal, tParam)),
-            };
-            env.SyntheticCellBodies.Add(new BoundFunctionBody(method, locals,
-                new BoundBlock(syntax, statements)));
+            var ctx = PublicContext(env, syntax, iface, parcel, token);
+            var graphLocals = new List<LocalSymbol>();
+            var graphStatements = new List<BoundStatement>();
+            StartRuntime(ctx, method.Parameters[1], graphLocals, graphStatements);
+            var work = new List<BoundStatement>();
+            var result = DecodeValue(ctx,
+                new BoundValueReferenceExpression(syntax, method.Parameters[0], parcel),
+                method.GenericParameters[0], graphLocals, work);
+            work.Add(new BoundReturnStatement(syntax, result));
+            FinishRuntime(ctx, graphStatements, work);
+            env.SyntheticCellBodies.Add(new BoundFunctionBody(method, graphLocals, new BoundBlock(syntax, graphStatements)));
         }
 
         private static void FillDeepCopyFunction(BindEnvironment env, NamespaceSymbol ns,
@@ -394,12 +404,13 @@ namespace RigiCompiler
                 new BoundLocalDeclarationStatement(syntax, pLocal,
                     new BoundInstanceCallExpression(syntax,
                         new BoundValueReferenceExpression(syntax, valueParam, tParam),
-                        toParcel, Array.Empty<BoundExpression>(), parcel)),
+                        toParcel, new BoundExpression[] { new BoundValueReferenceExpression(syntax, method.Parameters[1], env.B.Bool) }, parcel)),
                 new BoundReturnStatement(syntax,
                     new BoundCallExpression(syntax, fromParcel,
                         new List<BoundExpression>
                         {
                             new BoundValueReferenceExpression(syntax, pLocal, parcel),
+                            new BoundValueReferenceExpression(syntax, method.Parameters[1], env.B.Bool),
                         }, tParam, new SemanticSymbol[] { tParam })),
             };
             env.SyntheticCellBodies.Add(new BoundFunctionBody(method, locals,
@@ -430,6 +441,80 @@ namespace RigiCompiler
 
         private enum FieldKind { Scalar, Object, Array, List, Map, Parcel }
 
+        private static SynthContext PublicContext(BindEnvironment env, ASTNode syntax,
+            TypeSymbol host, TypeSymbol parcel, TypeSymbol token) => new(env, syntax, host,
+                SerializationFacts.FindWrapper(env.Unit.Symbols, "Serializable")!,
+                SerializationFacts.FindWrapper(env.Unit.Symbols, "SerializationBase"),
+                SerializationFacts.FindWrapper(env.Unit.Symbols, "Temporary"), parcel, host, token);
+
+        private static BoundExpression RuntimeCall(SynthContext ctx, string name,
+            params BoundExpression[] args)
+        {
+            var method = ctx.RuntimeType.Methods.First(m => m.Name == name);
+            return new BoundInstanceCallExpression(ctx.Syntax, ctx.Runtime, method, args, method.ReturnType!);
+        }
+
+        private static BoundStatement RuntimeStatement(SynthContext ctx, string name,
+            params BoundExpression[] args) => new BoundCallStatement(ctx.Syntax,
+                ctx.RuntimeType.Methods.First(m => m.Name == name), args, ctx.Runtime);
+
+        private static BoundExpression Enabled(SynthContext ctx) => new BoundFieldAccessExpression(
+            ctx.Syntax, ctx.Runtime, ctx.RuntimeType.Fields.First(f => f.Name == "enabled"), ctx.Env.B.Bool);
+
+        private static void StartRuntime(SynthContext ctx, ParameterSymbol flag,
+            List<LocalSymbol> locals, List<BoundStatement> statements)
+        {
+            var local = NewLocal(ctx, locals, "graph", ctx.RuntimeType);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, local,
+                new BoundNewExpression(ctx.Syntax, ctx.RuntimeType,
+                    ctx.RuntimeType.Methods.First(m => m.Kind == MethodKind.Init),
+                    new BoundExpression[] { new BoundValueReferenceExpression(ctx.Syntax, flag, ctx.Env.B.Bool) })));
+            ctx.Runtime = new BoundValueReferenceExpression(ctx.Syntax, local, ctx.RuntimeType);
+        }
+
+        private static void FinishRuntime(SynthContext ctx, List<BoundStatement> statements,
+            List<BoundStatement> work) => statements.Add(new BoundTryStatement(ctx.Syntax,
+                new BoundBlock(ctx.Syntax, work), Array.Empty<BoundCatchClause>(),
+                new BoundBlock(ctx.Syntax, new[] { RuntimeStatement(ctx, "dispose") }), null));
+
+        private static void FillPublicToParcel(SynthContext ctx)
+        {
+            var method = ctx.Host.Methods.First(m => m.Name == BilSpellings.ToParcelMethodName);
+            var locals = new List<LocalSymbol>();
+            var statements = new List<BoundStatement>();
+            StartRuntime(ctx, method.Parameters[0], locals, statements);
+            var work = new List<BoundStatement>();
+            var self = SymbolLookup.AsSelfConstructed(ctx.Host, ctx.Env.Unit.Symbols)!;
+            var result = EncodeValue(ctx, new BoundThisExpression(ctx.Syntax, self), self, locals, work);
+            work.Add(new BoundReturnStatement(ctx.Syntax, Cast(ctx, result, ctx.Parcel)));
+            FinishRuntime(ctx, statements, work);
+            ctx.Env.SyntheticCellBodies.Add(new BoundFunctionBody(method, locals, new BoundBlock(ctx.Syntax, statements)));
+
+            // 宿主的反序列化入口仍保留；公开泛型函数负责返回新壳。
+            method = ctx.Host.Methods.First(m => m.Name == BilSpellings.FromParcelMethodName);
+            locals = new List<LocalSymbol>();
+            statements = new List<BoundStatement>();
+            StartRuntime(ctx, method.Parameters[1], locals, statements);
+            work = new List<BoundStatement>();
+            var parcel = new BoundValueReferenceExpression(ctx.Syntax, method.Parameters[0], ctx.Parcel);
+            var body = ctx.Host.Methods.First(m => m.Name == BilSpellings.DecodeGraphMethodName);
+            var payload = NewLocal(ctx, locals, "payload", ctx.Parcel);
+            work.Add(new BoundLocalDeclarationStatement(ctx.Syntax, payload, parcel));
+            if (ctx.Host.Kind == TypeKind.Class)
+            {
+                var graph = new List<BoundStatement> {
+                    RuntimeStatement(ctx, "remember", Get(ctx, parcel, BilSpellings.GraphIdKey, ctx.Env.B.Int64),
+                        Cast(ctx, new BoundThisExpression(ctx.Syntax, self), ctx.Env.B.Object)),
+                    new BoundAssignmentStatement(ctx.Syntax, Ref(ctx, payload),
+                        Cast(ctx, Get(ctx, parcel, BilSpellings.GraphPayloadKey, ctx.Env.B.Any), ctx.Parcel)) };
+                work.Add(new BoundIfStatement(ctx.Syntax, Enabled(ctx), new BoundBlock(ctx.Syntax, graph), null));
+            }
+            Save(ctx, new BoundInstanceCallExpression(ctx.Syntax, new BoundThisExpression(ctx.Syntax, self), body,
+                new BoundExpression[] { Ref(ctx, payload), ctx.Runtime }, ctx.Env.B.Any), locals, work, "filled");
+            FinishRuntime(ctx, statements, work);
+            ctx.Env.SyntheticCellBodies.Add(new BoundFunctionBody(method, locals, new BoundBlock(ctx.Syntax, statements)));
+        }
+
         private static FieldKind Classify(SynthContext ctx, SemanticSymbol type)
         {
             var symbols = ctx.Env.Unit.Symbols;
@@ -449,15 +534,52 @@ namespace RigiCompiler
 
         private static SemanticSymbol StoredType(SynthContext ctx, SemanticSymbol fieldType)
         {
-            return Classify(ctx, fieldType) switch
-            {
-                FieldKind.Object or FieldKind.Map or FieldKind.Parcel => ctx.Parcel,
-                FieldKind.Array or FieldKind.List => ctx.ArrayAny,
-                _ => fieldType,
-            };
+            // 编译器已在字段闭包验证可序列性；槽中的实际值仍保持旧树编码。
+            // Any 仅用于容纳运行时 flag 选择的旧值或图 envelope。
+            return ctx.Env.B.Any;
         }
 
         private static BoundExpression EncodeValue(SynthContext ctx, BoundExpression value,
+            SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
+        {
+            if (NullableElement(ctx, type) is { } inner)
+                return NullableValue(ctx, value, type, inner, locals, statements, encode: true);
+            if (Classify(ctx, type) is FieldKind.Scalar or FieldKind.Parcel) return value;
+            if (type is TypeSymbol { Kind: TypeKind.Struct or TypeKind.EnumStruct })
+                return EncodeBody(ctx, value, type, locals, statements);
+            var source = Save(ctx, value, locals, statements, "source");
+            var id = Save(ctx, RuntimeCall(ctx, "enter", Cast(ctx, source, ctx.Env.B.Any)), locals, statements, "id");
+            var result = NewLocal(ctx, locals, "encoded", ctx.Env.B.Any);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, result, null));
+            var resultRef = Ref(ctx, result);
+            var full = new List<BoundStatement>();
+            var payload = EncodeBody(ctx, source, type, locals, full);
+            var payloadRef = Save(ctx, Cast(ctx, payload, ctx.Env.B.Any), locals, full, "payload");
+            full.Add(new BoundAssignmentStatement(ctx.Syntax, resultRef, payloadRef));
+            var graph = new List<BoundStatement>();
+            var node = NewRecord(ctx, type, locals, graph,
+                Classify(ctx, type) == FieldKind.Object
+                    ? new BoundFieldAccessExpression(ctx.Syntax, Cast(ctx, payloadRef, ctx.Parcel),
+                        ctx.Parcel.Fields.First(field => field.Name == "typeName"), ctx.Env.B.String)
+                    : null);
+            graph.Add(Set(ctx, node, BilSpellings.GraphIdKey,
+                new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Sub, IntLiteral(ctx, 0, IntType.I64, ctx.Env.B.Int64), id, ctx.Env.B.Int64), ctx.Env.B.Int64));
+            graph.Add(Set(ctx, node, BilSpellings.GraphReferenceKey, IntLiteral(ctx, 0, IntType.I64, ctx.Env.B.Int64), ctx.Env.B.Int64));
+            graph.Add(Set(ctx, node, BilSpellings.GraphPayloadKey, payloadRef, ctx.Env.B.Any));
+            graph.Add(new BoundAssignmentStatement(ctx.Syntax, resultRef, Cast(ctx, node, ctx.Env.B.Any)));
+            full.Add(new BoundIfStatement(ctx.Syntax, RuntimeCall(ctx, "isNewNode", id), new BoundBlock(ctx.Syntax, graph), null));
+            full.Add(RuntimeStatement(ctx, "leave", id));
+            var repeated = new List<BoundStatement>();
+            var reference = NewRecord(ctx, type, locals, repeated);
+            repeated.Add(Set(ctx, reference, BilSpellings.GraphReferenceKey, id, ctx.Env.B.Int64));
+            repeated.Add(new BoundAssignmentStatement(ctx.Syntax, resultRef, Cast(ctx, reference, ctx.Env.B.Any)));
+            statements.Add(new BoundIfStatement(ctx.Syntax,
+                new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.CmpGt, id, IntLiteral(ctx, 0, IntType.I64, ctx.Env.B.Int64), ctx.Env.B.Bool),
+                new BoundBlock(ctx.Syntax, repeated), new BoundBlock(ctx.Syntax, full)));
+            return resultRef;
+        }
+
+        private static BoundExpression EncodeBody(SynthContext ctx, BoundExpression value,
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
             return Classify(ctx, type) switch
@@ -474,10 +596,10 @@ namespace RigiCompiler
         private static BoundExpression EncodeObject(SynthContext ctx, BoundExpression value,
             SemanticSymbol type)
         {
-            var method = FindToParcelMethod(type, ctx.Env)
+            var method = FindSynthMethod(type, ctx.Env, BilSpellings.EncodeGraphMethodName)
                 ?? throw new CompilerInternalException("缺少 ..toParcel");
             return new BoundInstanceCallExpression(ctx.Syntax, value, method,
-                Array.Empty<BoundExpression>(), ctx.Parcel);
+                new[] { ctx.Runtime }, ctx.Parcel);
         }
 
         private static BoundExpression EncodeArray(SynthContext ctx, BoundExpression value,
@@ -579,6 +701,24 @@ namespace RigiCompiler
         private static BoundExpression EncodeMap(SynthContext ctx, BoundExpression value,
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
+            SerializationFacts.IsMap(type, ctx.Env.Unit.Symbols, out var key, out _);
+            if (!SerializationFacts.IsString(key, ctx.Env.Unit.Symbols))
+                return MapEntries(ctx, value, type, locals, statements, encode: true);
+            var result = NewLocal(ctx, locals, "mapwire", ctx.Env.B.Any);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, result, null));
+            var graph = new List<BoundStatement>();
+            var encoded = MapEntries(ctx, value, type, locals, graph, encode: true);
+            graph.Add(new BoundAssignmentStatement(ctx.Syntax, Ref(ctx, result), Cast(ctx, encoded, ctx.Env.B.Any)));
+            var tree = new List<BoundStatement>();
+            encoded = EncodeTreeMap(ctx, value, type, locals, tree);
+            tree.Add(new BoundAssignmentStatement(ctx.Syntax, Ref(ctx, result), Cast(ctx, encoded, ctx.Env.B.Any)));
+            statements.Add(new BoundIfStatement(ctx.Syntax, Enabled(ctx), new BoundBlock(ctx.Syntax, graph), new BoundBlock(ctx.Syntax, tree)));
+            return Ref(ctx, result);
+        }
+
+        private static BoundExpression EncodeTreeMap(SynthContext ctx, BoundExpression value,
+            SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
+        {
             SerializationFacts.IsMap(type, ctx.Env.Unit.Symbols, out _, out var valType);
             var mapLocal = NewLocal(ctx, locals, "mp", value.Type);
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, mapLocal, value));
@@ -630,6 +770,50 @@ namespace RigiCompiler
         private static BoundExpression DecodeValue(SynthContext ctx, BoundExpression stored,
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
+            if (NullableElement(ctx, type) is { } inner)
+                return NullableValue(ctx, stored, type, inner, locals, statements, encode: false);
+            // getElement<Any> 返回 Nullable<Any>；先剥离槽外层再按字段类型
+            // 转换，避免将 Nullable<Any> 的包装本身当作标量值解码。
+            stored = Cast(ctx, stored, ctx.Env.B.Any);
+            if (Classify(ctx, type) is FieldKind.Scalar or FieldKind.Parcel) return Cast(ctx, stored, type);
+            if (type is TypeSymbol { Kind: TypeKind.Struct or TypeKind.EnumStruct })
+                return DecodeBody(ctx, stored, type, locals, statements);
+            var source = Save(ctx, stored, locals, statements, "wire");
+            var result = NewLocal(ctx, locals, "decoded", type);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, result, null));
+            var resultRef = Ref(ctx, result);
+            var graph = new List<BoundStatement>();
+            var record = Save(ctx, Cast(ctx, source, ctx.Parcel), locals, graph, "record");
+            var reference = Save(ctx, RuntimeCall(ctx, "referenceId",
+                Get(ctx, record, BilSpellings.GraphReferenceKey, ctx.Env.B.Int64)), locals, graph, "refid");
+            var reused = new BoundBlock(ctx.Syntax, new BoundStatement[] {
+                new BoundAssignmentStatement(ctx.Syntax, resultRef, Cast(ctx, RuntimeCall(ctx, "resolve", reference), type)) });
+            var full = new List<BoundStatement>();
+            var id = Save(ctx, Get(ctx, record, BilSpellings.GraphIdKey, ctx.Env.B.Int64), locals, full, "nodeid");
+            var oldId = ctx.PendingId;
+            ctx.PendingId = id;
+            var payload = Get(ctx, record, BilSpellings.GraphPayloadKey, ctx.Env.B.Any);
+            var decoded = DecodeBody(ctx, payload, type, locals, full);
+            ctx.PendingId = oldId;
+            full.Add(new BoundAssignmentStatement(ctx.Syntax, resultRef, decoded));
+            graph.Add(new BoundIfStatement(ctx.Syntax,
+                new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.CmpGt, reference, IntLiteral(ctx, 0, IntType.I64, ctx.Env.B.Int64), ctx.Env.B.Bool),
+                reused, new BoundBlock(ctx.Syntax, full)));
+            var tree = new List<BoundStatement>();
+            ctx.PendingId = null;
+            decoded = DecodeBody(ctx, source, type, locals, tree);
+            ctx.PendingId = oldId;
+            tree.Add(new BoundAssignmentStatement(ctx.Syntax, resultRef, decoded));
+            var graphMode = type is GenericParameterSymbol
+                ? RuntimeCall(ctx, "isGraphParcel", Cast(ctx, source, ctx.Parcel),
+                    BindingDriver.MakeStringLiteral(ctx.Env, BilSpellings.GraphReferenceKey)) : Enabled(ctx);
+            statements.Add(new BoundIfStatement(ctx.Syntax, graphMode, new BoundBlock(ctx.Syntax, graph), new BoundBlock(ctx.Syntax, tree)));
+            return resultRef;
+        }
+
+        private static BoundExpression DecodeBody(SynthContext ctx, BoundExpression stored,
+            SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
+        {
             return Classify(ctx, type) switch
             {
                 FieldKind.Array => DecodeArray(ctx, stored, type, locals, statements),
@@ -648,11 +832,12 @@ namespace RigiCompiler
             var inst = ConstructSerializable(ctx, type);
             var instLocal = NewLocal(ctx, locals, "ob", type);
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, instLocal, inst));
-            var fromParcel = FindSynthMethod(type, ctx.Env, BilSpellings.FromParcelMethodName)
+            Remember(ctx, Ref(ctx, instLocal), statements);
+            var fromParcel = FindSynthMethod(type, ctx.Env, BilSpellings.DecodeGraphMethodName)
                 ?? throw new CompilerInternalException("缺少 ..fromParcel");
-            statements.Add(new BoundCallStatement(ctx.Syntax, fromParcel,
-                new List<BoundExpression> { parcelVal },
-                new BoundValueReferenceExpression(ctx.Syntax, instLocal, type)));
+            statements.Add(new BoundAssignmentStatement(ctx.Syntax, Ref(ctx, instLocal),
+                Cast(ctx, new BoundInstanceCallExpression(ctx.Syntax, Ref(ctx, instLocal), fromParcel,
+                    new List<BoundExpression> { parcelVal, ctx.Runtime }, ctx.Env.B.Any), type)));
             return new BoundValueReferenceExpression(ctx.Syntax, instLocal, type);
         }
 
@@ -684,10 +869,8 @@ namespace RigiCompiler
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
             SerializationFacts.IsList(type, ctx.Env.Unit.Symbols, out var elem);
-            var boxed = Cast(ctx, stored, ctx.ArrayAny);
-            var arr = RestoreArray(ctx, boxed, elem!,
-                ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.ArrayDefinition, elem!),
-                locals, statements);
+            // List 必须在解码任何元素之前登记，不能先恢复临时 Array。
+            var arr = Cast(ctx, stored, ctx.ArrayAny);
             var listType = (TypeSymbol)type;
             var listDef = listType.ConstructedFrom ?? listType;
             var listInit = listDef.Methods.First(m =>
@@ -696,6 +879,7 @@ namespace RigiCompiler
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, listLocal,
                 new BoundNewExpression(ctx.Syntax, listType, listInit,
                     Array.Empty<BoundExpression>())));
+            Remember(ctx, Ref(ctx, listLocal), statements);
             var arrLocal = NewLocal(ctx, locals, "la", arr.Type);
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, arrLocal, arr));
             var nLocal = NewLocal(ctx, locals, "ln", ctx.Env.B.Int32);
@@ -715,20 +899,18 @@ namespace RigiCompiler
                 new BoundValueReferenceExpression(ctx.Syntax, arrLocal, arr.Type),
                 new BoundValueReferenceExpression(ctx.Syntax, iLocal, ctx.Env.B.Int32),
                 ctx.ArrayGetAt,
-                ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, elem!));
-            var elemVal = Cast(ctx, raw, elem!);
-            var body = new List<BoundStatement>
-            {
-                new BoundCallStatement(ctx.Syntax, ctx.ListAdd,
+                ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, ctx.Env.B.Any));
+            var body = new List<BoundStatement>();
+            var elemVal = DecodeValue(ctx, raw, elem!, locals, body);
+            body.Add(new BoundCallStatement(ctx.Syntax, ctx.ListAdd,
                     new List<BoundExpression> { elemVal },
-                    new BoundValueReferenceExpression(ctx.Syntax, listLocal, listType)),
-                new BoundAssignmentStatement(ctx.Syntax,
+                    new BoundValueReferenceExpression(ctx.Syntax, listLocal, listType)));
+            body.Add(new BoundAssignmentStatement(ctx.Syntax,
                     new BoundValueReferenceExpression(ctx.Syntax, iLocal, ctx.Env.B.Int32),
                     new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Add,
                         new BoundValueReferenceExpression(ctx.Syntax, iLocal, ctx.Env.B.Int32),
                         IntLiteral(ctx, 1, IntType.I32, ctx.Env.B.Int32),
-                        ctx.Env.B.Int32)),
-            };
+                        ctx.Env.B.Int32)));
             loop.Body = new BoundBlock(ctx.Syntax, body);
             statements.Add(loop);
             return new BoundValueReferenceExpression(ctx.Syntax, listLocal, listType);
@@ -754,6 +936,7 @@ namespace RigiCompiler
                     {
                         new BoundValueReferenceExpression(ctx.Syntax, nLocal, ctx.Env.B.Int32),
                     }, destType, new[] { elemType })));
+            Remember(ctx, Ref(ctx, destLocal), statements);
             var iLocal = NewLocal(ctx, locals, "bi", ctx.Env.B.Int32);
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, iLocal,
                 IntLiteral(ctx, 0, IntType.I32, ctx.Env.B.Int32)));
@@ -790,18 +973,19 @@ namespace RigiCompiler
         private static BoundExpression DecodeBoxedAny(SynthContext ctx, BoundExpression anyVal,
             SemanticSymbol elemType, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
-            var kind = Classify(ctx, elemType);
-            BoundExpression stored = kind switch
-            {
-                FieldKind.Object or FieldKind.Map or FieldKind.Parcel =>
-                    Cast(ctx, anyVal, ctx.Parcel),
-                FieldKind.Array or FieldKind.List => Cast(ctx, anyVal, ctx.ArrayAny),
-                _ => Cast(ctx, anyVal, elemType),
-            };
-            return DecodeValue(ctx, stored, elemType, locals, statements);
+            return DecodeValue(ctx, anyVal, elemType, locals, statements);
         }
 
         private static BoundExpression DecodeMap(SynthContext ctx, BoundExpression stored,
+            SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
+        {
+            SerializationFacts.IsMap(type, ctx.Env.Unit.Symbols, out var key, out _);
+            if (!SerializationFacts.IsString(key, ctx.Env.Unit.Symbols) || ctx.PendingId != null)
+                return MapEntries(ctx, stored, type, locals, statements, encode: false);
+            return DecodeTreeMap(ctx, stored, type, locals, statements);
+        }
+
+        private static BoundExpression DecodeTreeMap(SynthContext ctx, BoundExpression stored,
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)
         {
             SerializationFacts.IsMap(type, ctx.Env.Unit.Symbols, out _, out var valType);
@@ -816,6 +1000,7 @@ namespace RigiCompiler
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, mapLocal,
                 new BoundNewExpression(ctx.Syntax, mapType, mapInit,
                     Array.Empty<BoundExpression>())));
+            Remember(ctx, Ref(ctx, mapLocal), statements);
             var parcelRef = new BoundValueReferenceExpression(ctx.Syntax, nestedLocal, ctx.Parcel);
             var nLocal = NewLocal(ctx, locals, "pn", ctx.Env.B.Int64);
             statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, nLocal,
@@ -859,6 +1044,149 @@ namespace RigiCompiler
             var local = new LocalSymbol(hint + ctx.NextId++, type, isConst: false);
             locals.Add(local);
             return local;
+        }
+
+        // 图模式的 Map 以交错键/值数组保存，不将用户键借作 metadata 字段名。
+        // 非 String 键是新增可序列化能力，树模式也使用此布局但仍独立复制。
+        private static BoundExpression MapEntries(SynthContext ctx, BoundExpression input,
+            SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements, bool encode)
+        {
+            SerializationFacts.IsMap(type, ctx.Env.Unit.Symbols, out var keyType, out var valueType);
+            var source = Save(ctx, encode ? input : Cast(ctx, input, ctx.ArrayAny), locals, statements, "entries");
+            BoundExpression length = encode
+                ? Cast(ctx, new BoundFieldAccessExpression(ctx.Syntax, source, ctx.MapCount, ctx.Env.B.Int64), ctx.Env.B.Int32)
+                : new BoundFieldAccessExpression(ctx.Syntax, source, ctx.ArrayLength, ctx.Env.B.Int32);
+            if (encode) length = new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Mul, length,
+                IntLiteral(ctx, 2, IntType.I32, ctx.Env.B.Int32), ctx.Env.B.Int32);
+            var count = Save(ctx, length, locals, statements, "entrycount");
+            BoundExpression target;
+            if (encode)
+                target = new BoundCallExpression(ctx.Syntax, ctx.ArrayOf, new[] { count }, ctx.ArrayAny, new[] { ctx.Env.B.Any });
+            else
+            {
+                var map = (TypeSymbol)type;
+                target = new BoundNewExpression(ctx.Syntax, map,
+                    (map.ConstructedFrom ?? map).Methods.First(m => m.Kind == MethodKind.Init && m.Parameters.Count == 0),
+                    Array.Empty<BoundExpression>());
+            }
+            target = Save(ctx, target, locals, statements, "entrytarget");
+            if (!encode) Remember(ctx, target, statements);
+            var index = NewLocal(ctx, locals, "entryindex", ctx.Env.B.Int32);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, index, IntLiteral(ctx, 0, IntType.I32, ctx.Env.B.Int32)));
+            var at = Ref(ctx, index);
+            var next = new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Add, at, IntLiteral(ctx, 1, IntType.I32, ctx.Env.B.Int32), ctx.Env.B.Int32);
+            var body = new List<BoundStatement>();
+            var values = new List<BoundExpression>();
+            foreach (var (itemType, slot, accessor) in new[] {
+                (keyType!, (BoundExpression)at, ctx.MapKeyAt), (valueType!, (BoundExpression)next, ctx.MapValueAt) })
+            {
+                BoundExpression raw;
+                if (encode)
+                {
+                    var mapIndex = Cast(ctx, new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Div, at,
+                        IntLiteral(ctx, 2, IntType.I32, ctx.Env.B.Int32), ctx.Env.B.Int32), ctx.Env.B.Int64);
+                    raw = new BoundInstanceCallExpression(ctx.Syntax, source, accessor, new[] { mapIndex },
+                        ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, itemType));
+                    var encoded = EncodeValue(ctx, Cast(ctx, raw, itemType), itemType, locals, body);
+                    body.Add(new BoundAssignmentStatement(ctx.Syntax,
+                        new BoundIndexExpression(ctx.Syntax, target, slot, ctx.ArraySetAt, ctx.Env.B.Any), Cast(ctx, encoded, ctx.Env.B.Any)));
+                }
+                else
+                {
+                    raw = new BoundIndexExpression(ctx.Syntax, source, slot, ctx.ArrayGetAt,
+                        ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, ctx.Env.B.Any));
+                    values.Add(Save(ctx, DecodeValue(ctx, raw, itemType, locals, body), locals, body, "entryvalue"));
+                }
+            }
+            if (!encode)
+            {
+                if (ctx.PendingId != null)
+                {
+                    // 图中的键可能指向尚未填完字段的祖先壳；此时调用 set
+                    // 会按临时 toString 合并不同键。按原序填标准库存储，
+                    // 完整图恢复后集合仍使用原来的键比较规则。
+                    var map = (TypeSymbol)type;
+                    var definition = map.ConstructedFrom ?? map;
+                    foreach (var (name, value) in new[] { ("ks", values[0]), ("vs", values[1]) })
+                    {
+                        var field = definition.Fields.First(f => f.Name == name);
+                        var fieldType = SymbolLookup.SubstituteFieldType(field, map, ctx.Env.Unit.Symbols);
+                        body.Add(new BoundCallStatement(ctx.Syntax, ctx.ListAdd, new[] { value },
+                            new BoundFieldAccessExpression(ctx.Syntax, target, field, fieldType)));
+                    }
+                }
+                else body.Add(new BoundCallStatement(ctx.Syntax, ctx.MapSet, values, target));
+            }
+            body.Add(new BoundAssignmentStatement(ctx.Syntax, at,
+                new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.Add, at, IntLiteral(ctx, 2, IntType.I32, ctx.Env.B.Int32), ctx.Env.B.Int32)));
+            statements.Add(new BoundLoop(ctx.Syntax, LoopKind.While, null) {
+                Condition = new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.CmpLt, at, count, ctx.Env.B.Bool),
+                Body = new BoundBlock(ctx.Syntax, body) });
+            return target;
+        }
+
+        private static BoundExpression Ref(SynthContext ctx, LocalSymbol local) =>
+            new BoundValueReferenceExpression(ctx.Syntax, local, local.Type!);
+
+        private static BoundExpression Save(SynthContext ctx, BoundExpression value,
+            List<LocalSymbol> locals, List<BoundStatement> statements, string name)
+        {
+            var local = NewLocal(ctx, locals, name, value.Type);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, local, value));
+            return Ref(ctx, local);
+        }
+
+        private static BoundExpression NewRecord(SynthContext ctx, SemanticSymbol type,
+            List<LocalSymbol> locals, List<BoundStatement> statements, BoundExpression? typeName = null) => Save(ctx,
+                new BoundNewExpression(ctx.Syntax, ctx.Parcel, ctx.ParcelInit,
+                    new[] { typeName ?? BindingDriver.MakeStringLiteral(ctx.Env, CanonicalSymbolPrinter.PrintType(type, compact: true)) }),
+                locals, statements, "record");
+
+        private static BoundStatement Set(SynthContext ctx, BoundExpression parcel,
+            string key, BoundExpression value, SemanticSymbol type) => new BoundCallStatement(ctx.Syntax,
+                ctx.SetElement, new[] { BindingDriver.MakeStringLiteral(ctx.Env, key), value }, parcel, new[] { type });
+
+        private static BoundExpression Get(SynthContext ctx, BoundExpression parcel,
+            string key, SemanticSymbol type) => Cast(ctx, new BoundInstanceCallExpression(ctx.Syntax,
+                parcel, ctx.GetElement, new[] { BindingDriver.MakeStringLiteral(ctx.Env, key) },
+                ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, type), new[] { type }), type);
+
+        private static void Remember(SynthContext ctx, BoundExpression shell, List<BoundStatement> statements)
+        {
+            if (ctx.PendingId is { } id)
+                statements.Add(RuntimeStatement(ctx, "remember", id, Cast(ctx, shell, ctx.Env.B.Object)));
+        }
+
+        private static SemanticSymbol? NullableElement(SynthContext ctx, SemanticSymbol type) =>
+            type is TypeSymbol { ConstructedFrom: { } definition, TypeArguments: { Count: 1 } args }
+                && ReferenceEquals(definition, ctx.Env.B.NullableDefinition) ? args[0] : null;
+
+        private static BoundExpression Null(SynthContext ctx, SemanticSymbol type)
+        {
+            var expr = new LiteralExpressionASTNode();
+            expr.AttachLiteral(new NullLiteralASTNode(expr));
+            var nullable = NullableElement(ctx, type) != null ? type
+                : ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, type);
+            return new BoundLiteralExpression(expr, nullable);
+        }
+
+        private static BoundExpression NullableValue(SynthContext ctx, BoundExpression source,
+            SemanticSymbol type, SemanticSymbol inner, List<LocalSymbol> locals,
+            List<BoundStatement> statements, bool encode)
+        {
+            var saved = Save(ctx, source, locals, statements, "nullable");
+            var resultType = encode
+                ? ctx.Env.Unit.Symbols.GetConstructedType(ctx.Env.B.NullableDefinition, ctx.Env.B.Any) : type;
+            var result = NewLocal(ctx, locals, "optional", resultType);
+            statements.Add(new BoundLocalDeclarationStatement(ctx.Syntax, result, Null(ctx, resultType)));
+            var body = new List<BoundStatement>();
+            var value = encode ? EncodeValue(ctx, Cast(ctx, saved, inner), inner, locals, body)
+                : DecodeValue(ctx, saved, inner, locals, body);
+            body.Add(new BoundAssignmentStatement(ctx.Syntax, Ref(ctx, result), Cast(ctx, value, resultType)));
+            statements.Add(new BoundIfStatement(ctx.Syntax,
+                new BoundBinaryExpression(ctx.Syntax, BilIntrinsicOp.CmpNe, saved, Null(ctx, saved.Type), ctx.Env.B.Bool),
+                new BoundBlock(ctx.Syntax, body), null));
+            return Ref(ctx, result);
         }
 
         private static BoundExpression Cast(SynthContext ctx, BoundExpression source,
@@ -912,6 +1240,9 @@ namespace RigiCompiler
             public FieldSymbol PairKey { get; }
             public FieldSymbol PairValue { get; }
             public int NextId;
+            public TypeSymbol RuntimeType { get; }
+            public BoundExpression Runtime { get; set; } = null!;
+            public BoundExpression? PendingId { get; set; }
 
             public SynthContext(BindEnvironment env, ASTNode syntax, TypeSymbol host,
                 TypeSymbol serializable, TypeSymbol? serializationBase, TypeSymbol? temporary,
@@ -926,6 +1257,8 @@ namespace RigiCompiler
                 Parcel = parcel;
                 Iface = iface;
                 Token = token;
+                RuntimeType = SerializationFacts.FindSerializationNamespace(env.Unit.Symbols)!.Types
+                    .First(t => t.Name == "SerializationGraphContext");
                 ParcelInit = parcel.Methods.First(m =>
                     m.Kind == MethodKind.Init && m.Parameters.Count == 1);
                 TokenInit = token.Methods.First(m => m.Kind == MethodKind.Init);

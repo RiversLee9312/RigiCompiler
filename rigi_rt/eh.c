@@ -18,12 +18,12 @@
  * 线程隔离即正确。 */
 static _Thread_local void *rigi_exc_pending_slot = NULL;
 
-/* local/shared 分派与 arc.c rigi_ref_acquire 的 tag2 分支同口径：
- * 对象头 typeId 的 SHARED 位决定走原子还是非原子 RC */
+/* local/shared 分派与 arc.c rigi_ref_acquire 的 tag2 分支同口径；
+ * 两路计数均原子化，支持同一失败 Task 的异常图由多个 waiter 持有。 */
 static void rigi_exc_object_acquire(void *object)
 {
     const RigiTypeSheet *sheet = ((const RigiObjectHeader *)object)->typeId;
-    if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_SHARED) != 0)
+    if (sheet != NULL && (sheet->typeFlags & (RIGI_TYPE_SHARED | RIGI_TYPE_ARRAY)) != 0)
     {
         rigi_acquire_shared(object);
     }
@@ -36,7 +36,7 @@ static void rigi_exc_object_acquire(void *object)
 static void rigi_exc_object_release(void *object)
 {
     const RigiTypeSheet *sheet = ((const RigiObjectHeader *)object)->typeId;
-    if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_SHARED) != 0)
+    if (sheet != NULL && (sheet->typeFlags & (RIGI_TYPE_SHARED | RIGI_TYPE_ARRAY)) != 0)
     {
         rigi_release_shared(object);
     }

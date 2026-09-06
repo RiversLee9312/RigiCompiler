@@ -105,6 +105,7 @@ namespace RigiCompiler
             SerializableImplicationRegistrar.Visit(env);
             SerializableFieldChecker.Visit(env);
             WrapperInheritanceChecker.Visit(env);
+            AtomicContainerConstraintChecker.Visit(env);
             // S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4 canonical shape 与
             // 类别矩阵；依赖 WrapperTarget 与参数/返回类型已解析）
             ProxyShapeChecker.Visit(env);

@@ -114,6 +114,8 @@ Task 是 `core.coroutine` 的具体 shared class（非 abstract，Rigi 世界实
 - 失败：保存未处理异常；
 - 取消：保存取消状态。
 
+原生 Task 以内部 refMap 槽持有失败异常，普通 ARC 与 macroGC 都能看到这条拥有边，包括异常字段反向引用 Task 的环。未观察失败登记另持报告引用；首次观察释放该报告引用，Task 仍可重复重抛同一异常。Task 回收后，已观察节点随之摘除；未观察节点仍保留到顶层报告，不因 Task 句柄丢失而静默消失。内部资源析构只处理节点，异常由普通引用图清理，不在 macroGC 回调中重新进入 ARC fence。
+
 丢弃 Task 句柄只表示调用方不再同步或观察它，不会取消对应 Coroutine。Executor/运行时活跃协程表必须持有该 Coroutine 直到终态，因此直接调用 async 函数并忽略返回值即可实现 fork/fire-and-forget。
 
 Task 的公开状态投影是 `core.coroutine.TaskState` 六 case 枚举：`Created` / `Runnable` / `Suspended` / `Completed` / `Failed` / `Cancelled`。`Running` 与 `Runnable` 对用户不可区分（Worker 身份透明，§17.1），投影合并为 `Runnable`。只读成员 `isRunning` 仅当状态为 `Runnable` 或 `Suspended`（即已启动未终止）时为 `true`，其余为 `false`。API 形状见 `SYNTAX.md` §4.5。
@@ -188,6 +190,8 @@ pub func isReady(): bool
 注册和触发之间必须进行原子握手，保证并发发生时不丢失唤醒；同一个 waiter 最多只能被发布一次。EventAlarm 的重复触发是幂等的。
 
 无自有事件源的用户直继子类由运行时提供默认底座：首个 `yield`/触发时懒建一枚手动粘滞事件（粘滞与原子握手不变量与上文一致），子类经 `protected func signal()` 完成事件源通知（L8 落地；此前此类子类 yield 属诊断拒绝）。
+
+原生底座随 Alarm 对象存活；挂起帧保活正在等待的 Alarm，响铃不释放底座，因此迟到等待仍能读取粘滞状态。对象经 ARC 或 macroGC 回收时，内部资源析构摘除底座身份；手动事件直接释放，计时器交回创建它的 Worker 关闭，不能在其他线程操作属主时钟循环。属主 shutdown 先封闭交接并清扫剩余底座；不复用的身份使随后对象析构安全查空。这是内部原语回收，不执行用户代码、不重入 ARC/GC fence，也不提供用户 finalizer（§25）。
 
 ### 19.4 `sleep`
 
@@ -282,6 +286,8 @@ pub shared singleton class IOExecutor : Executor { }
 基类 `Executor` 保持 abstract；三个内置 Executor 经 `new ComputeExecutor()` 等 singleton 构造表达式取得进程内唯一实例（singleton 语义见 `SYNTAX.md` §3.1.1/§9）。Worker 懒建：singleton 初始化只记录 Executor 种类，首个任务发布时才创建对应 OS 线程（§17.4 的 Worker 原语）。
 
 所有 Executor 都遵守 §17 的统一不变量。每个 Executor 拥有一个或多个 Worker；同一 Executor 的所有 Worker 共享相同调度策略与同一逻辑 Runnable Set。具体 Worker 数量、队列结构、work stealing 和扩缩容策略属于实现细节，除标准库另有明示外不得成为程序语义。
+
+当前实现中 Compute 在首个任务发布时创建固定 Worker 池，默认采用宿主可用逻辑处理器数（VM 使用 `Environment.ProcessorCount`，native 使用 `uv_available_parallelism`），范围限制为 1..254，为 Main/IO 保留 GC 登记槽。进程环境变量 `RIGI_COMPUTE_WORKERS` 可在 1..254 内覆盖数量；仅接受十进制数字，非法值回退默认。所有 Compute Worker 从同一 Rigi runnable 队列取任务，空闲登记与队列检测在同一调度锁下完成，每次发布最多认领一个空闲 Worker；Worker 身份不成为公共 API。
 
 `main` 根 Coroutine 默认绑定 MainExecutor。新 Coroutine 未显式选择 Executor 时继承创建方的 Executor。spawn 语义下跨 Executor 执行不会迁移当前 Coroutine，而是在目标 Executor 上创建新的 Coroutine，并通过 Task/await 同步。唯一的迁移通道是已启动 Task 的 `executor` 显式换绑（§18.4）：下一个恢复点生效，执行段内不迁移。
 

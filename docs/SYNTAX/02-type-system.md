@@ -1,5 +1,10 @@
 # 类型系统（§3）
 
+类型声明可带 `unsafe`，与访问级别、`shared` 等声明修饰符的排列顺序无关。
+使用该类型的构造与危险成员需要显式 unsafe 上下文；类型修饰符不会自动开启
+成员实现的 unsafe 权限。安全类型可私有持有 unsafe 类型，但安全公开签名不能
+经返回值、参数、字段或泛型实参暴露它。字段本身不能声明 `unsafe`。
+
 > 本文件是 [SYNTAX.md](../SYNTAX.md)（Rigi 语言语法参考）的章节拆分，§ 编号与原文件一致；总目录与章节索引见该索引文档。
 
 ## 3. 类型系统
@@ -121,11 +126,21 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 - `String` 是**非 rich ValueType**：它不持有托管引用，`refMap` 恒为空，因此可以自由出现在全局/静态字段与 async 边界上（见 §3.1.1），无需任何 shared 标注。它的字符数据位于编译器与运行时管理的特权裸缓冲区中，不是普通 Object 字段。
   - **复制语义按值深拷贝**：`var b = a` 在语义上产生一份独立的字符数据。实现可以引入对用户完全透明的 copy-on-write 或不可变共享优化，但**源码语义、类型检查与用户代码一律不得假设这些优化存在**——正如 BIL 永远不得假设某种 GC 模型或 GC 行为。任何可观察到共享的行为都是实现缺陷，而不是可依赖的特性。
   - `String` 不可被继承，也不可被 wrapper 修饰（非 rich struct 的通用规则，见 §14.9）。
-- `Nullable\<T>` 属于 `Object` 分支，但其 shared 属性由 `T` 推导而非由声明给出：`T` 是共享安全类型时，`Nullable\<T>` 也是共享安全类型。这个特权只属于 `Nullable\<T>`，因为它由 `T?` 隐式生成、用户无法声明它的 shared 变体。显式书写的库容器（`Array\<T>`、`Map\<K, V>` 等）不适用本规则——需要跨协程时应当选用相应的 shared 容器类型。
+- `Nullable\<T>` 属于 `Object` 分支，但其 shared 属性由 `T` 推导而非由声明给出：`T` 是共享安全类型时，`Nullable\<T>` 也是共享安全类型。内建 `Array\<T>` 同样按元素推导共享安全，但不提供并发同步；普通 `core.collections.List/Map` 不适用本规则。需要线性化并发操作时选用 `core.AtomicArray/AtomicList/AtomicMap`，API 与元素能力见 §20.7。
 - `Cell\<T>` / `ReadonlyCell\<T>`（§5.2 / §15.3）的物理表示是编译器特权：用户源码不可见、不可直接声明或 `new` 基类；实际实例恒为编译器逐变量合成的隐藏子类（同 Box——物理表示属编译器特权，见统一 cell 存储）。
 - 其他由规范明确标记为内建、编译器生成或系统特权的机制，也可以拥有普通用户类型不能声明或复制的 lowering、布局或派发规则。
 
 这些特权只属于语言规范明确列出的内建机制。用户声明的 class、struct、interface 或 wrapper 不能通过源码复制其布局、身份、派发或生命周期规则。
+
+`placeOf` 是前缀关键字，`placeOf(x)` 的紧邻括号伪调用语法不合法；`placeOf (x)` 或注释分隔的分组操作数仍可解析，稳定存储要求由语义阶段检查。
+
+`placeOf operand` 返回 local `core.Place\<T>`，实现 `IDisposable` 并保留目标身份。Object 使用对象自身身份；值类型的稳定局部变量、参数或全局存储复用捕获 Cell，常量使用 ReadonlyCell，临时值被拒绝。`==` / `!=` 比较目标身份；`dispose()` 释放 Place 自己的持有，不释放其他 Place/Handle 的持有。当前普通实例字段、未落地 companion 静态字段与复杂索引不支持稳定提升，必须给出诊断。
+
+`Place.expose(): Handle\<T>` 是 unsafe 能力升级入口。`Handle\<T>` 与可写变体 `MutableHandle\<T>` 是 unsafe shared object，可保留 local T，但没有普通 Rigi T 字段；两者不实现 `IDisposable`，按普通 shared ARC 生命周期释放隐藏目标。`load(): T` 对 Object 返回对象引用，对 Cell 返回正常值副本。只有逻辑 T 是 ValueType 且目标为可写 Cell 时，`asMutable()` 成功；Object、ReadonlyCell 或 `Handle\<Any>` 均抛 `core.ImmutablePlaceException`。`MutableHandle.store(T)` 写回同一 Cell。用户不能构造、继承或借 native 声明伪造 Handle。
+
+`core.Atomic\<T>` 是 unsafe shared object，仅私有持有 Handle 与 Mutex，允许 local T。unsafe `init(T)`、`load(): T`、`mutate(Func\<T,T>)` 通过稳定参数/局部 Place 建立能力。load/mutate 是普通同步方法，内部取得异步 Mutex 后在 finally 释放；mutate 仅在回调成功返回后替换 Handle，回调抛错保留旧值（不回滚用户另行 unsafe 修改的对象）。普通回调可挂起，锁仍保持。
+
+`core.AtomicStruct\<T extends ValueType>` 是安全 shared 门面，公开 safe `init(T)`、`load(): T`、`store(T)`；store 内部通过私有 Atomic 的回调替换值，不向用户提供 mutate，也不暴露 Atomic/Handle/Cell。
 
 ### 3.2 基本类型
 

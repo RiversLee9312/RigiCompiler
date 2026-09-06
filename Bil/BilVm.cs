@@ -29,6 +29,7 @@ namespace RigiCompiler.Bil
         // 测试缝：最近一次 Run 的 VmContext（调度内部观测——Worker
         // 登记表/ResumeLog 等，BilVmTask 套件断言多 Executor 行为用）
         internal VmContext? LastContext { get; private set; }
+        internal bool TraceResumes { get; set; }
 
         public BilVm(BilModule module)
         {
@@ -46,6 +47,7 @@ namespace RigiCompiler.Bil
         public BilVmResult Run(long maxSteps = 0, string? entryPoint = null)
         {
             var context = new VmContext(Module);
+            context.Dispatch.TraceResumes = TraceResumes;
             LastContext = context;
             context.MaxSteps = maxSteps;
             try

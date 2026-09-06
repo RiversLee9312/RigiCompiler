@@ -159,7 +159,7 @@ namespace RigiCompiler.Middleware.Emit
             string typeCanonical, MwMemberSymbol? initWrapper, MwMemberSymbol? init,
             LLVMValueRef[] userArgs, LLVMValueRef[]? wrapperArgs = null)
         {
-            var sheet = session.TypeSheetFor(typeCanonical);
+            var sheet = MaterializeClassSheet(session, builder, slots, typeCanonical);
             var (allocFn, allocType) = CallEmitter.DeclareHelperFace(session, "rigi_alloc",
                 PointerType(), new[] { PointerType() });
             var obj = builder.BuildCall2(allocType, allocFn, new[] { sheet }, "new.obj");
@@ -192,6 +192,55 @@ namespace RigiCompiler.Middleware.Emit
             }
             builder.BuildCall2(emitted.Type, emitted.Value, initArgs, "");
             return fat;
+        }
+
+        // 开放 new 的隐藏实参与对象头必须指向同一具化类型。布局阶段已驻留
+        // 闭合构造计划，这里按运行期实参选择对应 sheet，不再把开放模板当
+        // 实际对象类型（否则 new Reader<T> 在返回 Reader<Msg> 时无法 cast）。
+        internal static LLVMValueRef MaterializeClassSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            string typeRef, int depth = 0)
+        {
+            if (depth > 32) throw new CompilerInternalException("构造类型实参递归过深: " + typeRef);
+            if (GenericAbi.TryPlaceholderName(typeRef, out var placeholder)
+                && slots.ContainsKey(".generic." + placeholder))
+                return session.LoadLocal(builder, slots, new MirLocalOperand(".generic." + placeholder));
+            var result = session.TypeSheetFor(typeRef);
+            var template = session.Symbols.FindTypeByRef(typeRef);
+            if (template == null || template.Declaration.GenericParameters.Count == 0
+                || session.Layout == null) return result;
+            var substitution = ConstructedTypeCollector.BuildSubstitution(typeRef, template.Declaration);
+            if (substitution != null && !typeRef.Contains(".generic<", System.StringComparison.Ordinal))
+                return result;
+            var actual = new Dictionary<string, LLVMValueRef>();
+            foreach (var parameter in template.Declaration.GenericParameters)
+            {
+                if (substitution != null && substitution.TryGetValue(parameter, out var argument))
+                    actual[parameter] = MaterializeClassSheet(session, builder, slots, argument, depth + 1);
+                else if (slots.ContainsKey(".generic." + parameter))
+                    actual[parameter] = session.LoadLocal(builder, slots, new MirLocalOperand(".generic." + parameter));
+                else return result;
+            }
+            foreach (var candidate in session.Layout.Plans)
+            {
+                var candidateRef = candidate.Symbol.Canonical;
+                if (!GenericAbi.IsClosedConstructed(candidateRef)
+                    || session.Symbols.FindTypeByRef(candidateRef)?.Declaration != template.Declaration)
+                    continue;
+                var arguments = ConstructedTypeCollector.BuildSubstitution(candidateRef, template.Declaration);
+                if (arguments == null) continue;
+                var matches = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1);
+                foreach (var parameter in template.Declaration.GenericParameters)
+                {
+                    var expected = session.TypeSheetFor(arguments[parameter]);
+                    var equal = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
+                        actual[parameter], expected, "new.typearg.equal");
+                    matches = builder.BuildAnd(matches, equal, "new.typeargs.equal");
+                }
+                result = builder.BuildSelect(matches, session.TypeSheetFor(candidateRef), result, "new.actual.sheet");
+            }
+            return result;
         }
 
         // 静态 new 与动态 struct ctor thunk 共用：零初始化 → wrapper →
@@ -287,9 +336,7 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 else if (substitution != null && substitution.TryGetValue(paramName, out arg))
                 {
-                    var sheet = session.TypeSheetFor(arg);
-                    sheetPtr = LLVMValueRef.CreateConstBitCast(sheet,
-                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                    sheetPtr = MaterializeClassSheet(session, builder, slots, arg);
                 }
                 else if (substitution == null
                     && slots.ContainsKey(".generic." + paramName))

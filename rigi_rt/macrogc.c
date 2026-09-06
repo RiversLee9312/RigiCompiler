@@ -221,6 +221,21 @@ static _Atomic long gc_fence_waits = 0; /* ENTERING 阻塞次数（诊断口径�
 static int gc_started = 0;
 static int gc_off = 0;    /* RIGI_RT_GC_OFF=1：纯 ARC 对照（诊断用） */
 static int gc_trace_on = 0;  /* RIGI_RT_GC_TRACE=1：候选/收集全链路追踪（诊断用） */
+static int gc_stats_on = 0; /* 按轮统计，避免逐对象日志扰动压力运行。 */
+static uint64_t gc_stats_passes = 0;
+static uint64_t gc_stats_slots = 0;
+static uint64_t gc_stats_skipped = 0;
+
+/* 压力入口采样只读原子状态，不开逐轮 stderr 诊断。 */
+int64_t rigi_gc_active(void)
+{
+    return atomic_load_explicit(&gc_in_collect, memory_order_relaxed);
+}
+
+int64_t rigi_gc_debt_bytes(void)
+{
+    return atomic_load_explicit(&gc_debt, memory_order_relaxed);
+}
 
 /* GC 协程承载线程与双 Alarm 平台事件 */
 static GcEvent gc_wake;   /* GCWakeAlarm：release 阈值触发 → GC 协程 */
@@ -249,12 +264,21 @@ static void gc_rc_store(RigiObjectHeader *h, uint32_t v)
 
 static uint32_t gc_color(const RigiObjectHeader *h)
 {
-    return h->packedFlags & RIGI_GC_COLOR_MASK;
+    return atomic_load_explicit((const _Atomic uint32_t *)&h->packedFlags,
+        memory_order_relaxed) & RIGI_GC_COLOR_MASK;
+}
+
+static void gc_flags_replace(RigiObjectHeader *h, uint32_t mask, uint32_t value)
+{
+    _Atomic uint32_t *flags = (_Atomic uint32_t *)&h->packedFlags;
+    uint32_t old = atomic_load_explicit(flags, memory_order_relaxed);
+    while (!atomic_compare_exchange_weak_explicit(flags, &old,
+        (old & ~mask) | value, memory_order_relaxed, memory_order_relaxed)) { }
 }
 
 static void gc_set_color(RigiObjectHeader *h, uint32_t color)
 {
-    h->packedFlags = (h->packedFlags & ~RIGI_GC_COLOR_MASK) | color;
+    gc_flags_replace(h, RIGI_GC_COLOR_MASK, color);
 }
 
 typedef struct
@@ -372,6 +396,16 @@ static void gc_trace(void *object, const RigiTypeSheet *sheet,
         const char *elems = (const char *)object + 32;
         int32_t stride;
         int32_t idx;
+        // 无引用内联元素没有对象图出边；不逐槽空扫大数值缓冲区。
+        if (elemSheet != NULL
+            && (elemSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0
+            && elemSheet->refMapSize == 0
+            && (elemSheet->typeFlags & RIGI_TYPE_STRING) == 0)
+        {
+            if (gc_stats_on) gc_stats_skipped += (uint64_t)len;
+            return;
+        }
+        if (gc_stats_on) gc_stats_slots += (uint64_t)len;
         if (elemSheet != NULL
             && (elemSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0
             && elemSheet->typeSize > 0)
@@ -601,7 +635,7 @@ static void gc_teardown_block(void *ptr, const RigiTypeSheet *sheet)
         cursor += (size_t)hops * 16u;
         if (kind == RIGI_REFMAP_STRING)
         {
-            rigi_string_release(*(char *const *)(base + cursor));
+            rigi_string_release_unfenced(*(char *const *)(base + cursor));
         }
         else
         {
@@ -665,7 +699,7 @@ static void gc_teardown_ex(void *object, const RigiTypeSheet *sheet, int free_se
                 }
                 else
                 {
-                    rigi_string_release(*(char *const *)elem);
+                    rigi_string_release_unfenced(*(char *const *)elem);
                 }
             }
             else if ((elemSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0)
@@ -692,6 +726,7 @@ static void gc_teardown_ex(void *object, const RigiTypeSheet *sheet, int free_se
 
     /* §25 IDisposable 合约检查挂点（macroGC 清理步入点） */
     rigi_dispose_check(object, sheet);
+    rigi_native_resources_destroy(object, sheet);
     if (sheet == NULL || sheet->refMap == NULL)
     {
         if (free_self != 0)
@@ -709,7 +744,7 @@ static void gc_teardown_ex(void *object, const RigiTypeSheet *sheet, int free_se
         cursor += (size_t)hops * 16u;
         if (kind == RIGI_REFMAP_STRING)
         {
-            rigi_string_release(*(char *const *)(base + cursor));
+            rigi_string_release_unfenced(*(char *const *)(base + cursor));
         }
         else
         {
@@ -888,7 +923,7 @@ static bool gc_may_cycle(void *object, const RigiTypeSheet *sheet)
     return false;
 }
 
-void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
+static void gc_note_release_locked(void *object, const RigiTypeSheet *sheet)
 {
     RigiObjectHeader *h = (RigiObjectHeader *)object;
     long size;
@@ -916,15 +951,12 @@ void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
     {
         return; /* 纯 ARC 对照（诊断用） */
     }
-    gc_ledger_acquire();
     if (gc_color(h) == RIGI_GC_PURPLE)
     {
-        gc_ledger_release();
         return; /* 同一对象一轮候选账本只计一次 */
     }
     if (!gc_may_cycle(object, sheet))
     {
-        gc_ledger_release();
         return;
     }
     size = gc_object_size(object, sheet);
@@ -951,9 +983,8 @@ void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
     gc_ledger[gc_ledger_len].object = object;
     gc_ledger[gc_ledger_len].size = size;
     gc_ledger_len++;
-    h->packedFlags = (h->packedFlags
-            & ~(RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT)))
-        | RIGI_GC_PURPLE | (idx << RIGI_GC_INDEX_SHIFT);
+    gc_flags_replace(h, RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT),
+        RIGI_GC_PURPLE | (idx << RIGI_GC_INDEX_SHIFT));
     if (gc_trace_on)
     {
         const RigiTypeInfo *ti = sheet->typeInfoId;
@@ -962,7 +993,6 @@ void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
             ti != NULL && ti->name.data != NULL ? ti->name.data : "",
             size, (unsigned)idx);
     }
-    gc_ledger_release();
     debt = atomic_fetch_add_explicit(&gc_debt, size, memory_order_relaxed)
         + size;
     if (debt > gc_threshold && gc_started)
@@ -976,23 +1006,41 @@ void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
     }
 }
 
+void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet)
+{
+    gc_ledger_acquire();
+    gc_note_release_locked(object, sheet);
+    gc_ledger_release();
+}
+
+uint32_t rigi_gc_release_shared(void *object)
+{
+    RigiObjectHeader *h = (RigiObjectHeader *)object;
+    uint32_t old;
+    /* 减量与非零候选登记不可被另一线程的最后一次 release 分开。 */
+    gc_ledger_acquire();
+    old = atomic_fetch_sub_explicit((_Atomic uint32_t *)&h->rc, 1, memory_order_acq_rel);
+    if (old > 1) { gc_note_release_locked(object, h->typeId); }
+    gc_ledger_release();
+    return old;
+}
+
 void rigi_gc_forget_candidate(void *object)
 {
     RigiObjectHeader *h = (RigiObjectHeader *)object;
-    uint32_t pf = h->packedFlags;
+    uint32_t pf;
     uint32_t idx;
     uint32_t last;
     RigiObjectHeader *moved;
 
-    if ((pf & RIGI_GC_COLOR_MASK) != RIGI_GC_PURPLE)
-    {
-        return;
-    }
-    if ((pf & RIGI_GC_COLOR_MASK) != RIGI_GC_PURPLE)
-    {
-        return;
-    }
+    /* 别的线程 swap-remove 会搬动本对象；颜色与索引必须在同一锁内读。 */
     gc_ledger_acquire();
+    pf = atomic_load_explicit((_Atomic uint32_t *)&h->packedFlags, memory_order_relaxed);
+    if ((pf & RIGI_GC_COLOR_MASK) != RIGI_GC_PURPLE)
+    {
+        gc_ledger_release();
+        return;
+    }
     idx = pf >> RIGI_GC_INDEX_SHIFT;
     if (gc_trace_on)
     {
@@ -1012,12 +1060,11 @@ void rigi_gc_forget_candidate(void *object)
     {
         gc_ledger[idx] = gc_ledger[last];
         moved = (RigiObjectHeader *)gc_ledger[idx].object;
-        moved->packedFlags =
-            (moved->packedFlags & ~(0xFFFFFFu << RIGI_GC_INDEX_SHIFT))
-            | (idx << RIGI_GC_INDEX_SHIFT);
+        gc_flags_replace(moved, 0xFFFFFFu << RIGI_GC_INDEX_SHIFT,
+            idx << RIGI_GC_INDEX_SHIFT);
     }
     gc_ledger_len--;
-    h->packedFlags &= ~(RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT));
+    gc_flags_replace(h, RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT), 0);
     gc_ledger_release();
 }
 
@@ -1062,6 +1109,9 @@ static void gc_pass(void)
     size_t i;
     long round_debt = 0;
     uint32_t expected = RIGI_GC_IDLE;
+    uint64_t started = gc_stats_on ? gc_now_ms() : 0;
+    uint64_t marked;
+    uint64_t scanned;
 
     if (gc_trace_on)
     {
@@ -1098,6 +1148,7 @@ static void gc_pass(void)
     {
         fprintf(stderr, "[gc] markGray done\n");
     }
+    marked = gc_stats_on ? gc_now_ms() : 0;
     for (i = 0; i < gc_ledger_len; i++)
     {
         gc_scan(gc_ledger[i].object, &gc_trace_stack, &gc_whites);
@@ -1116,6 +1167,7 @@ static void gc_pass(void)
     {
         fprintf(stderr, "[gc] scan+gather done whites=%zu\n", gc_whites.len);
     }
+    scanned = gc_stats_on ? gc_now_ms() : 0;
     /* 补偿：清理前对存活子引用逐一 rc++ */
     for (i = 0; i < gc_whites.len; i++)
     {
@@ -1168,6 +1220,16 @@ static void gc_pass(void)
     /* （6）发布 IDLE + 触发 GCAlarm 唤醒全部 ENTERING 等待者 */
     atomic_store_explicit(&gc_flag, RIGI_GC_IDLE, memory_order_seq_cst);
     gc_event_signal(&gc_alarm);
+    if (gc_stats_on)
+    {
+        uint64_t finished = gc_now_ms();
+        gc_stats_passes++;
+        if (finished - started >= 100 || gc_stats_passes % 100 == 0)
+            fprintf(stderr, "[gc-stats] passes=%llu gray-ms=%llu scan-ms=%llu teardown-ms=%llu slots=%llu skipped=%llu\n",
+                (unsigned long long)gc_stats_passes, (unsigned long long)(marked - started),
+                (unsigned long long)(scanned - marked), (unsigned long long)(finished - scanned),
+                (unsigned long long)gc_stats_slots, (unsigned long long)gc_stats_skipped);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1193,22 +1255,29 @@ static void gc_thread_main(void)
             }
             continue;
         }
-        /* 唤醒后收干账本：正常路径收至账本清空且债务低于阈值（§23.2 末条
+        /* 唤醒后处理候选：正常路径仅在债务仍超阈值时续轮（§23.2 末条
          * 仍超门槛立即再来一轮）；stop 时也必须把账本收干才许退出——
          * 关闭信号若在连续 pass 期间到达（如 main 退出批量登记洪峰撞上
          * 某轮 pass 收尾），只查债务会放走「上一轮收干后、while 复查前」
          * 新登记的尾批候选（实测 AOT 套件 16 路并发下泄漏 ~25%） */
-        gc_pass();
-        while (gc_ledger_len > 0
-            || (atomic_load_explicit(&gc_stop, memory_order_acquire) == 0
-                && atomic_load_explicit(&gc_debt, memory_order_relaxed)
-                    > gc_threshold))
+        for (;;)
         {
             gc_pass();
-        }
-        if (atomic_load_explicit(&gc_stop, memory_order_acquire) != 0)
-        {
-            return;
+            if (atomic_load_explicit(&gc_stop, memory_order_acquire) != 0)
+            {
+                int remaining;
+                gc_ledger_acquire();
+                remaining = gc_ledger_len != 0;
+                gc_ledger_release();
+                if (remaining) { continue; }
+                return;
+            }
+            /* 正常运行按债务阈值续轮，不能追赶 mutator 新添的单条候选
+             * 反复冻结整图。stop 在此后到达会 signal wake，外层再收终轮。 */
+            if (atomic_load_explicit(&gc_debt, memory_order_relaxed) <= gc_threshold)
+            {
+                break;
+            }
         }
     }
 }
@@ -1255,6 +1324,8 @@ void rigi_gc_init(void)
     {
         gc_trace_on = 1;
     }
+    env = getenv("RIGI_RT_GC_STATS");
+    gc_stats_on = env != NULL && env[0] == '1';
     gc_event_init(&gc_wake);
     gc_event_init(&gc_alarm);
 #ifdef _WIN32

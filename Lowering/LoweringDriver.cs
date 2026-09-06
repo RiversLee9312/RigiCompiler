@@ -19,6 +19,8 @@ namespace RigiCompiler
             var result = new List<LoweredFunctionBody>();
             foreach (var body in bodies)
             {
+                // Handle 源码成员只承载类型检查，调用统一改为带 T 的私有全局 helper。
+                if (body.Method.Owner?.BilAlias == ".handle") continue;
                 var ctx = new LowerContext(body.Method);
                 // 闭包存储计划（SYNTAX §5.2）：在体降级前构建——被捕获参数的
                 // cell 构造 prologue 前插到体首；计划随 ctx 供全部 rewriter 查询

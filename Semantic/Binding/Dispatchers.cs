@@ -37,6 +37,7 @@ namespace RigiCompiler
                 TypeCheckExpressionASTNode => TypeCheckVisitor.Visit(node, scope, ctx, env,
                     expectedType),
                 TypeOfExpressionASTNode => TypeOfVisitor.Visit(node, scope, ctx, env, expectedType),
+                PlaceOfExpressionASTNode => PlaceOfVisitor.Visit(node, scope, ctx, env, expectedType),
                 NewExpressionASTNode => NewVisitor.Visit(node, scope, ctx, env, expectedType),
                 // 裸前导点 enum case 引用（S11，SYNTAX §12；参数化调用形态
                 // 是路径底座 + Call 后缀，归 PathVisitor 通道）

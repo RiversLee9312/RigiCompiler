@@ -27,7 +27,8 @@ namespace RigiCompiler.Middleware.Emit
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
-            if (session.TryGetFunction(target.Canonical, out var callee))
+            var cellSlot = FatValueSlotAbi.Applies(session, target);
+            if (!cellSlot && session.TryGetFunction(target.Canonical, out var callee))
             {
                 var callResult = builder.BuildCall2(callee.Type, entry,
                     CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
@@ -39,12 +40,13 @@ namespace RigiCompiler.Middleware.Emit
                     callResult, call.Result, call.ExcTarget);
                 return;
             }
-            var signature = CanonicalSignature.Parse(target.Canonical);
-            signature = SubstituteForReceiver(session, slots, call.Args[0], target, signature);
+            var signature = cellSlot ? FatValueSlotAbi.Signature(target)
+                : SubstituteForReceiver(session, slots, call.Args[0], target,
+                    CanonicalSignature.Parse(target.Canonical));
             var fnType = MethodFunctionTypeOf(session, target, signature);
             var abstractResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, call.Args, call.Result,
-                    temps, boxed), "");
+                    temps, boxed, coerceParameters: cellSlot), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
@@ -62,6 +64,52 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirCall call, MwMemberSymbol target)
         {
+            var values = session.Layout!.ValueInterfaceImplementations(target.Owner!.Canonical, target.SignatureKey);
+            if (values.Count == 0)
+            {
+                EmitObjectInterface(session, builder, slots, call, target);
+                return;
+            }
+            // 源码 struct 仍不可 implements；编译器合成接口可承载值能力。
+            // 值胖槽的 payload 是值块，不是对象头，不能交给 object iMap helper。
+            // 按已具化 TypeSheet 分流后复用普通调用的 this 解箱/泛型 ABI。
+            var fat = session.LoadLocal(builder, slots, call.Args[0]);
+            var typeId = builder.BuildAnd(builder.BuildExtractValue(fat, 0, "iface.value.type"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.SheetMask, false), "iface.value.sheet.bits");
+            var sheet = builder.BuildIntToPtr(typeId, PointerType(), "iface.value.sheet");
+            var done = session.CurrentFunction.AppendBasicBlock("iface.value.done");
+            foreach (var (host, method) in values)
+            {
+                var plan = session.Layout.Find(host)!;
+                var match = session.CurrentFunction.AppendBasicBlock("iface.value.match");
+                var next = session.CurrentFunction.AppendBasicBlock("iface.value.next");
+                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, sheet,
+                    session.TypeSheetFor(plan.Symbol.Canonical), "iface.value.is"), match, next);
+                builder.PositionAtEnd(match);
+                var callee = session.FunctionOf(method);
+                var temps = new List<ArcEmitter.RichTemp>();
+                var boxed = new List<ArcEmitter.FatTemp>();
+                var result = builder.BuildCall2(callee.Type, callee.Value,
+                    CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
+                        call.Result, temps, boxed, hostConstructedRef: plan.Symbol.Canonical,
+                        excTarget: call.ExcTarget), "");
+                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
+                CallEmitter.StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
+                    result, call.Result, call.ExcTarget);
+                builder.BuildBr(done);
+                builder.PositionAtEnd(next);
+            }
+            EmitObjectInterface(session, builder, slots, call, target);
+            builder.BuildBr(done);
+            builder.PositionAtEnd(done);
+        }
+
+        private static void EmitObjectInterface(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirCall call, MwMemberSymbol target)
+        {
             var slot = InterfaceSlotOf(session, target);
             var ifaceSheet = InterfaceSheetOf(session, target);
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",
@@ -69,6 +117,19 @@ namespace RigiCompiler.Middleware.Emit
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)slot, false) });
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
+            if (FatValueSlotAbi.IsGenericInterfaceSlot(target))
+            {
+                var slotSignature = FatValueSlotAbi.InterfaceSignature(session, target);
+                var result = builder.BuildCall2(MethodFunctionTypeOf(session, target, slotSignature), entry,
+                    CallEmitter.MarshalArgs(session, builder, slots, slotSignature, call.Args, call.Result,
+                        temps, boxed, coerceParameters: true), "");
+                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
+                CallEmitter.StoreCoercedResult(session, builder, slots,
+                    MirType.Of(slotSignature.ReturnTypeRef), result, call.Result, call.ExcTarget);
+                return;
+            }
             if (session.TryGetFunction(target.Canonical, out var callee))
             {
                 var callResult = builder.BuildCall2(callee.Type, entry,
@@ -125,7 +186,11 @@ namespace RigiCompiler.Middleware.Emit
             var siteReturn = inst.Result != null
                 ? slots[inst.Result].Local.Type.Canonical
                 : ".void";
-            var signature = CanonicalSignature.Create(siteParams, siteReturn);
+            var interfaceSlot = FatValueSlotAbi.IsGenericInterfaceSlot(callOperator);
+            var signature = interfaceSlot ? FatValueSlotAbi.InterfaceSignature(session, callOperator)
+                : FatValueSlotAbi.IsCallable(session, callOperator)
+                ? FatValueSlotAbi.Signature(callOperator)
+                : CanonicalSignature.Create(siteParams, siteReturn);
             var fnType = MethodFunctionTypeOf(session, callOperator, signature);
             var slot = VirtualSlotOf(session, callOperator);
             LLVMValueRef entry;
@@ -146,7 +211,7 @@ namespace RigiCompiler.Middleware.Emit
             var boxed = new List<ArcEmitter.FatTemp>();
             var callResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, callArgs, inst.Result,
-                    temps, boxed), "");
+                    temps, boxed, coerceParameters: interfaceSlot || FatValueSlotAbi.IsCallable(session, callOperator)), "");
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
@@ -204,7 +269,9 @@ namespace RigiCompiler.Middleware.Emit
                     }
                 }
             }
-            throw new CompilerInternalException($"虚槽缺失: {target.Canonical}");
+            throw new CompilerInternalException($"虚槽缺失: {target.Canonical}; "
+                + $"owner={target.Owner?.Canonical}; key={GenericAbi.PlanKey(target.Owner!)}; "
+                + $"plan={(plan == null ? "null" : string.Join(",", plan.VTableSlots))}");
         }
 
         // 接口 TypeSheet：恒取模板键 sheet。iMap 每个接口段都补模板

@@ -401,6 +401,9 @@ namespace RigiCompiler
                 case BoundTypeOfExpression typeOf:
                     if (typeOf.Operand != null) yield return typeOf.Operand;
                     break;
+                case BoundPlaceOfExpression placeOf:
+                    yield return placeOf.Operand;
+                    break;
                 case BoundVarArgsArgument varArgs:
                     foreach (var value in varArgs.Values) yield return value;
                     foreach (var (_, value) in varArgs.NamedValues) yield return value;

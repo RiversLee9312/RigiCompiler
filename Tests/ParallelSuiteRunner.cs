@@ -81,7 +81,14 @@ namespace RigiCompiler.Tests
             }
             for (var i = from; i <= to; i++)
             {
-                spec.Cases[i].Run();
+                try { spec.Cases[i].Run(); }
+                catch (Exception exception)
+                {
+                    // 测试源码/编译器异常是失败证据，保留完整堆栈并继续汇总；
+                    // 不让未捕获异常触发 Windows WER 弹窗阻塞自动测试。
+                    TestHarness.CheckTrue(spec.Cases[i].Label + "：测试驱动异常", false,
+                        exception.ToString());
+                }
             }
             return TestHarness.Summary(spec.SuiteName);
         }

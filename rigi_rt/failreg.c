@@ -1,8 +1,8 @@
 /*
  * 未观察失败注册表（MW11c 棒5a，native 半场；RUNTIME §18.2/§18.3）：
  * Task 失败异常本体的 native 承载。shared class 不得持 local
- * Exception 字段（P2 检查），故异常对象由本注册表 +1 持有，Task 只存
- * 节点 id（i64 字段 failureNodeId）。通道：
+ * Exception 字段（P2 检查），故 Task 通过内部 refMap 槽 +1 持有异常。
+ * 本表未观察节点额外 +1 负责顶层报告，已观察节点只借用 Task 槽。
  *   登记 = 生成代码 DONE 垫尾（MirTaskFail 发射 rigi_failure_record）；
  *   摘除 = await 观察（Task.registerWaiter → rigi_failure_drop，幂等）；
  *   汇总 = rigi_entry 失败汇总（rigi_failure_take_unobserved，main
@@ -15,6 +15,7 @@
  */
 #include "coroutine.h"
 #include "arc.h"
+#include "failreg.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -23,7 +24,7 @@
 typedef struct RigiFailureNode
 {
     int64_t id;
-    RigiFatRef failure; /* +1 持有（tag2 对象；零值防御 tolerated） */
+    RigiFatRef failure; /* 未观察时 +1；观察后借用 Task 隐藏拥有槽 */
     int observed;       /* await 观察置位（节点保留——重读重抛需要） */
     struct RigiFailureNode *next;
 } RigiFailureNode;
@@ -51,7 +52,7 @@ static void rigi_failreg_release_ref(RigiFatRef *fat)
     if (fat->payload != 0)
     {
         /* tag2 对象：payload 即对象地址，头内 rc/sheet 自足 */
-        rigi_release_shared((void *)(uintptr_t)fat->payload);
+        rigi_ref_release(fat->type_id, fat->payload);
         fat->payload = 0;
         fat->type_id = 0;
     }
@@ -60,15 +61,68 @@ static void rigi_failreg_release_ref(RigiFatRef *fat)
 /* atexit 兜底：残余节点统一释放（未观察失败已随进程退出终结） */
 static void rigi_failreg_cleanup(void)
 {
+    RigiFailureNode *nodes;
+    rigi_region_enter();
     rigi_failreg_lock();
-    while (rigi_failreg_head != NULL)
+    nodes = rigi_failreg_head;
+    rigi_failreg_head = NULL;
+    rigi_failreg_unlock();
+    while (nodes != NULL)
     {
-        RigiFailureNode *node = rigi_failreg_head;
-        rigi_failreg_head = node->next;
-        rigi_failreg_release_ref(&node->failure);
-        rigi_track_free(node);
+        RigiFailureNode *next = nodes->next;
+        if (!nodes->observed) rigi_failreg_release_ref(&nodes->failure);
+        rigi_track_free(nodes);
+        nodes = next;
+    }
+    rigi_region_exit();
+}
+
+/* Task 已死：已观察节点可回收；未观察节点保留顶层报告的所有权。
+ * 普通 ARC 与 macroGC 均可调用，不读取借用异常、不进入 ARC fence。
+ * 异常拥有边由 Task refMap 统一释放，包括同批白色对象边。 */
+void rigi_failure_release_task(int64_t id)
+{
+    RigiFailureNode **link;
+    if (id == 0) return;
+    rigi_failreg_lock();
+    for (link = &rigi_failreg_head; *link != NULL; link = &(*link)->next)
+    {
+        RigiFailureNode *node = *link;
+        if (node->id != id) continue;
+        if (node->observed)
+        {
+            *link = node->next;
+            rigi_track_free(node);
+        }
+        break;
     }
     rigi_failreg_unlock();
+}
+
+/* 终态发布前建立 Task→异常的实际拥有边；槽在分配时清零，只绑定一次。
+ * fence 先于册闸；内部槽没有 MIR 自动 ARC，+1 明确由此移交。 */
+void rigi_failure_bind(int64_t id, RigiFatRef *slot)
+{
+    RigiFailureNode *node;
+    if (id == 0) return;
+    rigi_region_enter();
+    rigi_failreg_lock();
+    for (node = rigi_failreg_head; node != NULL; node = node->next)
+    {
+        if (node->id == id)
+        {
+            if (slot == NULL || slot->payload != 0) abort();
+            *slot = node->failure;
+            slot->payload = rigi_ref_acquire(slot->type_id, slot->payload);
+            rigi_failreg_unlock();
+            rigi_region_exit();
+            return;
+        }
+    }
+    rigi_failreg_unlock();
+    rigi_region_exit();
+    fprintf(stderr, "rigi_rt: failure_bind 节点不存在\n");
+    abort();
 }
 
 /* 登记（DONE 垫尾）：+1 拷贝持有异常胖引用，返回节点 id（>0） */
@@ -86,7 +140,8 @@ int64_t rigi_failure_record(const RigiFatRef *exc)
     node->next = NULL;
     if (node->failure.payload != 0)
     {
-        rigi_acquire_shared((void *)(uintptr_t)node->failure.payload);
+        node->failure.payload = rigi_ref_acquire(
+            node->failure.type_id, node->failure.payload);
     }
     rigi_failreg_lock();
     if (!rigi_failreg_cleanup_registered)
@@ -106,24 +161,33 @@ int64_t rigi_failure_record(const RigiFatRef *exc)
 
 /* 观察标记（await 观察失败 Task 时由 registerWaiter 调用；幂等）。
  * 节点不摘除：await 快路径重抛需重读异常（rigi_failure_get）——
- * 已观察节点由汇总跳过、随进程退出经 atexit 链释放 */
+ * 已观察节点由汇总跳过，直到 Task 死亡才交接回收 */
 void rigi_failure_drop(int64_t id)
 {
     RigiFailureNode *node;
+    RigiFatRef release = {0, 0};
     if (id == 0)
     {
         return;
     }
+    rigi_region_enter();
     rigi_failreg_lock();
     for (node = rigi_failreg_head; node != NULL; node = node->next)
     {
         if (node->id == id)
         {
-            node->observed = 1;
+            if (!node->observed)
+            {
+                node->observed = 1;
+                release = node->failure;
+            }
             break;
         }
     }
     rigi_failreg_unlock();
+    /* 放报告 root，不放 Task 槽；闸外释放允许普通析构级联。 */
+    rigi_failreg_release_ref(&release);
+    rigi_region_exit();
 }
 
 /* 读取（await 失败快路径）：节点 id → 异常拷贝（每次读取独立
@@ -137,6 +201,8 @@ int32_t rigi_failure_get(int64_t id, RigiFatRef *out)
         fprintf(stderr, "rigi_rt: rigi_failure_get 参数非法（编译器 bug）\n");
         abort();
     }
+    /* fence 必须先于册闸，避免持闸 reader 等 GC、GC 析构又等册闸。 */
+    rigi_region_enter();
     rigi_failreg_lock();
     for (node = rigi_failreg_head; node != NULL; node = node->next)
     {
@@ -145,13 +211,15 @@ int32_t rigi_failure_get(int64_t id, RigiFatRef *out)
             *out = node->failure;
             if (out->payload != 0)
             {
-                rigi_acquire_shared((void *)(uintptr_t)out->payload);
+                out->payload = rigi_ref_acquire(out->type_id, out->payload);
             }
             rigi_failreg_unlock();
+            rigi_region_exit();
             return 1;
         }
     }
     rigi_failreg_unlock();
+    rigi_region_exit();
     fprintf(stderr, "rigi_rt: rigi_failure_get 节点 %lld 不存在（运行时 bug）\n",
         (long long)id);
     abort();

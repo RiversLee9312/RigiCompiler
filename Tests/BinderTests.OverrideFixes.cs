@@ -14,6 +14,37 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("P3 Override Async Consistency Fixes (§9.2.1, bug A1)");
 
+            var (closed, _) = BindUnit("""
+                pub interface Parent\<T> { }
+                pub interface Child\<T> implements Parent\<T> { }
+                pub open class Base\<T> implements Child\<T> {
+                    pub open func pick(value: T): T { return value }
+                    pub open func get\<U>(): i32 { return 1 }
+                }
+                pub class Derived: Base\<i32> {
+                    pub override func pick(value: i32): i32 { return value }
+                    pub func pick(value: String): String { return value }
+                    pub override func get\<V>(): i32 { return 2 }
+                    pub func get\<V, W>(): i32 { return 3 }
+                }
+                func check(d: Derived) {
+                    const p: Parent\<i32> = d
+                    const n: i32 = d.pick(1)
+                    const s: String = d.pick("text")
+                    const a: i32 = d.get\<String>()
+                    const b: i32 = d.get\<String, i32>()
+                }
+                """);
+            CheckNoErrors("闭合基类覆写仅去同槽并保留参数与泛型元数重载", closed);
+            var (incompatible, _) = BindUnit("""
+                pub interface Parent\<T> { }
+                pub interface Child\<T> implements Parent\<T> { }
+                pub open class Base\<T> implements Child\<T> { }
+                pub class Derived: Base\<i32> { }
+                func reject(d: Derived) { const p: Parent\<String> = d }
+                """);
+            TestHarness.CheckSemanticError("传递泛型接口不同实参仍拒绝", incompatible.Diagnostics,
+                "Cannot assign");
             // 负例：接口 sync 成员 + async override 实现（bug A1 本体）
             var (unit, _) = BindUnit(
                 "pub interface Worker {\n" +

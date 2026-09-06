@@ -20,6 +20,22 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return existing;
             }
+            if (TypeLayout.IsNullable(MirType.Of(canonical)))
+            {
+                if (!GenericAbi.IsClosedConstructed(canonical)) return null;
+                var declaration = new BilTypeDeclaration(TypeLayout.NullableTypeCanonical, BilTypeKind.Class);
+                declaration.GenericParameters.Add("T");
+                var nullableTemplate = new MwTypeSymbol(declaration, isExternal: true,
+                    System.Array.Empty<MwMemberSymbol>(), System.Array.Empty<MwCaseSymbol>());
+                // 仅类型身份壳；Nullable 值仍沿现有胖值表示，不增加堆对象。
+                var nullable = new TypeLayoutPlan(new MwTypeSymbol(canonical, nullableTemplate),
+                    TypeLayoutKind.Class, TypeLayout.ReferenceSlotSize, TypeLayout.ReferenceSlotSize,
+                    0, System.Array.Empty<FieldPlan>(), System.Array.Empty<string>(),
+                    System.Array.Empty<(string, int)>(), System.Array.Empty<ushort>(),
+                    System.Array.Empty<(MwCaseSymbol, uint)>(), null);
+                table.Add(nullable);
+                return nullable;
+            }
             // Span/SharedSpan 为内建 External class，无 BIL 字段可排；
             // 按「类数组动态元素对象」特判合成（前缀 32B + FlagArray）
             if (TypeLayout.IsSpanCanonical(canonical)

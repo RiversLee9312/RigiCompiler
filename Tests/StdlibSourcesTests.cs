@@ -53,9 +53,9 @@ namespace RigiCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 10 棵 RootASTNode",
-                roots.Count == 10, $"实际 {roots.Count} 棵");
-            if (roots.Count < 10) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 返回恰好 13 棵 RootASTNode",
+                roots.Count == 13, $"实际 {roots.Count} 棵");
+            if (roots.Count < 13) { TestHarness.Blank(); return; }
 
             // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
             // collections < coroutine（'l' < 'r'）；d < e < g < m < s < t
@@ -63,22 +63,28 @@ namespace RigiCompiler.Tests
                 roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.rg");
             TestHarness.Check("sourceName[1]",
                 roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.rg");
-            TestHarness.Check("sourceName[2]",
-                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
-            TestHarness.Check("sourceName[3]",
-                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.rg");
+            TestHarness.Check("sourceName[2]（Atomic）",
+                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic.rg");
+            TestHarness.Check("sourceName[3]（安全 Atomic 容器）",
+                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic_collections.rg");
+            TestHarness.Check("sourceName[10]（Place/Handle）",
+                roots[10].Span?.sourceName ?? "<null>", "<stdlib>/core/place.rg");
             TestHarness.Check("sourceName[4]",
-                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
+                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
             TestHarness.Check("sourceName[5]",
-                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
-            TestHarness.Check("sourceName[6]（MW12b 全局异常通道）",
-                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/global_exceptions.rg");
-            TestHarness.Check("sourceName[7]（MW11d-C core.messaging）",
-                roots[7].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
-            TestHarness.Check("sourceName[8]（MW11d core.serialization）",
-                roots[8].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
-            TestHarness.Check("sourceName[9]（MW11c core.time）",
-                roots[9].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
+                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.rg");
+            TestHarness.Check("sourceName[6]",
+                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
+            TestHarness.Check("sourceName[7]",
+                roots[7].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
+            TestHarness.Check("sourceName[8]（MW12b 全局异常通道）",
+                roots[8].Span?.sourceName ?? "<null>", "<stdlib>/core/global_exceptions.rg");
+            TestHarness.Check("sourceName[9]（MW11d-C core.messaging）",
+                roots[9].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
+            TestHarness.Check("sourceName[11]（MW11d core.serialization）",
+                roots[11].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
+            TestHarness.Check("sourceName[12]（MW11c core.time）",
+                roots[12].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
 
             TestHarness.Blank();
         }
@@ -263,23 +269,23 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.collections");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 3)
+            if (roots.Count < 5)
             {
-                TestHarness.CheckTrue("ParseAll 至少 3 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 5 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[2];
+            var root = roots[4];
 
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
             // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
             // 具体类（共 6 个声明，S9f）
-            TestHarness.CheckTrue("顶层恰好 17 个声明（namespace + 2 interface + " +
+            TestHarness.CheckTrue("顶层恰好 18 个声明（namespace + 2 interface + " +
                 "abstract 基类 + 2 class + alloc_array/arrayOf/arrayOfElements + " +
                 "span_alloc/spanOf/shared_span_alloc/sharedSpanOf + List/ListEnumerator + " +
-                "Map/MapEnumerator）",
-                root.Declarations.Count == 17, $"实际 {root.Declarations.Count}");
+                "Map/MapEnumerator/ListStorageEnumerator）",
+                root.Declarations.Count == 18, $"实际 {root.Declarations.Count}");
             if (root.Declarations.Count < 17) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
@@ -413,28 +419,28 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.coroutine");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 4)
+            if (roots.Count < 6)
             {
-                TestHarness.CheckTrue("ParseAll 至少 4 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 6 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[3];
+            var root = roots[5];
 
             // MW11c 顶层：namespace + 15 类型（Task/Task\<TReturn\> +
             // TaskState + Executor 族 4 + PollingAlarm/EventAlarm/
             // SleepAlarm + Mutex + Timer + CoroutineLocal + I64Queue/
-            // Dispatcher）+ laneOfExecutor 助手 + 31 个 rigi_ native
-            // 原语 + sleep Rigi 包装（共 49 个声明）。棒5a：删
+            // Dispatcher）+ laneOfExecutor 助手 + 32 个 rigi_ native
+            // 原语 + sleep Rigi 包装（共 50 个声明）。棒5a：删
             // make_sleep_alarm；增 SleepAlarm/laneOfExecutor 与句柄
             // lane/current、alarm_wait、poll_*、failure_record/drop；
             // 其后增 coro_local_push/pop/get/inherit（§20.2）；
             // L8 增 event_create_sticky/event_signal（用户 EventAlarm
             // 默认底座两面，§19.3）
-            TestHarness.CheckTrue("顶层恰好 49 个声明（namespace + 15 类型 + 33 func）",
-                root.Declarations.Count == 49, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 49) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 50 个声明（namespace + 15 类型 + 34 func）",
+                root.Declarations.Count == 50, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 50) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.coroutine",
@@ -555,11 +561,12 @@ namespace RigiCompiler.Tests
                 && laneOf.Modifiers.Contains(Keywords.PRIV)
                 && laneOf.Body != null);
 
-            // 声明[17..47]：§17.4 native 原语面（rigi_ 前缀，priv native；
+            // 声明[17..48]：§17.4 native 原语面（rigi_ 前缀，priv native；
             // 棒5a 增 coroutine_current/lane、alarm_wait、poll_*、
             // failure_record/drop；make_sleep_alarm 已删；其后增
             // coro_local_* 四面；L8 增 event_create_sticky/event_signal）
             string[] expectedNatives = {
+                "rigi_worker_parallelism",
                 "rigi_worker_create", "rigi_worker_destroy", "rigi_worker_enqueue",
                 "rigi_worker_park", "rigi_coroutine_create", "rigi_coroutine_resume",
                 "rigi_coroutine_destroy", "rigi_timer_create", "rigi_timer_cancel",
@@ -591,8 +598,8 @@ namespace RigiCompiler.Tests
                         false, root.Declarations[index].GetType().Name);
                 }
             }
-            TestHarness.CheckTrue("声明[48] 是 sleep Rigi 包装（非 native，有体）",
-                root.Declarations[48] is CallableDeclarationASTNode sleep
+            TestHarness.CheckTrue("声明[49] 是 sleep Rigi 包装（非 native，有体）",
+                root.Declarations[49] is CallableDeclarationASTNode sleep
                 && sleep.Name == "sleep"
                 && !sleep.Modifiers.Contains(Keywords.NATIVE)
                 && sleep.Body != null
@@ -607,14 +614,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core + IDisposable");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 5)
+            if (roots.Count < 7)
             {
-                TestHarness.CheckTrue("ParseAll 至少 5 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 7 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[4];
+            var root = roots[6];
 
             TestHarness.CheckTrue("顶层恰好 2 个声明（namespace + interface）",
                 root.Declarations.Count == 2, $"实际 {root.Declarations.Count}");
@@ -640,29 +647,29 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core + 异常子类");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 6)
+            if (roots.Count < 8)
             {
-                TestHarness.CheckTrue("ParseAll 至少 6 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 8 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[5];
+            var root = roots[7];
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
             // NoSuchMethodException/DividedByZeroException/OutOfBoundException/
             // IllegalStateException/NoSuchElementException 8 个 open class
             // （共 10 个声明；MW9b 增 OutOfBoundException，MW11c 增
             // IllegalStateException，MW11d-B1 增 NoSuchElementException）
-            TestHarness.CheckTrue("顶层恰好 10 个声明（namespace + Exception + 8 class）",
-                root.Declarations.Count == 10, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 10) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 11 个声明（namespace + Exception + 9 class）",
+                root.Declarations.Count == 11, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 11) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core");
 
-            string[] expected = { "Exception", "RuntimeException", "IOException", "CastException",
+            string[] expected = { "Exception", "RuntimeException", "ImmutablePlaceException", "IOException", "CastException",
                 "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException",
                 "IllegalStateException", "NoSuchElementException" };
             for (int i = 0; i < expected.Length; i++)
@@ -671,6 +678,15 @@ namespace RigiCompiler.Tests
                 if (root.Declarations[index] is ClassDeclarationASTNode exceptionClass)
                 {
                     var wantAbstract = expected[i] == "Exception";
+                    if (expected[i] == "ImmutablePlaceException")
+                    {
+                        TestHarness.CheckTrue("ImmutablePlaceException 是非 open 类且有无参 init",
+                            exceptionClass.ClassName == "ImmutablePlaceException"
+                            && !exceptionClass.Modifiers.Contains(Keywords.OPEN)
+                            && exceptionClass.Members.OfType<CallableDeclarationASTNode>()
+                                .Any(m => m.Kind == CallableKind.Init && m.Parameters.Parameters.Count == 0));
+                        continue;
+                    }
                     var wantMod = wantAbstract ? Keywords.ABSTRACT : Keywords.OPEN;
                     var kindLabel = wantAbstract ? "abstract" : "open";
                     TestHarness.CheckTrue($"声明[{index}] 是 {kindLabel} class {expected[i]}",
@@ -704,14 +720,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core + 全局异常通道");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 7)
+            if (roots.Count < 9)
             {
-                TestHarness.CheckTrue("ParseAll 至少 7 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 9 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[6];
+            var root = roots[8];
 
             TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + 2 class）",
                 root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
@@ -749,14 +765,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.time");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 10)
+            if (roots.Count < 13)
             {
-                TestHarness.CheckTrue("ParseAll 至少 10 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 13 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[9];
+            var root = roots[12];
 
             // 顶层：namespace + TimeStamp/TimeSpan/DateTime 3 个 struct
             // + rigi_time_now native（共 5 个声明，RUNTIME §19.7/§17.4）
@@ -813,35 +829,39 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.serialization");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 9)
+            if (roots.Count < 12)
             {
-                TestHarness.CheckTrue("ParseAll 至少 9 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 12 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[8];
+            var root = roots[11];
 
-            TestHarness.CheckTrue("顶层恰好 7 个声明（namespace + 3 wrapper + Parcel + fromParcel + deepCopy）",
-                root.Declarations.Count == 7, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 7) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("顶层恰好 8 个声明（namespace + 私有上下文 + 3 wrapper + Parcel + fromParcel + deepCopy）",
+                root.Declarations.Count == 8, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 8) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.serialization",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.serialization");
 
-            TestHarness.CheckTrue("声明[1] 是 SerializationBase wrapper",
-                root.Declarations[1] is WrapperDeclarationASTNode baseW
+            TestHarness.CheckTrue("声明[1] 是私有 SerializationGraphContext",
+                root.Declarations[1] is ClassDeclarationASTNode graph
+                && graph.ClassName == "SerializationGraphContext"
+                && graph.Modifiers.Contains(Keywords.PRIV));
+            TestHarness.CheckTrue("声明[2] 是 SerializationBase wrapper",
+                root.Declarations[2] is WrapperDeclarationASTNode baseW
                 && baseW.WrapperName == "SerializationBase");
-            TestHarness.CheckTrue("声明[2] 是 Serializable wrapper",
-                root.Declarations[2] is WrapperDeclarationASTNode ser
+            TestHarness.CheckTrue("声明[3] 是 Serializable wrapper",
+                root.Declarations[3] is WrapperDeclarationASTNode ser
                 && ser.WrapperName == "Serializable");
-            TestHarness.CheckTrue("声明[3] 是 Temporary wrapper（一个泛型参数）",
-                root.Declarations[3] is WrapperDeclarationASTNode tmp
+            TestHarness.CheckTrue("声明[4] 是 Temporary wrapper（一个泛型参数）",
+                root.Declarations[4] is WrapperDeclarationASTNode tmp
                 && tmp.WrapperName == "Temporary"
                 && tmp.GenericParameters?.Parameters.Count == 1);
-            TestHarness.CheckTrue("声明[4] 是 class Parcel（@SerializationBase + iterate）",
-                root.Declarations[4] is ClassDeclarationASTNode parcel
+            TestHarness.CheckTrue("声明[5] 是 class Parcel（@SerializationBase + iterate）",
+                root.Declarations[5] is ClassDeclarationASTNode parcel
                 && parcel.ClassName == "Parcel"
                 && parcel.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Kind == CallableKind.Init)
@@ -851,11 +871,11 @@ namespace RigiCompiler.Tests
                     .Any(m => m.Name == "setElement")
                 && parcel.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
-            TestHarness.CheckTrue("声明[5] 是 fromParcel",
-                root.Declarations[5] is CallableDeclarationASTNode fromP
+            TestHarness.CheckTrue("声明[6] 是 fromParcel",
+                root.Declarations[6] is CallableDeclarationASTNode fromP
                 && fromP.Name == "fromParcel");
-            TestHarness.CheckTrue("声明[6] 是 deepCopy",
-                root.Declarations[6] is CallableDeclarationASTNode deep
+            TestHarness.CheckTrue("声明[7] 是 deepCopy",
+                root.Declarations[7] is CallableDeclarationASTNode deep
                 && deep.Name == "deepCopy");
 
             TestHarness.Blank();
@@ -867,14 +887,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.messaging");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 8)
+            if (roots.Count < 10)
             {
-                TestHarness.CheckTrue("ParseAll 至少 8 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 10 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[7];
+            var root = roots[9];
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.messaging",

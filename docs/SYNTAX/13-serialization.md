@@ -23,15 +23,24 @@ pub shared class Greeting {
 
 - 标在 class 声明上（`@WrapperTarget(.Entity)`），表示该类型允许跨
   MessageQueue 的复制边界。
-- 编译器为宿主合成两个方法（源码层不可手写，经 wrapper 暴露面触达）：
-  - `obj:Serializable.toParcel(): Parcel` —— 深快照为 Parcel 树；
-  - `fromParcel\<T with Serializable>(parcel: Parcel): T` —— 由 Parcel
+  自动合成也支持具体 struct 宿主；enum struct 当前不纳入自动合成入口。
+- 编译器为宿主合成序列化方法（源码层不可手写，经 wrapper 暴露面触达）：
+  - `obj:Serializable.toParcel(loopedRefEnabled: bool = false): Parcel`；
+  - `fromParcel\<T with Serializable>(parcel: Parcel, loopedRefEnabled: bool = false): T` —— 由 Parcel
     树重建（顶层函数，`core.serialization.fromParcel`）；
-  - `deepCopy\<T with Serializable>(value: T): T` —— toParcel/fromParcel
-    往返的便捷组合。
-- **深复制不变量（无别名快照）**：toParcel 结果不别名源图任何可变部分
+  - `deepCopy\<T with Serializable>(value: T, loopedRefEnabled: bool = false): T` —— toParcel/fromParcel
+    往返的便捷组合；`obj:Serializable.deepCopy(loopedRefEnabled: bool = false)`
+    投影到同一个顶层实现。布尔参数可按名称传入。
+- **默认树模式**（`false`）：toParcel 结果不别名源图任何可变部分
   （数组/List/Map/嵌套对象全部新建）；fromParcel 重建出的兄弟字段是两个
   独立对象。往返后修改任一侧不影响另一侧。
+- 默认模式只追踪当前递归路径：重复引用逐边独立复制，真环抛
+  `core.IllegalStateException`，不无限递归。旧 String 键 Map 的编码保持不变。
+- **图模式**（`true`）：保留 class、Array、List、Map 之间的共享引用、自环
+  与多节点环；复制图和源图独立。值类型按值复制，不参与引用身份表。
+  每次公开调用拥有独立运行期上下文，编码用 `Place<Object>` 线性比较身份，
+  外层 `finally` 在正常及异常路径释放全部 Place。解码先创建壳、登记编号，
+  再填字段或元素；Array 在登记前已分配正确长度。
 
 ### 20.2.1 字段可序列性检查（编译期）
 
@@ -88,6 +97,8 @@ wrapper：非 `core.serialization` 命名空间的代码不得拿它修饰自己
 
 字段可序列性判定：标量/String 直收；Array/List/Map/Parcel 递归检查元素
 （或键值）类型；`@Serializable` 宿主递归其字段闭包；`T?` 递归 T。
+Map 的可序列化非 String 键也受支持，键和值分别检查闭包；集合自身仍按
+`toString()` 匹配键，不新增对象身份键语义。
 
 ## 20.4 `@Temporary`（切断序列化边的字段 wrapper）
 
@@ -96,7 +107,7 @@ wrapper：非 `core.serialization` 命名空间的代码不得拿它修饰自己
 class Foo {
     path: String
 
-    @Temporary(resume: () => rebuild(path))
+    @Temporary(resume=() => rebuild(path))
     cache: Cache
 }
 ```
@@ -156,11 +167,53 @@ pub func valueAtIndex(index: i64): Any?
 - 取回值从 Any 槽 cast 到 T；类型不符抛 `core.CastException`（预期行为）。
 - 嵌套 Parcel 合法（Parcel 自身满足 SerializationBase）。
 
+图模式的引用节点使用保留键 `..id`、`..ref`、`..data`：首次节点保存正编号、
+零引用编号及其负载，重复引用只保存目标编号。`typeName` 仍是节点类型名。
+这些元数据位于独立外层，不与用户字段或 String Map 键混合。
+图模式 Map 负载是按插入顺序交替保存键、值的节点序列，因而同一对象作为
+键、值及普通字段时仍能恢复别名。新增非 String 键在默认模式也使用该序列，
+但逐边独立复制。未知引用、重复编号或非连续新编号抛
+`core.IllegalStateException`；负载类型不匹配沿 Parcel 的类型检查报错。
+编码与解码必须使用相同的模式。
+图解码按原序填入 Map 键值存储，不在祖先对象仍未填完时调用键比较；
+完整恢复后的查找与更新继续遵循 Map 原有 `toString()` 规则。
+
 `..toParcel` / `..fromParcel` 是编译器为 `@Serializable` 宿主合成的序列化
 方法（`obj:Serializable.toParcel()` 源码面经编译器改写转发宿主合成体）；
 深复制不变量见 §20.2。
 
 ## 20.7 支撑集合 API 面（core.collections）
+
+安全并发集合位于 `core`：`AtomicArray\<T>`、`AtomicList\<T>`、
+`AtomicMap\<K,V>` 均为 safe shared class。元素（Map 的键和值分别）
+须同时证明 shared-safe 与 `with Serializable`；标量/String 与裸集合
+不会仅因其可作为序列化字段便自动满足此 wrapper 约束。编译器只给
+真实标准库容器及其工厂/快照型参附加私有共享证明，显式与推断调用、
+嵌套类型以及尚未代入的外层型参均检查，用户无新增约束语法。
+
+构造入口为同步方法级泛型工厂 `AtomicArray.fromArray\<E>(source)`、
+`AtomicList.fromList\<E>(source)`、`AtomicMap.fromMap\<A,B>(source)`；
+可推断实参，不得经 `AtomicArray\<E>.fromArray` 访问 static。
+工厂逐元素深复制，source 及其元素与新容器独立。
+
+AtomicMap 和 AtomicList 分别以 `Atomic<Map<K,V>>` 与 `Atomic<List<T>>`
+封装普通集合，单项删除在 Atomic 保护下直接调用底层集合。普通 List
+以可空内部槽存储元素，删除后清空尾槽；Map 复用这一释放行为，包装层
+不通过重建 Map 或 List 绕过引用残留。
+
+对外状态操作全部为 async 方法（须 await 完成以观察生效）：
+
+- Array：`length(): i32`、`getAtIndex(i32): T?`、`setAtIndex(i32,T)`、`iterate(): AtomicSnapshot\<T>`。
+- List：`length(): i64`、`add(T)`、`getAtIndex(i64): T?`、`setAtIndex(i64,T)`、`removeAt(i64)`、`iterate(): AtomicSnapshot\<T>`。
+- Map：`count(): i64`、`set(K,V)`、`tryGet(K): V?`、`containsKey(K): bool`、`remove(K): bool`、`keyAtIndex(i64): K?`、`valueAtIndex(i64): V?`、`iterate(): AtomicMapSnapshot\<K,V>`。
+
+每次读写均在私有 Atomic.mutate 的持锁回调内完成；入站和出站元素
+深复制，删除重建 backing 以释放普通 List 尾槽引用。读越界返回 null，
+写越界与 List 删除越界沿普通集合抛异常；Map 键仍按下述 toString 规则。
+返回的 snapshot 为 shared 可枚举值，每次同步 `iterate()` 新建独立
+本地枚举器及元素副本，既不观察容器后续修改，也不共享可变游标。
+Map 快照只保存独立键/值数组，不将普通 Pair 标记为 shared；其公开
+构造的两个数组必须等长。容器不公开 Atomic、Handle 或可变 backing。
 
 Parcel 与序列化合成代码使用的最小集合面（MW11d-B1）：
 

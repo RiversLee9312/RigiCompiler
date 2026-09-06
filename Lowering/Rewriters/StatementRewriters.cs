@@ -156,7 +156,7 @@ namespace RigiCompiler
                 guard.Track(call.Receiver, callReceiver);
             }
             var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
-                ctx, env, guard);
+                ctx, env, guard, call.Receiver?.Type as TypeSymbol, call.Method, call.TypeArguments);
             if (arguments == null) return null;
             // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
             var genericPack = call.GenericPack == null ? null
@@ -176,6 +176,12 @@ namespace RigiCompiler
             for (var i = 0; i < call.Arguments.Count; i++)
                 sealedArguments.Add(sealedSlots[slotIndex++]);
             if (call.IsIndirect) indirectTarget = sealedSlots[slotIndex];
+            if (call.Receiver != null && HandleCallLowering.IsHandle(call.Method))
+            {
+                return new LoweredCallStatement(call, HandleCallLowering.Helper(call.Method, env),
+                    HandleCallLowering.Arguments(call, callReceiver!, sealedArguments, env),
+                    typeArguments: HandleCallLowering.TypeArguments(call.Receiver));
+            }
             return new LoweredCallStatement(call, call.Method, sealedArguments, callReceiver,
                 call.TypeArguments, genericPack, indirectTarget);
         }
@@ -195,7 +201,8 @@ namespace RigiCompiler
             var guard = new EvalOrderGuard(ctx);
             guard.Track(call.Receiver!, receiver);
             var arguments = LoweringFacility.LowerArguments(call.Arguments,
-                call.Method.Parameters, ctx, env, guard);
+                call.Method.Parameters, ctx, env, guard, call.Receiver?.Type as TypeSymbol,
+                call.Method, call.TypeArguments);
             if (arguments == null) return null;
             var genericPack = call.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,

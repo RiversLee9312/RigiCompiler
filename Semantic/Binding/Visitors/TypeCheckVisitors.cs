@@ -31,6 +31,7 @@ namespace RigiCompiler
                 : targetType is TypeSymbol conversionTarget
                     ? ResolveConversion(source, conversionTarget, env)
                     : null;
+            if (conversion != null) UnsafeGates.CheckMethod(conversion, node, ctx, env);
             return new BoundCastExpression(node, source, targetType, cast.IsSafe, resultType,
                 conversion);
         }

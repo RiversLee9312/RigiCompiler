@@ -638,6 +638,21 @@ namespace RigiCompiler
     // 取运行时实际类型）/ TargetType（类型形态）互斥（构造时恰一个非 null）。
     // Type = Type\<T\> 构造类型（P3 定型：值形态 T = 操作数静态类型，
     // 类型形态 T = 目标类型）
+    public sealed class BoundPlaceOfExpression : BoundExpression
+    {
+        public BoundExpression Operand { get; }
+        public CellStorageInfo? Storage { get; }
+        public bool HasDynamicTarget { get; }
+
+        public BoundPlaceOfExpression(ASTNode syntax, BoundExpression operand,
+            TypeSymbol type, CellStorageInfo? storage, bool hasDynamicTarget = false) : base(syntax, type)
+        {
+            Operand = operand;
+            Storage = storage;
+            HasDynamicTarget = hasDynamicTarget;
+        }
+    }
+
     public sealed class BoundTypeOfExpression : BoundExpression
     {
         public BoundExpression? Operand { get; }

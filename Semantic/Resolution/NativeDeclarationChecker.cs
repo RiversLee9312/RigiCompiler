@@ -150,6 +150,11 @@ namespace RigiCompiler
             method.NativeSymbol = symbolAnnotation == null
                 ? method.Name
                 : env.NativeAnnotationStringArgument(symbolAnnotation, entry);
+            // capability 机制只由真正内嵌标准库触达，伪造库路径/符号名不能取得特权。
+            if (!entry.Context.File.IsCompilerLibrary && method.NativeLibrary == "rigi_rt"
+                && (method.NativeSymbol?.StartsWith("handle_", StringComparison.Ordinal) == true
+                    || method.NativeSymbol == "place_same_target"))
+                env.Error(entry.Node.Span, "Handle/Place runtime symbols are compiler-private");
         }
     }
 }

@@ -20,9 +20,9 @@ namespace RigiCompiler.Middleware.Emit
     /// &lt;/&lt;=/&gt;/&gt;= 调 compareTo 按 core::ComparisonResult 判别
     /// 映射 bool（SYNTAX §13.2）。全落空抛 core.NoSuchMethodException
     ///（VM VmException「没有用户 operator …」的语言级对应面）。
-    /// 语义边界（与 VM 的分歧，编译期受控拒绝/兜底）：泛型宿主的
-    /// operator 候选受控拒绝（构造 sheet 无法反解类型实参，class 宿主
-    /// 亦无运行时模板身份可判）；方法级泛型 typeid 注入仅支持「普通
+    /// 泛型 class 候选按已具化的构造 sheet 分臂，类级 typeid 由 receiver
+    /// 隐藏槽恢复。语义边界（与 VM 的分歧，编译期受控拒绝/兜底）：泛型
+    /// 值类型宿主的 operator 候选受控拒绝；方法级泛型 typeid 注入仅支持「普通
     /// 形参恰为占位」的精确形态，其余注入 core::Any（VM 推断失败的
     /// 缺省同口径）；Entity wrapper 的 operator 代理链不经本面（VM
     /// 会改道 .proxy.opr.*）；null-like 与 Span 恒等的 ==/!= 特判不在
@@ -172,24 +172,39 @@ namespace RigiCompiler.Middleware.Emit
             MirGenericBinaryOp inst, MwMemberSymbol candidate,
             LLVMValueRef leftFat, LLVMValueRef leftTid, LLVMValueRef leftPayload,
             LLVMValueRef rightFat, LLVMValueRef rightTid, LLVMValueRef rightPayload,
-            LLVMBasicBlockRef done)
+            LLVMBasicBlockRef done, string? constructedOwner = null)
         {
             if (!session.TryGetFunction(candidate.Canonical, out var callee))
             {
                 return;
             }
             var owner = candidate.Owner;
-            if (owner == null || !TrySheetOf(session, owner.Canonical, out var ownerSheet))
+            if (owner == null) return;
+            if (constructedOwner == null && owner.Declaration.GenericParameters.Count > 0
+                && owner.Declaration.Kind == BilTypeKind.Class)
+            {
+                // 类级实参由 receiver 隐藏槽恢复；按真实闭合宿主分别守卫，
+                // 不以模板 sheet 冒充实例身份，也不让未实例化的声明污染候选。
+                foreach (var ownerRef in ConstructedOwners(session, owner))
+                    EmitBinaryCandidateArm(session, builder, slots, inst, candidate,
+                        leftFat, leftTid, leftPayload, rightFat, rightTid, rightPayload,
+                        done, ownerRef);
+                return;
+            }
+            if (!TrySheetOf(session, constructedOwner ?? owner.Canonical, out var ownerSheet))
             {
                 return;
             }
-            RejectUnsupportedCandidate(candidate, owner);
+            if (constructedOwner == null) RejectUnsupportedCandidate(candidate, owner);
             var signature = CanonicalSignature.Parse(candidate.Canonical);
             if (signature.Parameters.Count != 1)
             {
                 return;   // 二元 operator 恰一普通形参（声明点校验；防御）
             }
             var paramType = signature.Parameters[0].TypeRef;
+            if (constructedOwner != null)
+                paramType = ConstructedTypeCollector.Substitute(paramType,
+                    ConstructedTypeCollector.BuildSubstitution(constructedOwner, owner.Declaration));
 
             var fn = session.CurrentFunction;
             var check = fn.AppendBasicBlock("gop.chk");
@@ -298,18 +313,27 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirGenericUnaryOp inst, MwMemberSymbol candidate,
             LLVMValueRef operandFat, LLVMValueRef operandTid, LLVMValueRef operandPayload,
-            LLVMBasicBlockRef done)
+            LLVMBasicBlockRef done, string? constructedOwner = null)
         {
             if (!session.TryGetFunction(candidate.Canonical, out var callee))
             {
                 return;
             }
             var owner = candidate.Owner;
-            if (owner == null || !TrySheetOf(session, owner.Canonical, out var ownerSheet))
+            if (owner == null) return;
+            if (constructedOwner == null && owner.Declaration.GenericParameters.Count > 0
+                && owner.Declaration.Kind == BilTypeKind.Class)
+            {
+                foreach (var ownerRef in ConstructedOwners(session, owner))
+                    EmitUnaryCandidateArm(session, builder, slots, inst, candidate,
+                        operandFat, operandTid, operandPayload, done, ownerRef);
+                return;
+            }
+            if (!TrySheetOf(session, constructedOwner ?? owner.Canonical, out var ownerSheet))
             {
                 return;
             }
-            RejectUnsupportedCandidate(candidate, owner);
+            if (constructedOwner == null) RejectUnsupportedCandidate(candidate, owner);
             var signature = CanonicalSignature.Parse(candidate.Canonical);
             if (signature.Parameters.Count != 0)
             {
@@ -335,9 +359,21 @@ namespace RigiCompiler.Middleware.Emit
 
         // ===== 候选调用与结果 =====
 
-        // 候选编译期形态校验（语义边界见类注释）：泛型宿主（值类型 =
-        // 类级 typeid 不可从值恢复；class = 构造身份无运行时模板判定）
-        // 受控拒绝
+        private static IEnumerable<string> ConstructedOwners(ModuleBuilder.Session session,
+            MwTypeSymbol owner)
+        {
+            if (session.Layout == null) yield break;
+            foreach (var plan in session.Layout.Plans)
+            {
+                var typeRef = plan.Symbol.Canonical;
+                if (GenericAbi.IsClosedConstructed(typeRef)
+                    && session.Symbols.FindTypeByRef(typeRef)?.Declaration == owner.Declaration)
+                    yield return typeRef;
+            }
+        }
+
+        // 未经闭合 class 分臂适配的泛型宿主仍受控拒绝：值类型的
+        // 类级 typeid 不能沿用 class 的 receiver 隐藏字段 ABI。
         private static void RejectUnsupportedCandidate(MwMemberSymbol candidate,
             MwTypeSymbol owner)
         {

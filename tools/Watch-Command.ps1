@@ -44,6 +44,12 @@ param(
     [string]$ArgumentList = '',
     [int]$TimeoutSeconds = 600,
     [string]$WorkingDirectory = (Get-Location).Path,
+    [string]$MetricsPath = '',
+    [string]$StderrPath = '',
+    [string]$StdoutPath = '',
+    [int]$NoProgressSeconds = 0,
+    [int]$HeartbeatSeconds = 10,
+    [switch]$FailOnStderr,
     [switch]$CleanupOrphans
 )
 
@@ -83,6 +89,10 @@ if (-not $Command) {
 }
 if ($TimeoutSeconds -le 0) {
     Write-Error "watch-command: -TimeoutSeconds must be positive"
+    exit 2
+}
+if (($NoProgressSeconds -lt 0) -or ($HeartbeatSeconds -le 0) -or ($NoProgressSeconds -gt 0 -and -not $StdoutPath)) {
+    [Console]::Error.WriteLine('watch-command: 无进展监测需要 StdoutPath，时间间隔必须有效。')
     exit 2
 }
 
@@ -200,6 +210,8 @@ try {
     $psi.Arguments = $ArgumentList
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true   # 铁律 1：stdin 断开（启动后立即关流 → EOF）
+    $psi.RedirectStandardError = [bool]$StderrPath
+    $psi.RedirectStandardOutput = [bool]$StdoutPath
     $psi.WorkingDirectory = $WorkingDirectory
 
     $p = New-Object System.Diagnostics.Process
@@ -214,15 +226,94 @@ try {
 
     [RigiJob]::Assign($job, $p)           # 铁律 3：后代出生即入 job
     $p.StandardInput.Close()              # 立即 EOF
+    $stderrTask = if ($StderrPath) { $p.StandardError.ReadToEndAsync() } else { $null }
+    $stdoutWriter = if ($StdoutPath) { [IO.StreamWriter]::new([IO.Path]::GetFullPath($StdoutPath), $false) } else { $null }
+    $lineTask = if ($StdoutPath) { $p.StandardOutput.ReadLineAsync() } else { $null }
 
-    $exited = $p.WaitForExit($TimeoutSeconds * 1000)
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $peakRss = [long]0
+    $lastProgress = 0.0
+    $nextHeartbeat = $HeartbeatSeconds
+    $progress = @{}
+    $lastRuntime = '尚无业务采样'
+    $lastRuntimeAt = 0.0
+    $stalled = $false
+    if ($MetricsPath -or $StdoutPath -or $NoProgressSeconds) {
+        # 只测被启动的实际进程；调用者应直接传 exe，编译另行计时。
+        do {
+            $exited = $p.WaitForExit(100)
+            if ($exited) { [RigiJob]::KillTree($job, 137) }
+            $drainDeadline = $watch.Elapsed.TotalSeconds + 3
+            if ($exited -and $lineTask) { [void]$lineTask.Wait(1000) }
+            $drainedLines = 0
+            while ($lineTask -and $lineTask.IsCompleted -and ($drainedLines -lt 1000 -or ($exited -and $watch.Elapsed.TotalSeconds -lt $drainDeadline))) {
+                $drainedLines++
+                $line = $lineTask.GetAwaiter().GetResult()
+                if ($null -eq $line) { $lineTask = $null; break }
+                $stdoutWriter.WriteLine($line)
+                $stdoutWriter.Flush()
+                [Console]::WriteLine($line)
+                # 仅业务计数的严格增加算进展；心跳/诊断不会掩盖卡死。
+                if ($line -match '(sender|reader)=(\d+) (accepted|received)=(\d+)') {
+                    $key = $Matches[1] + $Matches[2]
+                    $value = [long]$Matches[4]
+                    if ((-not $progress.ContainsKey($key)) -or $value -gt $progress[$key]) {
+                        $progress[$key] = $value
+                        $lastProgress = $watch.Elapsed.TotalSeconds
+                    }
+                }
+                if ($line -match 'workers=\d+ running=\d+ gc-active=\d+ gc-debt=-?\d+') {
+                    $lastRuntime = $Matches[0]
+                    $lastRuntimeAt = $watch.Elapsed.TotalSeconds
+                }
+                $lineTask = $p.StandardOutput.ReadLineAsync()
+                if ($exited) { [void]$lineTask.Wait(1000) }
+            }
+            if (-not $exited) {
+                $p.Refresh()
+                $peakRss = [Math]::Max($peakRss, $p.PeakWorkingSet64)
+                if ($StdoutPath -and $watch.Elapsed.TotalSeconds -ge $nextHeartbeat) {
+                    $counts = ($progress.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' '
+                    Write-Host ("[heartbeat] elapsed={0:N1}s idle={1:N1}s pid={2} threads={3} cpu={4:N1}s rss={5} {6}" -f $watch.Elapsed.TotalSeconds, ($watch.Elapsed.TotalSeconds - $lastProgress), $p.Id, $p.Threads.Count, $p.TotalProcessorTime.TotalSeconds, $p.WorkingSet64, $counts)
+                    Write-Host ("[heartbeat] last-reported-at={0:N1}s {1}" -f $lastRuntimeAt, $lastRuntime)
+                    $nextHeartbeat += $HeartbeatSeconds
+                }
+            }
+            $stalled = ($NoProgressSeconds -gt 0) -and (($watch.Elapsed.TotalSeconds - $lastProgress) -ge $NoProgressSeconds)
+        } while ((-not $exited) -and (-not $stalled) -and ($watch.Elapsed.TotalSeconds -lt $TimeoutSeconds))
+    } else {
+        $exited = $p.WaitForExit($TimeoutSeconds * 1000)
+    }
+    $watch.Stop()
+    if ($MetricsPath) {
+        [ordered]@{ elapsedSeconds = $watch.Elapsed.TotalSeconds; cpuSeconds = $p.TotalProcessorTime.TotalSeconds; peakRssBytes = $peakRss;
+            nativeExitCode = $(if ($exited) { $p.ExitCode } else { $null }); timedOut = (-not $exited); noProgressTimeout = $stalled; progress = $progress; command = $Command } |
+            ConvertTo-Json | Set-Content -LiteralPath $MetricsPath -Encoding utf8
+    }
     if ($exited) {
         $p.WaitForExit()                  # 让 ExitCode 定型
         $code = $p.ExitCode               # PS 关键字参数模式下 exit $p.ExitCode 会被拆成 $p + ".ExitCode"
+        if ($lineTask) {
+            # 后代仍持有 stdout 时只给有界排空时间，不能报告完整输出成功。
+            [Console]::Error.WriteLine('watch-command: stdout 未在退出后的有界排空阶段到达 EOF。')
+            if ($code -eq 0) { $code = 1 }
+        }
+        if ($stderrTask) {
+            if (-not $stderrTask.Wait(3000)) {
+                [IO.File]::WriteAllText([IO.Path]::GetFullPath($StderrPath), '[watchdog] stderr 未在退出后 3 秒内关闭。')
+                exit 1
+            }
+            $stderrText = $stderrTask.GetAwaiter().GetResult()
+            [IO.File]::WriteAllText([IO.Path]::GetFullPath($StderrPath), $stderrText)
+            if ($stderrText) {
+                [Console]::Error.Write($stderrText)
+                if ($FailOnStderr -and $code -eq 0) { $code = 1 }
+            }
+        }
         exit $code
     }
 
-    [Console]::Error.WriteLine("watch-command: timeout after ${TimeoutSeconds}s, killing process tree (pid=$($p.Id))")
+    [Console]::Error.WriteLine("watch-command: timeout elapsed=$($watch.Elapsed.TotalSeconds)s noProgress=$stalled, killing process tree (pid=$($p.Id))")
     [RigiJob]::KillTree($job, 137)
     # 铁律 2：逃逸者兜底（父进程多半已被 job 灭掉，taskkill 找不到属正常；PS 5.1 下原生命令
     # stderr 在 EAP=Stop 时会抛 NativeCommandError，这里必须降级 Continue 吞掉）
@@ -230,8 +321,20 @@ try {
     $ErrorActionPreference = 'Continue'
     try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch { }
     $ErrorActionPreference = $prevEap
+    if ($stderrTask) {
+        # 整个 Job 已终止；仍有外部继承管道时只给有界时间，不卡看门狗。
+        [void]$p.WaitForExit(3000)
+        if ($stderrTask.Wait(3000)) {
+            $stderrText = $stderrTask.GetAwaiter().GetResult()
+            [IO.File]::WriteAllText([IO.Path]::GetFullPath($StderrPath), $stderrText)
+            if ($stderrText) { [Console]::Error.Write($stderrText) }
+        } else {
+            [IO.File]::WriteAllText([IO.Path]::GetFullPath($StderrPath), '[watchdog] 进程树已终止，但 stderr 管道未在 3 秒内关闭。')
+        }
+    }
     exit 124
 }
 finally {
+    if ($stdoutWriter) { $stdoutWriter.Dispose() }
     [RigiJob]::Close($job)                # KILL_ON_JOB_CLOSE：残余后代由内核收尾
 }

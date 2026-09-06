@@ -233,6 +233,7 @@ namespace RigiCompiler.Middleware.Emit
                     DeclareFunction(fn);
                 }
                 DynamicNewEmitter.DeclareAll(this);
+                FatValueSlotAbi.DeclareAll(this);
                 if (Layout != null)
                 {
                     TypeSheetEmitter.EmitAll(this, Layout);
@@ -251,6 +252,7 @@ namespace RigiCompiler.Middleware.Emit
                     EmitBody(builder, emitted);
                 }
                 DynamicNewEmitter.EmitAll(this, builder);
+                FatValueSlotAbi.EmitAll(this, builder);
                 if (entrypoint != null)
                 {
                     EmitEntryStub(builder, entrypoint);
@@ -857,6 +859,9 @@ namespace RigiCompiler.Middleware.Emit
                     {
                         LlvmEmitDispatchers.Visit(inst, this);
                     }
+                    if (block.Id == "mw.state.0" && fn.RestoredEntrySource is { } source
+                        && Layout?.DisposeImplementations.Contains(source) == true)
+                        EmitDisposeReceiverMark(builder, slots);
                     TerminatorEmitter.Emit(this, builder, slots, blockRefs, emitted.Value, fn, block.Terminator);
                 }
                 }
@@ -885,6 +890,12 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     return;
                 }
+                EmitDisposeReceiverMark(builder, slots);
+            }
+
+            private void EmitDisposeReceiverMark(LLVMBuilderRef builder,
+                Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots)
+            {
                 // class 宿主的 .this 是胖引用槽（EmitClassTypeIdPrologue
                 // 同款物化形态）：payload 半 = 对象裸指针
                 var fat = LoadLocal(builder, slots, new MirLocalOperand(".this"));

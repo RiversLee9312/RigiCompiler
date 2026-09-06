@@ -19,7 +19,7 @@ namespace RigiCompiler.Tests
     /// 杜绝手编样例漂移。未找到 clang 工具链时整套 skip（不计失败）——
     /// CI 双平台 runner 预装 clang/lld 必跑。
     /// </summary>
-    public static class NativeE2ETests
+    public static partial class NativeE2ETests
     {
         public static int RunAll()
         {
@@ -71,9 +71,10 @@ namespace RigiCompiler.Tests
         // 表外拒绝是定稿行为，不做 VM 对拍）——cSource 现场 clang -c 出
         // 目标文件，经 native --link 链入，断言 stdout/退出码字面量
         private static (string Label, Action Run) NativeOnlyCase(string label,
-            string source, string cSource, string expectedStdout, int expectedExit) =>
+            string source, string cSource, string expectedStdout, int expectedExit,
+            IReadOnlyDictionary<string, string>? env = null) =>
             (label, () => RunNativeOnlyCase(label, source, cSource,
-                expectedStdout, expectedExit));
+                expectedStdout, expectedExit, env));
 
         private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
             (label, () => RunFailCase(label, source, needle, null));
@@ -124,10 +125,12 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n"),
             Case("print 无换行原样输出",
-                "import core.io.Console\n" +
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"print\")\n" +
+                "native func rawPrint(text: String)\n" +
                 "pub func main(): i32 {\n" +
-                "    Console.print(\"ab\")\n" +
-                "    Console.print(\"cd\")\n" +
+                "    rawPrint(\"ab\")\n" +
+                "    rawPrint(\"cd\")\n" +
                 "    return 0\n" +
                 "}\n"),
             Case("标量退出码",
@@ -3063,7 +3066,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub class Hero {\n" +
                 "    @Clamped\n" +
-                "    pub var hp: i32\n" +
+                "    pub var hp: i32 = 0\n" +
                 "    pub init() { }\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -4304,9 +4307,11 @@ namespace RigiCompiler.Tests
                 "    pub var v: T\n" +
                 "    pub init(v: T) { this.v = v }\n" +
                 "}\n" +
-                "pub func make\\<T, U extends Box\\<T>>(x: T): U { return U(x) }\n" +
+                "pub class Factory\\<T> {\n" +
+                "    pub func make\\<U extends Box\\<T>>(x: T): U { return U(x) }\n" +
+                "}\n" +
                 "pub func main(): i32 {\n" +
-                "    var b = make\\<i32, Box\\<i32>>(11)\n" +
+                "    var b = new Factory\\<i32>().make\\<Box\\<i32>>(11)\n" +
                 "    if (b.v == 11) { Console.println(\"ph arg ok\") }\n" +
                 "    return b.v\n" +
                 "}\n"),
@@ -4609,7 +4614,8 @@ namespace RigiCompiler.Tests
             FailCase("占位 cast 失败抛 CastException",
                 "pub func conv\\<T>(x: Any): T { return x as T }\n" +
                 "pub func main(): i32 {\n" +
-                "    return conv\\<String>(42 as Any)\n" +
+                "    const ignored = conv\\<String>(42 as Any)\n" +
+                "    return 0\n" +
                 "}\n", "无法将"),
             Case("struct 恒等 cast",
                 "pub struct Point {\n" +
@@ -7543,7 +7549,7 @@ namespace RigiCompiler.Tests
                 "    pub var payload: Any?\n" +
                 "    pub init() { }\n" +
                 "}\n" +
-                "pub struct Ref {\n" +
+                "pub rich struct Ref {\n" +
                 "    pub var target: Node?\n" +
                 "    pub init(_ -> target)\n" +
                 "}\n" +
@@ -7795,10 +7801,117 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "double rigiffi_pick(signed char flag, double x) { return flag ? x : -x; }\n",
                 "1.5\n-1.5\n", 0),
+            Case("Place 对象身份与 Cell 复用",
+                "class Item { pub var n: i32 = 1 }\n" +
+                "pub func main(): i32 {\n" +
+                " const x = new Item()\n var n: i32 = 1\n const fixed: i32 = 4\n" +
+                " seq using(const a = placeOf x) using(const b = placeOf x) {\n" +
+                "  core.io.Console.println((a == b).toString())\n }\n" +
+                " seq using(const a = placeOf n) using(const b = placeOf n) {\n" +
+                "  n = 9\n core.io.Console.println((a == b).toString())\n" +
+                "  core.io.Console.println(n.toString())\n a.dispose()\n" +
+                "  core.io.Console.println((a == b).toString())\n }\n" +
+                " seq using(const a = placeOf fixed) using(const b = placeOf fixed) {\n" +
+                "  core.io.Console.println((a == b).toString())\n }\n return 0\n}"),
+            Case("Handle 生命周期与值写回",
+                "pub func main(): i32 {\n var n: i32 = 3\n" +
+                " unsafe seq using(const p = placeOf n) {\n const h = p.expose()\n" +
+                " p.dispose()\n core.io.Console.println(h.load().toString())\n" +
+                " const m = h.asMutable()\n m.store(9)\n" +
+                " core.io.Console.println(n.toString())\n" +
+                " core.io.Console.println(h.load().toString())\n }\n return 0\n}"),
+            Case("Handle 对象只读与泛型能力边界", HandleBoundarySource),
+            Case("Cell 用户覆写开放封闭接口与重载 ABI", CellSlotSource),
+            Case("Handle rich value 与异常所有权", HandleRichSource),
+            EnvCase("Handle 隐藏边循环回收", HandleCycleSource,
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
+            Case("Atomic 值对象异常与安全门面", AtomicSource),
+            Case("Atomic 基础初始化与读取", "pub func main(): i32 { unsafe seq { const a = new Atomic\\<i32>(3)\n return a.load() } }") ,
+            Case("Atomic 值更新", "pub func main(): i32 { unsafe seq { const a = new Atomic\\<i32>(3)\n a.mutate(func{ (old:i32):i32 -> old + 4 })\n return a.load() } }") ,
+            Case("AtomicStruct 安全更新", "pub func main(): i32 { const a = new AtomicStruct\\<i32>(3)\n a.store(7)\n return a.load() }") ,
+            Case("Atomic nullable 值与对象往返", AtomicNullableSource),
+            Case("同步 callable 开放封闭多参数与Action", CallableSlotSource),
+            Case("Nullable 泛型cast与is元素约束", NullableCastSource),
+            Case("Atomic 回调挂起与锁竞争", AtomicContentionSource),
+            Case("安全Atomic容器工厂方法与快照隔离", AtomicContainersSource),
+            Case("安全Atomic数组仅工厂", AtomicContainerProbePrefix + "pub func main():i32 { const a = AtomicArray.fromArray\\<Item>(core.collections.arrayOfElements\\<Item>(new Item(1)))\n return 0 }"),
+            Case("安全Atomic数组长度", AtomicContainerProbePrefix + "pub func main():i32 { const a = AtomicArray.fromArray\\<Item>(core.collections.arrayOfElements\\<Item>(new Item(1)))\n return await a.length() }"),
+            Case("共享消息序列化往返", AtomicContainerProbePrefix + "pub func main():i32 { const item = new Item(1)\n const p = item:Serializable.toParcel()\n const x = core.serialization.fromParcel\\<Item>(p)\n return x.n }"),
+            Case("共享消息泛型深复制", AtomicContainerProbePrefix + "pub func main():i32 { const x = core.serialization.deepCopy\\<Item>(new Item(1))\n return x.n }"),
+            Case("普通Map自定义对象键相等", AtomicMapKeySource),
+            Case("泛型对象文本覆写可挂起", AtomicMapKeySuspendingSource),
+            Case("序列化类自环与异常调用隔离", SerializationGraphCorpus("serialization_graph_class")),
+            Case("序列化混合容器图与Temporary", SerializationGraphCorpus("serialization_graph_mixed")),
+            Case("序列化值类型开放泛型兼容", SerializationGraphCorpus("serialization_graph_value")),
+            Case("闭环动态字符串回收不重入fence", SerializationGraphCorpus("serialization_graph_gc_strings")),
+            Case("序列化非法引用与异常后上下文隔离", SerializationGraphCorpus("serialization_graph_errors")),
+            Case("纯RigiMQ水位部分compact与全部drain", SerializationGraphCorpus("mq_pure_watermark")),
+            Case("纯RigiMQ重复唤醒release与异常解锁", SerializationGraphCorpus("mq_pure_wakeup_release")),
+            Case("泛型new隐式typeid跨挂起恢复", SerializationGraphCorpus("generic_new_after_suspend")),
+            Case("泛型class序列化闭合对象头", SerializationGraphCorpus("serialization_generic_envelope")),
+            Case("双executor候选swap与最后release竞争", MqConcurrentReleaseCorpus()),
+            NativeErrCase("普通挂起dispose与同名元数回调布局", SerializationGraphCorpus("mq_dispose_after_suspend"),
+                "UndisposedResourceException", needlePresent: false),
+            NativeErrCase("Reader跨executor重复dispose幂等", SerializationGraphCorpus("mq_reader_dispose_race"),
+                "UndisposedResourceException", needlePresent: false),
+            Case("Compute池yield与Polling迁移单执行", SerializationGraphCorpus("compute_pool_resume")),
+            Case("Compute池终态与await登记竞争及重复观察", SerializationGraphCorpus("task_terminal_waiter_race")),
+            Case("MQ跨段缓存与积压branch及清空后复用", SerializationGraphCorpus("mq_segment_cursor")),
+            Case("值块lambda混合return与throw执行finally", SerializationGraphCorpus("lambda_return_throw_finally")),
+            NativeErrCase("序列化256节点长环重复引用与独立拷贝", SerializationGraphCorpus("serialization_graph_long_cycle"),
+                "UndisposedResourceException", needlePresent: false),
+            Case("Place嵌套泛型回调身份", SerializationGraphCorpus("place_nested_callback")),
+            Case("泛型Cell构造只读与未调用扩张成员", SerializationGraphCorpus("capability_generic_cells")),
+            Case("泛型接口参数返回与具体实现ABI", SerializationGraphCorpus("generic_interface_abi")),
+            Case("普通子类闭合泛型基类身份与字段", SerializationGraphCorpus("closed_generic_base_identity")),
+            Case("Any对象视图持有与AtomicList引用消息", SerializationGraphCorpus("any_object_view_ownership")),
+            Case("闭合Func间接继承与不同元数挂起", SerializationGraphCorpus("closed_callable_suspend")),
+            EnvCase("Alarm粘滞重复跨属主与环回收", SerializationGraphCorpus("alarm_lifecycle"),
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
+            NativeOnlyCase("Alarm原生底座反复创建释放有界", NativeResourceCorpus("alarm_resources"),
+                "void alarm_resource_test_marker(void) {}", "alarm-resources-ok\n", 0),
+            NativeOnlyCase("已观察失败Task节点与异常资源有界", NativeResourceCorpus("failure_resources"),
+                "void failure_resource_test_marker(void) {}", "failure-resources-ok\n", 0,
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
+            EnvCase("失败Task环的内部资源析构", SerializationGraphCorpus("failure_lifecycle"),
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
+            Case("同一失败Task多Compute观察者重抛", SerializationGraphCorpus("failure_shared_waiters")),
+            NativeOnlyCase("普通容器删除及时释放尾槽", NativeResourceCorpus("collection_remove_resources"),
+                "void collection_remove_resource_test_marker(void) {}", "7\ncollection-remove-resources-ok\n", 0),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
         // 比 stdout（行尾归一）与退出码（main 的 i32 返回）
+        // 正向源码必须在执行 VM/native 前通过编译诊断检查；运行期负例
+        // 同样要求合法源码。BIL 级刻意坏指令仍走各自专门驱动。
+        private static BilModule EmitNativeSource(string source,
+            [System.Runtime.CompilerServices.CallerMemberName] string label = "")
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
+            if (unit.Diagnostics.HasErrors)
+                throw new InvalidOperationException(label + "：正向源码必须零 Error；" +
+                    string.Join("; ", unit.Diagnostics.Diagnostics
+                        .Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.Phase + ": " + d.Message)));
+            TestHarness.CheckTrue(label + "：源码编译零 Error", true);
+            return module;
+        }
+
+        private static void DeleteNativeTestDirectory(string dir)
+        {
+            // ExternalProcess 已 WaitForExit 并 Dispose；Windows 映像锁可能
+            // 短暂延迟释放。仅对本用例目录有界重试，最终错误仍原样抛出。
+            for (var attempt = 0; ; attempt++)
+            {
+                try { Directory.Delete(dir, recursive: true); return; }
+                catch (Exception ex) when (OperatingSystem.IsWindows() && attempt < 5
+                    && (ex is UnauthorizedAccessException
+                        || (ex is IOException && ((ex.HResult & 0xffff) is 5 or 32 or 33))))
+                {
+                    System.Threading.Thread.Sleep(20 << attempt);
+                }
+            }
+        }
+
         private static void RunCase(string label, string source,
             IReadOnlyDictionary<string, string>? env = null)
         {
@@ -7806,7 +7919,7 @@ namespace RigiCompiler.Tests
             Directory.CreateDirectory(dir);
             try
             {
-                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var module = EmitNativeSource(source, label);
                 var text = BilWriter.Write(module);
 
                 // VM 侧（行为参考实现）
@@ -7836,7 +7949,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -7851,7 +7964,7 @@ namespace RigiCompiler.Tests
             Directory.CreateDirectory(dir);
             try
             {
-                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var module = EmitNativeSource(source, label);
                 var text = BilWriter.Write(module);
 
                 // VM 侧（行为参考实现）：stdout/退出码即参照，stderr 经
@@ -7887,7 +8000,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -8313,7 +8426,7 @@ namespace RigiCompiler.Tests
             Directory.CreateDirectory(dir);
             try
             {
-                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var module = EmitNativeSource(source, label);
                 var text = BilWriter.Write(module);
 
                 // VM 侧：应有未捕获语言级异常，消息含关键字
@@ -8346,7 +8459,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -8375,7 +8488,7 @@ namespace RigiCompiler.Tests
             Directory.CreateDirectory(dir);
             try
             {
-                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var module = EmitNativeSource(source, label);
                 var text = BilWriter.Write(module);
 
                 // VM 侧：构造环在急切初始化期以 VmException 炸出
@@ -8416,14 +8529,14 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
         // 前端 take(nums) 会把包再装箱成单元素；手改 invoke 整包转发后对拍
         private static void RunPackForwardCase()
         {
-            var (_, module, _) = BilTestHarness.EmitBilUnit(
+            var module = EmitNativeSource(
                 "import core.io.Console\n" +
                 "func take(nums: i32...): i32 { return nums.length }\n" +
                 "func wrap(nums: i32...): i32 { return take(nums) }\n" +
@@ -8468,7 +8581,7 @@ namespace RigiCompiler.Tests
         // main 改写为 add<Plain>，运行期候选链全落空
         private static string BuildGenericOpMissBil()
         {
-            var (_, module, _) = BilTestHarness.EmitBilUnit(
+            var module = EmitNativeSource(
                 "pub interface Addable {\n" +
                 "    operator plus(another: Addable): Addable\n" +
                 "}\n" +
@@ -8526,7 +8639,7 @@ namespace RigiCompiler.Tests
 
         private static BilModule IndirectCastModule(bool failMode)
         {
-            var (_, module, _) = BilTestHarness.EmitBilUnit(
+            var module = EmitNativeSource(
                 "pub open class Animal {\n" +
                 "    pub init() { }\n" +
                 "}\n" +
@@ -8808,7 +8921,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -8892,7 +9005,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -9024,7 +9137,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -9132,7 +9245,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 
@@ -9140,13 +9253,14 @@ namespace RigiCompiler.Tests
         // cSource 用工具链 clang -c 现场编成目标文件，native --file --out
         // --link 一次编译链接；执行产物断言 stdout（行尾归一）与退出码
         private static void RunNativeOnlyCase(string label, string source,
-            string cSource, string expectedStdout, int expectedExit)
+            string cSource, string expectedStdout, int expectedExit,
+            IReadOnlyDictionary<string, string>? env = null)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             try
             {
-                var (_, module, _) = BilTestHarness.EmitBilUnit(source);
+                var module = EmitNativeSource(source, label);
                 var text = BilWriter.Write(module);
                 var bilPath = Path.Combine(dir, "case.bil");
                 File.WriteAllText(bilPath, text, new UTF8Encoding(false));
@@ -9179,8 +9293,11 @@ namespace RigiCompiler.Tests
                 {
                     return;
                 }
+                var runEnv = new Dictionary<string, string>(MemtrackEnv);
+                if (env != null)
+                    foreach (var entry in env) runEnv[entry.Key] = entry.Value;
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: runEnv);
                 TestHarness.Check(label + "：stdout 符合预期",
                     NormalizeNewlines(nativeOut), expectedStdout);
                 TestHarness.CheckTrue(label + "：退出码符合预期",
@@ -9188,7 +9305,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Directory.Delete(dir, recursive: true);
+                DeleteNativeTestDirectory(dir);
             }
         }
 

@@ -79,7 +79,7 @@ wrapper
 ```text
 pub protected internal priv
 open abstract singleton
-rich shared
+rich shared unsafe
 wrapped(WRAPPER_TYPE_REF)
 ```
 
@@ -186,7 +186,7 @@ BIL 的 `get.field` / `set.field` 在使用点始终引用逻辑字段 canonical
 ```text
 pub protected internal priv
 static ext override abstract
-async entrypoint
+async entrypoint unsafe
 init
 native
 symbol("NATIVE_SYMBOL_NAME")
@@ -391,11 +391,22 @@ BIL block 是结构化代码 region，不是 LLVM basic block。
 
 ### 9.6 block 修饰符
 
+`unsafe` 可修饰类型、方法和 block，不能修饰字段。方法的 `unsafe` 为函数体
+提供危险操作上下文；block 的 `unsafe` 覆盖其中引用的子块。验证器按结构化
+可达路径传播权限，同一子块若另从安全路径到达，仍须单独通过校验。
+`invoke`/`invoke.noret` 调用 unsafe 方法或 unsafe 类型声明的成员，以及
+`new`/`new.wrapped` 调用 unsafe 构造时必须具备该权限。`new.indirect` 的
+typeid 静态界可确定具体类型时，按相同类型与精确 init 签名检查；
+`invoke.indirect`/`invoke.indirect.noret` 可确定匹配的 `operator call` 声明时，
+同样检查方法及其声明类型。未知泛型或缺失外部声明仍沿用既有动态协议，
+不因此一律要求 unsafe。类型上的 unsafe 不会隐式修改各方法体的权限。
+
 标准 block 修饰符为：
 
 ```text
 entrypoint
 volatile
+unsafe
 ```
 
 `volatile` 表示该 block 内可观察操作的源码顺序必须被保留，不得进行改变其 volatile 语义的重排。具体 LLVM volatile/atomic lowering 由 Middleware 决定。

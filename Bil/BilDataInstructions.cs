@@ -426,6 +426,8 @@ namespace RigiCompiler.Bil
         {
             var typeRef = VmTypeOps.RequireTypeId(coroutine.ReadVar(TypeId.Name));
             var declaration = context.FindType(typeRef);
+            if (BilVerificationContext.StripTypeArguments(typeRef) is ".handle" or "core::Place")
+                throw context.NoSuchMethodForType(coroutine, typeRef);
             if (declaration != null
                 && (declaration.Kind == BilTypeKind.EnumStruct
                     || HasAbstract(declaration)))

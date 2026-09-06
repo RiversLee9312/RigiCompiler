@@ -89,6 +89,7 @@ namespace RigiCompiler
         public TypeSymbol? BaseType { get; internal set; }
         public bool IsRich { get; }
         public bool IsShared { get; }
+        public bool IsUnsafe { get; internal set; }
         // open/abstract/singleton 标记位（P2 由声明修饰符写入符号，供修饰符
         // 合法性检查、可继承性判定与后续 pass 消费；均与声明一一对应）
         public bool IsOpen { get; internal set; }
@@ -207,9 +208,12 @@ namespace RigiCompiler
             BaseType = definition.BaseType;
             IsRich = definition.IsRich;
             IsShared = definition.IsShared;
+            IsUnsafe = definition.IsUnsafe;
             IsBuiltin = definition.IsBuiltin;
             IsValueTypeBranch = definition.IsValueTypeBranch;
             DerivesSharedSafetyFromTypeArgument = definition.DerivesSharedSafetyFromTypeArgument;
+            // 固定 ABI 别名不随源码泛型实参重新具化（Handle<T> 恒为 .handle）。
+            BilAlias = definition.BilAlias;
             IntrinsicOps = new HashSet<BilIntrinsicOp>();
             ConstructedFrom = definition;
             TypeArguments = typeArguments;
@@ -445,6 +449,7 @@ namespace RigiCompiler
         // 即定，S8f async 边界五项闸门的检查点分派依据；仅 Kind=Regular 的
         // 函数可置位——其余 Kind 置位由 AsyncGateChecker 拒绝）
         public bool IsAsync { get; }
+        public bool IsUnsafe { get; internal set; }
         public bool IsSynthetic { get; internal set; }
         // wrapper proxy 模板标记（SYNTAX §14.2；P1 建壳按声明名落定——
         // 非 proxy 成员恒 null）：P2/P3/P4 的模板识别与 Specific/Wildcard
@@ -669,6 +674,8 @@ namespace RigiCompiler
 
     public sealed class GenericParameterSymbol : SemanticSymbol
     {
+        // 仅真实标准库安全容器使用；不是用户可声明的泛型语法。
+        internal bool RequiresSharedSafe { get; set; }
         // 类型声明泛型参数的型变方向（函数泛型参数必须保持 invariant）。
         public GenericVariance Variance { get; }
         // 位置可变（TArgs...）/ 具名可变（named TArgs...）泛型参数（P1 读标记位）
@@ -692,6 +699,7 @@ namespace RigiCompiler
 
         internal bool IsSharedSafe(HashSet<GenericParameterSymbol>? visiting)
         {
+            if (RequiresSharedSafe) return true;
             visiting ??= new HashSet<GenericParameterSymbol>();
             if (!visiting.Add(this)) return false;
             try

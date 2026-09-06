@@ -397,6 +397,9 @@ namespace RigiCompiler.Bil
                             isContinue: true, location, errors);
                         jumps?.AddContinue(continueInstruction.BreakId.Name, assigned);
                         break;
+                    case ThrowInstruction when jumps != null:
+                        // 跳转出口另行收集时，throw 不向正常续点提供赋值状态。
+                        return null;
                     case RetInstruction ret:
                         // §16.8：ret 形态与 .return 匹配
                         if (context.ReturnType != null)
@@ -544,10 +547,13 @@ namespace RigiCompiler.Bil
                         // 内活跃（§16.5 推广；finally 内允许 break tryId）
                         var tryTokens = new List<(string, bool)>(tokens)
                             { (tryInstruction.BreakId.Name, false) };
+                        // 内层 route hint 的 relay 可能提前离开 try；独立保存这些
+                        // 出口，执行 finally 后再合并，不能只取 body 的落尾态。
+                        var tryJumps = new DaJumpCollector();
                         var bodyFlow = flow?.Clone();
                         var bodyExit = AnalyzeBlock(context, tryInstruction.Body,
                             new HashSet<string>(assigned), tryTokens, stack, errors, reported,
-                            collectors, bodyFlow, jumps);
+                            collectors, bodyFlow, tryJumps);
                         // 正常/捕获路径合并态（body 落尾不可达时不含正常路径）
                         HashSet<string>? merged = bodyExit;
                         SeqRouteFlow? mergedFlow = bodyFlow;
@@ -561,7 +567,7 @@ namespace RigiCompiler.Bil
                                     { tryInstruction.ExceptionSlot.Name };
                                 var handlerExit = AnalyzeBlock(context, entry.Handler,
                                     handlerAssigned, tryTokens, stack, errors, reported,
-                                    collectors, handlerFlow, jumps);
+                                    collectors, handlerFlow, tryJumps);
                                 if (handlerExit == null)
                                 {
                                     continue;
@@ -591,21 +597,30 @@ namespace RigiCompiler.Bil
                             var finallyFlow = merged != null ? mergedFlow : flow?.Clone();
                             var finallyAssigned = new HashSet<string>(merged ?? assigned)
                                 { tryInstruction.ExceptionSlot.Name };
-                            if (jumps != null)
-                            {
-                                DelayDaJumpsThroughFinally(jumps, context,
-                                    tryInstruction.FinallyBlock, tryTokens, stack, errors,
-                                    reported, collectors, flow);
-                            }
+                            // 保存的 break/continue 也先获得运行时写入的异常槽。
+                            foreach (var exits in tryJumps.Breaks.Values.Concat(tryJumps.Continues.Values))
+                                foreach (var exit in exits) exit.Add(tryInstruction.ExceptionSlot.Name);
+                            DelayDaJumpsThroughFinally(tryJumps, context,
+                                tryInstruction.FinallyBlock, tryTokens, stack, errors,
+                                reported, collectors, flow);
                             var finallyExit = AnalyzeBlock(context, tryInstruction.FinallyBlock,
                                 finallyAssigned, tryTokens, stack, errors, reported, collectors,
-                                finallyFlow, jumps);
-                            if (finallyExit == null || merged == null)
-                            {
-                                return null;
-                            }
-                            merged = finallyExit;
+                                finallyFlow, tryJumps);
+                            merged = merged == null ? null : finallyExit;
                             mergedFlow = finallyFlow;
+                        }
+                        foreach (var exit in tryJumps.TakeBreaks(tryInstruction.BreakId.Name))
+                        {
+                            if (merged == null) merged = exit;
+                            else merged.IntersectWith(exit);
+                        }
+                        // 只消费命中本 try 的跳转；外层循环/region 的出口继续上送。
+                        if (jumps != null)
+                        {
+                            foreach (var pair in tryJumps.Breaks)
+                                foreach (var exit in pair.Value) jumps.AddBreak(pair.Key, exit);
+                            foreach (var pair in tryJumps.Continues)
+                                foreach (var exit in pair.Value) jumps.AddContinue(pair.Key, exit);
                         }
                         if (merged == null)
                         {
@@ -755,7 +770,8 @@ namespace RigiCompiler.Bil
                 foreach (var snapshot in pair.Value)
                 {
                     var exit = AnalyzeBlock(context, finallyBlock, new HashSet<string>(snapshot),
-                        tokens, stack, errors, reported, collectors, flow?.Clone());
+                        tokens, stack, errors, reported, collectors, flow?.Clone(),
+                        new DaJumpCollector());
                     if (exit != null) list.Add(exit);
                 }
                 delayed[pair.Key] = list;

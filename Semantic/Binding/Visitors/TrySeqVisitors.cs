@@ -159,6 +159,9 @@ namespace RigiCompiler
         {
             var seq = (SeqBlockExpressionASTNode)node;
             var shell = new BoundSeqStatement(node, seq.IsVolatile, seq.Label);
+            shell.IsUnsafe = seq.IsUnsafe;
+            var previousUnsafe = ctx.IsUnsafe;
+            ctx.IsUnsafe |= seq.IsUnsafe;
             if (seq.Label != null)
             {
                 ctx.Labels.PushSeqLabel(shell);
@@ -173,6 +176,7 @@ namespace RigiCompiler
             finally
             {
                 if (seq.Label != null) ctx.Labels.PopSeqLabel();
+                ctx.IsUnsafe = previousUnsafe;
             }
             return shell;
         }
@@ -190,36 +194,43 @@ namespace RigiCompiler
         {
             var seq = (SeqBlockExpressionASTNode)node;
             var usingScope = new Scope(scope);
-            var usingBindings = UsingBindingBinder.Bind(seq.UsingBindings, usingScope, ctx, env);
-            var shell = new ValueBlockShell(new BoundValueBlock(seq.Body, seq.Label ?? "_"),
-                "seq expression");
-            // 外部期望类型回填值块（绑定前就绪）——体内 return@ 值表达式
-            // 据其做上下文定型（同一机制同 if/switch 表达式分支）
-            shell.Block.ExpectedType = expectedType;
-            ValueBlockVisitor.VisitInto(seq.Body, usingScope, shell, ctx, env);
-            shell.Block.IsVolatile = seq.IsVolatile;
-            if (shell.Block.ValueType == null)
+            var previousUnsafe = ctx.IsUnsafe;
+            ctx.IsUnsafe |= seq.IsUnsafe;
+            try
             {
-                // 体全路径向外逃逸（无命中自身的 return@——体内每条
-                // return@ 都穿透到外层块——且路径全终止）：表达式永不
-                // 落穿，合法；类型取外部期望类型兜底（表达式位引用只落
-                // 在不可达死代码里）。无期望类型则无法定型，维持报错
-                if (BoundAnalysis.GuaranteesValueReturn(shell.Block.Block))
+                var usingBindings = UsingBindingBinder.Bind(seq.UsingBindings, usingScope, ctx, env);
+                var shell = new ValueBlockShell(new BoundValueBlock(seq.Body, seq.Label ?? "_"),
+                    "seq expression");
+                // 外部期望类型回填值块（绑定前就绪）——体内 return@ 值表达式
+                // 据其做上下文定型（同一机制同 if/switch 表达式分支）
+                shell.Block.ExpectedType = expectedType;
+                ValueBlockVisitor.VisitInto(seq.Body, usingScope, shell, ctx, env);
+                shell.Block.IsVolatile = seq.IsVolatile;
+                shell.Block.IsUnsafe = seq.IsUnsafe;
+                if (shell.Block.ValueType == null)
                 {
-                    if (expectedType != null)
+                    // 全路径逃逸时以外部期望类型兜底；没有期望类型则无法定型。
+                    if (BoundAnalysis.GuaranteesValueReturn(shell.Block.Block))
                     {
-                        return new BoundSeqExpression(node, shell.Block, expectedType,
-                            usingBindings);
+                        if (expectedType != null)
+                        {
+                            return new BoundSeqExpression(node, shell.Block, expectedType,
+                                usingBindings);
+                        }
+                        env.Error(seq.Span, "seq expression escapes on all paths without " +
+                            "producing a value (a type annotation is required to type it)");
+                        return null;
                     }
-                    env.Error(seq.Span, "seq expression escapes on all paths without " +
-                        "producing a value (a type annotation is required to type it)");
+                    env.Error(seq.Span, "seq expression must produce a value " +
+                        "(at least one path must return@ a value)");
                     return null;
                 }
-                env.Error(seq.Span, "seq expression must produce a value " +
-                    "(at least one path must return@ a value)");
-                return null;
+                return new BoundSeqExpression(node, shell.Block, shell.Block.ValueType, usingBindings);
             }
-            return new BoundSeqExpression(node, shell.Block, shell.Block.ValueType, usingBindings);
+            finally
+            {
+                ctx.IsUnsafe = previousUnsafe;
+            }
         }
     }
 
@@ -274,6 +285,7 @@ namespace RigiCompiler
                         $"using resource type '{BoundAnalysis.TypeDisplay(type)}' has no accessible no-argument dispose method");
                     continue;
                 }
+                UnsafeGates.CheckMethod(dispose, usingNode, ctx, env);
                 if (dispose.IsAsync || dispose.IsOpen || dispose.IsAbstract)
                 {
                     env.Error(usingNode.Span,

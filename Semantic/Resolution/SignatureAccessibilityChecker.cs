@@ -113,6 +113,8 @@ namespace RigiCompiler
         private static void CheckFieldType(FieldSymbol field, SemanticSymbol type,
             Accessibility required, string kind, CharRange? span, ResolveEnvironment env)
         {
+            if (field.Owner?.IsUnsafe != true && FindUnsafeType(type) is { } unsafeType)
+                env.Error(span, $"Safe API '{field.Name}' cannot expose unsafe type '{unsafeType.Name}'");
             var hit = FindLessAccessible(type, required);
             if (hit == null) return;
             var position = kind switch
@@ -132,11 +134,25 @@ namespace RigiCompiler
             Accessibility required, bool isReturnType, CharRange? span,
             ResolveEnvironment env)
         {
+            if (!method.IsUnsafe && method.Owner?.IsUnsafe != true
+                && FindUnsafeType(type) is { } unsafeType)
+                env.Error(span, $"Safe API '{method.Name}' cannot expose unsafe type '{unsafeType.Name}'");
             var hit = FindLessAccessible(type, required);
             if (hit == null) return;
             env.Error(span,
                 $"Inconsistent accessibility: {(isReturnType ? "return" : "parameter")} " +
                 $"type '{hit.Name}' is less accessible than function '{method.Name}'");
+        }
+
+        // 私有实现可持有危险能力；对外签名不能经 Nullable/泛型容器藏匿它。
+        internal static TypeSymbol? FindUnsafeType(SemanticSymbol type)
+        {
+            if (type is not TypeSymbol t || t is ErrorTypeSymbol) return null;
+            if ((t.ConstructedFrom ?? t).IsUnsafe) return t;
+            if (t.TypeArguments != null)
+                foreach (var argument in t.TypeArguments)
+                    if (FindUnsafeType(argument) is { } found) return found;
+            return null;
         }
 
         // 递归查找首个有效可见性低于 required 的类型：自身先判（命中即

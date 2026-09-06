@@ -132,6 +132,10 @@ namespace RigiCompiler
         private static void CheckMemberModifiers(DeclEntry entry, List<string> modifiers,
             ResolveEnvironment env)
         {
+            if (entry.Symbol is FieldSymbol && modifiers.Contains(Keywords.UNSAFE))
+            {
+                env.Error(entry.Node.Span, "'unsafe' can only be applied to types and methods");
+            }
             // async 仅适用于函数与 lambda（§9.2）
             if (entry.Symbol is FieldSymbol && modifiers.Contains(Keywords.ASYNC))
             {

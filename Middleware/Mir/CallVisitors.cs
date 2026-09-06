@@ -165,10 +165,9 @@ namespace RigiCompiler.Middleware.Mir
             var sheetCanonical = GenericAbi.IsClosedConstructed(typeRef)
                 ? MwTypeKey.Normalize(typeRef)
                 : template.Canonical;
-            // G1 值类型：开放构造不坍缩到模板 canonical——值类型无 alloc
-            // sheet 消费，保留原 ref 供类级 typeid 代入（外层泛型占位名
-            // 可与模板参数名不同，坍缩后 substitution 丢失实参名）
-            if (template.Declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct
+            // 开放构造保留原 ref 供类级 typeid 代入；class 分配 sheet
+            // 仍可回退模板，但隐藏字段不能丢掉 E -> T 等实际参数映射。
+            if (template.Declaration.Kind is BilTypeKind.Class or BilTypeKind.Struct or BilTypeKind.EnumStruct
                 && ConstructedTypeCollector.IsConstructed(typeRef))
             {
                 sheetCanonical = MwTypeKey.Normalize(typeRef);

@@ -124,15 +124,15 @@ pub func sharedSpanOf\<T>(size: i32): SharedSpan\<T> {
     return shared_span_alloc\<T>(size)
 }
 
-// MW11d-B1：最小完备动态数组。backing 为 Array\<T>，扩容倍增。
+// 动态数组使用可空内部槽，删除时清空尾槽以释放引用，扩容倍增。
 // getAtIndex 越界读 null（与语言索引协议 §13.2 对齐，方法面非 [] 运算符）；
 // removeAt 越界抛 core.OutOfBoundException。
 pub class List\<T> implements IEnumerable\<T> {
-    priv var items: Array\<T>
+    priv var items: Array\<T?>
     priv var count: i32
 
     pub init() {
-        items = arrayOf\<T>(8)
+        items = arrayOf\<T?>(8)
         count = 0
     }
 
@@ -170,14 +170,15 @@ pub class List\<T> implements IEnumerable\<T> {
             i = (i + 1)
         }
         count = (count - 1)
+        items[count] = null
     }
 
     pub override func iterate(): IEnumerator\<T> {
-        return new ListEnumerator\<T>(items, count)
+        return new ListStorageEnumerator\<T>(items, count)
     }
 
     priv func grow() {
-        const bigger = arrayOf\<T>((items.length * 2))
+        const bigger = arrayOf\<T?>((items.length * 2))
         var i: i32 = 0
         while (i < count) {
             bigger[i] = (items[i] as T)
@@ -312,4 +313,20 @@ pub class MapEnumerator\<K, V> implements IEnumerator\<core.Pair\<K, V>> {
     pub override func current(): core.Pair\<K, V> {
         return new core.Pair\<K, V>((ks.getAtIndex(index) as K), (vs.getAtIndex(index) as V))
     }
+}
+
+// 内部可空槽不改变公开 ListEnumerator 的 Array<T> 构造契约。
+priv class ListStorageEnumerator\<T> implements IEnumerator\<T> {
+    priv const items: Array\<T?>
+    priv const count: i32
+    priv var index: i32
+
+    pub init(_ -> items, _ -> count) { index = (0 - 1) }
+
+    pub override func moveNext(): bool {
+        index = (index + 1)
+        return (index < count)
+    }
+
+    pub override func current(): T { return (items[index] as T) }
 }

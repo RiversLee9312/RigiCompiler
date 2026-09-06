@@ -30,6 +30,21 @@ namespace RigiCompiler.Tests
             TestBlock("{ volatile seq { operation() } }",
                 "[Seq(volatile, [Path(operation(), [])])]");
 
+            foreach (var prefix in new[] { "unsafe volatile", "volatile unsafe" })
+            {
+                var block = TestHarness.ParseBlock("{ " + prefix + " seq { operation() } }");
+                TestHarness.Check(prefix, AstDescribe.Block(block),
+                    "[Seq(volatile, unsafe, [Path(operation(), [])])]");
+                TestHarness.CheckTrue(prefix + " 结构与父链",
+                    block.Statements[0] is SeqBlockExpressionASTNode
+                    { IsUnsafe: true, IsVolatile: true } seq && seq.Parent == block
+                    && seq.Body.Parent == seq);
+            }
+            TestBlock("{ unsafe seq { operation() } }",
+                "[Seq(unsafe, [Path(operation(), [])])]");
+            TestInvalidBlock("{ unsafe unsafe seq { } }", "Duplicate modifier 'unsafe'");
+            TestInvalidBlock("{ volatile volatile seq { } }", "Duplicate modifier 'volatile'");
+
             TestHarness.Blank();
         }
 

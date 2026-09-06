@@ -19,6 +19,22 @@ pub func greet(name: String = "World"): String {
 
 必须使用显式 `return`，不支持隐式返回。
 
+`unsafe func` 和 `unsafe init` 显式声明危险操作。调用必须位于 `unsafe seq`
+或 `unsafe` 方法体内；检查在重载选定之后进行，`unsafe` 不改变候选排序。
+unsafe 类型的成员调用也受此约束，包括属性访问器、索引写入及复合赋值写回。
+动态 `new typeValue(...)` 在 `Type\<T>` 的 T 为已知具体类型时检查该类型，
+并检查按实参静态类型精确匹配的 unsafe init，不改用普通重载排序；
+未知泛型目标保留既有动态构造协议。
+参数默认值不继承方法体的 unsafe 权限。lambda 是独立函数边界，其危险操作
+须在 lambda 体内显式使用 `unsafe seq`。覆写安全成员不能增加 unsafe 要求。
+
+```rigi
+unsafe func dangerous(): i32 { return 1 }
+func safe(): i32 {
+    return unsafe seq { dangerous() }
+}
+```
+
 ### 4.2 函数调用、具名参数与重载解析
 
 ```rigi

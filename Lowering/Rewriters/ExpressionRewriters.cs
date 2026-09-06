@@ -118,7 +118,7 @@ namespace RigiCompiler
             // 登记，任一兄弟产前置语句时先求值槽位物化合成局部
             var guard = new EvalOrderGuard(ctx);
             var arguments = LoweringFacility.LowerArguments(call.Arguments, call.Method.Parameters,
-                ctx, env, guard);
+                ctx, env, guard, parameterMethod: call.Method, methodTypeArguments: call.TypeArguments);
             if (arguments == null) return null;
             // S9d-2：泛型包无值子节点，恒等透传（打包归 P4b）
             var genericPack = call.GenericPack == null ? null
@@ -748,7 +748,7 @@ namespace RigiCompiler
             guard.Track(instanceCall.Receiver, receiver);
             var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
                 instanceCall.Method.Parameters, ctx, env, guard,
-                instanceCall.Receiver.Type as TypeSymbol);
+                instanceCall.Receiver.Type as TypeSymbol, instanceCall.Method, instanceCall.TypeArguments);
             if (arguments == null) return null;
             var genericPack = instanceCall.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,
@@ -757,6 +757,16 @@ namespace RigiCompiler
             var sealedSlots = guard.Seal();
             var sealedArguments = new List<LoweredExpression>(instanceCall.Arguments.Count);
             for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
+            if (HandleCallLowering.IsHandle(instanceCall.Method))
+            {
+                var helper = HandleCallLowering.Helper(instanceCall.Method, env);
+                var typeArguments = HandleCallLowering.TypeArguments(instanceCall.Receiver);
+                var origin = new BoundCallExpression(instanceCall.Syntax, helper,
+                    Array.Empty<BoundExpression>(), instanceCall.Type, typeArguments);
+                return new LoweredCallExpression(origin, helper,
+                    HandleCallLowering.Arguments(instanceCall, sealedSlots[0], sealedArguments, env),
+                    typeArguments);
+            }
             return new LoweredInstanceCallExpression(instanceCall, sealedSlots[0],
                 instanceCall.Method, sealedArguments, instanceCall.Type, instanceCall.TypeArguments,
                 genericPack);
@@ -779,7 +789,7 @@ namespace RigiCompiler
             guard.Track(instanceCall.Receiver, receiver);
             var arguments = LoweringFacility.LowerArguments(instanceCall.Arguments,
                 instanceCall.Method.Parameters, ctx, env, guard,
-                instanceCall.Receiver.Type as TypeSymbol);
+                instanceCall.Receiver.Type as TypeSymbol, instanceCall.Method, instanceCall.TypeArguments);
             if (arguments == null) return null;
             var genericPack = instanceCall.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(instanceCall.GenericPack,

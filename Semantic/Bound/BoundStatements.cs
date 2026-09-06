@@ -175,6 +175,7 @@ namespace RigiCompiler
         public SemanticSymbol? ExpectedType { get; internal set; }
         // volatile 修饰（仅 seq 表达式置位，S7e；BIL §9.6 block 修饰符）
         public bool IsVolatile { get; internal set; }
+        public bool IsUnsafe { get; internal set; }
 
         public BoundValueBlock(ASTNode syntax, string label) : base(syntax)
         {
@@ -354,6 +355,7 @@ namespace RigiCompiler
         public IReadOnlyList<BoundUsingBinding> UsingBindings { get; internal set; } =
             Array.Empty<BoundUsingBinding>();
         public bool IsVolatile { get; }
+        public bool IsUnsafe { get; internal set; }
         // named 标签（仅显式 named 时非 null——语句 seq 不享有值块的 `_`
         // 默认标签，避免与值块默认值冲突；非 null 即可作 return@ 目标，
         // SYNTAX §6.1，M61）

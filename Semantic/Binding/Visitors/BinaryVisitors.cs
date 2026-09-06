@@ -124,7 +124,7 @@ namespace RigiCompiler
                 return true;
             }
             var resolved = OverloadResolution.ResolveBound(node, accessible, new[] { right },
-                env, leftType);
+                env, leftType, ctx);
             if (resolved == null)
             {
                 // 已落诊断（不适用/二义/推断失败/约束）
@@ -355,7 +355,7 @@ namespace RigiCompiler
                 return true;
             }
             var resolved = OverloadResolution.ResolveBound(node, accessible,
-                Array.Empty<BoundExpression>(), env, operandType);
+                Array.Empty<BoundExpression>(), env, operandType, ctx);
             if (resolved == null)
             {
                 // 已落诊断（不适用/二义/推断失败/约束）
@@ -461,7 +461,7 @@ namespace RigiCompiler
                     {
                         var field = place is BoundFieldReferenceExpression fr
                             ? fr.Field : ((BoundFieldAccessExpression)place).Field;
-                        if (!ConstFieldRules.CheckWritable(field, node.Span, ctx.Frame, env))
+                        if (!ConstFieldRules.CheckWritable(field, node.Span, ctx, env))
                         {
                             return null;
                         }
@@ -497,6 +497,7 @@ namespace RigiCompiler
                         // 写模式绑定同设施）——此前只查存在性，类型不一致时
                         // P3 放行由 BilVerifier §13.6 兜底
                         var setOperator = setters[0];
+                        UnsafeGates.CheckMethod(setOperator, node, ctx, env);
                         var elementType = setOperator.Parameters[1].Type!;
                         elementType = SymbolLookup.SubstituteForReceiver(elementType,
                             setOperator, setterLookup, env.Unit.Symbols);
@@ -562,7 +563,7 @@ namespace RigiCompiler
                 return true;
             }
             var resolved = OverloadResolution.ResolveBound(node, accessible, new[] { value },
-                env, targetType);
+                env, targetType, ctx);
             if (resolved == null)
             {
                 // 已落诊断（不适用/二义/推断失败/约束）

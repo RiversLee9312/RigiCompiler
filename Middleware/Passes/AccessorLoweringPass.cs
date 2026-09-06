@@ -71,7 +71,7 @@ namespace RigiCompiler.Middleware.Passes
                 if (fieldSymbol.Contains("#..value@", System.StringComparison.Ordinal))
                 {
                     return new MirGetField(inst.Object,
-                        AccessorRules.CurrentField(fn.Symbol, fieldSymbol), inst.Target);
+                        AccessorRules.CurrentField(fn.Symbol, fieldSymbol), inst.Target, inst.ExcTarget);
                 }
                 if (TypeLayout.IsLengthField(fieldSymbol))
                 {
@@ -95,7 +95,8 @@ namespace RigiCompiler.Middleware.Passes
                     && ImplBinder.FindAccessor(context.Symbols, fieldSymbol,
                         BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
                 {
-                    return new MirCall(getter, new List<MirOperand> { inst.Object }, inst.Target);
+                    // computed getter 的抛出仍归原读取点的词法 catch/finally。
+                    return new MirCall(getter, new List<MirOperand> { inst.Object }, inst.Target, inst.ExcTarget);
                 }
                 return inst;
             }
@@ -163,7 +164,7 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 访问器体判定与 wrapper 处置：跨四个 lowering 共享的纯查询，无可变状态
-        private static class AccessorRules
+        internal static class AccessorRules
         {
             // 当前 fn 即该字段的访问器（体内直访 backing）。FindAccessor 的
             // excludingFn 只跳过自身符号，派生 getter 体内读字段仍会命中基类

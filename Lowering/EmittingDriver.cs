@@ -223,6 +223,9 @@ namespace RigiCompiler
         private static List<GenericParameterSymbol> CollectFrameGenericParameters(
             MethodSymbol method)
         {
+            // 静态成员没有宿主实例，也不能引用类级型参；否则多出的
+            // typeid 槽会错位吞掉工厂的方法级实参与普通 source 参数。
+            if (method.IsStatic) return new List<GenericParameterSymbol>(method.GenericParameters);
             var methodNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (var genericParameter in method.GenericParameters)
             {

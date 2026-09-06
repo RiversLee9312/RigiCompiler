@@ -263,6 +263,12 @@ namespace RigiCompiler
             // 2. 括号分组 - 递归解析
             if (currentToken is NotationToken nt && nt.Content == "(")
             {
+                // placeOf 是前缀语法；仅紧邻括号是被禁止的伪函数调用。
+                // 空白/注释分隔的分组操作数继续交给普通表达式层。
+                if (target.Parent is PlaceOfExpressionASTNode placeOf
+                    && placeOf.Span is { } placeSpan
+                    && currentToken.CharRange.Start.offset == placeSpan.End.offset)
+                    context.RaiseError("placeOf operand requires separation; placeOf(x) is not valid syntax");
                 return DelegateGroupParsing(context);
             }
 
@@ -312,8 +318,26 @@ namespace RigiCompiler
                         StartSpan(typeOfNode, context.GetLocation().Start, context);
                         return DelegateStructuredParsing(typeOfNode,
                             new TypeOfExpressionParserLayer(typeOfNode) { allowBareReturn = allowBareReturn });
+                    case Keywords.PLACEOF:
+                        if (!allowPrefixUnary)
+                            context.RaiseError("连续的一元运算符必须用括号明确嵌套关系");
+                        var placeOfNode = new PlaceOfExpressionASTNode();
+                        StartSpan(placeOfNode, currentToken.CharRange.Start, context);
+                        currentExpression = placeOfNode;
+                        state = State.PrimaryParsed;
+                        // 与其他前缀表达式一致，不引入运算符优先级。
+                        allowBinaryOperator = false;
+                        return new ParserLayerResult.PushLayer(
+                            new ExpressionParserLayer(placeOfNode.Operand)
+                            {
+                                allowBinaryOperator = false,
+                                allowPrefixUnary = false,
+                                insideParens = insideParens,
+                                allowBareReturn = allowBareReturn
+                            }, TokenDisposition.Consume);
                     case Keywords.SEQ:
                     case Keywords.VOLATILE:
+                    case Keywords.UNSAFE:
                         // seq 块可以作为表达式使用（单表达式隐式值，或多语句
                         // return@_/return@标签；匿名默认标签为 _，SYNTAX §6.1）
                         // 保留当前 token，因为 SeqBlockParserLayer 需要重新读取它
@@ -1021,7 +1045,9 @@ namespace RigiCompiler
         private ParserLayerResult HandleMemberNameExpected(Token currentToken, ParserLayerContext context)
         {
             // 成员名不能是数字词（M31：3.14.15、foo.123 此前被接受；只查首字符）
-            if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content))
+            // 冒号后是 wrapper 名，true/false 等保留字不能冒充名称。
+            if (currentToken is WordToken name && Keywords.IsIdentifierStart(name.Content)
+                && (pendingConnector != PathConnector.Colon || Keywords.IsIdentifier(name.Content)))
             {
                 var path = (PathExpressionASTNode)currentExpression!;
                 var segment = new PathSegmentASTNode(path)

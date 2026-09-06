@@ -83,7 +83,7 @@ namespace RigiCompiler
                 case State.Initial:
                     return HandleInitial(currentToken, context);
                 case State.Volatile:
-                    return HandleVolatile(currentToken, context);
+                    return HandleInitial(currentToken, context);
                 case State.SeqKeyword:
                     return HandleSeqKeyword(currentToken, context);
                 case State.UsingOrNamed:
@@ -131,7 +131,17 @@ namespace RigiCompiler
                 // volatile 修饰符
                 if (wt.Content == Keywords.VOLATILE)
                 {
+                    if (seqNode.IsVolatile) context.RaiseError("Duplicate modifier 'volatile'");
                     seqNode.IsVolatile = true;
+                    state = State.Volatile;
+                    return ParserLayerResult.Continue.Instance;
+                }
+
+                // 两个块修饰符正交，可按任意顺序组合，但不可重复。
+                if (wt.Content == Keywords.UNSAFE)
+                {
+                    if (seqNode.IsUnsafe) context.RaiseError("Duplicate modifier 'unsafe'");
+                    seqNode.IsUnsafe = true;
                     state = State.Volatile;
                     return ParserLayerResult.Continue.Instance;
                 }
@@ -144,25 +154,9 @@ namespace RigiCompiler
                 }
             }
 
-            context.RaiseError($"Expected 'volatile' or 'seq', got: {currentToken}");
-            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-        }
-
-        private ParserLayerResult HandleVolatile(Token currentToken, ParserLayerContext context)
-        {
-            // 跳过换行
-            if (currentToken is LineBreakToken)
-            {
-                return ParserLayerResult.Continue.Instance;
-            }
-
-            if (currentToken is WordToken wt && wt.Content == Keywords.SEQ)
-            {
-                state = State.SeqKeyword;
-                return ParserLayerResult.Continue.Instance;
-            }
-
-            context.RaiseError($"Expected 'seq' after 'volatile', got: {currentToken}");
+            context.RaiseError(state == State.Volatile
+                ? $"Expected 'seq' after '{(seqNode.IsUnsafe ? "unsafe" : "volatile")}', got: {currentToken}"
+                : $"Expected 'unsafe', 'volatile' or 'seq', got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 

@@ -214,7 +214,8 @@ namespace RigiCompiler
                 }
 
                 // seq 块语句（含 volatile/using/named）
-                if (wt.Content == Keywords.SEQ || wt.Content == Keywords.VOLATILE)
+                if (wt.Content == Keywords.SEQ || wt.Content == Keywords.VOLATILE
+                    || wt.Content == Keywords.UNSAFE)
                 {
                     var seqNode = new SeqBlockExpressionASTNode(targetNode);
                     targetNode.Statements.Add(seqNode);

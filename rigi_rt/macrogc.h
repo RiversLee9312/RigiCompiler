@@ -70,6 +70,7 @@ void rigi_gc_region_fence_exit(void);
 /* release 路径钩子（region 内调用，减至非零后）：候选登记 + 债务累计 +
  * 阈值比较 + 原子 pending 去重后触发 GCWakeAlarm（§22.3/§23.5 同 region）。 */
 void rigi_gc_note_release(void *object, const RigiTypeSheet *sheet);
+uint32_t rigi_gc_release_shared(void *object);
 
 /* 析构路径钩子（rigi_destruct 头部）：在册候选摘除（swap-remove + 债务
  * 回减）；非候选零开销（颜色位判别）。 */

@@ -220,6 +220,11 @@ namespace RigiCompiler.Bil
 
             if (!isMethod)
             {
+                if (HasKeyword(declaration, BilKeyword.Unsafe))
+                {
+                    errors.Add(new BilVerificationError("21.8", symbol,
+                        "unsafe 仅适用于类型和方法，不能修饰字段"));
+                }
                 // §8.3：backing 与 computed 是互斥的存储形态标记
                 if (HasKeyword(declaration, BilKeyword.Backing)
                     && HasKeyword(declaration, BilKeyword.Computed))

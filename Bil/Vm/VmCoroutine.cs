@@ -244,12 +244,15 @@
         internal void AttachTaskObject(VmObject taskObject)
         {
             TaskObject = taskObject;
+            taskObject.TaskRuntimeState = this;
         }
 
         // await 登记（VmDispatch.Await 在 task gate 临界区内调用，随后
         // 同一临界区内 TrySuspend）
-        internal void MarkAwaiting(long taskHandle, string? resultSlot)
+        private VmCoroutine? _awaitTarget;
+        internal void MarkAwaiting(long taskHandle, string? resultSlot, VmCoroutine target)
         {
+            _awaitTarget = target;
             _awaitHandle = taskHandle;
             _awaitResultSlot = resultSlot;
         }
@@ -478,7 +481,8 @@
                 var slot = _awaitResultSlot;
                 _awaitHandle = 0;
                 _awaitResultSlot = null;
-                Dispatch.SettleAwait(this, handle, slot);
+                try { Dispatch.SettleAwait(this, handle, slot); }
+                finally { _awaitTarget = null; }
                 return State == VmCoroutineState.Running;
             }
             if (_pollingAlarm != null)

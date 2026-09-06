@@ -29,7 +29,7 @@ namespace RigiCompiler
         // P2 拒；无 setter 的 const 访问器字段由 has no setter 拦截），
         // 不再走 const 检查；无访问器字段走 const 规则
         public static bool CheckWritable(FieldSymbol field, CharRange? span,
-            BindFunctionFrame frame, BindEnvironment env)
+            BindContext ctx, BindEnvironment env)
         {
             if (field.Getter != null || field.Setter != null)
             {
@@ -38,15 +38,16 @@ namespace RigiCompiler
                     env.Error(span, $"'{field.Name}' has no setter");
                     return false;
                 }
-                if (!frame.CanAccess(field.Setter))
+                if (!ctx.Frame.CanAccess(field.Setter))
                 {
                     env.Error(span, $"'{field.Name}' setter is inaccessible due to its " +
                         "accessibility level");
                     return false;
                 }
+                UnsafeGates.CheckMethod(field.Setter, span, ctx, env);
                 return true;
             }
-            return CheckAssignable(field, span, frame, env);
+            return CheckAssignable(field, span, ctx.Frame, env);
         }
 
         // 收窄资格：const 字段（不带访问器的 backing field 直访——带访问器

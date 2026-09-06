@@ -798,7 +798,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 return;
             }
-            if (leftType.Contains(".generic<", System.StringComparison.Ordinal))
+            if (Layout.GenericAbi.TryPlaceholderName(leftType, out _))
             {
                 foreach (var candidate in ImplBinder.CollectOperatorCandidates(
                     context.Symbols, ImplBinder.UserBinaryOperatorName(op)))
@@ -822,7 +822,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 return;
             }
-            if (operandType.Contains(".generic<", System.StringComparison.Ordinal))
+            if (Layout.GenericAbi.TryPlaceholderName(operandType, out _))
             {
                 foreach (var candidate in ImplBinder.CollectOperatorCandidates(
                     context.Symbols, ImplBinder.UserUnaryOperatorName(op)))
@@ -942,6 +942,9 @@ namespace RigiCompiler.Middleware.Mir
         private static void AddInterfaceEdges(MwContext context, MwMemberSymbol target,
             List<string> edges)
         {
+            if (context.DispatchQuery is { } valueQuery)
+                foreach (var (_, implementation) in valueQuery.ValueInterfaceImplementations(
+                    target.Owner!.Canonical, target.SignatureKey)) edges.Add(implementation);
             if (HasFunctionBody(context, target.Canonical))
             {
                 edges.Add(target.Canonical);

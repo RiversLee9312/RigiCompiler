@@ -45,10 +45,14 @@ void *rigi_alloc(const RigiTypeSheet *desc)
 
 void rigi_acquire_local(void *object)
 {
+    /* local 限制是语言可达性规则，不保证运行时引用只在一个线程计数。
+     * 同一失败 Task 的异常及任意深 local 字段可被多 waiter 持有；
+     * 保持对象身份与静态 shared 规则，计数统一使用原子操作。 */
     rigi_region_enter();
     if (object != NULL)
     {
-        ((RigiObjectHeader *)object)->rc += 1;
+        atomic_fetch_add_explicit((_Atomic uint32_t *)&((RigiObjectHeader *)object)->rc,
+            1, memory_order_relaxed);
     }
     rigi_region_exit();
 }
@@ -165,6 +169,10 @@ void rigi_value_release(void *ptr, const RigiTypeSheet *sheet)
     rigi_region_exit();
 }
 
+/* 数组共用擦除元素类型的 sheet：生命周期保守使用原子 RC，覆盖嵌套数组。
+ * 这不改变元素共享安全判定，也不提供数组元素访问的并发同步。
+ * 对象必须读取头内实际 sheet；胖引用可能只是 Object/接口视图，
+ * 不能用视图的非 shared 标志把共享对象误送进非原子 RC 路径。 */
 uint64_t rigi_ref_acquire(uint64_t type_id, uint64_t payload)
 {
     uint64_t tag;
@@ -179,8 +187,8 @@ uint64_t rigi_ref_acquire(uint64_t type_id, uint64_t payload)
             rigi_region_exit();
             return payload;
         }
-        sheet = (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
-        if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_SHARED) != 0)
+        sheet = ((const RigiObjectHeader *)(uintptr_t)payload)->typeId;
+        if (sheet != NULL && (sheet->typeFlags & (RIGI_TYPE_SHARED | RIGI_TYPE_ARRAY)) != 0)
         {
             rigi_acquire_shared((void *)(uintptr_t)payload);
         }
@@ -221,8 +229,8 @@ void rigi_ref_release(uint64_t type_id, uint64_t payload)
     {
         if (payload != 0)
         {
-            sheet = (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
-            if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_SHARED) != 0)
+            sheet = ((const RigiObjectHeader *)(uintptr_t)payload)->typeId;
+            if (sheet != NULL && (sheet->typeFlags & (RIGI_TYPE_SHARED | RIGI_TYPE_ARRAY)) != 0)
             {
                 rigi_release_shared((void *)(uintptr_t)payload);
             }
@@ -326,6 +334,7 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
 
     cursor = sizeof(RigiObjectHeader);
     rigi_dispose_check(object, desc);
+    rigi_native_resources_destroy(object, desc);
     if (desc == NULL || desc->refMap == NULL)
     {
         rigi_track_free(object);
@@ -352,20 +361,27 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
     rigi_track_free(object);
 }
 
+/* 基类字段偏移保持不变；派生对象也承担继承来的原生资源所有权。 */
+void rigi_native_resources_destroy(void *object, const RigiTypeSheet *desc)
+{
+    for (; desc != NULL; desc = desc->baseTypeId)
+    {
+        if (desc->typeInfoId != NULL && desc->typeInfoId->destroyNative != NULL)
+        {
+            desc->typeInfoId->destroyNative(object);
+        }
+    }
+}
+
 void rigi_release_local(void *object)
 {
     RigiObjectHeader *header = (RigiObjectHeader *)object;
     rigi_region_enter();
     if (header != NULL)
     {
-        if (--header->rc == 0)
+        if (rigi_gc_release_shared(object) == 1)
         {
             rigi_destruct(object, header->typeId);
-        }
-        else
-        {
-            /* MW12：减至非零 → 候选登记 + 债务累计 + 阈值触发（同 region） */
-            rigi_gc_note_release(object, header->typeId);
         }
     }
     rigi_region_exit();
@@ -378,16 +394,10 @@ void rigi_release_shared(void *object)
     rigi_region_enter();
     if (header != NULL)
     {
-        old = atomic_fetch_sub_explicit(
-            &(((_Atomic uint32_t *)&header->rc)[0]), 1, memory_order_acq_rel);
+        old = rigi_gc_release_shared(object);
         if (old == 1)
         {
             rigi_destruct(object, header->typeId);
-        }
-        else
-        {
-            /* MW12：减至非零 → 候选登记 + 债务累计 + 阈值触发（同 region） */
-            rigi_gc_note_release(object, header->typeId);
         }
     }
     rigi_region_exit();

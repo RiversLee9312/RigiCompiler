@@ -24,7 +24,10 @@ namespace RigiCompiler.Middleware.Layout
         // frame 状态字段名（i32：0=原入口，N=挂起点恢复 state）
         public const string StateFieldName = "state";
 
-        public static string FrameCanonicalOf(string fnCanonical) => "$mw.frame." + fnCanonical;
+        // 函数返回类型可能含多个泛型实参；MirType 会归一逗号空格，
+        // 注册时必须同口径，否则 frame 局部与布局表出现两个名字。
+        public static string FrameCanonicalOf(string fnCanonical) =>
+            MwTypeKey.Normalize("$mw.frame." + fnCanonical);
 
         public static string FrameFieldSymbol(string frameCanonical, string slotName,
             string typeCanonical) => frameCanonical + "#" + slotName + "@" + typeCanonical;

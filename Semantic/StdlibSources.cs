@@ -44,7 +44,9 @@ namespace RigiCompiler
                 {
                     text = reader.ReadToEnd();
                 }
-                roots.Add((RootASTNode)new Parser().Parse(new Lexer().Tokenize(text, sourceName)));
+                var root = (RootASTNode)new Parser().Parse(new Lexer().Tokenize(text, sourceName));
+                root.IsCompilerLibrary = true;
+                roots.Add(root);
             }
             // 零匹配 = EmbeddedResource 配置失效（stdlib 整体缺失）：静默返回空
             // 列表会让 stdlib 符号全部找不到、诊断全指向用户代码，必须响亮失败

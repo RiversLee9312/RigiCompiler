@@ -1,16 +1,10 @@
-// Rigi 标准库：core.messaging 消息队列传输层（MW11d-C）。
-// MessageQueue 是运行时内部传输原语（交接 §7），Rigi 无 static class，
-// 以 pub class + 仅静态方法近似；用户代码应经 Phase D 的 Reader/
-// Messenger 使用，不要直接依赖本面。
-// 五个公开方法签名保持交接 §7；序列化在 Rigi 层完成（post 先
-// toParcel，next 后 fromParcel）。native/VM 只搬运 Parcel。
+// Rigi 标准库：纯语言消息队列；安全 AtomicList 保存消息，Mutex 统一线性化。
+// MessageQueue 保留五 API，Reader/Receiver/Messenger 组合 capability 与 Task。
 namespace core.messaging
 
 import core.serialization.Serializable
-import core.serialization.Parcel
-import core.serialization.fromParcel
 
-// 句柄能力种类（交接 §8.1）。code 与 native/VM 矩阵常量对齐。
+// capability 种类；枚举不能由用户构造任意 code。
 pub enum struct QueueHandleType {
     pub const code: i32
     priv init(_ -> code)
@@ -20,146 +14,307 @@ pub enum struct QueueHandleType {
     Sender(2)
 ]
 
-// 不透明 capability token（交接 §8）。id 进程内不复用。
-// 交接草稿为 struct；落地为 shared class——native 尚不支持泛型值类型
-// 构造（Middleware/Mir CallVisitors/FlowBuilder 的 MW5 受控拒绝），
-// class 形态语义不变（capability 由 id 承载，与对象身份无关）。
-pub shared class QueueHandle\<TMessage with core.serialization.Serializable> {
-    pub var id: i64
-    pub var type: QueueHandleType
-    pub init(_ -> id, _ -> type)
+// 直接对象 capability；所有可变状态由同一队列 Mutex 保护。
+// 释放后清除 queue 链接，外界保留旧 capability 不会继续钉住消息日志。
+pub shared class QueueHandle\<TCapability with core.serialization.Serializable> {
+    priv const gate: core.coroutine.Mutex
+    priv var queue: QueueState\<TCapability>?
+    priv const kind: QueueHandleType
+    priv const reader: QueueReaderState\<TCapability>?
+    priv init(state: QueueState\<TCapability>, type: QueueHandleType, cursor: QueueReaderState\<TCapability>?) {
+        gate = state.gate
+        queue = state
+        kind = type
+        reader = cursor
+    }
+    pub static func create_queue\<TMessage with core.serialization.Serializable>(): QueueHandle\<TMessage> {
+        return new QueueHandle\<TMessage>(new QueueState\<TMessage>(), QueueHandleType.Owner, null)
+    }
+    pub static func add_queue_handle\<TMessage with core.serialization.Serializable>(
+        source: QueueHandle\<TMessage>, type: QueueHandleType
+    ): QueueHandle\<TMessage> {
+        const lock = await source.gate.acquire()
+        try {
+            if (source.queue == null) { throw new core.IllegalStateException(mqError(-1)) }
+            const q = (source.queue as QueueState\<TMessage>)
+            if (type.code == 1) { throw new core.IllegalStateException(mqError(-3)) }
+            if (type.code == 2) {
+                if (source.kind.code == 0) { throw new core.IllegalStateException(mqError(-4)) }
+                if (q.sealed()) { throw new core.IllegalStateException(mqError(-9)) }
+                q.senders = (q.senders + (1 as i64))
+                return new QueueHandle\<TMessage>(q, type, null)
+            }
+            if (type.code != 0) { throw new core.IllegalStateException(mqError(-1)) }
+            if (source.kind.code == 2) { throw new core.IllegalStateException(mqError(-5)) }
+            const reader = new QueueReaderState\<TMessage>(q.tail)
+            reader.segment = q.lastSegment()
+            reader.following = q.readers
+            q.readers = reader
+            return new QueueHandle\<TMessage>(q, type, reader)
+        } finally(e) { source.gate.release(lock) }
+    }
+    pub static func release_queue_handle\<TMessage with core.serialization.Serializable>(handle: QueueHandle\<TMessage>) {
+        const lock = await handle.gate.acquire()
+        try {
+            if (handle.queue == null) { throw new core.IllegalStateException(mqError(-2)) }
+            const q = (handle.queue as QueueState\<TMessage>)
+            handle.queue = null
+            if (handle.kind.code == 1) { q.ownerAlive = false }
+            if (handle.kind.code == 2) { q.senders = (q.senders - (1 as i64)) }
+            if (handle.reader != null) { q.removeReader((handle.reader as QueueReaderState\<TMessage>)) }
+            if (q.sealed()) { q.signal() }
+            q.reclaim()
+        } finally(e) { handle.gate.release(lock) }
+    }
+    pub static async func post\<TMessage with core.serialization.Serializable>(
+        handle: QueueHandle\<TMessage>, item: TMessage
+    ) {
+        // 保持旧复制异常顺序，即使没有 reader 也必须验证默认拒环。
+        const copy = core.serialization.deepCopy\<TMessage>(item)
+        const lock = await handle.gate.acquire()
+        try {
+            if (handle.queue == null) { throw new core.IllegalStateException(mqError(-1)) }
+            if (handle.kind.code != 2) { throw new core.IllegalStateException(mqError(-6)) }
+            const q = (handle.queue as QueueState\<TMessage>)
+            if (q.sealed()) { throw new core.IllegalStateException(mqError(-8)) }
+            if (q.readers != null) { q.append(copy) }
+            q.tail = (q.tail + (1 as i64))
+            if (q.readers == null) {
+                q.head = q.tail
+                q.base = q.tail
+            }
+            q.signal()
+        } finally(e) { handle.gate.release(lock) }
+    }
+    pub static async func next\<TMessage with core.serialization.Serializable>(
+        handle: QueueHandle\<TMessage>
+    ): QueueItem\<TMessage> {
+        var reader: QueueReaderState\<TMessage>? = null
+        const entered = await handle.gate.acquire()
+        try {
+            if (handle.queue == null) { throw new core.IllegalStateException(mqError(-1)) }
+            if (handle.kind.code != 0) { throw new core.IllegalStateException(mqError(-7)) }
+            reader = (handle.reader as QueueReaderState\<TMessage>)
+            if ((reader as QueueReaderState\<TMessage>).inNext) { throw new core.IllegalStateException(mqError(-10)) }
+            (reader as QueueReaderState\<TMessage>).inNext = true
+        } finally(e) { handle.gate.release(entered) }
+        const r = (reader as QueueReaderState\<TMessage>)
+        try {
+            while (true) {
+                const lock = await handle.gate.acquire()
+                try {
+                    if (handle.queue == null) { throw new core.IllegalStateException(mqError(-1)) }
+                    const q = (handle.queue as QueueState\<TMessage>)
+                    if (r.cursor < q.tail) {
+                        const value = q.read(r)
+                        r.cursor = (r.cursor + (1 as i64))
+                        q.reclaim()
+                        return new QueueItem\<TMessage>(false, value)
+                    }
+                    if (q.sealed()) { return new QueueItem\<TMessage>(true, null) }
+                    // 先占空闲 wake，再解队列锁。signal-before-await 会把锁变空闲；
+                    // 否则第二次 acquire 排队。token 只释放一次，没有丢唤醒窗口。
+                    r.waitToken = await r.wake.acquire()
+                } finally(e) { handle.gate.release(lock) }
+                const wakeLock = await r.wake.acquire()
+                try {
+                    // 醒来只重试队列状态；release 与 post 都可以唤醒。
+                } finally(e) { r.wake.release(wakeLock) }
+            }
+        } finally(e) {
+            const lock = await handle.gate.acquire()
+            try {
+                r.signal()
+                r.inNext = false
+            } finally(e) { handle.gate.release(lock) }
+        }
+        return new QueueItem\<TMessage>(true, null)
+    }
 }
 
-// next 的返回物（交接 §10）：EOS 只由 isEos 判定，不用 item==null。
-// shared class：async 返回类型须共享安全（§4.5 闸门）；交接草稿的
-// struct 形态同样受泛型值类型构造限制，T 的 shared 安全性在实例化点
-// 重跑（§3.1.1 声明侧跳过、构造点检查）。
 pub shared class QueueItem\<T> {
     pub var isEos: bool
     pub var item: T?
     pub init(_ -> isEos, _ -> item)
 }
 
-// 队列「消息可得」EventAlarm：包装 native/VM 自动复位事件句柄。
-// yield 走既有 EventAlarm 握手（rigi_alarm_wait / TryAwaitTimer）。
-priv shared class MessageAvailableAlarm : core.coroutine.EventAlarm {
-    pub init(nativeHandle: i64) {
-        handle = nativeHandle
+// reader 记录不反向引用队列。空读时使用固定 wake gate，避免为每条消息
+// 创建运行时事件；waitToken 只能在队列锁内设置、摘取和释放。
+priv shared class QueueReaderState\<TMessage with core.serialization.Serializable> {
+    pub var cursor: i64
+    pub var segment: QueueLogSegment\<TMessage>?
+    pub var inNext: bool
+    pub const wake: core.coroutine.Mutex
+    pub var waitToken: core.coroutine.Mutex.Lock?
+    pub var following: QueueReaderState\<TMessage>?
+    pub init(position: i64) {
+        cursor = position
+        segment = null
+        inNext = false
+        wake = new core.coroutine.Mutex()
+        waitToken = null
+        following = null
+    }
+    pub func signal() {
+        if (waitToken != null) {
+            const token = (waitToken as core.coroutine.Mutex.Lock)
+            waitToken = null
+            wake.release(token)
+        }
     }
 }
 
-// 运行时内部传输原语。公开方法体在 Rigi；私有 native 为 parcel 形态 hook。
+// 有界消息段；每段复用安全 AtomicList。日志不把整个积压放进一个
+// 巨型数组，避免临时引用释放反复把同一超阈数组计入 GC 候选债务。
+priv shared class QueueLogSegment\<TMessage with core.serialization.Serializable> {
+    pub const base: i64
+    pub var count: i64
+    pub const log: core.AtomicList\<TMessage>
+    pub var following: QueueLogSegment\<TMessage>?
+    pub init(position: i64) {
+        base = position
+        count = (0 as i64)
+        log = core.AtomicList.fromList\<TMessage>(new core.collections.List\<TMessage>())
+        following = null
+    }
+}
+
+priv shared class QueueState\<TMessage with core.serialization.Serializable> {
+    pub const gate: core.coroutine.Mutex
+    priv var first: QueueLogSegment\<TMessage>?
+    priv var last: QueueLogSegment\<TMessage>?
+    pub var base: i64
+    pub var head: i64
+    pub var tail: i64
+    pub var ownerAlive: bool
+    pub var senders: i64
+    pub var readers: QueueReaderState\<TMessage>?
+    pub init() {
+        gate = new core.coroutine.Mutex()
+        first = null
+        last = null
+        base = (0 as i64)
+        head = (0 as i64)
+        tail = (0 as i64)
+        ownerAlive = true
+        senders = (0 as i64)
+        readers = null
+    }
+    pub func sealed(): bool {
+        return ((not ownerAlive) and (senders == (0 as i64)))
+    }
+    pub func lastSegment(): QueueLogSegment\<TMessage>? { return last }
+    // 所有段链接、段内计数和 reader 缓存都由外层队列 gate 保护。
+    pub func append(item: TMessage) {
+        if (last == null) {
+            const segment = new QueueLogSegment\<TMessage>(tail)
+            first = segment
+            last = segment
+        }
+        if ((last as QueueLogSegment\<TMessage>).count == (64 as i64)) {
+            const segment = new QueueLogSegment\<TMessage>(tail)
+            (last as QueueLogSegment\<TMessage>).following = segment
+            last = segment
+        }
+        const segment = (last as QueueLogSegment\<TMessage>)
+        await segment.log.add(item)
+        segment.count = (segment.count + (1 as i64))
+    }
+    pub func read(reader: QueueReaderState\<TMessage>): TMessage? {
+        if (reader.segment == null) { reader.segment = first }
+        while (true) {
+            const segment = (reader.segment as QueueLogSegment\<TMessage>)
+            if (reader.cursor < (segment.base + segment.count)) {
+                return await segment.log.getAtIndex((reader.cursor - segment.base))
+            }
+            reader.segment = segment.following
+        }
+        return null
+    }
+    pub func signal() {
+        var current = readers
+        while (current != null) {
+            const r = (current as QueueReaderState\<TMessage>)
+            r.signal()
+            current = r.following
+        }
+    }
+    // 最慢 live reader 决定绝对水位；整段消费完立即断链。
+    // 先更新 reader 缓存，释放的 capability 或旧段都不钉住历史前缀。
+    pub func reclaim() {
+        var mark = tail
+        var current = readers
+        while (current != null) {
+            const r = (current as QueueReaderState\<TMessage>)
+            if (r.cursor < mark) { mark = r.cursor }
+            if (r.segment != null) {
+                const segment = (r.segment as QueueLogSegment\<TMessage>)
+                if ((r.cursor >= (segment.base + segment.count)) and (segment.following != null)) {
+                    r.segment = segment.following
+                }
+            }
+            current = r.following
+        }
+        head = mark
+        if (head == tail) {
+            current = readers
+            while (current != null) {
+                const r = (current as QueueReaderState\<TMessage>)
+                r.segment = null
+                current = r.following
+            }
+        }
+        while (first != null) {
+            const segment = (first as QueueLogSegment\<TMessage>)
+            if ((segment.base + segment.count) > head) { break }
+            first = segment.following
+            segment.following = null
+        }
+        if (first == null) { last = null }
+        base = if (first == null) { tail } else { (first as QueueLogSegment\<TMessage>).base }
+    }
+    pub func removeReader(target: QueueReaderState\<TMessage>) {
+        const expectedReader = (target as Object)
+        var previous: QueueReaderState\<TMessage>? = null
+        var current = readers
+        while (current != null) {
+            const r = (current as QueueReaderState\<TMessage>)
+            var matches = false
+            const candidate = (r as Object)
+            seq using(const expected = placeOf expectedReader) {
+                seq using(const actual = placeOf candidate) { matches = (expected == actual) }
+            }
+            if (matches) {
+                if (previous == null) { readers = r.following }
+                else { (previous as QueueReaderState\<TMessage>).following = r.following }
+                r.following = null
+                r.segment = null
+                r.signal()
+                return
+            }
+            previous = r
+            current = r.following
+        }
+    }
+}
+
+// 五 API 保留原有签名；capability 自身封装私有状态和校验。
 pub class MessageQueue {
     pub static func create_queue\<TMessage with core.serialization.Serializable>(): QueueHandle\<TMessage> {
-        const id = mq_create()
-        return new QueueHandle\<TMessage>(id, QueueHandleType.Owner)
+        return QueueHandle.create_queue\<TMessage>()
     }
-
-    pub static func add_queue_handle\<TMessage with core.serialization.Serializable>(
-        source: QueueHandle\<TMessage>,
-        type: QueueHandleType
-    ): QueueHandle\<TMessage> {
-        const id = mq_add(source.id, (type.code as i64))
-        if (id <= (0 as i64)) {
-            throw new core.IllegalStateException(mqError((id as i32)))
-        }
-        return new QueueHandle\<TMessage>(id, type)
+    pub static func add_queue_handle\<TMessage with core.serialization.Serializable>(source: QueueHandle\<TMessage>, type: QueueHandleType): QueueHandle\<TMessage> {
+        return QueueHandle.add_queue_handle\<TMessage>(source, type)
     }
-
-    pub static func release_queue_handle\<TMessage with core.serialization.Serializable>(
-        handle: QueueHandle\<TMessage>
-    ) {
-        const code = mq_release(handle.id)
-        if (code != 0) {
-            throw new core.IllegalStateException(mqError(code))
-        }
+    pub static func release_queue_handle\<TMessage with core.serialization.Serializable>(handle: QueueHandle\<TMessage>) {
+        QueueHandle.release_queue_handle\<TMessage>(handle)
     }
-
-    // 完成点 = 深复制入队可见（交接 §17）。不等待任何 reader。
-    pub static async func post\<TMessage with core.serialization.Serializable>(
-        handle: QueueHandle\<TMessage>,
-        item: TMessage
-    ) {
-        const parcel = item:Serializable.toParcel()
-        const code = mq_post(handle.id, parcel as Any)
-        if (code != 0) {
-            throw new core.IllegalStateException(mqError(code))
-        }
+    pub static async func post\<TMessage with core.serialization.Serializable>(handle: QueueHandle\<TMessage>, item: TMessage) {
+        await QueueHandle.post\<TMessage>(handle, item)
     }
-
-    // 有消息/EOS 立即完成；空则 yield 队列 EventAlarm 后重试（交接 §24
-    // 单 outstanding next：调用边界经 mq_next_enter/exit 在 native/VM
-    // 登记——Rigi 侧全局可变状态须共享安全，无共享集合可用）。
-    pub static async func next\<TMessage with core.serialization.Serializable>(
-        handle: QueueHandle\<TMessage>
-    ): QueueItem\<TMessage> {
-        const entered = mq_next_enter(handle.id)
-        if (entered != 0) {
-            throw new core.IllegalStateException(mqError(entered))
-        }
-        try {
-            while (true) {
-                const status = mq_try_next(handle.id)
-                if (status == 1) {
-                    const boxed = mq_take(handle.id)
-                    const parcel = boxed as Parcel
-                    const value = fromParcel\<TMessage>(parcel)
-                    return new QueueItem\<TMessage>(false, value)
-                }
-                if (status == 2) {
-                    return new QueueItem\<TMessage>(true, null)
-                }
-                if (status < 0) {
-                    throw new core.IllegalStateException(mqError(status))
-                }
-                const alarm = mq_alarm(handle.id)
-                if (alarm == (0 as i64)) {
-                    throw new core.IllegalStateException(mqError(-1))
-                }
-                yield new MessageAvailableAlarm(alarm)
-            }
-        } finally(e) {
-            mq_next_exit(handle.id)
-        }
-        // 防御不可达（while(true) 内全部路径已 return/throw）
-        return new QueueItem\<TMessage>(true, null)
+    pub static async func next\<TMessage with core.serialization.Serializable>(handle: QueueHandle\<TMessage>): QueueItem\<TMessage> {
+        return await QueueHandle.next\<TMessage>(handle)
     }
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_create")
-    priv static native func mq_create(): i64
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_add")
-    priv static native func mq_add(sourceId: i64, typeCode: i64): i64
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_release")
-    priv static native func mq_release(handleId: i64): i32
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_post")
-    priv static native func mq_post(handleId: i64, parcel: Any): i32
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_try_next")
-    priv static native func mq_try_next(handleId: i64): i32
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_take")
-    priv static native func mq_take(handleId: i64): Any
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_alarm")
-    priv static native func mq_alarm(handleId: i64): i64
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_next_enter")
-    priv static native func mq_next_enter(handleId: i64): i32
-
-    @NativeLibrary("rigi_rt")
-    @NativeSymbol("mq_next_exit")
-    priv static native func mq_next_exit(handleId: i64)
 }
 
 // 违规消息文本：Rigi 包装层抛 IllegalStateException，双端同文。
@@ -197,10 +352,9 @@ priv func mqError(code: i32): String {
     return "MessageQueue: 非法操作"
 }
 
-// ===== MW11d-D：Reader / Receiver / Messenger 高层 API（交接 §12–§16）=====
+// ===== Reader / Receiver / Messenger 高层 API =====
 // 分层纪律（§20）：传输机制在 MessageQueue 五原语；cursor 管理、listener
-// 派发、Executor 路由全部在本文件 Rigi 层组合。native 层绝不直接执行
-// 用户 callback（§15.1 天然满足：native 只见 Parcel）。
+// 派发、Executor 路由全部在本文件 Rigi 层组合，callback 经 Task.run 执行。
 // 单向 capability（§16.1）：Reader/Receiver 无任何派生 Sender 的 API——
 // 结构性保证（无相应方法），不依赖运行时检查。
 
@@ -208,11 +362,13 @@ priv func mqError(code: i32): String {
 // EOS 由 next 返回的 QueueItem.isEos 判定（§10/§25）。
 pub shared class Reader\<TMessage with core.serialization.Serializable> implements core.IDisposable {
     priv const handle: QueueHandle\<TMessage>
+    priv const disposeGate: core.coroutine.Mutex
     priv var disposed: bool
 
     // 包装既有 Reader capability 句柄（调用方让渡句柄所有权给本对象）
     pub init(_ -> handle) {
         disposed = false
+        disposeGate = new core.coroutine.Mutex()
     }
 
     // 下一条消息：转发 MessageQueue.next（单 outstanding 纪律见 §24）
@@ -232,20 +388,22 @@ pub shared class Reader\<TMessage with core.serialization.Serializable> implemen
         return new Receiver\<TMessage>(this.branch())
     }
 
-    // §12.2：只释放自己的 handle；幂等（重复 dispose 不再触达 native）
+    // §12.2：只释放自己的 handle；幂等（重复 dispose 不再释放 capability）
     pub override func dispose() {
-        if (disposed) { return }
-        disposed = true
-        MessageQueue.release_queue_handle(handle)
+        const lock = await disposeGate.acquire()
+        try {
+            if (disposed) { return }
+            disposed = true
+            MessageQueue.release_queue_handle(handle)
+        } finally(e) { disposeGate.release(lock) }
     }
 }
 
 // listener 登记表项（priv：只服务 Receiver 内部；id = callback 对象身份）
 priv shared class ListenerEntry\<TMessage with core.serialization.Serializable> {
-    pub var id: i64
     pub var callback: core.AsyncAction\<TMessage>
     pub var executor: core.coroutine.Executor
-    pub init(_ -> id, _ -> callback, _ -> executor)
+    pub init(_ -> callback, _ -> executor)
 }
 
 // ===== 冷 Task 非泛型壳（priv，文件内机制）=====
@@ -310,17 +468,12 @@ priv shared class ListenerCall\<TMessage with core.serialization.Serializable> :
     }
 }
 
-// Reader 的 push View（§13）：内部持独立 Reader + pump 协程
-//（next 循环 → listener 查找 → 按 listener 的 Executor 派发；
-// EOS/dispose 停泵）。身份与路由（§14/§15）：callback 对象自身即
-// identity（经 mq_object_id 原语取对象身份——playground 实证语言层
-// 无 == 身份比较：lambda 隐藏类无 operator equals、toString 同位点
-// 相等非身份）；默认 Executor = IOExecutor（§15.2 写死）。
+// Reader 的 push View：独立 cursor、listener 对象身份与默认 IOExecutor。
 pub shared class Receiver\<TMessage with core.serialization.Serializable> implements core.IDisposable {
     priv const internalReader: Reader\<TMessage>
     priv var entries: Array\<ListenerEntry\<TMessage>>
     priv var entryCount: i32
-    priv var gate: i64
+    priv const gate: core.coroutine.Mutex
     priv var disposed: bool
 
     // 包装 Reader 并立即起泵（调用方让渡 reader 所有权给本对象）
@@ -328,7 +481,7 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
         internalReader = reader
         entries = core.collections.arrayOf\<ListenerEntry\<TMessage>>(4)
         entryCount = 0
-        gate = mq_sync_create()
+        gate = new core.coroutine.Mutex()
         disposed = false
         startPump()
     }
@@ -336,29 +489,27 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
     // §14：callback 对象自身即 identity。重复注册幂等（同一 callback
     // 只登记一次，行为无歧义）。已 dispose 拒绝登记
     pub func addListener(callback: core.AsyncAction\<TMessage>) {
-        const id = mq_object_id((callback as Any))
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         try {
             if (disposed) {
                 throw new core.IllegalStateException(
                     "Receiver.addListener：Receiver 已 dispose")
             }
-            if (findIndex(id) >= 0) { return }
+            if (findIndex(callback) >= 0) { return }
             if (entryCount == entries.length) { growEntries() }
             entries[entryCount] = new ListenerEntry\<TMessage>(
-                id, callback, new core.coroutine.IOExecutor())
+                callback, new core.coroutine.IOExecutor())
             entryCount = entryCount + 1
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
     }
 
     // §14：按 callback 身份摘除；未注册为无操作（幂等）
     pub func removeListener(callback: core.AsyncAction\<TMessage>) {
-        const id = mq_object_id((callback as Any))
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         try {
-            const index = findIndex(id)
+            const index = findIndex(callback)
             if (index < 0) { return }
             var i = index
             while (i < (entryCount - 1)) {
@@ -366,39 +517,45 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
                 i = i + 1
             }
             entryCount = entryCount - 1
+            // Array 的写入元素类型不接收 null；重建表排除旧尾槽引用。
+            const retained = core.collections.arrayOf\<ListenerEntry\<TMessage>>(entries.length)
+            i = 0
+            while (i < entryCount) {
+                retained[i] = (entries[i] as ListenerEntry\<TMessage>)
+                i = i + 1
+            }
+            entries = retained
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
     }
 
     // §15：listener 级 Executor 路由。未注册 callback 拒绝（无歧义）
     pub func setExecutor(callback: core.AsyncAction\<TMessage>, executor: core.coroutine.Executor) {
-        const id = mq_object_id((callback as Any))
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         try {
-            const index = findIndex(id)
+            const index = findIndex(callback)
             if (index < 0) {
                 throw new core.IllegalStateException(
                     "Receiver.setExecutor：listener 未注册")
             }
             (entries[index] as ListenerEntry\<TMessage>).executor = executor
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
     }
 
     // §15：已注册 → 其 Executor；未注册 → 默认 IOExecutor（§15.2）
     pub func getExecutor(callback: core.AsyncAction\<TMessage>): core.coroutine.Executor {
-        const id = mq_object_id((callback as Any))
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         try {
-            const index = findIndex(id)
+            const index = findIndex(callback)
             if (index >= 0) {
                 return (entries[index] as ListenerEntry\<TMessage>).executor
             }
             return new core.coroutine.IOExecutor()
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
     }
 
@@ -410,15 +567,17 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
     // §13.2：只释放内部 Reader（不级联兄弟 View）。幂等；pump 协程
     // 经句柄释放的信号唤醒后走错误路径静默退出（见 pumpLoop 注释）
     pub override func dispose() {
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         var first = false
         try {
             if (not disposed) {
                 disposed = true
                 first = true
+                entries = core.collections.arrayOf\<ListenerEntry\<TMessage>>(4)
+                entryCount = 0
             }
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
         if (first) {
             internalReader.dispose()
@@ -432,11 +591,7 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
         AsyncShell.start(new PumpAdapter\<TMessage>(this))
     }
 
-    // pump 协程（§13）：next 循环 → EOS 停泵；dispose 与挂起 next 的
-    // 竞态由 native「先信号后销毁」保证唤醒——醒来后 try_next/enter 报
-    // 「句柄已释放」IllegalStateException，静默停泵。pump 是内部 reader
-    // 的唯一消费者（单 outstanding next 天然满足）。
-    // internal：PumpAdapter 的跨类回调通道（同模块可见，非公共契约）
+    // 内部 reader 是唯一消费者；release 在队列锁内唤醒，错误出口静默停泵。
     internal async func pumpLoop() {
         try {
             while (true) {
@@ -449,20 +604,25 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
         }
     }
 
-    // 按注册序向每个 listener 派发：临界区内快照表（同步 Mutex 不得跨
+    // 按注册序向每个 listener 派发：临界区内快照表（队列 Mutex 可跨
     // 挂起点持有），临界区外为每个 listener 建 ListenerCall 并经
     // AsyncShell 以该 listener 的 Executor 起冷 Task（§15.1：callback
     // 只经 Rigi 层 Task + run(executor) 既有通道执行，native 不触达）
     priv func dispatch(message: TMessage) {
-        mq_sync_acquire(gate)
-        const snapshot = core.collections.arrayOf\<ListenerEntry\<TMessage>>(entryCount)
+        const lock = await gate.acquire()
+        var snapshot = core.collections.arrayOf\<ListenerEntry\<TMessage>>(0)
+        var n: i32 = 0
         var i: i32 = 0
-        while (i < entryCount) {
-            snapshot[i] = (entries[i] as ListenerEntry\<TMessage>)
-            i = i + 1
-        }
-        const n = entryCount
-        mq_sync_release(gate)
+        try {
+            if (disposed) { return }
+            n = entryCount
+            snapshot = core.collections.arrayOf\<ListenerEntry\<TMessage>>(n)
+            while (i < n) {
+                const entry = (entries[i] as ListenerEntry\<TMessage>)
+                snapshot[i] = new ListenerEntry\<TMessage>(entry.callback, entry.executor)
+                i = i + 1
+            }
+        } finally(e) { gate.release(lock) }
         i = 0
         while (i < n) {
             const entry = (snapshot[i] as ListenerEntry\<TMessage>)
@@ -473,10 +633,17 @@ pub shared class Receiver\<TMessage with core.serialization.Serializable> implem
         }
     }
 
-    priv func findIndex(id: i64): i32 {
+    priv func findIndex(callback: core.AsyncAction\<TMessage>): i32 {
+        // 擦除泛型 callable 的静态类型，Place 仍按实际对象 target 比较。
+        const expectedCallback = (callback as Object)
         var i: i32 = 0
         while (i < entryCount) {
-            if ((entries[i] as ListenerEntry\<TMessage>).id == id) { return i }
+            const candidate = ((entries[i] as ListenerEntry\<TMessage>).callback as Object)
+            seq using(const expected = placeOf expectedCallback) {
+                seq using(const actual = placeOf candidate) {
+                    if (expected == actual) { return i }
+                }
+            }
             i = i + 1
         }
         return -1
@@ -499,14 +666,14 @@ pub shared class Messenger\<TMessage with core.serialization.Serializable> imple
     priv const owner: QueueHandle\<TMessage>
     priv const sender: QueueHandle\<TMessage>
     priv var receiverCache: Receiver\<TMessage>?
-    priv var gate: i64
+    priv const gate: core.coroutine.Mutex
     priv var disposed: bool
 
     pub init() {
         owner = MessageQueue.create_queue\<TMessage>()
         sender = MessageQueue.add_queue_handle\<TMessage>(owner, QueueHandleType.Sender)
         receiverCache = null
-        gate = mq_sync_create()
+        gate = new core.coroutine.Mutex()
         disposed = false
     }
 
@@ -519,16 +686,16 @@ pub shared class Messenger\<TMessage with core.serialization.Serializable> imple
     // §16：懒建——Owner 派生 Reader → createReceiver
     pub var receiver: Receiver\<TMessage> {
         pub get(_: _) {
-            mq_sync_acquire(gate)
-            if (receiverCache == null) {
+            const lock = await gate.acquire()
+            try {
+              if (receiverCache == null) {
                 // 直接包 Owner 派生的新 Reader（所有权让渡给 Receiver）
                 // ——不能 createReader().createReceiver()：中介 Reader
                 // 无人 dispose 会把句柄/对象漏掉（memtrack 实证）
                 receiverCache = new Receiver\<TMessage>(this.createReader())
-            }
-            const result = (receiverCache as Receiver\<TMessage>)
-            mq_sync_release(gate)
-            return result
+              }
+              return (receiverCache as Receiver\<TMessage>)
+            } finally(e) { gate.release(lock) }
         }
     }
 
@@ -541,7 +708,7 @@ pub shared class Messenger\<TMessage with core.serialization.Serializable> imple
     // §16：释放 Sender + Owner → 生产侧 sealed → readers drain 后 EOS。
     // 幂等；不级联 dispose 已派生的 Reader/Receiver（它们有自己的句柄）
     pub override func dispose() {
-        mq_sync_acquire(gate)
+        const lock = await gate.acquire()
         var first = false
         try {
             if (not disposed) {
@@ -549,7 +716,7 @@ pub shared class Messenger\<TMessage with core.serialization.Serializable> imple
                 first = true
             }
         } finally(e) {
-            mq_sync_release(gate)
+            gate.release(lock)
         }
         if (first) {
             MessageQueue.release_queue_handle(sender)
@@ -557,29 +724,3 @@ pub shared class Messenger\<TMessage with core.serialization.Serializable> imple
         }
     }
 }
-
-// ===== MW11d-D 内部原语（文件级 priv，不进公共面）=====
-// native 同步 Mutex（§17.4）：Receiver/Messenger 内部表跨 lane 一致性
-//（listener 在 IO/Compute lane 跑、用户在 Main 调 addListener）。
-// coroutine.rg 的同符号声明是文件级 priv，按既有先例在本文件重声明
-//（同 (lib, symbol) 映射同一 C 函数/VM hook；纪律不变：不得跨挂起点
-// 持有，与语言级异步 Mutex 严格区分）。
-@NativeLibrary("rigi_rt")
-@NativeSymbol("sync_mutex_create")
-priv native func mq_sync_create(): i64
-
-@NativeLibrary("rigi_rt")
-@NativeSymbol("sync_mutex_acquire")
-priv native func mq_sync_acquire(mutex: i64)
-
-@NativeLibrary("rigi_rt")
-@NativeSymbol("sync_mutex_release")
-priv native func mq_sync_release(mutex: i64)
-
-// 对象身份原语（§14）：listener 身份键。playground 实证语言层无身份
-// 比较通道（lambda 隐藏类无 operator equals；toString 同位点相等，非
-// 身份）——身份是机制（mechanism）不是策略，故下沉为 rigi_rt/VM 原语
-//（rigi_rt/stringfmt.c rigi_object_id：Any 槽 payload 即对象身份）
-@NativeLibrary("rigi_rt")
-@NativeSymbol("object_id")
-priv native func mq_object_id(value: Any): i64

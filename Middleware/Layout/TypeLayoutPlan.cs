@@ -124,6 +124,12 @@ namespace RigiCompiler.Middleware.Layout
     {
         private readonly Dictionary<string, TypeLayoutPlan> _plans = new(System.StringComparer.Ordinal);
         private readonly List<TypeLayoutPlan> _order = new();
+        private readonly IReadOnlySet<string>? _nonGenericNames;
+
+        internal LayoutPlanTable(IReadOnlySet<string>? nonGenericNames = null)
+        {
+            _nonGenericNames = nonGenericNames;
+        }
 
         public IReadOnlyList<TypeLayoutPlan> Plans => _order;
 
@@ -157,7 +163,7 @@ namespace RigiCompiler.Middleware.Layout
                 : null;
         }
 
-        private static bool LooksLikeOpenGenericQuery(string typeRef)
+        private bool LooksLikeOpenGenericQuery(string typeRef)
         {
             var angle = typeRef.IndexOf('<');
             if (angle < 0 || !typeRef.EndsWith(">", System.StringComparison.Ordinal))
@@ -173,6 +179,10 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return true;
             }
+            // 顶层用户类型没有命名空间分隔符；已布局的实参是闭合类型，
+            // 不能误当声明占位而跳过构造计划（例如 Box<Value>）。
+            var arguments = ConstructedTypeCollector.TypeArgumentsOf(typeRef);
+            if (arguments.Count > 0 && arguments.All(argument => _plans.ContainsKey(argument))) return false;
             return inner.IndexOf(':') < 0 && inner.IndexOf('.') < 0
                 && inner.IndexOf('<') < 0;
         }
@@ -181,7 +191,8 @@ namespace RigiCompiler.Middleware.Layout
         {
             var key = GenericAbi.PlanKey(plan.Symbol);
             _plans.Add(key, plan);
-            if (key != plan.Symbol.Canonical && !_plans.ContainsKey(plan.Symbol.Canonical))
+            if (key != plan.Symbol.Canonical && !_plans.ContainsKey(plan.Symbol.Canonical)
+                && !(_nonGenericNames?.Contains(plan.Symbol.Canonical) ?? false))
             {
                 _plans.Add(plan.Symbol.Canonical, plan);
             }
@@ -222,6 +233,21 @@ namespace RigiCompiler.Middleware.Layout
                 }
             }
             return list;
+        }
+
+        // 值类型没有对象 iMap；隐藏合成接口的可达性与发射使用同一查询。
+        public IReadOnlyList<(string Host, string Method)> ValueInterfaceImplementations(string iface, string signature)
+        {
+            var result = new List<(string, string)>();
+            foreach (var plan in _order)
+            {
+                if (plan.Kind != TypeLayoutKind.Struct || !plan.Symbol.Declaration.ImplementsTypes.Contains(iface)) continue;
+                if (plan.Symbol.Declaration.GenericParameters.Count > 0
+                    && !GenericAbi.IsClosedConstructed(plan.Symbol.Canonical)) continue;
+                foreach (var method in LayoutEngine.InstanceMethods(plan.Symbol))
+                    if (method.SignatureKey == signature) result.Add((plan.Symbol.Canonical, method.Canonical));
+            }
+            return result;
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿namespace RigiCompiler
+namespace RigiCompiler
 {
     // 局部变量声明（S5）与解构声明（S7f，SYNTAX §18）。
     // 自旧 BindSession.BindLocalDeclaration/BindDestructuring/FindCorePairDefinition
@@ -493,14 +493,14 @@
                 case BoundFieldReferenceExpression fieldReference:
                     // 字段写入统一检查（S8e）：带访问器字段查 setter，
                     // 无访问器字段走 const 规则
-                    if (!ConstFieldRules.CheckWritable(fieldReference.Field, node.Span, ctx.Frame,
+                    if (!ConstFieldRules.CheckWritable(fieldReference.Field, node.Span, ctx,
                         env))
                     {
                         return null;
                     }
                     break;
                 case BoundFieldAccessExpression fieldAccess:
-                    if (!ConstFieldRules.CheckWritable(fieldAccess.Field, node.Span, ctx.Frame,
+                    if (!ConstFieldRules.CheckWritable(fieldAccess.Field, node.Span, ctx,
                         env))
                     {
                         return null;

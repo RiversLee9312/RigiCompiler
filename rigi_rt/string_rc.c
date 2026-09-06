@@ -48,13 +48,12 @@ void rigi_string_acquire(const char *data)
     rigi_region_exit();
 }
 
-void rigi_string_release(const char *data)
+/* GC 已停世界时不能再次进入 mutator fence；共享同一字符串释放实现。 */
+static void rigi_string_release_unfenced(const char *data)
 {
     RigiStringBlock *block;
-    rigi_region_enter();
     if (data == NULL)
     {
-        rigi_region_exit();
         return;
     }
     block = (RigiStringBlock *)(void *)(data - sizeof(RigiStringBlock));
@@ -64,5 +63,11 @@ void rigi_string_release(const char *data)
     {
         rigi_track_free(block);
     }
+}
+
+void rigi_string_release(const char *data)
+{
+    rigi_region_enter();
+    rigi_string_release_unfenced(data);
     rigi_region_exit();
 }

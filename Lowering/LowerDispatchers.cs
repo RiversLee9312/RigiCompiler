@@ -78,6 +78,7 @@ namespace RigiCompiler
                 BoundSmartCastExpression => SmartCastRewriter.Visit(expression, ctx, env),
                 BoundTypeCheckExpression => TypeCheckRewriter.Visit(expression, ctx, env),
                 BoundTypeOfExpression => TypeOfRewriter.Visit(expression, ctx, env),
+                BoundPlaceOfExpression => PlaceOfRewriter.Visit(expression, ctx, env),
                 BoundEnumCaseExpression => EnumCaseRewriter.Visit(expression, ctx, env),
                 BoundSafeAccessExpression => SafeAccessRewriter.Visit(expression, ctx, env),
                 BoundSafeAccessReceiverExpression => SafeReceiverRewriter.Visit(expression,

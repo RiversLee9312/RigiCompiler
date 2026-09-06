@@ -115,8 +115,34 @@ namespace RigiCompiler.Tests
             TestSuffixAfterTypeOf();
             TestErrorCases();
             TestStructuralAssertions();
+            TestPlaceOf();
 
             return TestHarness.Summary("TypeOf");
+        }
+
+        private static void TestPlaceOf()
+        {
+            TestHarness.Section("placeOf 专用表达式");
+            TestExpr("var p = placeOf value", "PlaceOf(Path(value, []))");
+            TestExpr("var p = placeOf (value)", "PlaceOf(Group(Path(value, [])))");
+            TestExpr("var p = placeOf/*分隔*/(value)", "PlaceOf(Group(Path(value, [])))");
+            TestExpr("var p = placeOf (1 + 2)", "PlaceOf(Group(Binary(Int(1,I32) + Int(2,I32))))");
+            TestHarness.CheckParseError("placeOf(x) 不接受伪调用语法",
+                () => TestHarness.ParseRoot("var p = placeOf(x)"), "requires separation");
+            TestExpr("var p = placeOf obj.field", "PlaceOf(Path(obj, [.field]))");
+            TestExpr("var p = placeOf factory()", "PlaceOf(Path(factory(), []))");
+            TestExpr("var p = (placeOf obj).dispose()",
+                "Path((Group(PlaceOf(Path(obj, [])))), [.dispose()])");
+            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var p = placeOf value");
+            var place = (PlaceOfExpressionASTNode)decl.Initializer!.Expression;
+            TestHarness.CheckTrue("PlaceOf 的父链完整",
+                ReferenceEquals(place.Parent, decl.Initializer)
+                && ReferenceEquals(place.Operand.Parent, place)
+                && ReferenceEquals(place.Operand.Expression.Parent, place.Operand));
+            TestHarness.CheckParseError("placeOf 缺操作数",
+                () => TestHarness.ParseRoot("var p = placeOf"), "Unexpected end of file");
+            TestHarness.CheckParseError("placeOf 不引入二元优先级",
+                () => TestHarness.ParseRoot("var p = placeOf a + b"), "");
         }
     }
 }

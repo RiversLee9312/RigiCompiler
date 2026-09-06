@@ -287,26 +287,26 @@ namespace RigiCompiler.Tests
             try
             {
                 // 正常执行：println 原样进 stdout
-                var (_, _, text) = BilTestHarness.EmitBilUnit(
+                var (_, module, _) = BilTestHarness.EmitBilUnit(
                     "pub func main(): i32 {\n" +
                     "    core.io.Console.println(\"vm ok\")\n" +
                     "    return 42\n" +
                     "}\n");
                 var okPath = Path.Combine(dir, "main.bil");
-                File.WriteAllText(okPath, text, new UTF8Encoding(false));
+                File.WriteAllText(okPath, BilWriter.Write(module), new UTF8Encoding(false));
                 var ok = RunVm("vm", "--file", okPath);
                 Check("vm 正常执行退出码 0", ok.Code == 0);
                 Check("vm stdout 精确", ok.Out == "vm ok\n");
 
                 // VM 异常（除零）→ stderr 输出异常信息、退出码 1
-                var (_, _, divText) = BilTestHarness.EmitBilUnit(
+                var (_, divModule, _) = BilTestHarness.EmitBilUnit(
                     "pub func main(): i32 {\n" +
                     "    var a: i32 = 1\n" +
                     "    var b: i32 = 0\n" +
                     "    return (a / b)\n" +
                     "}\n");
                 var divPath = Path.Combine(dir, "div.bil");
-                File.WriteAllText(divPath, divText, new UTF8Encoding(false));
+                File.WriteAllText(divPath, BilWriter.Write(divModule), new UTF8Encoding(false));
                 var div = RunVm("vm", "--file", divPath);
                 Check("vm 异常退出码 1", div.Code == 1);
                 Check("vm 异常信息含除零", div.Err.Contains("除以零"));

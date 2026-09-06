@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -23,6 +23,7 @@ namespace RigiCompiler.Tests
             TestLambdaExplicitFuncType();
             TestLambdaParamCapturePrologue();
             TestLambdaBlockBody();
+            TestLambdaThrowBlock();
             TestLambdaCompoundAssignCapture();
             TestLambdaGenericContext();
             TestLambdaMethodGenericCellCapture();
@@ -40,6 +41,40 @@ namespace RigiCompiler.Tests
             TestLambdaMethodWrapperEmission();
         }
 
+        // 全路径抛出的值块没有结果，不得发射未赋值结果槽的死读。
+        private static void TestLambdaThrowBlock()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit("""
+                pub func main(): i32 {
+                    const fail = func{ ():i32 -> { throw new core.RuntimeException("callback") }}
+                    try { fail() } catch(e:core.RuntimeException) {}
+                    return 0
+                }
+                """);
+            CheckNoErrors("直接 throw 值块 lambda 全管线无诊断", unit);
+            BilTestHarness.CheckBilValid("直接 throw 值块 lambda 验证器零错误", module);
+            var (mixedUnit, mixed, _) = BilTestHarness.EmitBilUnit("""
+                pub func main(): i32 {
+                    var finalized = 0
+                    const choose = func{ (n:i32):i32 -> {
+                        try {
+                            if (n > 0) { return@_ n + 1 }
+                            throw new core.RuntimeException("mixed")
+                        } finally (_) { finalized = finalized + 1 }
+                    }}
+                    return choose(1)
+                }
+                """);
+            CheckNoErrors("混合 return/throw/finally lambda 无诊断", mixedUnit);
+            BilTestHarness.CheckBilValid("混合 lambda 内存 BIL 验证", mixed);
+            BilTestHarness.CheckBilValid("混合 lambda BIL 文本往返验证", BilReader.Read(BilWriter.Write(mixed)));
+            // 删除真实产值写入后，return 路径仍可达，验证器必须拒绝死读伪装。
+            var mixedCall = mixed.Functions.Single(f => f.Symbol.StartsWith("..lambda..")
+                && f.Symbol.Contains("$$call(n:.i32)"));
+            foreach (var block in mixedCall.Blocks)
+                block.Instructions.RemoveAll(i => i is SetVarInstruction { Target.Name: ".s0" });
+            BilTestHarness.CheckBilInvalid("混合 lambda 可达未赋值读取仍被拒绝", mixed, "赋值前被读取");
+        }
         // 无捕获：隐藏类 extends Func、new 空参、invoke.indirect
         private static void TestLambdaNoCapture()
         {

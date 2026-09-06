@@ -651,17 +651,17 @@ namespace RigiCompiler.Middleware.Passes
         // MirReachability.AddVirtualEdges/AddInterfaceEdges 的查询口
         // 径，但保留每类实现身份（分流臂需要）
         private readonly Dictionary<string,
-            List<(string ClassCanonical, string ImplCanonical)>> _closureCache = new(
+            List<(TypeLayoutPlan ClassPlan, string ImplCanonical)>> _closureCache = new(
                 System.StringComparer.Ordinal);
 
-        private List<(string ClassCanonical, string ImplCanonical)> ClosurePairsOf(
+        private List<(TypeLayoutPlan ClassPlan, string ImplCanonical)> ClosurePairsOf(
             MwContext context, MwMemberSymbol target, bool operatorDispatch)
         {
             if (_closureCache.TryGetValue(target.Canonical, out var cached))
             {
                 return cached;
             }
-            var pairs = new List<(string, string)>();
+            var pairs = new List<(TypeLayoutPlan, string)>();
             var binding = operatorDispatch
                 ? Binding.ImplBinder.BindOperatorCall(target)
                 : Binding.ImplBinder.BindCall(target);
@@ -688,10 +688,10 @@ namespace RigiCompiler.Middleware.Passes
                     // R2-b：闭包枚举直走布局计划表（不经字符串查
                     // 询口）——① 同名不同元数模板 canonical 撞键
                     //（core::Func<1>/Func<2> 共享 "core::Func"），
-                    // 派生判定按 PlanKey 逐级比对（arity 正确）；
+                    // 派生判定按模板声明逐级比对（arity 正确）；
                     // ② 跳过构造计划（臂类键恒为模板 canonical，
                     // 构造实例沿构造基链命中模板臂——R2-a）
-                    var ownerPlanKey = GenericAbi.PlanKey(target.Owner!);
+                    var ownerTemplate = target.Owner!;
                     switch (binding)
                     {
                         case Binding.VirtualCallBinding:
@@ -700,12 +700,12 @@ namespace RigiCompiler.Middleware.Passes
                                 if (plan.Kind != TypeLayoutKind.Class
                                     || Layout.ConstructedTypeCollector.IsConstructed(
                                         plan.Symbol.Canonical)
-                                    || !DerivesFromTemplate(plan, ownerPlanKey)
+                                    || !DerivesFromTemplate(plan, ownerTemplate)
                                     || slot >= plan.VTableSlots.Count)
                                 {
                                     continue;
                                 }
-                                pairs.Add((plan.Symbol.Canonical,
+                                pairs.Add((plan,
                                     plan.VTableSlots[slot]));
                             }
                             break;
@@ -727,7 +727,7 @@ namespace RigiCompiler.Middleware.Passes
                                                 == target.Owner)
                                         && baseOffset + slot < slots.Count)
                                     {
-                                        pairs.Add((plan.Symbol.Canonical,
+                                        pairs.Add((plan,
                                             slots[baseOffset + slot]));
                                     }
                                 }
@@ -741,13 +741,13 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // R2-b：arity 正确的模板派生判定——沿 BasePlan 链按
-        // PlanKey 比对（同名不同元数模板 canonical 撞键，裸
-        // canonical 比对会把 Func<1> 子类错配进 Func<2> 闭包）
-        private static bool DerivesFromTemplate(TypeLayoutPlan plan, string ownerPlanKey)
+        // 声明身份比对；闭合基类保留模板声明，且不同元数声明各自独立。
+        // 不能用闭合 PlanKey 与模板 PlanKey 相等来判定继承关系。
+        private static bool DerivesFromTemplate(TypeLayoutPlan plan, MwTypeSymbol ownerTemplate)
         {
             for (var current = plan; current != null; current = current.BasePlan)
             {
-                if (GenericAbi.PlanKey(current.Symbol) == ownerPlanKey)
+                if (current.Symbol.Declaration == ownerTemplate.Declaration)
                 {
                     return true;
                 }
@@ -1055,7 +1055,10 @@ namespace RigiCompiler.Middleware.Passes
         private static void RejectUnsupportedTaintedShape(MirFunction fn)
         {
             var canonical = fn.Symbol.Canonical;
-            if (canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
+            // 文本分派是普通 MIR 调用组成的封闭 if 链，没有 wrapper
+            // router 的动态包 ABI，可由既有直调/虚调挂起协议完整切分。
+            if ((canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
+                    && canonical != BuiltinToStringDispatchPass.DispatchCanonical)
                 || canonical.Contains("$..init.", System.StringComparison.Ordinal)
                 || canonical.Contains(ProxyBakeSupport.WrappedInfix,
                     System.StringComparison.Ordinal)
@@ -1167,9 +1170,11 @@ namespace RigiCompiler.Middleware.Passes
         {
             internal string FrameFieldSymbol = "";
             internal MirOperand? Operand;
+            internal MirType? OperandTargetType;
             internal string? TypeIdTypeRef;
             internal string? CallerTypeIdLocal;
             internal string? ReceiverTypeIdField;
+            internal MirOperand? ReceiverTypeIdOperand;
         }
 
         // B-2 虚派发挂起点：闭包全类臂（最深派生优先——臂条件
@@ -1188,9 +1193,9 @@ namespace RigiCompiler.Middleware.Passes
 
         private sealed class VirtualArm
         {
-            internal string ClassCanonical = "";
+            internal int InheritanceDepth;
             internal CallSiteInfo? Impl;             // 非 tainted 实现为 null（落原调用）
-            // R2-a：臂条件 type.is 目标集——首元素恒为类 canonical
+            // R2-a：臂条件 type.is 目标集——首元素恒为类 PlanKey
             //（非泛型 = 唯一元素；泛型类 = 模板空壳 + 模块内全部闭
             // 合构造 sheet：实例头是构造 sheet 且其基链不含模板空
             // 壳，单模板键判定恒 miss；开放占位 new 的实例仍携模
@@ -1413,7 +1418,10 @@ namespace RigiCompiler.Middleware.Passes
                                 if (point.InstIndex == i)
                                 {
                                     point.LiveAfter = fn.Locals
-                                        .Where(l => live.Contains(l.Name))
+                                        // new/cast 等在发射期隐式读取 typeid，MIR
+                                        // 显式操作数的 def/use 看不到这些依赖。
+                                        .Where(l => live.Contains(l.Name)
+                                            || l.Name.StartsWith(".generic.", System.StringComparison.Ordinal))
                                         .Select(l => l.Name).ToList();
                                 }
                             }
@@ -2040,7 +2048,7 @@ namespace RigiCompiler.Middleware.Passes
                 var implEntries = new Dictionary<string, CallSiteInfo>(
                     System.StringComparer.Ordinal);
                 var armIndex = 0;
-                foreach (var (classCanonical, implCanonical) in pairs)
+                foreach (var (classPlan, implCanonical) in pairs)
                 {
                     CallSiteInfo? entry = null;
                     if (tainted.Contains(implCanonical))
@@ -2082,17 +2090,13 @@ namespace RigiCompiler.Middleware.Passes
                     }
                     point.Virtual.Arms.Add(new VirtualArm
                     {
-                        ClassCanonical = classCanonical,
+                        InheritanceDepth = DepthOf(classPlan),
                         Impl = entry,
-                        TypeRefs = ArmTypeRefsOf(context, classCanonical),
+                        TypeRefs = ArmTypeRefsOf(context, classPlan),
                     });
                 }
-                // 最深派生优先（臂条件 type.is 是子类判定）：深度 =
-                // 闭包内被派生计数，降序
-                var query = context.DispatchQuery!;
-                point.Virtual.Arms.Sort((a, b) =>
-                    DepthOf(query, b.ClassCanonical, point.Virtual.Arms)
-                        .CompareTo(DepthOf(query, a.ClassCanonical, point.Virtual.Arms)));
+                // 按实际布局基类链排序，闭合祖先和同名不同元数不再丢失。
+                point.Virtual.Arms.Sort((a, b) => b.InheritanceDepth.CompareTo(a.InheritanceDepth));
                 if (point.Virtual.Arms.All(a => a.Impl == null))
                 {
                     throw new CompilerInternalException(
@@ -2102,14 +2106,14 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // R2-a：臂条件 type.is 目标集——非泛型类 = [类 canonical]；
-        // 泛型类 = [模板 canonical] + 模块内全部闭合构造 canonical
+        // 泛型类 = [含元数的模板 PlanKey] + 同声明的闭合构造 canonical
         //（布局计划表枚举；实例头 sheet 只可能是模板空壳或某个已
         // 物化闭合构造，构造链基链覆盖派生类实例——臂只需枚举臂
         // 类自身的构造，派生构造实例沿其构造基链命中）
         private static List<string> ArmTypeRefsOf(MwContext context,
-            string classCanonical)
+            TypeLayoutPlan classPlan)
         {
-            var refs = new List<string> { classCanonical };
+            var refs = new List<string> { GenericAbi.PlanKey(classPlan.Symbol) };
             if (context.Layout == null)
             {
                 return refs;
@@ -2117,14 +2121,12 @@ namespace RigiCompiler.Middleware.Passes
             foreach (var plan in context.Layout.Plans)
             {
                 var canonical = plan.Symbol.Canonical;
-                if (canonical == classCanonical
+                if (canonical == classPlan.Symbol.Canonical
                     || !Layout.ConstructedTypeCollector.IsConstructed(canonical))
                 {
                     continue;
                 }
-                var stripped = BilVerificationContext.StripTypeArguments(
-                    MwTypeKey.Normalize(canonical));
-                if (stripped == classCanonical)
+                if (plan.Symbol.Declaration == classPlan.Symbol.Declaration)
                 {
                     refs.Add(canonical);
                 }
@@ -2132,18 +2134,11 @@ namespace RigiCompiler.Middleware.Passes
             return refs;
         }
 
-        private static int DepthOf(IMwDispatchQuery query, string classCanonical,
-            List<VirtualArm> arms)
+        private static int DepthOf(TypeLayoutPlan plan)
         {
             var depth = 0;
-            foreach (var arm in arms)
-            {
-                if (arm.ClassCanonical != classCanonical
-                    && query.DerivesFrom(classCanonical, arm.ClassCanonical))
-                {
-                    depth++;
-                }
-            }
+            for (var ancestor = plan.BasePlan; ancestor != null; ancestor = ancestor.BasePlan)
+                depth++;
             return depth;
         }
 
@@ -2183,6 +2178,7 @@ namespace RigiCompiler.Middleware.Passes
                         site.CalleeFrameCanonical, expected[i].Name,
                         expected[i].Type.Canonical),
                     Operand = args[i],
+                    OperandTargetType = expected[i].Type,
                 });
             }
             if (hiddenTypeIds.Count == 0)
@@ -2241,6 +2237,7 @@ namespace RigiCompiler.Middleware.Passes
                         ReceiverTypeIdField = GenericAbi.HiddenFieldSymbol(
                             owner.Canonical,
                             parameter.Name.Substring(".generic.".Length)),
+                        ReceiverTypeIdOperand = runtimeTypeIdReceiver,
                     });
                 }
                 return;
@@ -2273,9 +2270,14 @@ namespace RigiCompiler.Middleware.Passes
                 }
                 else
                 {
-                    throw new MwNotSupportedException(
-                        "B-2 暂不支持类级 typeid 实参为嵌套占位构造的 tainted 调用: "
-                        + callee.Symbol.Canonical);
+                    // class 实例已经保存完整实参身份；嵌套开放类型也从
+                    // 接收者读取，不能按调用方同名 T 猜测或退化为 Any。
+                    if (owner.Declaration.Kind != BilTypeKind.Class || args.Count == 0)
+                        throw new MwNotSupportedException(
+                            "B-2 嵌套开放类级 typeid 缺少 class 接收者: " + callee.Symbol.Canonical);
+                    drop.ReceiverTypeIdField = GenericAbi.HiddenFieldSymbol(owner.Canonical,
+                        parameter.Name.Substring(".generic.".Length));
+                    drop.ReceiverTypeIdOperand = runtimeTypeIdReceiver ?? args[0];
                 }
                 site.Drops.Add(drop);
             }
@@ -2553,6 +2555,7 @@ namespace RigiCompiler.Middleware.Passes
                 new List<MirLocal> { frameParam }, locals, new List<MirBlock>(),
                 false, isCoroutineResume: true,
                 isPlainResume: plan.Mode == SplitMode.Plain);
+            if (plan.Mode == SplitMode.Plain) resumeFn.RestoredEntrySource = fn.Symbol.Canonical;
             var frameOp = new MirLocalOperand(FrameParamName);
             var syms = Syms(context, mir);
 
@@ -2845,6 +2848,14 @@ namespace RigiCompiler.Middleware.Passes
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
+                else if (drop.ReceiverTypeIdField != null)
+                {
+                    var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                    headInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
+                        drop.ReceiverTypeIdField, tid));
+                    headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
                 else
                 {
                     headInsts.Add(new MirSetField(
@@ -2966,6 +2977,14 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
                     headInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                    headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
+                        drop.FrameFieldSymbol));
+                }
+                else if (drop.ReceiverTypeIdField != null)
+                {
+                    var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                    headInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
+                        drop.ReceiverTypeIdField, tid));
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
@@ -3163,6 +3182,14 @@ namespace RigiCompiler.Middleware.Passes
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
                     }
+                    else if (drop.ReceiverTypeIdField != null)
+                    {
+                        var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
+                        newInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
+                            drop.ReceiverTypeIdField, tid));
+                        newInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
+                            drop.FrameFieldSymbol));
+                    }
                     else
                     {
                         newInsts.Add(new MirSetField(
@@ -3354,7 +3381,26 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     if (drop.Operand != null)
                     {
-                        newInsts.Add(new MirSetField(drop.Operand, calleeOp,
+                        var operand = drop.Operand;
+                        if (operand is MirLocalOperand local)
+                        {
+                            var sourceType = resumeFn.FindLocal(local.Name).Type;
+                            var targetType = drop.OperandTargetType ?? sourceType;
+                            if (sourceType.Canonical != targetType.Canonical
+                                && (TypeLayout.IsGenericPlaceholder(sourceType)
+                                    || TypeLayout.IsGenericPlaceholder(targetType)))
+                            {
+                                // 协议臂写具体 callee frame 前显式编组；不能把胖值直接写进标量字段。
+                                var converted = fresh("$mw.call.arg.", targetType);
+                                newInsts.Add(TypeLayout.IsGenericPlaceholder(targetType)
+                                    ? TypeLayout.ClassifySlot(context.Layout, sourceType) == ManagedSlotKind.FatReference
+                                        ? new MirCopyLocal(operand, converted)
+                                        : new MirBoxAny(operand, converted)
+                                    : new MirCast(operand, converted, false, targetType.Canonical, null, site.ExcTarget));
+                                operand = new MirLocalOperand(converted);
+                            }
+                        }
+                        newInsts.Add(new MirSetField(operand, calleeOp,
                             drop.FrameFieldSymbol));
                     }
                     else if (drop.TypeIdTypeRef != null)
@@ -3369,7 +3415,7 @@ namespace RigiCompiler.Middleware.Passes
                         // R2-a：类级 typeid 运行期取自接收者实例隐
                         // 藏字段（首入块执行，接收者槽仍活跃）
                         var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
-                        newInsts.Add(new MirGetField(receiverOp,
+                        newInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand ?? receiverOp,
                             drop.ReceiverTypeIdField, tid));
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
@@ -3414,7 +3460,20 @@ namespace RigiCompiler.Middleware.Passes
                             "tainted 虚调用有结果槽但实现无 $mw.result: "
                             + impl.Callee.Symbol.Canonical);
                     }
-                    doneInsts.Add(new MirGetField(calleeOp, impl.ResultFieldSymbol,
+                    var sourceType = impl.Callee.ReturnType;
+                    var targetType = resumeFn.FindLocal(site.Result).Type;
+                    if (sourceType.Canonical != targetType.Canonical
+                        && (TypeLayout.IsGenericPlaceholder(sourceType)
+                            || TypeLayout.IsGenericPlaceholder(targetType)))
+                    {
+                        var raw = fresh("$mw.call.result.", sourceType);
+                        doneInsts.Add(new MirGetField(calleeOp, impl.ResultFieldSymbol, raw));
+                        doneInsts.Add(TypeLayout.IsGenericPlaceholder(targetType)
+                            ? new MirBoxAny(new MirLocalOperand(raw), site.Result)
+                            : new MirCast(new MirLocalOperand(raw), site.Result, false,
+                                targetType.Canonical, null, site.ExcTarget));
+                    }
+                    else doneInsts.Add(new MirGetField(calleeOp, impl.ResultFieldSymbol,
                         site.Result));
                 }
                 resumeFn.AddBlock(new MirBlock(ids.Done, doneInsts,
@@ -3982,15 +4041,24 @@ namespace RigiCompiler.Middleware.Passes
             EmitTaskMark(context, insts, frameOp, taskFieldSymbol,
                 taskTypeRef, "markRunnable", fresh);
 
-        // 终态共用尾段：complete/fail → publishAll → noteTerminal
+        // 终态与 await 登记共用 Task.gate：状态迁移和 waiter 排空必须
+        // 原子完成，否则其他 Worker 可在排空后才把 waiter 写入旧队列。
+        // publishAll 留在锁外，避免恢复者等待同一 gate 时阻塞发布路径。
         private static void EmitTerminalPublish(MwContext context, MirFunction fn,
             List<MirInst> insts, string task, string taskTypeRef, bool failed,
             RuntimeSyms syms, System.Func<string, MirType, string> fresh,
             System.Func<string, MirType, string> freshManaged)
         {
+            var gate = fresh("$mw.done.gate.", I64);
+            insts.Add(new MirGetField(new MirLocalOperand(task),
+                TaskField(taskTypeRef, "gate", ".i64"), gate));
+            insts.Add(new MirCall(syms.MutexAcquire,
+                new List<MirOperand> { new MirLocalOperand(gate) }, null));
             var drained = freshManaged("$mw.drained.", MirType.Of(".array<.i64>"));
             insts.Add(new MirCall(TaskFn(context, taskTypeRef, failed ? "fail" : "complete"),
                 new List<MirOperand> { new MirLocalOperand(task) }, drained));
+            insts.Add(new MirCall(syms.MutexRelease,
+                new List<MirOperand> { new MirLocalOperand(gate) }, null));
             var disp = freshManaged("$mw.disp.", MirType.Of(DispatcherCanonical));
             insts.Add(new MirCall(syms.DispatcherGet, new List<MirOperand>(), disp));
             insts.Add(new MirCall(syms.PublishAll,

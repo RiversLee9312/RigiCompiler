@@ -459,7 +459,7 @@ namespace RigiCompiler.Middleware.Binding
             // 泛型占位左操作数（T extends Bound 内的运算）：静态无法解析
             // 到唯一声明（VM 运行期按实际 typeid 派发）——遗1 不支持，
             // 由调用方受控拒绝
-            if (current.Contains(".generic<", System.StringComparison.Ordinal))
+            if (Layout.GenericAbi.TryPlaceholderName(current, out _))
             {
                 return null;
             }

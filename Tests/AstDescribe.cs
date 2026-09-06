@@ -59,6 +59,7 @@ namespace RigiCompiler.Tests
                 SwitchExpressionASTNode s => Switch(s),
                 LambdaExpressionASTNode l => Lambda(l),
                 TypeOfExpressionASTNode t => $"TypeOf({Expr(t.Operand.Expression)})",
+                PlaceOfExpressionASTNode p => $"PlaceOf({Expr(p.Operand.Expression)})",
                 SeqBlockExpressionASTNode seq => Seq(seq),
                 _ => $"<{node.GetType().Name}>"
             };
@@ -114,6 +115,7 @@ namespace RigiCompiler.Tests
         {
             var parts = new List<string>();
             if (seq.IsVolatile) parts.Add("volatile");
+            if (seq.IsUnsafe) parts.Add("unsafe");
             foreach (var binding in seq.UsingBindings)
             {
                 var constVar = binding.IsConst ? "const" : "var";

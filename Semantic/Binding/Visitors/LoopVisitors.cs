@@ -176,7 +176,7 @@ namespace RigiCompiler
                     return null;
                 }
                 var resolved = OverloadResolution.ResolveBound(node, accessible,
-                    new[] { to }, env, rangeLookup);
+                    new[] { to }, env, rangeLookup, ctx);
                 if (resolved == null)
                 {
                     ctx.Flow.Restore(before);

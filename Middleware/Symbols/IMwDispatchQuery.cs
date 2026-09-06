@@ -22,5 +22,6 @@ namespace RigiCompiler.Middleware.Symbols
 
         // 全部已布局 class 的 canonical（遍历 override 后代用）
         IReadOnlyList<string> AllClassCanonicals();
+        IReadOnlyList<(string Host, string Method)> ValueInterfaceImplementations(string iface, string signature);
     }
 }

@@ -53,6 +53,7 @@ namespace RigiCompiler.Middleware.Pipeline
                 .Add(new ProxyBakingPass())
                 .Add(new CallWildcardLoweringPass())
                 .Add(new SingletonLoweringPass())
+                .Add(new BuiltinToStringDispatchPass())
                 .Add(new CoroutineSplitPass())
                 .Add(new RcInjectionPass());
         }

@@ -18,6 +18,10 @@ namespace RigiCompiler.Tests
             TestExpr("var v = foo(name = 42)", "Path(foo(name:Int(42,I32)), [])");
             TestExpr("var v = foo(1, name = 2)", "Path(foo(Int(1,I32), name:Int(2,I32)), [])");
             TestExpr("var v = foo()", "Path(foo(), [])");
+            TestExpr("var v = foo(loopedRefEnabled=true)", "Path(foo(loopedRefEnabled:Bool(True)), [])");
+            TestExpr("var v = foo(value:Serializable)", "Path(foo(Path(value, [:Serializable])), [])");
+            TestHarness.CheckParseError("loopedRefEnabled 冒号具名语法拒绝",
+                () => TestHarness.ParseRoot("var v = foo(loopedRefEnabled: true)"), "");
 
             TestHarness.Blank();
         }

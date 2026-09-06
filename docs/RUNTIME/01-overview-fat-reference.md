@@ -50,6 +50,7 @@
 
 - 胖引用中的 typeid 表示"当前代码认为它是什么类型"（静态视图）。
 - 对象头中的 typeid 表示"这个对象实际上是什么类型"（决定方法与内存布局如何解释）。
+- Object 的 ARC 按对象头实际类型选择 local/shared 路径；两路计数均原子化，覆盖失败 Task 的异常图由多个 waiter 同时持有的运行时边界，视图转换不改变生命周期协议。
 - 例：用 `Object` 类型的字段装一个值，引用里的 typeid 指向 `Object`，对象头里的 typeid 指向实际类型。`cast` 借此低成本实现（见 §12）。
 
 ---
@@ -70,7 +71,7 @@
 - **非 rich ValueType**：不含托管引用，`refMap` 恒为空；复制、构造和栈上计算完全不进入 GC 引用图。`String` 属于本域（字符数据是特权裸缓冲区，不是托管引用，见 §4）。
 - **rich ValueType**：可以含托管引用，仍遵守值语义和 Box 的 unique ownership；复制/销毁时按 `refMap` 对内部引用执行 acquire/release。全部 wrapper 属于本域（wrapper 恒为 rich struct，见 §14）。
 - **shared rich ValueType**：rich ValueType 的共享安全子集；内部只能指向 shared Object，并只能内嵌非 rich 或 shared rich ValueType。`shared wrapper` 属于本域。
-- **local Object**：未标记 `shared` 的 class 实例，归创建它的 Coroutine 所有，引用计数由 microGC 以非同步 ARC 管理。
+- **local Object**：未标记 `shared` 的 class 实例，归创建它的 Coroutine 所有，引用计数由 microGC 管理。运行时计数使用原子操作以支持 Task 异常传播的多 waiter 持有；这不放宽语言的 shared 闭包限制。
 - **shared Object**：标记 `shared` 的 class 实例，可由多个 Coroutine 持有，引用计数由 microSGC 以同步 ARC 管理。
 
 静态闭包保证 shared Object 和 shared rich ValueType 只能指向 shared Object，并只能内嵌非 rich/shared rich ValueType；local Object 可以指向 local/shared Object，并持有任意 ValueType。由此 shared 图不可能反向到达 local 对象域。shared 只决定共享资格与 GC 路径，不自动为用户字段提供线程安全。

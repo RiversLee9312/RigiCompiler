@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 
 namespace RigiCompiler.Bil.Vm
 {
@@ -57,6 +57,9 @@ namespace RigiCompiler.Bil.Vm
         private readonly VmContext _context;
         private long _nextHandle;
         private readonly ConcurrentDictionary<long, VmCoroutine> _coroutines = new();
+        private int _activeSegments;
+        private long _activityEpoch;
+        private readonly ConcurrentDictionary<long, WeakReference<VmCoroutine>> _completedCoroutines = new();
         private readonly ConcurrentDictionary<long, VmWorker> _workers = new();
         private readonly ConcurrentDictionary<long, SemaphoreSlim> _mutexes = new();
         private readonly ConcurrentDictionary<long, VmTimerRecord> _timers = new();
@@ -88,9 +91,11 @@ namespace RigiCompiler.Bil.Vm
         // 换绑/多 Executor 用例的确定性观测装置（单所有者不变量保证同一
         // 协程的追加不并发）
         internal readonly ConcurrentDictionary<long, List<long>> ResumeLog = new();
+        internal bool TraceResumes { get; set; }
 
         private void NoteResume(VmCoroutine coroutine)
         {
+            if (!TraceResumes) return;
             var list = ResumeLog.GetOrAdd(coroutine.Handle, _ => new List<long>());
             lock (list)
             {
@@ -651,9 +656,6 @@ namespace RigiCompiler.Bil.Vm
             // 唤醒债务（死锁判定的在途唤醒源）：创建即借，耗尽/取消/
             // 销毁时归还（幂等）
             public WakeupMarker? Marker;
-            // MW11d-C 手动 EventAlarm（MessageQueue「消息可得」）：粘滞
-            // signaled 被 wait 消费复位（rigi_rt worker.c auto_reset 同口径）
-            public bool AutoReset;
         }
 
         // §18.3 await：Rigi Task.registerWaiter 决策 + 同一 gate 临界区
@@ -707,7 +709,7 @@ namespace RigiCompiler.Bil.Vm
                         "registerWaiter 未返回判定码"))).Value;
                 if (code == 0)
                 {
-                    coroutine.MarkAwaiting(handle, resultSlot);
+                    coroutine.MarkAwaiting(handle, resultSlot, RequireCoroutine(handle));
                     if (!coroutine.TrySuspend())
                     {
                         throw new VmException("await 时协程不在 Running");
@@ -747,7 +749,9 @@ namespace RigiCompiler.Bil.Vm
 
         private VmCoroutine RequireCoroutine(long handle)
         {
-            return _coroutines.TryGetValue(handle, out var coroutine)
+            return (_coroutines.TryGetValue(handle, out var coroutine)
+                || (_completedCoroutines.TryGetValue(handle, out var weak)
+                    && weak.TryGetTarget(out coroutine)))
                 ? coroutine
                 : throw new VmException("协程句柄失效：" + handle);
         }
@@ -768,9 +772,10 @@ namespace RigiCompiler.Bil.Vm
             return coroutine.State == VmCoroutineState.Running;
         }
 
-        private static void ApplyTaskOutcome(VmCoroutine coroutine, VmCoroutine target,
+        private void ApplyTaskOutcome(VmCoroutine coroutine, VmCoroutine target,
             int code, string? resultSlot)
         {
+            _failed.TryRemove(target.Handle, out _);
             switch (code)
             {
                 case 1:
@@ -846,6 +851,13 @@ namespace RigiCompiler.Bil.Vm
                     new VmBool(failed),
                 });
             }
+            // 活动/排队/挂起协程仍在强登记册；终态结果由 Task 保活。
+            // 先发布弱项再摘强项，迟到 await 不存在查找空窗。
+            _completedCoroutines[coroutine.Handle] = new WeakReference<VmCoroutine>(coroutine);
+            _coroutines.TryRemove(coroutine.Handle, out _);
+            if (taskObject != null && ReadBoolField(taskObject,
+                TaskPrefixOf(taskObject.TypeRef) + "#observed@.bool"))
+                _failed.TryRemove(coroutine.Handle, out _);
         }
 
         // 未被任何 await 观察的失败（fire-and-forget；对齐旧
@@ -965,6 +977,14 @@ namespace RigiCompiler.Bil.Vm
 
         // ===== 原语钩子实现（VmHooks 经 context.Dispatch 转调）=====
 
+        internal static int ComputeParallelism()
+        {
+            var setting = Environment.GetEnvironmentVariable("RIGI_COMPUTE_WORKERS");
+            return int.TryParse(setting, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var count)
+                && count is >= 1 and <= 254 ? count : Math.Clamp(Environment.ProcessorCount, 1, 254);
+        }
+
         internal VmValue WorkerCreate(IReadOnlyList<VmValue> args)
         {
             var entryToken = RequireI64("rigi_worker_create", args, 0);
@@ -1065,6 +1085,15 @@ namespace RigiCompiler.Bil.Vm
             {
                 if (handle == 0 && IsDeadlocked())
                 {
+                    if (Environment.GetEnvironmentVariable("RIGI_VM_DEADLOCK_TRACE") == "1")
+                    {
+                        foreach (var entry in _coroutines)
+                        {
+                            lock (entry.Value.SyncRoot)
+                                Console.Error.WriteLine($"[vm-deadlock] {entry.Key} {entry.Value.State} "
+                                    + string.Join(" <- ", entry.Value.CallStack.Select(frame => frame.Function.Symbol)));
+                        }
+                    }
                     throw new VmException(
                         "VM 调度死锁：存在未终态协程，但无 runnable 任务且无"
                         + "在途唤醒源（Alarm/轮询定时器），调度器无法继续推进");
@@ -1085,6 +1114,8 @@ namespace RigiCompiler.Bil.Vm
         // 故无竞态误判
         private bool IsDeadlocked()
         {
+            var epoch = Interlocked.Read(ref _activityEpoch);
+            if (Volatile.Read(ref _activeSegments) != 0) return false;
             if (Volatile.Read(ref _pendingWakeups) > 0)
             {
                 return false;
@@ -1129,7 +1160,9 @@ namespace RigiCompiler.Bil.Vm
                     }
                 }
             }
-            return true;
+            return Volatile.Read(ref _activeSegments) == 0
+                && Interlocked.Read(ref _activityEpoch) == epoch
+                && Volatile.Read(ref _pendingWakeups) == 0;
         }
 
         private static void Enqueue(VmWorker worker, long task)
@@ -1146,7 +1179,7 @@ namespace RigiCompiler.Bil.Vm
             // resumeFn token 在 VM 侧不承载语义（VM 直接解释 BIL，无需
             // 状态机 fn 指针）；frame token = 协程规格表键
             var frame = RequireI64("rigi_coroutine_create", args, 1);
-            if (!_specs.TryGetValue(frame, out var spec))
+            if (!_specs.TryRemove(frame, out var spec))
             {
                 throw new VmException("rigi_coroutine_create：未知 frame token " + frame);
             }
@@ -1170,6 +1203,10 @@ namespace RigiCompiler.Bil.Vm
 
         internal long ResumeSegment(VmCoroutine coroutine)
         {
+            Interlocked.Increment(ref _activeSegments);
+            Interlocked.Increment(ref _activityEpoch);
+            try
+            {
             // 协程锁串行化（单所有者不变量：同一协程任意时刻至多一个
             // Worker）：转换 + settle + Step 循环整体在锁内（旧
             // VmExecutor.Execute 同口径；C# lock 同线程可重入，Step 内的
@@ -1211,6 +1248,13 @@ namespace RigiCompiler.Bil.Vm
                     s_currentCoroutine = previous;
                 }
             }
+
+            }
+            finally
+            {
+                Interlocked.Increment(ref _activityEpoch);
+                Interlocked.Decrement(ref _activeSegments);
+            }
         }
 
         internal VmValue CoroutineDestroy(IReadOnlyList<VmValue> args)
@@ -1237,6 +1281,13 @@ namespace RigiCompiler.Bil.Vm
             // Mutex 原语（不得跨挂起点持有）
             _mutexes[handle] = new SemaphoreSlim(1, 1);
             return handle;
+        }
+
+        // CLR 终结器线程仅操作并发登记册和独占资源，不进入解释器。
+        internal void ReleaseOwnedResources(long gate, long coroutine)
+        {
+            if (gate != 0 && _mutexes.TryRemove(gate, out var mutex)) mutex.Dispose();
+            if (coroutine != 0) _completedCoroutines.TryRemove(coroutine, out _);
         }
 
         internal VmValue SyncMutexCreate(IReadOnlyList<VmValue> args)
@@ -1443,12 +1494,6 @@ namespace RigiCompiler.Bil.Vm
             {
                 if (record.Signaled)
                 {
-                    // 手动 EventAlarm（MW11d-C）：粘滞 signaled 被本次
-                    // wait 消费复位，下次 wait 重新阻塞
-                    if (record.AutoReset)
-                    {
-                        record.Signaled = false;
-                    }
                     return false;
                 }
                 if (!waiter.TrySuspend())
@@ -1497,71 +1542,18 @@ namespace RigiCompiler.Bil.Vm
             return VmVoid.Instance;
         }
 
-        // ===== MW11d-C：MessageQueue 传输层（rigi_rt/message.c 同语义镜像）=====
-        // append-only 广播日志 + 每 reader 独立 cursor + watermark 回收 +
-        // capability 矩阵 + sealed/EOS；只搬运 Parcel（深复制在 Rigi 层
-        // 经 toParcel/fromParcel 完成）。错误码 -1..-9 与 native 逐条对齐，
-        // Rigi 层翻译为 core.IllegalStateException（双端同文）。
-        private const int MqErrReleased = -1;
-        private const int MqErrDoubleRelease = -2;
-        private const int MqErrDeriveOwner = -3;
-        private const int MqErrDeriveSender = -4;
-        private const int MqErrDeriveReader = -5;
-        private const int MqErrPost = -6;
-        private const int MqErrNext = -7;
-        private const int MqErrSealedPost = -8;
-        private const int MqErrSealedSender = -9;
-        private const int MqErrOutstandingNext = -10;
-
-        private sealed class VmMqReader
-        {
-            public long HandleId;
-            public long Cursor;        // 下一条可见消息的全局序号
-            public long EventHandle;   // _timers 手动 EventAlarm（AutoReset）
-            // 单 outstanding next 守约（§24）：next 调用边界由 Rigi 层
-            // enter/exit 标记（全局可变状态须共享安全，Rigi 侧无共享集合）
-            public bool InNext;
-        }
-
-        private sealed class VmMqRecord
-        {
-            public readonly List<VmValue> Log = new();  // append-only Parcel 日志
-            public long BaseSeq;                        // Log[0] 的全局序号
-            public bool OwnerAlive = true;
-            public long SenderCount;
-            public bool Sealed;
-            public readonly List<VmMqReader> Readers = new();
-            public long RefCount;                       // 存活句柄数合计
-        }
-
-        private sealed class VmMqHandle
-        {
-            public long Id;
-            public int Type;           // 0 reader / 1 owner / 2 sender
-            public bool Released;      // 墓碑：重复释放诊断（随队列回收 purge）
-            public VmMqRecord Queue = null!;
-            public VmMqReader? Reader;
-        }
-
-        private readonly Dictionary<long, VmMqHandle> _mqHandles = new();
-        private readonly object _mqGate = new object();
-
-        // 手动 EventAlarm（rigi_event_* 镜像）：复用 VmTimerRecord（
-        // Gate/Waiters/Signaled 与 TryAwaitTimer 握手兼容），无 DotNetTimer。
-        // L8 起两形态：autoReset=true 消息队列（wait 消费 signaled）/
-        // autoReset=false 用户 EventAlarm 默认底座（粘滞，§19.3）
-        private long EventCreateCore(bool autoReset)
+        // 粘滞 EventAlarm 复用定时器等待登记与唤醒债务。
+        private long EventCreateCore()
         {
             var handle = NewHandle();
             _timers[handle] = new VmTimerRecord
             {
-                AutoReset = autoReset,
                 Marker = new WakeupMarker(this),
             };
             return handle;
         }
 
-        private long MqEventCreate() => EventCreateCore(autoReset: true);
+
 
         // L8：用户直继 EventAlarm 子类默认底座懒建（native EventAlarm.
         // ensureHandle → rigi_event_create_sticky 同口径）：lock 内双检
@@ -1577,7 +1569,7 @@ namespace RigiCompiler.Bil.Vm
                 {
                     return existing;
                 }
-                var handle = EventCreateCore(autoReset: false);
+                var handle = EventCreateCore();
                 alarmObject.WriteField("core.coroutine::EventAlarm#handle@.i64",
                     new VmI64(handle));
                 return handle;
@@ -1587,7 +1579,7 @@ namespace RigiCompiler.Bil.Vm
         // L8：rigi_event_create_sticky hook 承载（stdlib EventAlarm.
         // ensureHandle 的 native 声明；粘滞形态）
         internal VmValue EventCreateSticky(IReadOnlyList<VmValue> args) =>
-            new VmI64(EventCreateCore(autoReset: false));
+            new VmI64(EventCreateCore());
 
         // L8：rigi_event_signal 镜像（stdlib EventAlarm.signal 的 native
         // 声明）：粘滞形态触发——闸内恒置 Signaled（终态，重复 signal
@@ -1611,373 +1603,6 @@ namespace RigiCompiler.Bil.Vm
             foreach (var waiter in waiters)
             {
                 Publish(waiter, "EventAlarm.signal");
-            }
-            return VmVoid.Instance;
-        }
-
-        private void MqEventSignal(long handle)
-        {
-            if (!_timers.TryGetValue(handle, out var record))
-            {
-                return;
-            }
-            List<VmCoroutine> waiters;
-            lock (record.Gate)
-            {
-                waiters = record.Waiters;
-                record.Waiters = new List<VmCoroutine>();
-                if (waiters.Count == 0)
-                {
-                    record.Signaled = true;  // 无 waiter：置粘滞，下次 wait 立即消费
-                }
-            }
-            foreach (var waiter in waiters)
-            {
-                Publish(waiter, "MessageQueue.signal");
-            }
-        }
-
-        private void MqEventDestroy(long handle)
-        {
-            if (_timers.TryRemove(handle, out var record))
-            {
-                record.Marker?.Disarm();
-            }
-        }
-
-        // watermark 回收：序号 < 全部存活 reader cursor 最小值的消息不再
-        // 有读者；无存活 reader 时全部回收（新 reader 从队尾起，native
-        // rigi_mq_reclaim 同口径）。调用时须持 _mqGate
-        private static void MqReclaim(VmMqRecord q)
-        {
-            if (q.Log.Count == 0)
-            {
-                return;
-            }
-            long mark;
-            if (q.Readers.Count == 0)
-            {
-                mark = q.BaseSeq + q.Log.Count;
-            }
-            else
-            {
-                mark = q.Readers[0].Cursor;
-                foreach (var r in q.Readers)
-                {
-                    if (r.Cursor < mark)
-                    {
-                        mark = r.Cursor;
-                    }
-                }
-            }
-            var drop = mark - q.BaseSeq;
-            if (drop <= 0)
-            {
-                return;
-            }
-            if (drop > q.Log.Count)
-            {
-                drop = q.Log.Count;
-            }
-            q.Log.RemoveRange(0, (int)drop);
-            q.BaseSeq += drop;
-        }
-
-        // sealed 判定（Owner 已释放 ∧ Sender 计数归零，§9.2）；进入 sealed
-        // 时收集 reader 事件供闸外唤醒（pending next 观察到 EOS）
-        private static List<long> MqReaderEvents(VmMqRecord q)
-        {
-            var events = new List<long>(q.Readers.Count);
-            foreach (var r in q.Readers)
-            {
-                events.Add(r.EventHandle);
-            }
-            return events;
-        }
-
-        private VmMqHandle MqNewHandle(int type, VmMqRecord q, VmMqReader? reader)
-        {
-            var h = new VmMqHandle
-            {
-                Id = NewHandle(),
-                Type = type,
-                Queue = q,
-                Reader = reader,
-            };
-            _mqHandles[h.Id] = h;
-            q.RefCount++;
-            return h;
-        }
-
-        internal VmValue MqCreate(IReadOnlyList<VmValue> args)
-        {
-            lock (_mqGate)
-            {
-                var q = new VmMqRecord();
-                var owner = MqNewHandle(1, q, null);
-                return new VmI64(owner.Id);
-            }
-        }
-
-        internal VmValue MqAdd(IReadOnlyList<VmValue> args)
-        {
-            var sourceId = RequireI64("rigi_mq_add", args, 0);
-            var typeCode = RequireI64("rigi_mq_add", args, 1);
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(sourceId, out var source) || source.Released)
-                {
-                    return new VmI64(MqErrReleased);
-                }
-                if (typeCode == 1)
-                {
-                    return new VmI64(MqErrDeriveOwner);
-                }
-                var q = source.Queue;
-                if (typeCode == 2)
-                {
-                    if (source.Type == 0)
-                    {
-                        return new VmI64(MqErrDeriveSender);
-                    }
-                    if (q.Sealed)
-                    {
-                        return new VmI64(MqErrSealedSender);
-                    }
-                    q.SenderCount++;
-                    return new VmI64(MqNewHandle(2, q, null).Id);
-                }
-                if (typeCode == 0)
-                {
-                    if (source.Type == 2)
-                    {
-                        return new VmI64(MqErrDeriveReader);
-                    }
-                    // 新 reader cursor 从创建时队尾起（新订阅语义，§12.1）
-                    var reader = new VmMqReader
-                    {
-                        Cursor = q.BaseSeq + q.Log.Count,
-                        EventHandle = MqEventCreate(),
-                    };
-                    q.Readers.Add(reader);
-                    var derived = MqNewHandle(0, q, reader);
-                    reader.HandleId = derived.Id;
-                    return new VmI64(derived.Id);
-                }
-                return new VmI64(MqErrReleased);
-            }
-        }
-
-        internal VmValue MqRelease(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_release", args, 0);
-            var wake = new List<long>();
-            long deadEvent = 0;
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h))
-                {
-                    return new VmI32(MqErrReleased);
-                }
-                if (h.Released)
-                {
-                    return new VmI32(MqErrDoubleRelease);
-                }
-                h.Released = true;
-                var q = h.Queue;
-                q.RefCount--;
-                if (h.Type == 1)
-                {
-                    q.OwnerAlive = false;
-                }
-                else if (h.Type == 2)
-                {
-                    q.SenderCount--;
-                }
-                else if (h.Reader != null)
-                {
-                    // 摘 reader 链 + 事件闸外「先信号后销毁」（pending next
-                    // 以「句柄已释放」错误收场）
-                    q.Readers.Remove(h.Reader);
-                    deadEvent = h.Reader.EventHandle;
-                    h.Reader = null;
-                }
-                if (!q.Sealed && !q.OwnerAlive && q.SenderCount == 0)
-                {
-                    q.Sealed = true;
-                    wake.AddRange(MqReaderEvents(q));
-                }
-                if (q.RefCount == 0)
-                {
-                    // 队列析构：残留 reader 事件销毁 + 墓碑句柄 purge
-                    foreach (var r in q.Readers)
-                    {
-                        MqEventDestroy(r.EventHandle);
-                    }
-                    q.Readers.Clear();
-                    var dead = new List<long>();
-                    foreach (var pair in _mqHandles)
-                    {
-                        if (ReferenceEquals(pair.Value.Queue, q))
-                        {
-                            dead.Add(pair.Key);
-                        }
-                    }
-                    foreach (var id in dead)
-                    {
-                        _mqHandles.Remove(id);
-                    }
-                }
-                else
-                {
-                    MqReclaim(q);
-                }
-            }
-            if (deadEvent != 0)
-            {
-                MqEventSignal(deadEvent);
-                MqEventDestroy(deadEvent);
-            }
-            foreach (var ev in wake)
-            {
-                MqEventSignal(ev);
-            }
-            return new VmI32(0);
-        }
-
-        internal VmValue MqPost(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_post", args, 0);
-            if (args.Count <= 1)
-            {
-                throw new VmException("rigi_mq_post：参数 1 需要 Parcel");
-            }
-            var parcel = args[1];
-            List<long> wake;
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h) || h.Released)
-                {
-                    return new VmI32(MqErrReleased);
-                }
-                if (h.Type != 2)
-                {
-                    return new VmI32(MqErrPost);
-                }
-                var q = h.Queue;
-                if (q.Sealed)
-                {
-                    return new VmI32(MqErrSealedPost);
-                }
-                // VM 无 RC：Parcel 只读共享（fromParcel 只读不写）；追加即
-                // 唤醒；并发 post 由大闸串行化 = 全局追加序（§18）
-                q.Log.Add(parcel);
-                wake = MqReaderEvents(q);
-                MqReclaim(q);
-            }
-            foreach (var ev in wake)
-            {
-                MqEventSignal(ev);
-            }
-            return new VmI32(0);
-        }
-
-        internal VmValue MqTryNext(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_try_next", args, 0);
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h) || h.Released)
-                {
-                    return new VmI32(MqErrReleased);
-                }
-                if (h.Type != 0 || h.Reader == null)
-                {
-                    return new VmI32(MqErrNext);
-                }
-                var q = h.Queue;
-                if (h.Reader.Cursor < q.BaseSeq + q.Log.Count)
-                {
-                    return new VmI32(1);       // 有消息：随后 MqTake 取
-                }
-                if (q.Sealed)
-                {
-                    return new VmI32(2);       // EOS（§25：sealed ∧ cursor 到队尾）
-                }
-                return new VmI32(0);           // 空：yield 队列 alarm 重试
-            }
-        }
-
-        internal VmValue MqTake(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_take", args, 0);
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h) || h.Released
-                    || h.Type != 0 || h.Reader == null)
-                {
-                    throw new VmException("rigi_mq_take 句柄非法（须先经 try_next 校验）");
-                }
-                var q = h.Queue;
-                var seq = h.Reader.Cursor;
-                if (seq >= q.BaseSeq + q.Log.Count)
-                {
-                    throw new VmException("rigi_mq_take 无消息可取（try_next/take 未配对）");
-                }
-                var parcel = q.Log[(int)(seq - q.BaseSeq)];
-                h.Reader.Cursor = seq + 1;
-                MqReclaim(q);
-                return parcel;
-            }
-        }
-
-        internal VmValue MqAlarm(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_alarm", args, 0);
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h) || h.Released
-                    || h.Type != 0 || h.Reader == null)
-                {
-                    return new VmI64(0);
-                }
-                return new VmI64(h.Reader.EventHandle);
-            }
-        }
-
-        internal VmValue MqNextEnter(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_next_enter", args, 0);
-            lock (_mqGate)
-            {
-                if (!_mqHandles.TryGetValue(handleId, out var h) || h.Released)
-                {
-                    return new VmI32(MqErrReleased);
-                }
-                if (h.Type != 0 || h.Reader == null)
-                {
-                    return new VmI32(MqErrNext);
-                }
-                if (h.Reader.InNext)
-                {
-                    return new VmI32(MqErrOutstandingNext);
-                }
-                h.Reader.InNext = true;
-                return new VmI32(0);
-            }
-        }
-
-        internal VmValue MqNextExit(IReadOnlyList<VmValue> args)
-        {
-            var handleId = RequireI64("rigi_mq_next_exit", args, 0);
-            lock (_mqGate)
-            {
-                // 幂等：finally 路径句柄可能已释放/从未 enter 成功
-                if (_mqHandles.TryGetValue(handleId, out var h)
-                    && h.Type == 0 && h.Reader != null)
-                {
-                    h.Reader.InNext = false;
-                }
             }
             return VmVoid.Instance;
         }

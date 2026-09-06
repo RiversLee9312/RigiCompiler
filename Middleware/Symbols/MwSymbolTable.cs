@@ -22,6 +22,7 @@ namespace RigiCompiler.Middleware.Symbols
         private readonly Dictionary<string, MwMemberSymbol> _members = new(StringComparer.Ordinal);
 
         public IReadOnlyCollection<MwTypeSymbol> Types => _types.Values;
+        internal IReadOnlyCollection<MwTypeSymbol> Declarations => _typesByDeclKey.Values;
         public IReadOnlyCollection<MwMemberSymbol> Members => _members.Values;
 
         // 全局成员（Owner 为 null：全局函数/全局字段，§8.4.1）

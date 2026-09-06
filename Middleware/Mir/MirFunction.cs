@@ -54,6 +54,8 @@ namespace RigiCompiler.Middleware.Mir
         // 传播垫尾 = release 配平 + ret FAILED（pending 保持置位沿
         // 调用链上传），无 Task 终态序列
         public bool IsPlainResume { get; }
+        // 普通挂起函数的入口义务随 .this 恢复到 state 0，不能留在陷阱 stub。
+        internal string? RestoredEntrySource { get; set; }
 
         private readonly List<MirLocal> _locals;
         private readonly Dictionary<string, MirLocal> _localMap;

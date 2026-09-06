@@ -147,7 +147,8 @@ namespace RigiCompiler
                 name, kind, ns, declaringType,
                 baseType: defaultBase,
                 isRich: kind == TypeKind.Wrapper || modifiers.Contains(Keywords.RICH),
-                isShared: modifiers.Contains(Keywords.SHARED));
+                isShared: modifiers.Contains(Keywords.SHARED),
+                bilAlias: IsHandleDeclaration(node, ns, name) ? ".handle" : null);
             CollectGenericParameters(symbol.GenericParameters, generics, result);
             result.Map(node, symbol);
             // 重复检测：同容器同名同元数类型只保留第一个（S10 定稿：类型名
@@ -172,6 +173,13 @@ namespace RigiCompiler
         }
 
         // ===== 变量壳（字段 / 全局变量与常量）=====
+
+        private static bool IsHandleDeclaration(ASTNode node, NamespaceSymbol ns, string name)
+        {
+            if (ns.FullName != "core" || name is not ("Handle" or "MutableHandle")) return false;
+            while (node.Parent != null) node = node.Parent;
+            return node is RootASTNode { IsCompilerLibrary: true };
+        }
 
         private static void CollectVariable(
             CompilationUnit unit, VariableDeclarationASTNode node, NamespaceSymbol ns,
@@ -337,6 +345,22 @@ namespace RigiCompiler
             {
                 var gp = new GenericParameterSymbol(p.Name, p.IsVariadic, p.IsNamedVariadic,
                     p.Variance);
+                // 来源身份不可由用户伪造 core 命名空间取得。容器及其工厂、
+                // 快照的参数共同承担同一能力证明，所有实例化点统一验证。
+                ASTNode root = generics;
+                while (root.Parent != null) root = root.Parent;
+                ASTNode? declaration = generics.Parent;
+                while (declaration != null && declaration is not ClassDeclarationASTNode)
+                    declaration = declaration.Parent;
+                if (root is RootASTNode { IsCompilerLibrary: true }
+                    && declaration is ClassDeclarationASTNode container
+                    && container.ClassName is "AtomicArray" or "AtomicList" or "AtomicMap"
+                        or "AtomicSnapshot" or "AtomicMapSnapshot"
+                        or "QueueHandle" or "QueueItem" or "QueueState" or "MessageQueue"
+                        or "QueueReaderState" or "QueueLogSegment"
+                        or "Reader" or "Receiver" or "Messenger" or "ListenerEntry"
+                        or "PumpAdapter" or "ListenerCall")
+                    gp.RequiresSharedSafe = true;
                 target.Add(gp);
                 result.Map(p, gp);
             }
@@ -444,6 +468,10 @@ namespace RigiCompiler
         }
 
         public FileContext FileContextOf(RootASTNode file) => fileContexts[file];
+
+        // 按需存储提升需要回到声明点绑定初值；不得在使用点作用域重绑。
+        internal ASTNode? DeclarationOf(SemanticSymbol symbol) =>
+            symbolOf.FirstOrDefault(pair => ReferenceEquals(pair.Value, symbol)).Key;
 
         internal void Map(ASTNode node, SemanticSymbol symbol) => symbolOf.Add(node, symbol);
 

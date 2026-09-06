@@ -40,7 +40,7 @@ namespace RigiCompiler.Bil
         Open, Abstract, Singleton, Rich, Shared,          // §8.2 类型
         Ext, Init, Native, Entrypoint,                    // §8.3/§8.4 成员
         Const, Var, Backing, Computed, Readable, Writable,
-        CompilerGenerated, Override, Async,
+        CompilerGenerated, Override, Async, Unsafe,
     }
 
     // §8.4 访问器类别（getter(FIELD)/setter(FIELD) 修饰符的二态）

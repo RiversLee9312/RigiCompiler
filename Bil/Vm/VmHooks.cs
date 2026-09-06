@@ -75,7 +75,17 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "print_err", PrintErr);
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
             // MW11d-D：对象身份原语（交接 §14 listener 身份键）
-            hooks.Register("rigi_rt", "object_id", ObjectId);
+
+            hooks.Register("rigi_rt", "place_same_target", PlaceSameTarget);
+            hooks.Register("rigi_rt", "handle_make", HandleMake);
+            hooks.Register("rigi_rt", "handle_target", (ctx, args) =>
+                new VmAny(HandleObject(args[0]).HandleTarget!));
+            hooks.Register("rigi_rt", "handle_is_mutable", (ctx, args) =>
+                new VmBool(HandleObject(args[0]).HandleMutable));
+            hooks.Register("rigi_rt", "handle_kind", (ctx, args) =>
+                new VmI32(HandleObject(args[0]).HandleKind));
+            hooks.Register("rigi_rt", "handle_type_is_value", (ctx, args) =>
+                new VmBool(ctx.IsValueType(((VmTypeId)args[0]).TypeSymbol)));
             hooks.Register("rigi_rt", "alloc_array", AllocArray);
             // span_alloc 与 shared_span_alloc 共用此键；Invoke 按 callee 分流
             hooks.Register("rigi_rt", "span_alloc",
@@ -95,6 +105,8 @@ namespace RigiCompiler.Bil.Vm
             // Mutex/TLS/时钟；timer 回调语义归棒4b）。hook 键 =
             // @NativeSymbol 短名（C 符号 = rigi_ + 短名，与 rigi_rt
             // 导出一一对应）
+            hooks.Register("rigi_rt", "worker_parallelism",
+                (ctx, args) => new VmI32(VmDispatch.ComputeParallelism()));
             hooks.Register("rigi_rt", "worker_create",
                 (ctx, args) => ctx.Dispatch.WorkerCreate(args));
             hooks.Register("rigi_rt", "worker_destroy",
@@ -122,25 +134,6 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => ctx.Dispatch.EventCreateSticky(args));
             hooks.Register("rigi_rt", "event_signal",
                 (ctx, args) => ctx.Dispatch.EventSignal(args));
-            // MW11d-C MessageQueue 传输层（rigi_rt/message.c 同语义镜像）
-            hooks.Register("rigi_rt", "mq_create",
-                (ctx, args) => ctx.Dispatch.MqCreate(args));
-            hooks.Register("rigi_rt", "mq_add",
-                (ctx, args) => ctx.Dispatch.MqAdd(args));
-            hooks.Register("rigi_rt", "mq_release",
-                (ctx, args) => ctx.Dispatch.MqRelease(args));
-            hooks.Register("rigi_rt", "mq_post",
-                (ctx, args) => ctx.Dispatch.MqPost(args));
-            hooks.Register("rigi_rt", "mq_try_next",
-                (ctx, args) => ctx.Dispatch.MqTryNext(args));
-            hooks.Register("rigi_rt", "mq_take",
-                (ctx, args) => ctx.Dispatch.MqTake(args));
-            hooks.Register("rigi_rt", "mq_alarm",
-                (ctx, args) => ctx.Dispatch.MqAlarm(args));
-            hooks.Register("rigi_rt", "mq_next_enter",
-                (ctx, args) => ctx.Dispatch.MqNextEnter(args));
-            hooks.Register("rigi_rt", "mq_next_exit",
-                (ctx, args) => ctx.Dispatch.MqNextExit(args));
             hooks.Register("rigi_rt", "sync_mutex_create",
                 (ctx, args) => ctx.Dispatch.SyncMutexCreate(args));
             hooks.Register("rigi_rt", "sync_mutex_acquire",
@@ -277,24 +270,36 @@ namespace RigiCompiler.Bil.Vm
             return new VmString(arguments[0].ToStandardText());
         }
 
-        // object_id（MW11d-D，交接 §14）：对象身份原语。语言层无引用相等
-        // ==（lambda 隐藏类无 operator equals），Receiver listener 身份键
-        // 需要机制层身份通道。Any 胖值拆包取 payload，身份 = 宿主对象引用
-        // 的稳定身份哈希（RuntimeHelpers.GetHashCode——同一 VmObject 恒同
-        // 值；VmAny 构造对引用类型 payload 不复制，身份穿透装箱）。
-        // 标量 payload 无身份语义（每次装箱是新宿主对象），调用方不应依赖。
-        private static VmValue ObjectId(VmContext context, IReadOnlyList<VmValue> arguments)
+        private static VmValue PlaceSameTarget(VmContext context, IReadOnlyList<VmValue> arguments)
         {
-            if (arguments.Count != 1)
+            if (arguments.Count != 2) throw new VmException("place_same_target 需要 2 个参数");
+            var left = arguments[0] is VmAny leftAny ? leftAny.Payload : arguments[0];
+            var right = arguments[1] is VmAny rightAny ? rightAny.Payload : arguments[1];
+            return new VmBool(ReferenceEquals(left, right));
+        }
+
+        private static VmObject HandleObject(VmValue value)
+        {
+            if (value is VmAny any) value = any.Payload;
+            if (value is not VmObject { TypeRef: ".handle", HandleTarget: not null } handle)
+                throw new VmException("Handle 内部能力无效");
+            return handle;
+        }
+
+        private static VmValue HandleMake(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 4 || arguments[0] is not VmTypeId { TypeSymbol: ".handle" }
+                || arguments[2] is not VmI32 kind || arguments[3] is not VmBool mutable)
+                throw new VmException("Handle 内部构造参数无效");
+            var target = arguments[1] is VmAny any ? any.Payload : arguments[1];
+            if (target is not VmObject { IsValueType: false } && target is not VmArray)
+                throw new VmException("Handle 目标必须为对象或稳定 Cell");
+            return new VmAny(new VmObject(".handle", false)
             {
-                throw new VmException("object_id 需要恰好 1 个参数");
-            }
-            var value = arguments[0];
-            if (value is VmAny any)
-            {
-                value = any.Payload;
-            }
-            return new VmI64(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value));
+                HandleTarget = target,
+                HandleMutable = mutable.Value,
+                HandleKind = kind.Value,
+            });
         }
 
         // §22.5 span_alloc：签名与 alloc_array 对照——hidden typeid（.generic.T 物化）+ size。

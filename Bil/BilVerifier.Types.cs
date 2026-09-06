@@ -813,7 +813,7 @@ namespace RigiCompiler.Bil
             var type = VarType(context, callTarget);
             if (type == null) return;
             if (!TryFindCallOperator(context, type, arguments, location, errors,
-                    out var returnType, out var isAsync, out var found))
+                    out var returnType, out var isAsync, out var found, out _))
             {
                 if (!found)
                 {
@@ -856,8 +856,9 @@ namespace RigiCompiler.Bil
         private static bool TryFindCallOperator(BilFunctionContext context, string objectTypeRef,
             IReadOnlyList<BilVariableOperand> arguments, string location,
             List<BilVerificationError> errors, out string returnType, out bool isAsync,
-            out bool found)
+            out bool found, out BilSimpleMemberDeclaration? selected)
         {
+            selected = null;
             returnType = ".void";
             isAsync = false;
             found = false;
@@ -959,6 +960,7 @@ namespace RigiCompiler.Bil
                         }
                     }
                     if (!matches) continue;
+                    selected = simple;
                     returnType = SubstituteHostGenerics(candidateReturn, declaration, current);
                     isAsync = simple.Modifiers.Any(m =>
                         m is BilKeywordModifier { Keyword: BilKeyword.Async });

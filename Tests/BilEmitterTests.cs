@@ -60,6 +60,7 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Reset();
             TestHarness.Section("BilEmitter");
+            TestUnsafeProjection();
 
             TestGoldenOutput();
             TestOriginChain();

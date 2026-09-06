@@ -61,6 +61,7 @@ typedef void (*RigiTimerCallback)(void *ctx);
 /* 起 OS 线程并立即进入入口 fn；返回 Worker 句柄。entry_fn == 0 =
  * 约定入口：生成代码导出的 rigi_dispatcher_entry（Dispatcher
  * workerLoop 包装，shim.c rigi_entry 先例的固定导出符号） */
+int32_t rigi_worker_parallelism(void);
 int64_t rigi_worker_create(int64_t entry_fn);
 
 /* 优雅退出：stop 置位 + 双通道唤醒（sem_post + uv_async_send）+ join +
@@ -117,9 +118,8 @@ int64_t rigi_timer_create(int64_t owner, int64_t delay_ms,
  * 线程可调 */
 void rigi_timer_cancel(int64_t timer);
 
-/* 停止 + uv_close + NOWAIT flush + 释放（alarm.c 析构先例：close 回调
- * 在 flush 的 closing 阶段同步跑完后内存才释放）；幂等。仅属主线程
- * 可调 */
+/* 停止 + uv_close；内存在属主 loop 的 close 回调释放，不递归泵。
+ * 失效身份幂等忽略。仅属主线程可调。 */
 void rigi_timer_destroy(int64_t timer);
 
 /* EventAlarm waiter 登记（棒5a，§19.3 原子握手；生成代码 yield
@@ -127,21 +127,19 @@ void rigi_timer_destroy(int64_t timer);
  * 随后结束执行段 ret SUSPENDED）；已触发（粘滞）→ 不登记，返 0
  *（调用方自行重发布自己，执行段仍结束）。闹钟定时器块在响铃耗尽后
  * 不立即回收（waiter 可能持句柄迟到登记——读 signaled 粘滞位），
- * 统一由属主 Worker 收尾清扫/主 Worker shutdown 回收。 */
+ * 由 Alarm 内部析构交回属主关闭；shutdown 兜底并使身份失效。 */
 int32_t rigi_alarm_wait(int64_t timer, int64_t waiter);
 
-/* 手动 EventAlarm（MW11d-C 消息可得）：无 uv_timer，自动复位握手。
- * create 计入 armed（死锁看门狗）；signal = 有 waiter 则排空发布，
- * 否则置 signaled；wait 经 rigi_alarm_wait 消费 signaled。
- * destroy 不走 live_timers 清扫，由队列回收显式调用。 */
-int64_t rigi_event_create(void);
 /* 用户 EventAlarm 子类默认底座（L8，§19.3）：手动事件粘滞形态——
  * signal 恒置已触发（迟到 wait 立即重发布且不清 signaled）并归还
  * armed；重复 signal 幂等。stdlib EventAlarm.ensureHandle 懒建；
- * 无属主销毁通道，挂登记册链随 atexit 兜底释放（memtrack 口径） */
+ * 内部析构摘册释放，atexit 仅兜底仍存活的底座。 */
 int64_t rigi_event_create_sticky(void);
 void rigi_event_signal(int64_t ev);
 void rigi_event_destroy(int64_t ev);
+/* 内部析构面：不复用身份，安全忽略 shutdown 已回收的底座；
+ * 允许任意线程/macroGC 调用，计时器关闭交接属主，不进入 ARC fence。 */
+void rigi_alarm_release(int64_t identity);
 
 /* 主 Worker 收尾（rigi_entry 在 Dispatcher workerLoop 返回后调用）：
  * 交接队列残余令牌排空（quiescence 直返时 noteTerminal 末次唤醒

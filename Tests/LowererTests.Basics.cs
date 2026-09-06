@@ -224,11 +224,12 @@ namespace RigiCompiler.Tests
         private static List<LoweredFunctionBody> LambdaRelatedBodies(
             IReadOnlyList<LoweredFunctionBody> lowered, string hostName)
         {
+            // 只选该宿主实际声明的 lambda，标准库新增闭包不改变本用例的三体断言。
+            var host = lowered.Single(b => b.Method.Name == hostName && b.Method.Owner == null);
+            var lambdaTypes = host.Locals.Select(local => local.Type).OfType<TypeSymbol>()
+                .Where(type => type.Name.StartsWith("..lambda..", System.StringComparison.Ordinal)).ToHashSet();
             return lowered.Where(b =>
-                b.Method.Name == hostName
-                || (b.Method.Owner != null
-                    && b.Method.Owner.Name.StartsWith("..lambda..",
-                        System.StringComparison.Ordinal))).ToList();
+                ReferenceEquals(b, host) || (b.Method.Owner != null && lambdaTypes.Contains(b.Method.Owner))).ToList();
         }
 
         private static LoweredFunctionBody LambdaCallBody(

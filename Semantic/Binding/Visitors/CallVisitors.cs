@@ -781,9 +781,9 @@ namespace RigiCompiler
             // （wrapper 源码无法写 `..` 成员名；此处最窄改写）
             if (receiver is BoundWrapperAccessExpression place
                 && SerializationFacts.IsSerializableWrapper(place.Wrapper)
-                && name == "toParcel")
+                && name is "toParcel" or "deepCopy")
             {
-                return BindSerializableToParcel(node, place.Receiver, arguments, scope, ctx, env);
+                return BindSerializableToParcel(node, place.Receiver, arguments, scope, ctx, env, name);
             }
             var receiverType = SymbolLookup.EffectiveMemberType(receiver.Type, env);
             var candidates = SymbolLookup.FindInstanceMethods(receiverType, name,
@@ -858,13 +858,8 @@ namespace RigiCompiler
         // 具体类型走合成实现槽；T with Serializable 走 ..ISerializable 接口槽
         // （VM/native 均按接口/签名派发到实际类型）。
         private static CallBinding? BindSerializableToParcel(ASTNode node, BoundExpression host,
-            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env)
+            List<ArgumentASTNode> arguments, Scope scope, BindContext ctx, BindEnvironment env, string name)
         {
-            if (arguments.Count != 0)
-            {
-                env.Error(node.Span, "Serializable.toParcel takes no arguments");
-                return null;
-            }
             var parcel = SerializationFacts.FindParcel(env.Unit.Symbols);
             var method = SerializationSynthesis.FindToParcelMethod(host.Type, env);
             if (parcel == null || method == null)
@@ -872,10 +867,22 @@ namespace RigiCompiler
                 env.Error(node.Span, "Serializable.toParcel is unavailable on this host");
                 return null;
             }
+            var resolved = OverloadResolution.Resolve(node, new List<MethodSymbol> { method },
+                arguments, scope, ctx, env, null, host.Type as TypeSymbol);
+            if (resolved == null) return null;
+            var bound = resolved.Value.Arguments;
+            if (name == "deepCopy")
+            {
+                var copy = SerializationFacts.FindSerializationNamespace(env.Unit.Symbols)!.Methods
+                    .First(m => m.Name == "deepCopy" && m.GenericParameters.Count == 1);
+                return new CallBinding { Method = copy,
+                    Arguments = new List<BoundExpression> { host, bound[0] },
+                    TypeArguments = new[] { host.Type }, IsVoid = false, ResultType = host.Type };
+            }
             return new CallBinding
             {
                 Method = method,
-                Arguments = new List<BoundExpression>(),
+                Arguments = bound,
                 IsVoid = false,
                 Receiver = host,
                 ResultType = parcel,
@@ -1390,6 +1397,8 @@ namespace RigiCompiler
                     && m.Name != BilSpellings.InitSerializableMethodName).ToList();
             if (inits.Count == 0)
             {
+                // 默认 init 同样受到 unsafe 类型的构造限制。
+                UnsafeGates.CheckConstruction(typeSymbol, node, ctx, env);
                 // 无显式 init 的零参构造（§9.3 默认构造）
                 if (newNode.Arguments.Count == 0)
                 {
@@ -1473,6 +1482,7 @@ namespace RigiCompiler
             var arguments = CallFacility.BindDynamicNewArguments(newNode, newNode.Arguments,
                 scope, ctx, env);
             if (arguments == null) return null;
+            UnsafeGates.CheckDynamicConstruction(resultType, arguments, newNode, ctx, env);
             return new BoundDynamicNewExpression(newNode, typeValue, null, arguments, resultType);
         }
     }

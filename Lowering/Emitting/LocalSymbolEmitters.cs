@@ -201,6 +201,18 @@ namespace RigiCompiler
             // 内建 bootstrap 符号（基元/层级根）不声明：经 BIL 别名投影引用；
             // ErrorType 是毒化单例，同样不进符号段
             if (type.IsBuiltin || type is ErrorTypeSymbol) return;
+            if (type.BilAlias == ".handle")
+            {
+                // 两个源码能力类型共用唯一非泛型运行时对象，不携带用户字段/方法。
+                if (type.Name == "MutableHandle") return;
+                var handle = new BilTypeDeclaration(".handle", BilTypeKind.Class);
+                handle.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
+                handle.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
+                handle.Modifiers.Add(new BilKeywordModifier(BilKeyword.Unsafe));
+                handle.Modifiers.Add(new BilKeywordModifier(BilKeyword.CompilerGenerated));
+                env.AddLocalSymbol(handle);
+                return;
+            }
             env.AddLocalSymbol(EmitTypeDeclaration(type, env));
             foreach (var nested in type.NestedTypes)
             {
@@ -231,6 +243,7 @@ namespace RigiCompiler
             if (type.IsSingleton) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Singleton));
             if (type.IsRich) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
             if (type.IsShared) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
+            if (type.IsUnsafe) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Unsafe));
             // M109b-2 §8.7：companion singleton 建议 compiler-generated（仅
             // companion 自身——宿主类持 CompanionInfo 作反向链接不投影）；
             // 全局字段 singleton cell（裁定 1）同样标记 compiler-generated
@@ -405,6 +418,7 @@ namespace RigiCompiler
             // S10（BIL §8.4/§15.2）：async 修饰符——调用点返回 Task 的语义
             // 标记（§15.2 结果形态由 verifier 据此校验）
             if (method.IsAsync) modifiers.Add(new BilKeywordModifier(BilKeyword.Async));
+            if (method.IsUnsafe) modifiers.Add(new BilKeywordModifier(BilKeyword.Unsafe));
             if (method.Kind == MethodKind.Init) modifiers.Add(new BilKeywordModifier(BilKeyword.Init));
             if (method.Kind == MethodKind.Operator) modifiers.Add(new BilOperatorModifier(method.Name));
             // M109b §9.7/§8.7：..init.wrapper / ..init.field.* / companion

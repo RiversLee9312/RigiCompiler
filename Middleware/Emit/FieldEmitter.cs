@@ -87,6 +87,23 @@ namespace RigiCompiler.Middleware.Emit
                     : FieldPointer(session, session.Builder, slots, inst.Object, field.Offset);
                 StoreAt(session, session.Builder, slots, field, inst.FieldSymbol,
                     pointer, inst.Source);
+                if (inst.FieldSymbol.EndsWith("#failureNodeId@.i64", System.StringComparison.Ordinal))
+                {
+                    var owner = inst.FieldSymbol.Substring(0, inst.FieldSymbol.LastIndexOf('#'));
+                    var plan = session.Layout?.Find(owner);
+                    if (plan != null && ClassLayout.IsTask(plan.Symbol.Declaration.Symbol))
+                    {
+                        // 节点发布前绑定隐藏拥有槽；其释放统一交给 refMap，
+                        // 使 Exception→Task 环能按普通对象图收集。
+                        var hidden = FieldPointer(session, session.Builder, slots, inst.Object,
+                            plan.Size - LayoutEngine.ReferenceSlotSize);
+                        var node = session.Builder.BuildLoad2(LLVMTypeRef.Int64, pointer, "failure.bind.id");
+                        var ptr = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+                        var (bind, bindType) = CallEmitter.DeclareHelperFace(session,
+                            "rigi_failure_bind", LLVMTypeRef.Void, new[] { LLVMTypeRef.Int64, ptr });
+                        session.Builder.BuildCall2(bindType, bind, new[] { node, hidden }, "");
+                    }
+                }
                 // 占位宿主写回：临时槽（含本次写入）重装箱回源占位槽——
                 // VM 对占位接收者的字段写原地生效（调用方写回链依赖）
                 placeholderHost?.Writeback(session, session.Builder, slots);

@@ -1,4 +1,4 @@
-﻿namespace RigiCompiler
+namespace RigiCompiler
 {
     // 路径表达式（M42 统一形态）的值位置绑定（S5/S7c-2/S7f/S8c/S11，
     // SYNTAX §1.4/§3.4/§9/§13.2/§14.5）。
@@ -967,6 +967,7 @@
                     "accessibility level");
                 return false;
             }
+            UnsafeGates.CheckMethod(field.Getter, span, ctx, env);
             return true;
         }
 
@@ -1283,7 +1284,12 @@
                         "(void) and cannot be used as a value");
                     return null;
                 }
-                value = call.IsIndirect
+                // wrapper 可投影为顶层兼容函数（Serializable.deepCopy）；
+                // 此时实参已包含宿主，不能再补一份段 receiver。
+                value = !call.IsIndirect && call.Receiver == null && call.Method.Owner == null
+                    ? new BoundCallExpression(segment, call.Method, call.Arguments,
+                        call.ResultType!, call.TypeArguments, call.GenericPack)
+                    : call.IsIndirect
                     ? new BoundCallExpression(segment, call.Method, call.Arguments,
                         call.ResultType!, call.TypeArguments, call.GenericPack,
                         isIndirect: true, indirectTarget: call.IndirectTarget)
@@ -1416,6 +1422,7 @@
                 return null;
             }
             var writeOp = candidates[0];
+            UnsafeGates.CheckMethod(writeOp, node, ctx, env);
             // 写模式形参宿主代入（S8c 修复）：定义级 setAtIndex 的形参类型
             // 含宿主泛型参数时按 receiver 构造链代入（读模式经
             // OverloadResolution 的 receiverType 同口径——

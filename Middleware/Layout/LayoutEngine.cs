@@ -31,8 +31,12 @@ namespace RigiCompiler.Middleware.Layout
             IReadOnlyDictionary<string, IReadOnlyList<(string Method, string Wrapper)>>?
                 methodSlots = null)
         {
-            var table = new LayoutPlanTable();
-            foreach (var type in symbols.Types)
+            // 泛型模板兼容别名不得抢占同名零元数类型的真实身份。
+            var nonGenericNames = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var type in symbols.Declarations)
+                if (type.Declaration.GenericParameters.Count == 0) nonGenericNames.Add(type.Canonical);
+            var table = new LayoutPlanTable(nonGenericNames);
+            foreach (var type in symbols.Declarations)
             {
                 if (!type.IsExternal)
                 {
@@ -151,7 +155,7 @@ namespace RigiCompiler.Middleware.Layout
                 return existing;
             }
             // struct 内联递归的循环包含属生成方违约（值类型不能自含）；防御
-            if (!visiting.Add(type.Canonical))
+            if (!visiting.Add(GenericAbi.PlanKey(type)))
             {
                 throw new CompilerInternalException($"类型布局循环依赖: {type.Canonical}");
             }
@@ -167,7 +171,7 @@ namespace RigiCompiler.Middleware.Layout
                 BilTypeKind.Wrapper => ValueTypeLayout.LayoutWrapper(type, symbols, table, visiting),
                 _ => null,
             };
-            visiting.Remove(type.Canonical);
+            visiting.Remove(GenericAbi.PlanKey(type));
             if (plan != null)
             {
                 table.Add(plan);

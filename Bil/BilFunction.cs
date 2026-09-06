@@ -7,7 +7,7 @@ namespace RigiCompiler.Bil
     // §9.6 block 修饰符标准集
     public enum BilBlockModifier
     {
-        Entrypoint, Volatile,
+        Entrypoint, Volatile, Unsafe,
     }
 
     // 函数定义（§9.1）：fn(METHOD_SYMBOL) { .args/.vars/.block... }

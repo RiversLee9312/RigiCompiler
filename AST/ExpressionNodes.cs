@@ -357,6 +357,17 @@ namespace RigiCompiler
         }
     }
 
+    // placeOf 是专用前缀表达式；稳定存储与对象身份由 Binder 区分。
+    public class PlaceOfExpressionASTNode : ExpressionASTNode
+    {
+        [ChildAstNode] public ExpressionRootASTNode Operand { get; }
+
+        public PlaceOfExpressionASTNode()
+        {
+            Operand = new ExpressionRootASTNode(this);
+        }
+    }
+
     // typeOf 表达式（SYNTAX.md §3.7）：typeOf(expr)，返回 Type\<T>
     public class TypeOfExpressionASTNode : ExpressionASTNode
     {
@@ -415,6 +426,7 @@ namespace RigiCompiler
     public class SeqBlockExpressionASTNode : ExpressionASTNode
     {
         public bool IsVolatile;                    // volatile 修饰符
+        public bool IsUnsafe;                      // unsafe 词法上下文
         [ChildAstNode] public List<UsingBindingASTNode> UsingBindings;  // using 资源绑定列表
         public string? Label;                      // named 标签（可选）
         [ChildAstNode] public CodeBlockASTNode Body;

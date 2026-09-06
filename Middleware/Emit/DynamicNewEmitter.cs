@@ -413,7 +413,8 @@ namespace RigiCompiler.Middleware.Emit
             disp.Linkage = LLVMLinkage.LLVMInternalLinkage;
             session.RegisterSynthetic(dispName, disp, dispType);
 
-            if (IsAbstract(plan.Symbol) || IsOpenGenericTemplate(plan))
+            if (IsAbstract(plan.Symbol) || IsOpenGenericTemplate(plan)
+                || BilVerificationContext.StripTypeArguments(plan.Symbol.Canonical) is ".handle" or "core::Place")
             {
                 return;
             }
@@ -447,7 +448,8 @@ namespace RigiCompiler.Middleware.Emit
             session.SetCurrentFunction(disp.Fn);
             var entry = disp.Fn.AppendBasicBlock("entry");
             builder.PositionAtEnd(entry);
-            if (IsAbstract(plan.Symbol) || IsOpenGenericTemplate(plan))
+            if (IsAbstract(plan.Symbol) || IsOpenGenericTemplate(plan)
+                || BilVerificationContext.StripTypeArguments(plan.Symbol.Canonical) is ".handle" or "core::Place")
             {
                 builder.BuildRet(LLVMValueRef.CreateConstPointerNull(PointerType()));
                 return;
@@ -687,7 +689,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     continue;
                 }
-                if (IsMethodLevelGeneric(member.Canonical))
+                if (IsMethodLevelGeneric(member))
                 {
                     throw new MwNotSupportedException(
                         "new.indirect 不支持方法级泛型 init: " + member.Canonical);
@@ -709,10 +711,15 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 语言无 init<T>；名段含 < 即为方法级泛型，受控拒绝
-        private static bool IsMethodLevelGeneric(string canonical)
+        private static bool IsMethodLevelGeneric(MwMemberSymbol member)
         {
-            var dollar = canonical.IndexOf('$');
-            var open = canonical.IndexOf('(');
+            var canonical = member.Canonical;
+            // 合成 frame 的宿主名内嵌原函数签名，可能自身含 $、< 和 (。
+            // 与 CanonicalSignature 一样从尾部参数列表反向定位真实 init；
+            // Owner 的驻留名可能用泛型元数，长度不等于成员中的具化宿主名。
+            var close = canonical.LastIndexOf(")@", StringComparison.Ordinal);
+            var open = close < 0 ? -1 : canonical.LastIndexOf('(', close);
+            var dollar = open < 0 ? -1 : canonical.LastIndexOf("$init", open, StringComparison.Ordinal);
             if (dollar < 0 || open <= dollar)
             {
                 return false;

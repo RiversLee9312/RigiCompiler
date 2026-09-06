@@ -274,7 +274,7 @@ namespace RigiCompiler.Bil.Vm
                         continue;
                     }
                     if (OperatorParamsMatch(slot.ImplSymbol, valueArguments,
-                            skipGenericPrefix: true))
+                            skipGenericPrefix: true, receiverType: receiverType))
                     {
                         return slot.ImplSymbol;
                     }
@@ -468,6 +468,8 @@ namespace RigiCompiler.Bil.Vm
 
         public bool IsValueType(string typeRef)
         {
+            var normalized = BilVerificationContext.NormalizeTypeRef(typeRef);
+            if (normalized == "core::ValueType" || normalized.StartsWith("core::Type<", StringComparison.Ordinal)) return true;
             if (IsBuiltinScalar(typeRef) || typeRef == ".string" || typeRef == "core::String")
             {
                 return true;
@@ -985,6 +987,16 @@ namespace RigiCompiler.Bil.Vm
             var instance = new VmObject(typeRef, valueType,
                 !valueType && DisposeSlotTargetOf(typeRef) != null
                     ? UndisposedTracker : null);
+            for (var resourceType = FindType(typeRef); resourceType != null;
+                resourceType = resourceType.ExtendsType == null ? null : FindType(resourceType.ExtendsType))
+            {
+                if (resourceType.Symbol is "core.coroutine::Mutex" or "core.coroutine::Dispatcher"
+                    or "core.coroutine::Task" or "core.coroutine::Task<TReturn>")
+                {
+                    instance.NativeResourceRelease = Dispatch.ReleaseOwnedResources;
+                    break;
+                }
+            }
             foreach (var field in CollectInstanceFields(typeRef))
             {
                 if (!BilVerificationContext.TryParseFieldSymbol(field.Symbol,
@@ -1642,7 +1654,7 @@ namespace RigiCompiler.Bil.Vm
         }
 
         private bool OperatorParamsMatch(string methodSymbol, IReadOnlyList<VmValue> valueArguments,
-            bool skipGenericPrefix = false)
+            bool skipGenericPrefix = false, string? receiverType = null)
         {
             if (!BilVerificationContext.TryParseMethodSymbol(methodSymbol,
                     out _, out _, out var parameters, out _))
@@ -1650,6 +1662,10 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             var ordinary = new List<(string Name, string TypeRef)>();
+            // 泛型宿主的 callable 参数按实际 receiver 具化后匹配。
+            var receiverDeclaration = receiverType == null ? null : FindType(receiverType);
+            var substitution = receiverDeclaration == null ? null
+                : VmTypeSheetBuilder.BuildSubstitution(receiverType!, receiverDeclaration);
             foreach (var parameter in parameters)
             {
                 if (parameter.Name.StartsWith(".generic.", StringComparison.Ordinal)
@@ -1658,7 +1674,8 @@ namespace RigiCompiler.Bil.Vm
                 {
                     continue;
                 }
-                ordinary.Add(parameter);
+                ordinary.Add(substitution == null ? parameter : (parameter.Name,
+                    VmTypeSheetBuilder.SubstituteGenericArguments(parameter.TypeRef, substitution)));
             }
             if (skipGenericPrefix)
             {
@@ -1674,7 +1691,10 @@ namespace RigiCompiler.Bil.Vm
                     {
                         if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
                         {
-                            genericHidden.Add(arg);
+                            // 宿主 typeid 由 PushFrame 从 this 注入，不占调用实参数。
+                            var name = arg.Name.Substring(".generic.".Length);
+                            if (substitution == null || !substitution.ContainsKey(name))
+                                genericHidden.Add(arg);
                         }
                         else if (arg.Name.StartsWith(".vargs.", StringComparison.Ordinal)
                             || arg.Name.StartsWith(".kwargs.", StringComparison.Ordinal))
@@ -1730,6 +1750,14 @@ namespace RigiCompiler.Bil.Vm
         private bool TypeAssignable(string from, string to)
         {
             if (TypesEqual(from, to)) return true;
+            // 嵌套类型同样需要归一化内建别名（例如 nullable<core::i32>）。
+            if (BilVerificationContext.NormalizeTypeRef(from)
+                == BilVerificationContext.NormalizeTypeRef(to)) return true;
+            if (from == ".null" && BilVerificationContext.NormalizeTypeRef(to)
+                    .StartsWith("core::Nullable<", StringComparison.Ordinal)) return true;
+            var normalizedTarget = BilVerificationContext.NormalizeTypeRef(to);
+            if (normalizedTarget.StartsWith("core::Nullable<", StringComparison.Ordinal))
+                return TypeAssignable(from, normalizedTarget.Substring(15, normalizedTarget.Length - 16));
             if (to is ".any" or "core::Any") return true;
             var visited = new HashSet<string>(StringComparer.Ordinal);
             return TypeAssignableWalk(from, to, visited);

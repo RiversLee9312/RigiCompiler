@@ -341,6 +341,7 @@ namespace RigiCompiler
     {
         public LoweredBlock Body { get; }
         public bool IsVolatile { get; }
+        public bool IsUnsafe { get; }
         public LocalSymbol BreakId { get; }
 
         public LoweredSeqBlock(BoundNode origin, LoweredBlock body, bool isVolatile,
@@ -348,6 +349,12 @@ namespace RigiCompiler
         {
             Body = body;
             IsVolatile = isVolatile;
+            IsUnsafe = origin switch
+            {
+                BoundSeqStatement seq => seq.IsUnsafe,
+                BoundSeqExpression seq => seq.Body.IsUnsafe,
+                _ => false,
+            };
             BreakId = breakId;
         }
     }

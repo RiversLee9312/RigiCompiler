@@ -61,6 +61,26 @@ BilModule（BIL 内存对象模型）
 
 ---
 
+### 1.1 Handle 隐藏布局与 Cell 虚槽
+
+安全 Atomic 集合使用普通 Rigi 源码持锁回调与逐元素序列化复制。
+静态泛型工厂帧只含方法级 typeid；开放 class 的 new 在 MIR 保留实际
+泛型映射（例如工厂 E 到宿主 T），分配 sheet 可复用模板，实例隐藏
+typeid 仍须写入。可挂起调用的嵌套开放 class 实参从接收者隐藏字段
+取得 typeid，不按调用方同名型参猜测。协程 frame 名注册与 MirType
+使用相同 canonical 归一，包含多参数泛型返回类型时也不产生双键。
+
+`BuiltinToStringDispatchPass` 在 CoroutineSplit 前为 Any/Object 的
+对象文本覆写生成实际类型分派；命中现有虚槽后走普通 MIR 调用，
+未命中才使用默认 native 文本 helper。普通 Map 的泛型对象键因而
+遵循用户 toString 覆写，分派中的挂起与引用生命周期仍走统一后续 pass。
+
+同步 callable 若可挂起，CoroutineSplit 的动态实现协议臂在写入具体 callee frame 前使用 MIR cast/box 适配参数；DONE 从具体结果字段先读到同类型临时槽，再转换到调用点类型。全部临时槽仍由既有生命周期 pass 管理，禁止把开放胖值直接写入具体标量/struct 字段或反向读取。
+
+Handle 固定 `.handle` 布局为 16B 对象头、16B 隐藏 target 胖引用、16B kind/mutable 元数据；只将 target 放入 refMap，不加入可枚举 Fields。普通 ARC 析构和 macroGC trace/teardown 共用该唯一扫描项，保证正常销毁与环收集恰好释放一次，禁止额外 native release 面。
+
+Cell/ReadonlyCell 的 `getValue/setValue` 与同步 Func/Action 的 `$$call` 虚槽统一使用胖值 ABI。`FatValueSlotAbi` 按真实继承和签名为槽生成适配器，复用普通参数编组、装拆箱和 ARC 临时销毁；封闭与开放泛型调用均使用同一槽约定，callable 的全部普通参数逐项适配，非 void 返回统一为胖值。同名 Cell 重载、接口独立段与 async callable 保留自身 ABI。适配器把异常 pending 原样传回普通调用点的异常边；异常出口从函数全局值类型读取真实返回类型，不能从 opaque pointer 推断。
+
 ## 2. 外部依赖与选型裁决
 
 | 部件 | 选型 | 理由 / 备选 |
@@ -198,8 +218,10 @@ enter/exit，pass 不另插 region 指令。
 
 ### 4.3 两级 ARC
 
-- **microGC**（local Object）：非原子计数。同一 Coroutine 任意时刻最多一个
-  Worker 执行（RUNTIME §22.1），串行性由语言模型保证。
+- **microGC**（local Object）：原子计数。同一 Coroutine 的执行仍串行，
+  但失败 Task 保存的异常及其 local 字段图可被多个 waiter 同时持有。
+  local/shared 的静态共享限制与对象身份不变；计数采用与 microSGC
+  相同的原子增减和候选登记协议，不改变用户字段的并发读写语义。
 - **microSGC**（shared Object）：**原子计数**。跨协程并发 acquire/release 同一
   shared 对象是合法程序，生命周期元数据必须自洽——`shared` 不担保的只是用户
   字段的线程安全（RUNTIME §21 末条）。
@@ -409,6 +431,10 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   声明宿主的 split 产物，与 VM `FindCallTarget` 拍平 sheet 含继承槽
   同语义）；静态类型不透明（AsyncAction/AsyncFunc 槽）→ 保留真 init，
   启动时 `bindColdBody` 改写为 type.is 链 + `$mw.bindcold.*` 动态绑定。
+  布局前的 `ConstructedCallCollector` 沿已到达 Task 的实际 body 字段继续
+  收集闭合调用类型；该调用尚未出现在默认 BIL 方法体中，不能仅扫描该体。
+  同样，属性读取须按访问器规则分析 getter，才能覆盖其中创建的泛型对象。
+  两者均沿实际调用与存储事实传播，不因类型出现就扫描其全部成员。
 
 **MW11a 已收口（中间形态：C 侧重实现，单线程垂直切片）**：
 
@@ -616,15 +642,18 @@ typeid 不是托管引用，不进 refMap）。`new` 站在 rigi_alloc 之后把
 形参槽落 core::Any sheet 常量，对齐 VM AlignGenericHiddenArgs 缺省 .any）。
 
 **泛型占位操作数运算（G4 定稿）**：`T extends Bound` 内的 `a + b` 族
-（操作数静态类型含 `.generic<` 占位）直译为 MirGenericBinaryOp /
+（操作数静态类型本身为顶层 `.generic<...>` 占位）直译为 MirGenericBinaryOp /
 MirGenericUnaryOp，发射期运行期派发（GenericOpEmitter，VM ExecuteBinary
 同口径）：内建标量/String 按实际 sheet 逐臂求值优先；否则按左操作数实际
 typeid 经 rigi_type_is 逐候选臂判定（候选 = 模块内全部同名 operator，
 派生深度降序；普通形参再经右臂 type_is 校验）；!= 调 equals 取反、
 </<=/>/>= 调 compareTo 按 ComparisonResult 判别映射 bool。全落空抛
 core.NoSuchMethodException（VM VmException「没有用户 operator …」对应面）。
-边界：泛型宿主的 operator 候选编译期受控拒绝（构造 sheet 无法反解类型
-实参）；方法级泛型 typeid 注入仅支持普通形参恰为占位的精确形态，其余
+已知构造宿主即使含嵌套开放实参，也走普通 operator 解析、可达边和调用路径。
+泛型 class 候选按已具化的闭合宿主 sheet 分臂，普通形参类型同步代入；类级
+typeid 由 receiver 隐藏槽恢复，不把裸模板当作对象的构造身份。
+边界：泛型值类型宿主的 operator 候选编译期受控拒绝；方法级泛型 typeid
+注入仅支持普通形参恰为占位的精确形态，其余
 注入 core::Any（VM 推断失败缺省同口径）；Entity wrapper 的 operator
 代理链不经此面；接口声明的 operator 不在候选集（VM FindOperator 的宿主
 集只含 extends 链，同口径）。
@@ -632,7 +661,7 @@ core.NoSuchMethodException（VM VmException「没有用户 operator …」对应
 **TypeSheet 全局名**：无角括号的既有名保持不变；构造 canonical 的 `<,>`
 转义为 `$` / `.`（空格删除），避免跨工具链引号差异。
 
-**is / supers / with（MW5 c3）**：MIR 直译 `type.is` / `type.supers` / `type.with`（含 `.indirect`）为 `MirTypeCheck`；发射调 `rigi_type_*` helper（typeid+payload 两枚 i64 + 目标 TypeSheet*，返 i32 0/1）。实际类型：tag2 取对象头 TypeSheet，tag0/tag1 掩码胖引用 typeid。TypeInfo 形态 `{name: rigi_string, sheet*, wrappers**, wrapperCount, ifaceClosure**, ifaceClosureCount}` 与 TypeSheet 成对发射，`typeInfoId` 回指；wrappers 来自声明 `BilWrappedModifier`；ifaceClosure 为传递 implements 闭包（含接口的父接口）。泛型占位目标（`.generic<$.generic.T>`）降为 typeid 局部（与 `.indirect` 同 helper）。接口默认方法（有 fn 体）进入实现类 iMap 槽（未 override 时指向接口方法）；MirReachability 补默认方法可达边。
+**is / supers / with（MW5 c3）**：MIR 直译 `type.is` / `type.supers` / `type.with`（含 `.indirect`）为 `MirTypeCheck`；发射调 `rigi_type_*` helper（typeid+payload 两枚 i64 + 目标 TypeSheet*，返 i32 0/1）。实际类型：tag2 取对象头 TypeSheet，tag0/tag1 掩码胖引用 typeid。TypeInfo 形态 `{name: rigi_string, sheet*, wrappers**, wrapperCount, ifaceClosure**, ifaceClosureCount, nullableElement*, destroyNative(void*)}` 与 TypeSheet 成对发射，`typeInfoId` 回指；wrappers 来自声明 `BilWrappedModifier`；ifaceClosure 为传递 implements 闭包（含接口的父接口）。泛型占位目标（`.generic<$.generic.T>`）降为 typeid 局部（与 `.indirect` 同 helper）。接口默认方法（有 fn 体）进入实现类 iMap 槽（未 override 时指向接口方法）；MirReachability 补默认方法可达边。
 
 **Any/Box ABI（RUNTIME §2/§4 定稿）**：胖引用 128-bit = `{typeid: i64（最高字节
 tag）, payload: i64}`，16B 对齐。tag0（ValueType ≤8B）payload 内联值；tag1
@@ -797,14 +826,9 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 ├── coroutine.h             # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI 类型（旧 C 调度面已删）
 ├── cohandle.c/.h           # 协程句柄原语：create/resume/destroy + lane + PollingAlarm 轮询状态
 ├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
-│                             #   + MW11d 手动事件三面（rigi_event_create/signal/destroy——
-│                             #   MessageQueue「消息可得」唤醒底座，先信号后销毁）
 │                             #   + L8 rigi_event_create_sticky（用户 EventAlarm 直继子类默认底座：
 │                             #   粘滞形态，signal 恒置已触发并归还 armed，幂等；stdlib
 │                             #   EventAlarm.ensureHandle 懒建，yield 分流改经 ensureHandle 取柄）
-├── message.c/.h            # MW11d MessageQueue 传输层 native 面：句柄注册表（id 不复用）/
-│                             #   capability 矩阵校验/broadcast 日志 + 独立 cursor/watermark 回收/
-│                             #   EOS/单 outstanding next 登记；只搬运 Parcel，不回调 Rigi
 ├── failreg.c               # 未观察失败注册表（Task 失败异常 native 承载；shared class 不得持 local Exception）
 └── eh.c/.h                 # MW9a checked-flag 便携异常传输：TLS pending 槽三面（rigi_exc_raise/pending/take）+ 顶层 reporter（rigi_type_name_of/rigi_exc_halt），不使用平台原生 EH
 ```
@@ -827,7 +851,7 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 | MW9 | 异常：try/catch/finally → checked-flag 便携传输（§8；**MW9a 已收口**：rigi_rt eh 三面 + reporter、MIR 构件（MirThrow/MirTakePending/MirRetThrow/ExcTarget）、TryExpander 十步展开、RcInjection 传播垫、Emit pending 检查、NativeE2E 捕获型对拍 13 例；**MW9b 已收口**：内置异常 message 模板源码化（stdlib init 重载）+ VM/native 构造全走真 init、VM 顶层格式对齐 `{类型全名}: {message}`、三占位 abort + 数组/Span 越界写 abort 全转真异常（守卫指令 ExcTarget 扩面 + ExceptionEmitter 共享抛出辅助 + core 异常恒可达白名单；除零策略换 Throw 实现）、SYNTAX §8.1 加第 6 异常类 `core.OutOfBoundException` + §8.2 未捕获进程行为） | 异常对拍套件 |
 | MW10 | wrapper 烘焙全链（**已收口**：Entity/Value/Method 三类 proxy 链 + wildcard router 与 call??? 降级 + singleton 三态 get fn 与急切初始化，§5/§7） | |
 | MW11 | 协程：状态机、Executor/Worker、Alarm（libuv 时钟底座）、Task、eager spawn。**MW11a/b** 曾以 C 侧重实现收口中间形态（单线程 drain + Alarm waiter）。**MW11c**：架构转向落地——Dispatcher/Task 调度在 Rigi 世界，rigi_rt 瘦身为 Worker/协程句柄/定时器/同步 Mutex/TLS/失败注册表原语；冷 Task、TaskState、executor 换绑、多 Worker 懒起、Timer/`sleep`、语言级 Mutex（VM 方法 hook；native 由 CoroutineSplit 改写 `enter` + Rigi `release` 真体，判定在 `tryEnter`/`releaseNext`） | ASYNC §8 集成测试 |
-| MW11d | 序列化 + 消息全链（**已收口**）：`core.serialization`（@Serializable/@SerializationBase/@Temporary/@Terminal 四修饰器 + Parcel + toParcel/fromParcel/deepCopy 合成，SYNTAX §20）；MessageQueue 传输层五原语 + capability 矩阵 + EOS/broadcast/深复制双端对拍；Reader/Receiver/Messenger 高层 API + listener 身份（`rigi_object_id` 对象身份原语）+ Executor 路由（默认 IOExecutor），RUNTIME §27。泛型基建两处顺手补齐：闸门 2 裸 GP 实参与 receiver/类型实参同口径声明侧跳过；裸模板 new 隐藏 typeid 取当前 fn 的 `.generic.*` 局部 | BilVm Messaging 电池 + NativeE2E 对拍 + e2e 负例 |
+| MW11d | 序列化 + 消息全链（**已收口**）：`core.serialization`（@Serializable/@SerializationBase/@Temporary/@Terminal 四修饰器 + Parcel + toParcel/fromParcel/deepCopy 合成，SYNTAX §20）；纯 Rigi MessageQueue 五 API + 安全 AtomicList/Mutex + capability 矩阵 + EOS/broadcast/深复制双端对拍；Reader/Receiver/Messenger 高层 API + listener 身份（安全 Place 对象身份）+ Executor 路由（默认 IOExecutor），RUNTIME §27。泛型基建两处顺手补齐：闸门 2 裸 GP 实参与 receiver/类型实参同口径声明侧跳过；裸模板 new 隐藏 typeid 取当前 fn 的 `.generic.*` 局部 | BilVm Messaging 电池 + NativeE2E 对拍 + e2e 负例 |
 | MW12 | macroGC：收集器、候选账本、GC 协程（native 常驻专用线程承载）、fence 激活、§25 检查（**已收口**：MW12a 收集器+fence 上线 / MW12b §25.2 全链 + GlobalExceptionHandler / MW12c 循环回收套件，全量 59 套件 0 failed） | NativeE2E mw12c 循环回收 9 例 + mw12b 4 例（含双宿主对拍）；顺带清偿两个既有 bug：FieldEmitter 借用字段读侧 ARC 失衡、Emit 临时 alloca 落非 entry 块栈泄漏（BuildEntryAlloca 统一） |
 | MW13 | 优化收尾（move/cursor、CellElim 激进化）、工具链捆绑与发布 | |
 
@@ -838,3 +862,5 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 - 字符串插值在 BIL 之前已由 frontend 降级为 `toString` + String 内建 `+`
   （SYNTAX §3.8），不构成 Middleware 的独立工作项；MW1 只依赖 String 类型与
   内建 `+`。
+
+通用原生资源所有权：TypeInfo.destroyNative 是无 GC fence 重入的资源终结槽。协程 Mutex、Task（含泛型）与 Dispatcher 按真实布局生成 gate 清零/释放回调，ARC 与 macroGC 白色清理均执行；同步锁登记册支持退出清扫后的迟到终结。Mutex.Lock 强持属主直到令牌自身回收。shared RC 减量与非零候选登记在同一账本锁内，最后释放在锁外递归析构；颜色/索引 CAS 保留并发 dispose 位。

@@ -114,7 +114,8 @@ namespace RigiCompiler
             if (receiver == null) return null;
             guard.Track(call.Receiver, receiver);
             var arguments = LoweringFacility.LowerArguments(call.Arguments,
-                call.Method.Parameters, ctx, env, guard);
+                call.Method.Parameters, ctx, env, guard, call.Receiver.Type as TypeSymbol,
+                call.Method, call.TypeArguments);
             if (arguments == null) return null;
             var genericPack = call.GenericPack == null ? null
                 : new LoweredGenericVarArgsArgument(call.GenericPack, call.GenericPack.IsNamed,

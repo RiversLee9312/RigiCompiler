@@ -105,7 +105,7 @@ namespace RigiCompiler.Middleware.Emit
             }
             // 泛型占位元素：运行时 stride 分派（数组头 elemSheet），
             // 禁止按 16B 胖引用硬读（写路径按 typeSize 动态 stride）
-            if (TypeLayout.IsGenericPlaceholder(elementType))
+            if (IsBareElementParameter(elementType))
             {
                 EmitPlaceholderGet(session, builder, slots, inst);
                 return;
@@ -148,7 +148,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException($"set.array 缺元素类型: {inst.CollectionType.Canonical}");
             }
-            if (TypeLayout.IsGenericPlaceholder(elementType))
+            if (IsBareElementParameter(elementType))
             {
                 if (TryStoreBakedScalar(session, builder, slots, inst)
                     || TryStoreViaTypeId(session, builder, slots, inst))
@@ -174,6 +174,12 @@ namespace RigiCompiler.Middleware.Emit
             StoreElement(session, builder, slots, inst.Element,
                 ElementPointer(builder, obj, abi, index), abi);
         }
+
+        // 只有裸 T 的槽宽需要运行时决定；Nullable<T>/Array<T>/Box<T>
+        // 即使含有泛型参数，也始终按引用槽读写，不能借用 T 的标量宽度。
+        private static bool IsBareElementParameter(MirType type) =>
+            type.Canonical.StartsWith(".generic<", System.StringComparison.Ordinal)
+            || type.Canonical.StartsWith("$.generic.", System.StringComparison.Ordinal);
 
         private static bool TryStoreBakedScalar(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirSetArray inst)

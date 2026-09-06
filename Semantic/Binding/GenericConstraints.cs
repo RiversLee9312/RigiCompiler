@@ -46,7 +46,18 @@ namespace RigiCompiler
             {
                 var argument = typeArgs[i];
                 if (argument is ErrorTypeSymbol) continue;
-                if (SymbolLookup.ContainsGenericParameter(argument)) continue;
+                // 必须先于开放泛型早退：外层型参也须携带共享安全证明。
+                if (generics[i].RequiresSharedSafe && !(argument switch
+                    {
+                        TypeSymbol type => type.IsSharedSafe(),
+                        GenericParameterSymbol parameter => parameter.IsSharedSafe(),
+                        _ => false,
+                    }))
+                {
+                    error(span, $"Type argument '{BoundAnalysis.TypeDisplay(argument)}' must be shared-safe for '{generics[i].Name}'");
+                    ok = false;
+                }
+                if (SymbolLookup.ContainsGenericParameter(argument) && !generics[i].RequiresSharedSafe) continue;
                 foreach (var constraint in generics[i].Constraints)
                 {
                     var bound = constraint.Bound;
@@ -291,10 +302,28 @@ namespace RigiCompiler
         // 双双取定义级——S11a 起应用携带构造代入结果，构造类型回退定义）
         private static bool HasWrapper(SemanticSymbol argument, TypeSymbol wrapper)
         {
+            if (argument is GenericParameterSymbol parameter)
+                return ParameterHasWrapper(parameter, wrapper, new HashSet<GenericParameterSymbol>());
             var definition = argument as TypeSymbol;
             if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
             return definition != null
                 && definition.AppliedWrappers.Any(w => ReferenceEquals(w.WrapperDefinition, wrapper));
+        }
+
+        private static bool ParameterHasWrapper(GenericParameterSymbol parameter, TypeSymbol wrapper,
+            HashSet<GenericParameterSymbol> visited)
+        {
+            if (!visited.Add(parameter)) return false;
+            foreach (var constraint in parameter.Constraints)
+            {
+                if (constraint.Kind == GenericConstraintKind.With && ReferenceEquals(constraint.Bound, wrapper))
+                    return true;
+                if (constraint.Kind != GenericConstraintKind.Extends) continue;
+                if (constraint.Bound is GenericParameterSymbol outer
+                    ? ParameterHasWrapper(outer, wrapper, visited)
+                    : HasWrapper(constraint.Bound, wrapper)) return true;
+            }
+            return false;
         }
     }
 }
