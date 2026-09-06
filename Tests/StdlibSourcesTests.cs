@@ -106,9 +106,10 @@ namespace RigiCompiler.Tests
             // lambda 对象模型（SYNTAX §5.2）：Func/Action/AsyncFunc/AsyncAction
             // 各 33 个元数变种 + Cell/ReadonlyCell，共 134 个 class 声明；
             // 末尾 any_to_string（§3.8 toString 机制的 priv 全局 native 触达点）；
+            // any_hash（Map 键判等，同构 priv 全局 native，any_to_string 之前）；
             // String.length ext const 内建字段（VM 直读，同 Array.length 通道）
-            TestHarness.CheckTrue("顶层恰好 140 个声明（namespace + ext operator + Pair + ComparisonResult + 134 callable/Cell + String.length + any_to_string）",
-                root.Declarations.Count == 140, $"实际 {root.Declarations.Count}");
+            TestHarness.CheckTrue("顶层恰好 141 个声明（namespace + ext operator + Pair + ComparisonResult + 134 callable/Cell + String.length + any_hash + any_to_string）",
+                root.Declarations.Count == 141, $"实际 {root.Declarations.Count}");
             TestHarness.CheckTrue("首声明是 namespace core",
                 root.Declarations.Count > 0
                 && root.Declarations[0] is NamespaceDeclarationASTNode,
@@ -812,13 +813,29 @@ namespace RigiCompiler.Tests
                     .Any(m => m.Name == "compareTo")
                 && dateTime.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "equals"));
+            var timeNow = root.Declarations[4] as CallableDeclarationASTNode;
             TestHarness.CheckTrue("声明[4] 是 rigi_time_now priv native（返回 i64）",
-                root.Declarations[4] is CallableDeclarationASTNode timeNow
+                timeNow != null
                 && timeNow.Name == "rigi_time_now"
                 && timeNow.Modifiers.Contains(Keywords.NATIVE)
                 && timeNow.Modifiers.Contains(Keywords.PRIV)
                 && timeNow.Body == null
                 && timeNow.ReturnType != null);
+            // @NativeSymbol("time_now") 必带（coroutine.rg 同符号声明同
+            // 口径）：缺省符号经 rigi_rt 前缀拼接落空成 rigi_rigi_time_now
+            TestHarness.CheckTrue("声明[4] 带 @NativeLibrary/@NativeSymbol 双注解",
+                timeNow != null && timeNow.Annotations.Count == 2
+                && AstDescribe.Symbol(timeNow.Annotations[0].Name.symbol) == "NativeLibrary"
+                && AstDescribe.Symbol(timeNow.Annotations[1].Name.symbol) == "NativeSymbol",
+                timeNow == null ? "<none>" : $"注解数 {timeNow.Annotations.Count}");
+            TestHarness.CheckTrue("声明[4] NativeSymbol 实参是 time_now",
+                timeNow != null && timeNow.Annotations.Count == 2
+                && timeNow.Annotations[1].Arguments.Count == 1
+                && AstDescribe.Expr(timeNow.Annotations[1].Arguments[0].Value.Expression)
+                    == "Str(\"time_now\")",
+                timeNow == null || timeNow.Annotations.Count < 1
+                    ? "<none>"
+                    : AstDescribe.Expr(timeNow.Annotations[1].Arguments[0].Value.Expression));
 
             TestHarness.Blank();
         }

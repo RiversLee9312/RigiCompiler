@@ -48,6 +48,9 @@ namespace RigiCompiler.Tests
                 pub var n: i32
                 pub init(value: i32) { n = value }
                 pub override func toString():String { return n.toString() }
+                // Map 键判等已改 hash 短路 + toString 精比：对象键要按字段值
+                // 判等必须 override hash（默认是身份哈希，不同实例不等）
+                pub override func hash(): i64 { return (n as i64) }
             }
             var checkNumber:i32 = 0
             func require(value:bool) {

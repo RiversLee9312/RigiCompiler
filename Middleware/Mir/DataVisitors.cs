@@ -1,5 +1,6 @@
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Binding;
+using RigiCompiler.Middleware.Passes;
 using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Mir
@@ -104,10 +105,34 @@ namespace RigiCompiler.Middleware.Mir
                 return;
             }
             var member = ImplBinder.FindUserBinaryOperator(flow.Context.Symbols, inst.Op,
-                leftType.Canonical, rightType.Canonical)
-                ?? throw new MwNotSupportedException(
+                leftType.Canonical, rightType.Canonical);
+            if (member == null && inst.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe)
+            {
+                // Any 默认 equals 臂（==/!= 判等，SYNTAX §13.2，用户裁定）：
+                // 左操作数静态链上没有 equals 声明时直调合成默认体（双虚调
+                // hash 比较，equals-or-hash 判等链，绝不涉 toString；体内
+                // Any$hash invoke 经 FlowBuilder 重定向 +
+                // BuiltinToStringDispatchPass 得 override 感知派发；值类型/
+                // 标量实参经 EmitDirectCall 的 CoerceArg 装箱为 .any）。
+                // 已知边界：静态链无 equals 而运行期实际类型（子类 hiding
+                // 再定义）有 equals 时，VM DispatchUserBinary 按实际类型
+                // 派发用户 equals，native 直调默认体——分歧仅限该组合；
+                // 泛型占位臂（Map 主路径）两端一致
+                //（合成 fn 只有 fn 定义、无符号段声明——FindMember 查不到，
+                // 与 toString/hash 先例同；用 SyntheticMember 直调，fn 是否
+                // 在场以 any_hash native 声明为门，同 LocalSymbolEmitters
+                // 的发射门控）
+                member = flow.Context.Symbols.FindMember("core::$any_hash(value:.any)@.i64")
+                    == null
+                    ? null
+                    : ProxyBakeSupport.SyntheticMember(ImplBinder.AnyEqualsCanonical, null);
+            }
+            if (member == null)
+            {
+                throw new MwNotSupportedException(
                     $"没有用户 operator {operatorName}：{leftType.Canonical}"
                     + "（VM 运行期同形异常；native 编译期拒绝）");
+            }
             var excTarget = flow.Tries.CurrentExcTarget();
             if (inst.Op == BilBinaryOp.CmpNe)
             {

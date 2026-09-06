@@ -104,6 +104,12 @@ namespace RigiCompiler.Tests
                 "func f() { take\\<Map\\<String, i32>>(new Map\\<String, i32>()) }\n");
             CheckNoErrors("with SerializationBase 填入 Map<String, i32> 合法", withMap.Unit);
 
+            // Any.hash 承诺（Map 键判等，用户裁定）：无约束泛型的有效成员类型
+            // 是 Any——hash 与 toString 同为可解析承诺（Map.keysEqual 的绑定前提）
+            var anyHashOnK = BindUnitWithStdlib(
+                "func probe\\<K>(x: K): i64 { return x.hash() }\n");
+            CheckNoErrors("无约束 K 上 x.hash() 解析成功", anyHashOnK.Unit);
+
             var withParcel = BindUnitWithStdlib(
                 "import core.serialization.SerializationBase\n" +
                 "import core.serialization.Parcel\n" +

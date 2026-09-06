@@ -455,4 +455,19 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 
 基元与默认实现均为内建行为：BIL VM 经 `BIL_STANDARD.md` §22.5 内建 hook（`rigi_rt` / `any_to_string`）执行，原生环境经 `RUNTIME.md` §26 的 `rigi_rt.any_to_string` 路由。
 
+### 3.8.1 哈希承诺（`hash`）
+
+每个类型都拥有 `hash(): i64`（承诺挂在类型层级根 `Any` 上——`Any.hash` 是 open、可被 override、自带实现的普通方法，`Object` 提供 open `override` 默认实现），可直接调用，也可经 `override` 覆写以定制哈希。与 `toString` 同构：泛型参数（无约束或仅 `supers`/`with`）可经 Any 承诺访问 `hash`。
+
+默认实现语义（`Object` 版，经 `any_hash` 内建提供）：
+
+- **`String`** 按内容哈希——内容相同的两个 `String` 哈希相等；
+- **标量**（数值 / `bool` / `char`）按值哈希；
+- **对象**（引用类型默认）按实例身份哈希——同一实例两次调用相等，不同实例（即使 `toString` 相同）哈希不同；
+- **`null`** 固定为 `0`。
+
+只承诺**同一宿主内**同值必同哈希；VM 宿主与原生宿主的哈希数值不要求一致（跨进程、跨宿主都不可持久化或比较哈希数值）。哈希不保证分布均匀，允许碰撞。典型用途是关联数组键判等：`core.collections.Map` 的键相等 = `==`（**equals-or-hash 判等链**，用户裁定）——键类型声明了 `operator equals` 走它（运行期最派生），未声明的类型走 `Any` 承诺的默认 `equals`（双虚调 `hash` 比较），hash 碰撞即判等，**绝不走 `toString`**。默认 `hash` 对对象是身份哈希，不同身份的对象键互不覆盖；值语义 `struct`/需要按字段判等的 `class` 键请 `override hash` 或实现 `operator equals`。
+
+与 `toString` 机制同构：`Any`/`Object` 的默认实现体是编译器合成的小函数，装箱接收者后调用 `.bootstrap.rg` 的文件级私有全局 `native` 函数 `any_hash`（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_hash")`）——用户代码不可直接调用它；用户类型 `override hash` 后经普通虚派发执行自身实现。
+
 ---

@@ -166,6 +166,65 @@ namespace RigiCompiler
                 HasBody = true,
             });
 
+            // hash 机制（Map 键判等，用户裁定）：与 toString 同构的 Any 承诺——
+            // open、可被 override、自带实现；Object 提供 open override 默认实现
+            //（override 关系使 SymbolLookup 遮蔽生效，o.hash() 唯一解析到
+            // Object 版本，消除 Any/Object 双候选歧义）。二者均不发 BIL native
+            // 成员声明；fn 体由发射阶段合成（EmitBuiltinNativeMethods）：
+            // .this → invoke any_hash → ret。any_hash 是 .bootstrap.rg 的 priv
+            // 全局 native（rigi_rt/any_hash，§22.5 内建 hook）：String 按内容、
+            // 标量按值、对象按 Any 槽 payload 身份（null 固定 0）；两宿主
+            //（VM/native）哈希数值不要求一致，仅同一宿主内同值必同哈希；
+            // 用户类型 override 后经虚派发执行自身实现，不再命中原生面
+            Any.Methods.Add(new MethodSymbol("hash", MethodKind.Regular,
+                owner: Any, returnType: Int64)
+            {
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
+                // 自带实现（体由发射阶段合成）——OverrideChecker.FindImplementation
+                // 据此认定 hash 承诺已被默认实现满足
+                HasBody = true,
+            });
+            Object.Methods.Add(new MethodSymbol("hash", MethodKind.Regular,
+                owner: Object, returnType: Int64)
+            {
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
+                IsOverride = true,
+                HasBody = true,
+            });
+
+            // equals 机制（==/!= 判等，SYNTAX §13.2，用户裁定）：Any 承诺
+            // operator equals——open、可被子类同名再定义（§13.2 运算符不可
+            // 标 override，子类静默 hiding + 运行期最派生命中）、自带默认
+            // 实现（体由发射阶段合成，LocalSymbolEmitters：双虚调 hash 比较
+            // ——equals-or-hash 判等链，绝不涉 toString）。挂上后「Any 之间
+            // /无约束 K 之间的 ==」在前端自动翻合法（SymbolLookup 沿
+            // BaseType 链收集 operator，含 Any）。Object 同形（IsOverride
+            // 仅一致性记号；operator 不进 OverrideChecker）。默认体语义：
+            //   equals(other) = this.hash() == other.hash()
+            //（hash 碰撞即判等的 Map 口径；键类型声明了自己的 operator
+            // equals 则运行期最派生覆盖默认体）
+            var anyEquals = new MethodSymbol("equals", MethodKind.Operator,
+                owner: Any, returnType: Bool)
+            {
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
+                HasBody = true,
+            };
+            anyEquals.Parameters.Add(new ParameterSymbol("other", Any));
+            Any.Methods.Add(anyEquals);
+            var objectEquals = new MethodSymbol("equals", MethodKind.Operator,
+                owner: Object, returnType: Bool)
+            {
+                Accessibility = Accessibility.Public,
+                IsOpen = true,
+                IsOverride = true,
+                HasBody = true,
+            };
+            objectEquals.Parameters.Add(new ParameterSymbol("other", Any));
+            Object.Methods.Add(objectEquals);
+
             // Exception.message / getMessage 随 stdlib 源码声明入图，不在此程序化添加
 
             // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/

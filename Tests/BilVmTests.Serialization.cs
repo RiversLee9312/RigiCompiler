@@ -98,6 +98,122 @@ namespace RigiCompiler.Tests
             CheckI32("Map main 返回 0", result, 0);
         }
 
+        // Map 键判等缺陷回归锚（Any.hash 裁定）：两个同类实例不重载 hash——
+        // 默认 toString 同为类型名，旧 toString 判等下互相覆盖（count==1）；
+        // 新判等 hash（对象默认身份哈希）不同 → 两键共存且各自可查
+        private static void TestMapObjectKeyIdentityNotMerged()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub class Key { pub init() {} }\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Key, i32>()\n" +
+                "    const k1 = new Key()\n" +
+                "    const k2 = new Key()\n" +
+                "    m.set(k1, 1)\n" +
+                "    m.set(k2, 2)\n" +
+                "    if (((m.count == 2L) and ((m.tryGet(k1) if? 0) == 1)) and ((m.tryGet(k2) if? 0) == 2)) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"FAIL\")\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("Map 对象键身份判等不互相覆盖", result);
+            TestHarness.Check("Map 对象键 stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("Map 对象键 main 返回 0", result, 0);
+        }
+
+        // String/标量键内容判等语义不变：内容 hash 一致（默认 equals =
+        // 双虚调 hash 比较，equals-or-hash 链）→ 合并
+        private static void TestMapContentKeysStillMerge()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<String, i32>()\n" +
+                "    m.set(\"k\", 1)\n" +
+                "    m.set(\"k\" + \"\", 2)\n" +
+                "    var n = new Map\\<i32, String>()\n" +
+                "    n.set(7, \"seven\")\n" +
+                "    n.set(7, \"SEVEN\")\n" +
+                "    n.set(8, \"eight\")\n" +
+                "    if ((((m.count == 1L) and ((m.tryGet(\"k\") if? 0) == 2)) and ((n.tryGet(7) if? \"\") == \"SEVEN\")) and ((n.tryGet(8) if? \"\") == \"eight\")) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"FAIL\")\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("Map String/标量键内容合并语义不变", result);
+            TestHarness.Check("Map 内容键 stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("Map 内容键 main 返回 0", result, 0);
+        }
+
+        // 自定义类 override hash(): i64 → 按用户哈希判等（equals-or-hash 链：
+        // 未声明 equals 的键走默认 equals = 双虚调 hash 比较，同哈希即同键）
+        private static void TestMapCustomHashKeySemantics()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub class Badge {\n" +
+                "    pub var code: i32\n" +
+                "    pub init(v: i32) { code = v }\n" +
+                "    pub override func hash(): i64 { return (code as i64) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Badge, i32>()\n" +
+                "    m.set(new Badge(5), 1)\n" +
+                "    m.set(new Badge(5), 2)\n" +
+                "    m.set(new Badge(6), 3)\n" +
+                "    if (((m.count == 2L) and ((m.tryGet(new Badge(5)) if? 0) == 2)) and ((m.tryGet(new Badge(6)) if? 0) == 3)) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"FAIL\")\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("Map 自定义 hash 按用户哈希判等", result);
+            TestHarness.Check("Map 自定义 hash stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("Map 自定义 hash main 返回 0", result, 0);
+        }
+
+        // 键类型声明 operator equals（不 override hash）→ 按 equals 判等
+        //（equals-or-hash 链：运行期最派生的 equals 优先于默认 hash 比较；
+        // 同字段 equals=true 合并 count 不增，equals=false 不合并；String/
+        // 标量键内容判等回归断言同例）
+        private static void TestMapCustomEqualsKeySemantics()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub class Tag {\n" +
+                "    pub var id: i32\n" +
+                "    pub init(v: i32) { id = v }\n" +
+                "    pub operator equals(other: Tag): bool { return (id == other.id) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Tag, i32>()\n" +
+                "    m.set(new Tag(5), 1)\n" +
+                "    m.set(new Tag(5), 2)\n" +
+                "    m.set(new Tag(6), 3)\n" +
+                "    var s = new Map\\<String, i32>()\n" +
+                "    s.set(\"k\", 1)\n" +
+                "    s.set(\"k\", 9)\n" +
+                "    var n = new Map\\<i32, i32>()\n" +
+                "    n.set(7, 1)\n" +
+                "    n.set(7, 7)\n" +
+                "    if (((((m.count == 2L) and ((m.tryGet(new Tag(5)) if? 0) == 2)) and ((m.tryGet(new Tag(6)) if? 0) == 3)) and (s.count == 1L)) and (n.count == 1L)) {\n" +
+                "        core.io.Console.println(\"ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"FAIL\")\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("Map 自定义 equals 键按 equals 判等", result);
+            TestHarness.Check("Map 自定义 equals 键 stdout 精确 ok", result.Stdout, "ok\n");
+            CheckI32("Map 自定义 equals 键 main 返回 0", result, 0);
+        }
+
         // MW11d-B1：Parcel set/get/嵌套/枚举/absent 抛 / 存 null 读 null
         private static void TestParcelSetGetNestedAbsentNull()
         {

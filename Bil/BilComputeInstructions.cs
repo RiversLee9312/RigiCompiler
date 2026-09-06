@@ -511,6 +511,18 @@ namespace RigiCompiler.Bil
         {
             var name = VmTypeOps.BinaryOperatorName(instruction.Op);
             var symbol = context.FindOperator(left.TypeRef, name, new[] { right });
+            if (symbol == null && instruction.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe
+                && context.FindFunction(BilSpellings.AnyEqualsCanonical) != null)
+            {
+                // Any 默认 equals 臂（==/!= 判等，SYNTAX §13.2，用户裁定）：
+                // 左操作数沿派生链没有声明 equals 时回退 Any 承诺的默认体
+                //（双虚调 hash 比较，equals-or-hash 判等链，绝不涉 toString）。
+                // 合成 fn 只有 fn 定义、无符号段声明（内建宿主不进
+                // LocalSymbols，同 toString/hash 先例），FindOperator 的声明
+                // needle 扫描看不到它——函数表直查。类型自声明的 equals 已在
+                // 上面按最派生命中，不经过此臂；fn 缺席（无 stdlib 夹具）保持原样
+                symbol = BilSpellings.AnyEqualsCanonical;
+            }
             if (symbol == null)
             {
                 throw new VmException("没有用户 operator " + name + "：" + left.TypeRef);

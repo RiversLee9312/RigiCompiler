@@ -222,9 +222,11 @@ Parcel 与序列化合成代码使用的最小集合面（MW11d-B1）：
   `core.OutOfBoundException`）。
 - `Map\<K, V>`：`set / tryGet / containsKey / remove / count /
   keyAtIndex / valueAtIndex / iterate()`。
-- **K 相等口径（取舍注明）**：无约束泛型不可用 `==`（Any 只承诺
-  toString），Map 键相等走「两侧 `toString()` 后 String 内建 ==」——
-  String 键 toString 即自身、标量为十进制文本时语义正确；引用类型
-  toString 为类型名，**不是对象身份**，不要把 Map 当身份索引使用。
-  需要对象身份键的场景用 `rigi_rt` 对象身份原语（RUNTIME §27.6，
+- **K 相等口径（equals-or-hash 判等链，用户裁定）**：Map 键相等 =
+  `==`——键类型声明了 `operator equals` 走它（运行期最派生）；未声明
+  的类型走 Any 承诺的默认 `equals`（双虚调 `hash()` 比较，§3.8.1），
+  hash 碰撞即判等，**绝不涉 `toString`**。String 键按内容、标量键按值
+  判等语义不变；默认 `hash` 对对象是身份哈希——不同身份的对象键互不
+  覆盖，需要值语义键的类型请 `override hash` 或实现 `operator equals`。
+  需要纯对象身份键的场景也可用 `rigi_rt` 对象身份原语（RUNTIME §27.6，
   Receiver listener 表即一例）。

@@ -208,6 +208,9 @@ namespace RigiCompiler.Middleware.Mir
         {
             "core::Any$toString()@.string" => "core::$any_to_string(value:.any)@.string",
             "core::Object$toString()@.string" => "core::$any_to_string(value:.any)@.string",
+            // hash（Map 键判等）：与 toString 同构的 helper 重定向
+            "core::Any$hash()@.i64" => "core::$any_hash(value:.any)@.i64",
+            "core::Object$hash()@.i64" => "core::$any_hash(value:.any)@.i64",
             _ => symbol,
         };
 

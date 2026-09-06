@@ -1101,6 +1101,57 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("s:Logged.wrap(1) → T=i32",
                 cWrap.TypeArguments.Count == 1
                 && ReferenceEquals(cWrap.TypeArguments[0], uWrap.Symbols.Bootstrap.Int32));
+
+            // 接口闭包推断：List\<T> implements IEnumerable\<T>——实参类型
+            // 与构造形参的关系在 implements 层（BaseType 链到不了）
+            var (uIfc, bIfc) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func total\\<T>(src: IEnumerable\\<T>): i32 { return 0 }\n" +
+                "func main(l: List\\<i32>): i32 { return total(l) }\n");
+            CheckNoErrors("接口闭包推断 List→IEnumerable", uIfc);
+            var cIfc = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bIfc, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("total(List<i32>) → T=i32",
+                cIfc.TypeArguments.Count == 1
+                && ReferenceEquals(cIfc.TypeArguments[0], uIfc.Symbols.Bootstrap.Int32));
+
+            // 接口闭包推断跨实参代入：Map\<K,V> implements
+            // IEnumerable\<core.Pair\<K,V>>——闭包形态已代入 K/V
+            var (uMapIfc, bMapIfc) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func count\\<T>(src: IEnumerable\\<T>): i32 { return 0 }\n" +
+                "func main(m: Map\\<String, i32>): i32 { return count(m) }\n");
+            CheckNoErrors("接口闭包推断 Map→IEnumerable<Pair>", uMapIfc);
+            var cMapIfc = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bMapIfc, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("count(Map<String,i32>) → T=Pair<String,i32>",
+                cMapIfc.TypeArguments.Count == 1
+                && cMapIfc.TypeArguments[0] is TypeSymbol { Name: "Pair", TypeArguments: { } pairArgs }
+                && pairArgs.Count == 2
+                && ReferenceEquals(pairArgs[0], uMapIfc.Symbols.Bootstrap.String)
+                && ReferenceEquals(pairArgs[1], uMapIfc.Symbols.Bootstrap.Int32));
+
+            // 构造接口实参直接匹配不回归：iterate() 返回 IEnumerator\<i32>
+            //（代入后形态）→ T=i32
+            var (uEnum, bEnum) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func step\\<T>(e: IEnumerator\\<T>): i32 { return 0 }\n" +
+                "func main(l: List\\<i32>): i32 { return step(l.iterate()) }\n");
+            CheckNoErrors("构造接口实参直接匹配", uEnum);
+            var cEnum = (BoundCallExpression)((BoundReturnStatement)
+                BodyOf(bEnum, "main").Body.Statements[0]).Value!;
+            TestHarness.CheckTrue("step(IEnumerator<i32>) → T=i32",
+                cEnum.TypeArguments.Count == 1
+                && ReferenceEquals(cEnum.TypeArguments[0], uEnum.Symbols.Bootstrap.Int32));
+
+            // 接口形参负例不回归：实参类型与接口无实现关系 → 仍无法推断
+            var (uNeg, _) = BindUnitWithStdlib(
+                "import core.collections.*\n" +
+                "func total\\<T>(src: IEnumerable\\<T>): i32 { return 0 }\n" +
+                "func main(s: String): i32 { return total(s) }\n");
+            TestHarness.CheckSemanticError("接口形参无实现关系仍无法推断",
+                uNeg.Diagnostics,
+                "cannot infer type arguments from the given arguments");
         }
     }
 }

@@ -64,6 +64,11 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 - `<`/`>`/`<=`/`>=` 由 `compareTo` 的结果推导。
 - `core.ComparisonResult` 枚举值：`.Equal`、`.GreaterThanAnother`、`.LesserThanAnother`。
 - 两者返回类型固定，因此不需要 `TResult`。仅需相等语义的类型只实现 `equals` 即可，无需具备全序。
+- **Any 承诺 `operator equals`**（Map 键判等口径，用户裁定）：未自行实现
+  `equals` 的类型，`==` 默认 = 双侧 `hash()` 虚调比较（**equals-or-hash
+  判等链**：实现了 `equals` 走 `equals`，否则 `hash` 比较；hash 碰撞即
+  判等），**绝不走 `toString`**。因此任意类型之间的同型 `==`/`!=` 恒合
+  法；`Map` 键判等即按此链执行。
 
 #### 索引运算符
 
@@ -150,7 +155,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 泛型参数 `T` 上的成员解析（普通方法、operator 名字调用、运算符位置、字段、索引）走**有效成员类型**，不因 `T` 不是具体 `TypeSymbol` 而一律拒绝：
 
 - `T extends B`：按 `B` 解析成员。`B` 的 `BaseType` 链与接口闭包一并可见（与「`B` 类型变量调成员」同一口径）。构造界（如 `T extends IEnumerable\<i32>`）按已代入的构造类型查找；界含外层宿主泛型参数时保留参数身份（`U extends SomeBound\<T>` 内 `U` 的成员按 `SomeBound\<T>` 解析）。
-- `T` 无约束，或只有 `supers` / `with`：按 `Any` 解析（stdlib 承诺成员，如 `toString`）。`supers` 是下界，不提供成员保证；`with` 只提供 wrapper place（`param:W`），不提供普通成员。在运算符位置对仅有 `supers`/`with` 的 `T` 使用未承诺运算符时，诊断会标明该约束不提供成员。
+- `T` 无约束，或只有 `supers` / `with`：按 `Any` 解析（stdlib 承诺成员，如 `toString`/`hash`，以及 operator `equals`——`==`/`!=` 于无约束 `T` 因此恒合法，默认语义为 equals-or-hash 判等链，见 §13.2 比较运算符）。`supers` 是下界，不提供成员保证；`with` 只提供 wrapper place（`param:W`），不提供普通成员。在运算符位置对仅有 `supers`/`with` 的 `T` 使用未承诺运算符时，诊断会标明该约束不提供成员。
 
 **结果定型**按约束签名（宿主代入后）给出，不是 `T` 本身：`T extends Addable` 且 `Addable.plus` 返回 `Addable` 时，`a + b` 与 `a.plus(b)` 的类型都是 `Addable`。把它赋回 `: T` 是编译错误；赋给 `: Addable` 合法。`F-bounded`（`T extends Addable\<T>`）仍非法，见 §3.6。
 

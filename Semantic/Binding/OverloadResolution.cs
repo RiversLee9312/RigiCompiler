@@ -490,7 +490,7 @@ namespace RigiCompiler
                     }
                 }
                 if (!TryUnify(hostView.ParameterTypes[paramIndex], boundArgs[i]?.Type,
-                    bindings, fixedGenerics))
+                    bindings, fixedGenerics, env.Unit.Symbols))
                 {
                     return null;
                 }
@@ -511,7 +511,7 @@ namespace RigiCompiler
             for (int i = 0; i < boundArgs.Count; i++)
             {
                 if (!TryUnify(hostView.ParameterTypes[i], boundArgs[i].Type, bindings,
-                    fixedGenerics))
+                    fixedGenerics, env.Unit.Symbols))
                 {
                     return null;
                 }
@@ -534,11 +534,13 @@ namespace RigiCompiler
         }
 
         // 结构统一：裸方法泛型参数绑定实参类型；构造模式递归下钻
-        // （含沿 BaseType 找同定义构造——lambda 隐藏类 : Func\<...>）；
+        // （含沿 BaseType 找同定义构造——lambda 隐藏类 : Func\<...>；
+        // BaseType 链到不了构造接口时再沿 implements 闭包找——
+        // List\<T> implements IEnumerable\<T>，同 IsAssignable 口径）；
         // 同一参数再绑定必须引用相等。actual == null 为 null 字面量，跳过。
         private static bool TryUnify(SemanticSymbol pattern, SemanticSymbol? actual,
             Dictionary<GenericParameterSymbol, SemanticSymbol> bindings,
-            List<GenericParameterSymbol> methodFixed)
+            List<GenericParameterSymbol> methodFixed, SymbolGraph symbols)
         {
             if (actual == null) return true;
             if (actual is ErrorTypeSymbol) return false;
@@ -567,10 +569,27 @@ namespace RigiCompiler
                         break;
                     }
                 }
+                // BaseType 链到不了构造接口（List\<i32> → IEnumerable\<i32>）：
+                // 沿 implements 传递闭包找同定义构造接口作为 match
+                if (match == null && actual is TypeSymbol actualType)
+                {
+                    foreach (var iface in OverrideChecker.InterfaceClosure(actualType,
+                        symbols))
+                    {
+                        if (ReferenceEquals(iface.ConstructedFrom, constructed.ConstructedFrom)
+                            && iface.TypeArguments != null
+                            && iface.TypeArguments.Count == patternArgs.Count)
+                        {
+                            match = iface;
+                            break;
+                        }
+                    }
+                }
                 if (match == null) return false;
                 for (int i = 0; i < patternArgs.Count; i++)
                 {
-                    if (!TryUnify(patternArgs[i], match.TypeArguments![i], bindings, methodFixed))
+                    if (!TryUnify(patternArgs[i], match.TypeArguments![i], bindings,
+                        methodFixed, symbols))
                     {
                         return false;
                     }

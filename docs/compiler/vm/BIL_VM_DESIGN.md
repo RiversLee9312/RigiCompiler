@@ -43,7 +43,7 @@ Bil/
     ├── VmTask.cs                 # Task 句柄：终态 + waiter 列表（shared 内建对象）
     ├── VmAlarm.cs                # PollingAlarm / EventAlarm 的 VM 表示与注册
     ├── VmException.cs            # 语言级异常的 VM 承载（包装异常对象 VmValue）
-    ├── VmHooks.cs                # §22.5 hook 表：rigi_rt print/printErr/any_to_string + core::Any$call???
+    ├── VmHooks.cs                # §22.5 hook 表：rigi_rt print/printErr/any_to_string/any_hash + core::Any$call???
     ├── VmTypeSheet.cs            # 逻辑 TypeSheet：拍平 vtable+iMap 与统一方法派发（§3.4）
     └── Values/
         ├── VmValue.cs            # 抽象基类 + 精确标量子类型（见 §3）
@@ -99,6 +99,16 @@ Bil/
   精确类型分派，见 §5）。
 - 操作数为用户类型 → 按精确类型解析到对应 operator fn，以普通调用语义执行
   （复用调用基建，不改变指令语义）。
+- `==`/`!=` 的 Any 默认 equals 臂（equals-or-hash 判等链，用户裁定）：
+  左操作数沿派生链没有声明 `equals` 时，`DispatchUserBinary` fallback
+  函数表直查合成默认体 `core::Any$$equals`（双虚调 `hash`——默认实现
+  无符号段声明，同 toString/hash 先例；`FindOperator` 声明 needle 扫描
+  看不到它，故不走该路径），`!=` 沿用既有取反包装；类型自声明的
+  `equals` 已按最派生命中、不经过此臂，绝不涉 `toString`。native 侧
+  对应面（静态 Any 直调 / 泛型占位末臂）见
+  MIDDLEWARE_ARCHITECTURE——分歧仅限「静态链无 equals 而运行期实际
+  类型（子类静默 hiding 再定义）有 equals」组合；Map 主路径（泛型臂）
+  两端一致。
 
 ### 3.4 方法派发：逻辑 TypeSheet（拍平 vtable + iMap）
 
@@ -243,6 +253,8 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 | `rigi_rt` / `print_err` | `printErr` 别名键（MW12b：`core.GlobalExceptionHandler` 的 native 声明经 `rigi_` 直拼命中 shim.c `rigi_print_err`；两键同实现） |
 | `rigi_rt` / `gexc_register_handler` / `gexc_handler_count` / `gexc_handler_at` | MW12b §25.2 `core.GlobalExceptionHandler` 处理器注册表三面（VM 侧注册表存 VmHooks，注册序=下标序；dispatch 空注册表走默认 `print_err` 文本，与 native atexit flush 一致） |
 | `rigi_rt` / `any_to_string` | §3.8 标准文本；未覆写者为 canonical 类型名（toString 成员方法不再直接 hook——其默认实现是编译器合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_to_string` 触达本 hook） |
+| `rigi_rt` / `any_hash` | §3.8.1 i64 哈希（Map 键判等，用户裁定扩充，同 `any_to_string` 的 stdlib native 面形态）：String 按内容、标量按值、对象按身份、null 固定 0；仅同一宿主内同值必同哈希，与 native 宿主数值不要求一致（hash 成员方法同样不直接 hook——默认实现是合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_hash` 触达本 hook） |
+| `rigi_rt` / `time_now` | §17.4 时钟原语：返回自 1970/1/1 00:00 UTC 起毫秒（i64）。`core.time.DateTime.now()` 与 `core.coroutine` 的 `rigi_time_now` 声明均显式 `@NativeSymbol("time_now")` 命中本键 |
 | `rigi_rt` / `alloc_array` | 零值初始化 `.array<T>`；T 为 enum struct 按宿主错误（§14.3） |
 | `rigi_rt` / `timer_create` | 时钟底座句柄；`sleep`/`Timer` 经 stdlib 构造调用（RUNTIME §19.4/§19.5）。旧 `make_sleep_alarm` 已删除 |
 | （方法 hook）`core::Any$call???` | 按 symbol 路由；无路由抛 `core::NoSuchMethodException` |

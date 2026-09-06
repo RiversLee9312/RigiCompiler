@@ -74,6 +74,20 @@ typeid 仍须写入。可挂起调用的嵌套开放 class 实参从接收者隐
 对象文本覆写生成实际类型分派；命中现有虚槽后走普通 MIR 调用，
 未命中才使用默认 native 文本 helper。普通 Map 的泛型对象键因而
 遵循用户 toString 覆写，分派中的挂起与引用生命周期仍走统一后续 pass。
+同一 pass 以同构通道为 `hash` 生成 `$mw.any.hash` 分派链（§4.8
+`any_hash` 面； CoroutineSplit 白名单同步放行该合成 fn），无任何
+override 时不合成链、调用点直调 helper。
+
+`==`/`!=` 的 Any 默认 equals 臂（equals-or-hash 判等链，用户裁定）：
+未声明 `equals` 的类型比较直调合成默认体 `core::Any$$equals`（双虚调
+`hash`，体内 `Any$hash` invoke 经 FlowBuilder 重定向 +
+`$mw.any.hash` 分派链得 override 感知）——静态左操作数在
+UserOperatorLowering 直调（MirReachability 对两合成 fn 恒收编）、
+泛型占位左操作数在 GenericOpEmitter 候选臂全落空后的末臂直调。
+已知边界：静态链无 `equals` 而运行期实际类型（子类静默 hiding 再定义）
+有 `equals` 时，native 直调默认体、VM 按实际类型派发用户 `equals`，
+分歧仅限该组合（Map 主路径泛型臂两端一致）；后续可用
+`$mw.any.equals` 双操作数通道闭合。
 
 同步 callable 若可挂起，CoroutineSplit 的动态实现协议臂在写入具体 callee frame 前使用 MIR cast/box 适配参数；DONE 从具体结果字段先读到同类型临时槽，再转换到调用点类型。全部临时槽仍由既有生命周期 pass 管理，禁止把开放胖值直接写入具体标量/struct 字段或反向读取。
 
@@ -310,6 +324,7 @@ rigi_rt 导出（命名待定，形态固定）：
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
 | `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |
 | `any_to_string` | 任意胖值标准文本（StringOut 首参 + Any 槽指针）：内建标量走对应 to_string 面；`core::String`（tag1）拷贝裸块；其余（tag2 对象 / 大 struct 等）取 TypeInfo.name。不虚调 toString（防默认体递归；override 经方法虚派发，不经本面） |
+| `any_hash` | 任意胖值 i64 哈希（Any 槽指针入参；§3.8.1 Map 键判等）：tag1 String 对 data 字节取 FNV-1a 64（内容）；tag0 标量对 payload 8 字节取 FNV-1a 64（按值）；tag2 对象与 tag1 非 String 堆值对 payload（堆指针）取 FNV-1a 64（身份，不直接返回裸指针）；null 固定 0。只承诺同一进程内同值必同哈希，与 VM hook 数值不要求一致。不虚调 hash（防默认体递归；override 经 `$mw.any.hash` 合成分派链走方法虚派发，不经本面） |
 | `box_*` | Box 运行时面 |
 | `rigi_span_alloc` | Span/SharedSpan 分配（与数组同构：32B 前缀 + 原生 stride 内联元素；TypeSheet 区分 Span vs SharedSpan）。元素访问内联无独立面；析构复用数组走查（`RIGI_TYPE_ARRAY`） |
 | `rigi_try_cast` | 动态 cast（占位目标）：胖引用 typeid+payload + 目标 TypeSheet* + 两枚 out i64；is 命中改写视图 typeid；数值互转对齐 VM；失败返 0 |

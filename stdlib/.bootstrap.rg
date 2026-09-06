@@ -580,6 +580,15 @@ pub abstract class ReadonlyCell\<T> {
 //（core::Array#length@.i32 的 VM 直读先例）。const 保证不可写入。
 pub ext const String.length: i64
 
+// hash 机制的 native 触达点（Map 键判等，用户裁定）：与 any_to_string 同构
+// 的 priv 全局 native——Any/Object 的 hash 不是 native 成员，默认实现体由
+// 编译器合成为调用本函数的小 fn。文件级私有全局形态把用户挡在访问控制外
+//（§16.1），只经合成体触达；VM hook（BIL §22.5）对任意胖值取 i64 哈希
+//（String 按内容、标量按值、对象按身份，null 固定 0）。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("any_hash")
+priv native func any_hash(value: Any): i64
+
 // toString 机制的 native 触达点（SYNTAX §3.8，用户裁定）：Any/Object 的
 // toString 不再是 native 成员——它们的默认实现体由编译器合成为调用本
 // 函数的小 fn。文件级私有全局形态把用户挡在访问控制外（§16.1），只经

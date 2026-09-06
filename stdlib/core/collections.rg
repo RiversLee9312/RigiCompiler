@@ -207,13 +207,15 @@ pub class ListEnumerator\<T> implements IEnumerator\<T> {
     }
 }
 
-// MW11d-B1：关联数组（内部 Pair\<K,V> 动态数组 + 线性查找）。
-// 刻意不引哈希——规避 identity/hash contract；未来可换哈希实现、
-// 对外语义不变。
-// K 相等：无约束泛型不可用 `==`（§13.3：无约束/仅 supers·with 的有效
-// 成员类型是 Any，Any 只承诺 toString，不承诺 operator equals）。
-// 通道：两侧 toString 后走 String 内建 ==（Parcel 键为 String 时
-// toString 即自身；标量为十进制文本）。不硬编码 String 特化。
+// MW11d-B1：关联数组（内部 Pair\<K,V> 动态数组 + 线性查找）。哈希桶结构
+// 仍不引入——线性扫描语义不变，判等通道已升级（Map 键判等再升级，用户
+// 裁定）：K 相等 = `==`（equals-or-hash 判等链）——键类型声明了
+// operator equals 则运行期最派生命中走它；未声明的类型走 Any 承诺的
+// 默认 equals（双虚调 hash 比较，SYNTAX §13.2），hash 碰撞即判等（默认
+// hash 对对象是身份哈希，不同身份的键互不覆盖；String/标量键的内容
+// 判等语义不变）。**绝不涉 toString**。`==` 于无约束 K 合法：Any 承诺
+// operator equals（§13.3 有效成员类型 Any 的承诺清单含 toString/hash/
+// equals）。不硬编码 String 特化。
 pub class Map\<K, V> implements IEnumerable\<core.Pair\<K, V>> {
     priv var ks: List\<K>
     priv var vs: List\<V>
@@ -292,7 +294,10 @@ pub class Map\<K, V> implements IEnumerable\<core.Pair\<K, V>> {
     }
 
     priv func keysEqual(a: K, b: K): bool {
-        return a.toString() == b.toString()
+        // equals-or-hash 判等链（用户裁定）：`==` 经运行期最派生的
+        // operator equals——声明了 equals 的键走它，否则命中 Any 默认体
+        //（双虚调 hash 比较）。绝不涉 toString
+        return (a == b)
     }
 }
 

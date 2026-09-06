@@ -85,8 +85,52 @@ namespace RigiCompiler.Middleware.Emit
                 EmitBinaryCandidateArm(session, builder, slots, inst, candidate,
                     leftFat, leftTid, leftPayload, rightFat, rightTid, rightPayload, done);
             }
+            // Any 默认 equals 臂（==/!= 判等，SYNTAX §13.2，用户裁定）：
+            // 候选臂全落空（实际类型沿派生链无 equals 声明）时的末臂——
+            // 直调合成 fn core::Any$$equals（双虚调 hash 比较，
+            // equals-or-hash 判等链，绝不涉 toString）。与 VM
+            // DispatchUserBinary 的 Any fallback 同口径——Map 主路径两端一致。
+            // 臂命中即恒 br done；落空（合成 fn 不在模块）才续接 miss 块
+            if (inst.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe)
+            {
+                var anyMiss = fn.AppendBasicBlock("gop.anymiss");
+                if (!EmitAnyDefaultEqualsArm(session, builder, slots, inst,
+                        leftFat, rightFat, done))
+                {
+                    builder.BuildBr(anyMiss);
+                }
+                builder.PositionAtEnd(anyMiss);
+            }
             EmitOperatorMiss(session, builder, leftTid, operatorName, inst.ExcTarget);
             builder.PositionAtEnd(done);
+        }
+
+        // Any 默认 equals 末臂：胖值直通（形参 .any，无拆箱）→ 直调合成
+        // fn → pending 检查 → bool 落槽（!= 取反，与候选臂同口径）→ br done。
+        // 合成 fn 不在模块（无 stdlib 夹具）时返回 false（无臂），保持落空
+        private static bool EmitAnyDefaultEqualsArm(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirGenericBinaryOp inst, LLVMValueRef leftFat, LLVMValueRef rightFat,
+            LLVMBasicBlockRef done)
+        {
+            if (!session.TryGetFunction(ImplBinder.AnyEqualsCanonical, out var callee))
+            {
+                return false;
+            }
+            var flag = builder.BuildCall2(callee.Type, callee.Value, new[]
+            {
+                CoerceFatToParam(session, builder, leftFat, MirType.Of(".any")),
+                CoerceFatToParam(session, builder, rightFat, MirType.Of(".any")),
+            }, "gop.anyeq");
+            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
+            if (inst.Op == BilBinaryOp.CmpNe)
+            {
+                flag = builder.BuildNot(flag, "gop.anyne");
+            }
+            builder.BuildStore(flag, slots[inst.Target].Slot);
+            builder.BuildBr(done);
+            return true;
         }
 
         // 内建臂：sheet 双等守卫 → 拆载荷 → BindBinary 同路径求值 → 落槽。

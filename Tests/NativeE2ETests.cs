@@ -124,6 +124,21 @@ namespace RigiCompiler.Tests
                 "    Console.println(greeting + \"!\")\n" +
                 "    return 0\n" +
                 "}\n"),
+            // String.length（core::String#length@.i64）原生直读：字面量
+            // 常量槽与局部 ARC 槽两种宿主形态（比较字面量带 L 后缀，i64）
+            Case("String.length 字面量宿主",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    if (\"abc\".length == 3L) { Console.println(\"strlen ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("String.length 变量宿主",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = \"abcd\"\n" +
+                "    if (s.length == 4L) { Console.println(\"strlen var ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
             Case("print 无换行原样输出",
                 "@NativeLibrary(\"rigi_rt\")\n" +
                 "@NativeSymbol(\"print\")\n" +
@@ -4376,6 +4391,70 @@ namespace RigiCompiler.Tests
                 "    if (n.s == \"hi!\") { Console.println(\"str typeof ok\") }\n" +
                 "    return 0\n" +
                 "}\n"),
+            // Map 键判等（equals-or-hash 链，用户裁定）四形态对拍：只断言
+            // 行为级结果（count/tryGet），绝不打印具体 hash 数值——VM/native
+            // 两宿主哈希数值必然不同
+            Case("Map 对象键身份判等不互相覆盖",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub class Key { pub init() {} }\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Key, i32>()\n" +
+                "    const k1 = new Key()\n" +
+                "    const k2 = new Key()\n" +
+                "    m.set(k1, 1)\n" +
+                "    m.set(k2, 2)\n" +
+                "    if (((m.count == 2L) and ((m.tryGet(k1) if? 0) == 1)) and ((m.tryGet(k2) if? 0) == 2)) { Console.println(\"identity ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Map String 键内容相同仍合并",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<String, i32>()\n" +
+                "    m.set(\"k\", 1)\n" +
+                "    m.set(\"k\" + \"\", 2)\n" +
+                "    if ((m.count == 1L) and ((m.tryGet(\"k\") if? 0) == 2)) { Console.println(\"merge ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("Map 自定义 hash 按用户哈希合并",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub class Badge {\n" +
+                "    pub var code: i32\n" +
+                "    pub init(v: i32) { code = v }\n" +
+                "    pub override func hash(): i64 { return (code as i64) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Badge, i32>()\n" +
+                "    m.set(new Badge(5), 1)\n" +
+                "    m.set(new Badge(5), 2)\n" +
+                "    m.set(new Badge(6), 3)\n" +
+                "    if (((m.count == 2L) and ((m.tryGet(new Badge(5)) if? 0) == 2)) and ((m.tryGet(new Badge(6)) if? 0) == 3)) { Console.println(\"user hash ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // equals 键对拍（equals-or-hash 链，用户裁定）：键类型声明
+            // operator equals（不 override hash）→ 运行期最派生 equals
+            // 优先——按字段判等合并/不合并；String 键内容判等回归
+            Case("Map 自定义 equals 键按 equals 判等",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub class Tag {\n" +
+                "    pub var id: i32\n" +
+                "    pub init(v: i32) { id = v }\n" +
+                "    pub operator equals(other: Tag): bool { return (id == other.id) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<Tag, i32>()\n" +
+                "    m.set(new Tag(5), 1)\n" +
+                "    m.set(new Tag(5), 2)\n" +
+                "    m.set(new Tag(6), 3)\n" +
+                "    var s = new Map\\<String, i32>()\n" +
+                "    s.set(\"k\", 1)\n" +
+                "    s.set(\"k\", 9)\n" +
+                "    if ((((m.count == 2L) and ((m.tryGet(new Tag(5)) if? 0) == 2)) and ((m.tryGet(new Tag(6)) if? 0) == 3)) and (s.count == 1L)) { Console.println(\"user equals ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
             Case("动态 new rich struct 实参",
                 "import core.io.Console\n" +
                 "pub struct Pair2 {\n" +
@@ -4552,6 +4631,71 @@ namespace RigiCompiler.Tests
                 "    var o = new t()\n" +
                 "    return 0\n" +
                 "}\n", "不匹配任何 init"),
+            // ===== 动态 new 隐式默认构造（L7 动态同口径）：全链无 init
+            // 声明 + 零实参 → 分配 + 字段零值 + ..init.wrapper 缝合，
+            // 不调 init 体（VM TryFindInit argc==0 同口径）=====
+            Case("动态 new 零参无显式 init 隐式默认构造",
+                "import core.io.Console\n" +
+                "pub class Plain {\n" +
+                "    pub var x: i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(Plain)\n" +
+                "    var p = new t()\n" +
+                "    if (p.x == 0) { Console.println(\"implicit ok\") }\n" +
+                "    return p.x\n" +
+                "}\n"),
+            Case("动态 new 无 init 子类继承有参 init 基类",
+                "import core.io.Console\n" +
+                "pub open class BaseV {\n" +
+                "    pub var b: i32\n" +
+                "    pub init(v: i32) { b = v }\n" +
+                "}\n" +
+                "pub class ChildV : BaseV {\n" +
+                "    pub var c: i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(ChildV)\n" +
+                "    var d = new t()\n" +
+                "    if ((d.c == 0) and (d.b == 0)) { Console.println(\"child ok\") }\n" +
+                "    return d.c\n" +
+                "}\n"),
+            Case("动态 new 零参无 init struct",
+                "import core.io.Console\n" +
+                "pub struct PlainS {\n" +
+                "    pub var x: i32\n" +
+                "    pub var y: i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(PlainS)\n" +
+                "    var s = new t()\n" +
+                "    if ((s.x == 0) and (s.y == 0)) { Console.println(\"plain s ok\") }\n" +
+                "    return (s.x + s.y)\n" +
+                "}\n"),
+            Case("动态 new 零参泛型界无 init 类",
+                "import core.io.Console\n" +
+                "pub class PlainG {\n" +
+                "    pub var x: i32?\n" +
+                "}\n" +
+                "pub func make\\<T extends PlainG>(): T { return T() }\n" +
+                "pub func main(): i32 {\n" +
+                "    var p = make\\<PlainG>()\n" +
+                "    if (p.x == null) { Console.println(\"generic implicit ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            // 回归对照：字段初始化器经语义合成 init（非隐式路径），
+            // 零参动态 new 走显式 init 臂，修复前后都应过
+            Case("动态 new 零参字段初始化器合成 init",
+                "import core.io.Console\n" +
+                "pub class FieldInit {\n" +
+                "    pub var x: i32 = 7\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = typeOf(FieldInit)\n" +
+                "    var f = new t()\n" +
+                "    if (f.x == 7) { Console.println(\"fieldinit ok\") }\n" +
+                "    return f.x\n" +
+                "}\n"),
             Case("数值 cast 宽化窄化",
                 "pub func main(): i32 {\n" +
                 "    var a: i32 = 1000\n" +
@@ -4942,6 +5086,17 @@ namespace RigiCompiler.Tests
                 "    a[9] = 2\n" +
                 "    return 0\n" +
                 "}\n", "数组下标越界", "core::OutOfBoundException: 数组下标越界：9（长度 3）"),
+            // DateTime.now()（core.time 的 rigi_time_now → rigi_rt time_now）：
+            // 窗口断言用固定历史常数（2001-09-09 起毫秒），不对拍墙钟字面量
+            Case("DateTime.now 时钟原语窗口",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var now = core.time.DateTime.now()\n" +
+                "    if (now.stamp.milliseconds > 1000000000000L) {\n" +
+                "        Console.println(\"time now ok\")\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n"),
             // ===== MW11a 棒3 协程对拍（VM 母本移植；B-1 起 main 与
             // 其同步调用链可直接挂起——本组保留「await 收进 async run()
             // 体内」写法作回归，main 直接 await 形态见下方 B-1 组；

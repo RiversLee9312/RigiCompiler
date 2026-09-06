@@ -44,6 +44,10 @@ namespace RigiCompiler.Middleware.Layout
         public const string SharedSpanTypeCanonical = "core::SharedSpan";
         public const string SpanLengthField = "core::Span#length@.i32";
         public const string SharedSpanLengthField = "core::SharedSpan#length@.i32";
+        // String.length（.bootstrap.rg ext const 声明，i64）：String 在 native
+        // 是 16B 内联值 { i8* data, i64 len }（StringAbi），无布局计划——
+        // 发射层直读（与 Array length 特判同构）
+        public const string StringLengthField = "core::String#length@.i64";
 
         // refMap 编码（与 arc.h RIGI_REFMAP_* 对齐）：高 2 位 kind | 低 14 位跳数
         public const int RefMapKindShift = 14;
@@ -169,6 +173,9 @@ namespace RigiCompiler.Middleware.Layout
             || IsConstructedLengthField(fieldSymbol, ArrayTypeCanonical)
             || IsConstructedLengthField(fieldSymbol, SpanTypeCanonical)
             || IsConstructedLengthField(fieldSymbol, SharedSpanTypeCanonical);
+
+        public static bool IsStringLengthField(string fieldSymbol) =>
+            fieldSymbol == StringLengthField;
 
         private static bool IsConstructedLengthField(string fieldSymbol, string head) =>
             fieldSymbol.StartsWith(head + "<", System.StringComparison.Ordinal)

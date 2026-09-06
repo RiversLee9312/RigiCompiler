@@ -419,6 +419,19 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var inits = CollectInits(session, plan);
+            // L7 动态同口径：全链无 init 声明 → 补声明零参隐式默认构造
+            // thunk（index 0 不会被显式 init 占用——仅 inits 为空时走此臂）
+            if (inits.Count == 0)
+            {
+                var implicitName = ThunkName(key, 0);
+                var implicitType = plan.Kind == TypeLayoutKind.Struct
+                    ? StructThunkType(session, 0)
+                    : ThunkType(session, 0);
+                var implicitThunk = session.Module.AddFunction(implicitName, implicitType);
+                implicitThunk.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                session.RegisterSynthetic(implicitName, implicitThunk, implicitType);
+                return;
+            }
             for (var i = 0; i < inits.Count; i++)
             {
                 var thunkName = ThunkName(key, i);
@@ -457,7 +470,29 @@ namespace RigiCompiler.Middleware.Emit
             var inits = CollectInits(session, plan);
             if (inits.Count == 0)
             {
+                // L7 动态同口径：全链无 init 声明 → 单臂分发器（argc==0
+                // 命中隐式默认构造 thunk；argc>0 落 miss ret null，调用点
+                // 抛 NoSuchMethodException——VM TryFindInit 的
+                // arguments.Count == 0 严格同口径）
+                var dispatchArgSheets = disp.Fn.GetParam(0);
+                var dispatchArgc = disp.Fn.GetParam(1);
+                dispatchArgSheets.Name = "argSheets";
+                dispatchArgc.Name = "argc";
+                if (!session.TryGetSynthetic(ThunkName(key, 0), out var implicitThunk))
+                {
+                    builder.BuildRet(LLVMValueRef.CreateConstPointerNull(PointerType()));
+                    return;
+                }
+                var implicitMiss = disp.Fn.AppendBasicBlock("miss");
+                var implicitHit = disp.Fn.AppendBasicBlock("hit.implicit");
+                var argcZero = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, dispatchArgc,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false), "argc.eq");
+                builder.BuildCondBr(argcZero, implicitHit, implicitMiss);
+                builder.PositionAtEnd(implicitHit);
+                builder.BuildRet(implicitThunk.Fn);
+                builder.PositionAtEnd(implicitMiss);
                 builder.BuildRet(LLVMValueRef.CreateConstPointerNull(PointerType()));
+                EmitImplicitDefaultThunk(session, builder, plan);
                 return;
             }
             var argSheets = disp.Fn.GetParam(0);
@@ -580,6 +615,45 @@ namespace RigiCompiler.Middleware.Emit
             }
             var fatResult = NewEmitter.EmitAllocAndInit(session, builder, emptySlots,
                 plan.Symbol.Canonical, init.Wrapper, init.Member, userArgs);
+            builder.BuildRet(fatResult);
+        }
+
+        // 隐式默认构造 thunk 体（全链无 init 声明 + 零实参）：复用 L7
+        // 设施——class 走 EmitAllocAndInit(init: null)（alloc + 隐藏
+        // typeid + ..init.wrapper 缝合，rigi_alloc 零化分配同 VM 字段
+        // 零值）；struct 走 EmitInitValueOnSlot（sret 形态 memset 零 +
+        // wrapper）。不调 init 体（无体可调），wrapper 缺失时按两设施
+        // 的 TryGetFunction 守卫自然跳过
+        private static void EmitImplicitDefaultThunk(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, TypeLayoutPlan plan)
+        {
+            var name = ThunkName(GenericAbi.PlanKey(plan.Symbol), 0);
+            if (!session.TryGetSynthetic(name, out var thunk)
+                || thunk.Fn.BasicBlocksCount > 0)
+            {
+                return;
+            }
+            session.SetCurrentFunction(thunk.Fn);
+            var entry = thunk.Fn.AppendBasicBlock("entry");
+            builder.PositionAtEnd(entry);
+            // wrapper 取法照 CollectInits：声明形符号 ..init.wrapper()@.void
+            var wrapper = session.Symbols.FindMember(
+                plan.Symbol.Declaration.Symbol + "$..init.wrapper()@.void");
+            var emptySlots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(
+                System.StringComparer.Ordinal);
+            if (plan.Kind == TypeLayoutKind.Struct)
+            {
+                var slot = thunk.Fn.GetParam(0);
+                slot.Name = "out";
+                NewEmitter.EmitInitValueOnSlot(session, builder, emptySlots, slot,
+                    plan.Symbol.Canonical, wrapper, null,
+                    System.Array.Empty<LLVMValueRef>());
+                builder.BuildRetVoid();
+                return;
+            }
+            var fatResult = NewEmitter.EmitAllocAndInit(session, builder, emptySlots,
+                plan.Symbol.Canonical, wrapper, null,
+                System.Array.Empty<LLVMValueRef>());
             builder.BuildRet(fatResult);
         }
 

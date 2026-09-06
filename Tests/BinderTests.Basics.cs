@@ -340,11 +340,25 @@ namespace RigiCompiler.Tests
             TestHarness.Check("泛型 equals 用户类型 ==", BoundDescribe.Body(BodyOf(bodies2, "eq")),
                 "Body(eq, [], [Return(Binary(CmpEq, Param(a,Vec), Param(b,Vec), bool))])");
 
-            // 负例：未定义 equals 的用户类型保持编译错误（文档无默认相等语义）
-            var (unit3, _) = BindUnit(
-                "class Plain { }\nfunc eq(a: Plain, b: Plain): bool { return (a == b) }\n");
-            TestHarness.CheckSemanticError("未定义 equals 的用户类型 ==", unit3.Diagnostics,
-                "Operator '==' is not defined for type 'Plain'");
+            // 正例（Any 承诺 equals，用户裁定）：未定义 equals 的用户类型
+            // ==/!= 合法——Any 承诺的默认 equals = 双虚调 hash 比较
+            //（equals-or-hash 判等链，绝不涉 toString）；!= 仍绑 CmpNe
+            var (unit3, bodies3) = BindUnit(
+                "class Plain { }\nfunc eq(a: Plain, b: Plain): bool { return (a == b) }\n" +
+                "func ne(a: Plain, b: Plain): bool { return (a != b) }\n");
+            CheckNoErrors("无诊断（未定义 equals 的用户类型 ==/!= 走 Any 承诺）", unit3);
+            TestHarness.Check("未定义 equals 的用户类型 ==",
+                BoundDescribe.Body(BodyOf(bodies3, "eq")),
+                "Body(eq, [], [Return(Binary(CmpEq, Param(a,Plain), Param(b,Plain), bool))])");
+            TestHarness.Check("未定义 equals 的用户类型 !=",
+                BoundDescribe.Body(BodyOf(bodies3, "ne")),
+                "Body(ne, [], [Return(Binary(CmpNe, Param(a,Plain), Param(b,Plain), bool))])");
+
+            // 同型负例保留：Any 与具体类型混合比较仍报同型要求
+            var (unit3b, _) = BindUnit(
+                "class Plain { }\nfunc eq(a: Any, b: Plain): bool { return (a == b) }\n");
+            TestHarness.CheckSemanticError("Any 与具体类型混合比较", unit3b.Diagnostics,
+                "requires operands of the same type");
 
             // 回归：用户引用类型 null 判等仍走 S8b 特例（不要求 equals）
             var (unit4, bodies4) = BindUnit(

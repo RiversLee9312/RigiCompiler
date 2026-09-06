@@ -391,9 +391,13 @@ namespace RigiCompiler.Middleware.Binding
                 or "float" or "double" or "bool" or "char" or "String";
         }
 
+        // Any 默认 equals 合成 fn canonical（==/!= 判等，用户裁定；
+        // 唯一定义在 BilSpellings.AnyEqualsCanonical——LocalSymbolEmitters.
+        // EmitSynthesizedEqualsDefaultBody 同形投影，VM fallback 共用）
+        public const string AnyEqualsCanonical = BilSpellings.AnyEqualsCanonical;
+
         public static string UserBinaryOperatorName(BilBinaryOp op)
-        {
-            return op switch
+        {            return op switch
             {
                 BilBinaryOp.Add => "plus",
                 BilBinaryOp.Sub => "minus",

@@ -56,6 +56,17 @@ namespace RigiCompiler.Bil
         // 无符号段声明的预定义符号，Middleware 由 CallWildcardLoweringPass 改写）
         public const string CallWildcardMethodHead = "core::Any$call???";
 
+        // ==/!= 判等（SYNTAX §13.2，用户裁定）：Any 承诺 operator equals 的
+        // 默认体合成 fn（LocalSymbolEmitters.EmitSynthesizedEqualsDefaultBody
+        // 发射；$$ 即 operator canonical）——默认体 = 双虚调 core::Any$hash
+        // 比较（equals-or-hash 判等链，绝不涉 toString）。内建宿主不进
+        // LocalSymbols：VM DispatchUserBinary fallback 经函数表直查、
+        // Middleware 静态 Any 直调臂/泛型占位末臂共用此键；native 侧两 fn
+        // 由 MirReachability 恒收编建 MIR（体内 Any$hash invoke 经
+        // FlowBuilder 重定向 + BuiltinToStringDispatchPass 得 override 感知）
+        public const string AnyEqualsCanonical = "core::Any$$equals(other:.any)@.bool";
+        public const string ObjectEqualsCanonical = "core::Object$$equals(other:.any)@.bool";
+
         // call??? 方法符号判定（宿主段精确匹配，签名段之前；VM
         // BilDataInstructions.IsCallWildcardSymbol 同口径）
         public static bool IsCallWildcardMethod(string methodSymbol)

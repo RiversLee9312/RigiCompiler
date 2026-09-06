@@ -73,8 +73,11 @@ namespace RigiCompiler.Middleware.Passes
                     return new MirGetField(inst.Object,
                         AccessorRules.CurrentField(fn.Symbol, fieldSymbol), inst.Target, inst.ExcTarget);
                 }
-                if (TypeLayout.IsLengthField(fieldSymbol))
+                if (TypeLayout.IsLengthField(fieldSymbol)
+                    || TypeLayout.IsStringLengthField(fieldSymbol))
                 {
+                    // 内建 length 通道（Array/Span i32 直读 + String i64
+                    // extractvalue）：ext const 无访问器，直通发射层特判
                     return inst;
                 }
                 // 类级隐藏 typeid 字段（#..generic.，遗6：泛型宿主成员

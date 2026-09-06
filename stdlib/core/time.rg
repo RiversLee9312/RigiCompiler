@@ -1,7 +1,6 @@
 // Rigi 标准库：core.time 时间类型面（MW11c，RUNTIME §19.7）——支撑
-// core.coroutine.Timer 的最小时间面。本棒（棒2）只落地形状：
-// DateTime.now() 的 native 时钟原语（§17.4 rigi_time_now）只声明不
-// 实现（棒3 落地 rigi_rt），调用即受控失败，现状无人调用。
+// core.coroutine.Timer 的最小时间面。DateTime.now() 的 native 时钟原语
+//（§17.4 rigi_time_now，@NativeSymbol("time_now")）经 rigi_rt 落地。
 //   - TimeStamp：时刻戳——milliseconds（1970/1/1 00:00 UTC 起毫秒，
 //     负数为该时刻前）+ nanoseconds（毫秒外多出的纳秒，访问器 setter
 //     限 0..999_999，越界抛 core.OutOfBoundException）；总纳秒 =
@@ -84,7 +83,9 @@ pub struct DateTime {
     }
 }
 
-// 时钟原语（§17.4；与 core.coroutine 的 rigi_time_now 同一 native 符号，
-// 本文件私有声明供 DateTime.now 触达；MW11c 棒2 只声明不实现）
+// 时钟原语（§17.4；与 core.coroutine 的 rigi_time_now 同一 native 符号
+// time_now，本文件私有声明供 DateTime.now 触达；@NativeSymbol 必带——
+// 缺省符号经 rigi_rt 前缀拼接会落空成 rigi_rigi_time_now）
 @NativeLibrary("rigi_rt")
+@NativeSymbol("time_now")
 priv native func rigi_time_now(): i64

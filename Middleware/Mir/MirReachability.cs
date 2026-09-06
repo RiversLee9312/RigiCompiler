@@ -159,6 +159,21 @@ namespace RigiCompiler.Middleware.Mir
             // drain 段（生成代码）调用，register 体内 new List<...> 等边
             // 由 BFS 正常展开；BIL 级可达性看不到 stub 这条边
             EnqueueTypeMethods(context, bySymbol, queue, "core::GlobalExceptionHandler");
+            // ==/!= 判等的 Any 默认 equals 合成 fn（用户裁定）：无符号段
+            // 声明（内建宿主不进 LocalSymbols），永不为入口、也无 BIL 级
+            // 调用边（前端 == 发 cmp.eq intrinsic；静态 Any 直调臂/泛型
+            // 占位末臂是 MIR/LLVM 层边）——恒收编（与协程运行时段粒度
+            // 同构；不在模块时静默跳过）
+            foreach (var equalsCanonical in new[]
+                     {
+                         BilSpellings.AnyEqualsCanonical, BilSpellings.ObjectEqualsCanonical,
+                     })
+            {
+                if (bySymbol.ContainsKey(equalsCanonical))
+                {
+                    queue.Enqueue((equalsCanonical, false));
+                }
+            }
             while (queue.Count > 0)
             {
                 var (symbol, fromTentative) = queue.Dequeue();

@@ -27,6 +27,17 @@ namespace RigiCompiler.Middleware.Emit
                     builder.BuildStore(length, slots[inst.Target].Slot);
                     return;
                 }
+                if (TypeLayout.IsStringLengthField(inst.FieldSymbol))
+                {
+                    // String 无布局计划（native 16B 内联值 { i8* data, i64 len }，
+                    // StringAbi）：宿主槽直载值后 extractvalue 第 1 成员即长度。
+                    // 字面量常量槽（MirLoadResource 物化）与局部 ARC 槽两形态
+                    // 宿主同为此形态；只读长度，不触碰 ARC
+                    var host = session.LoadLocal(builder, slots, inst.Object);
+                    var stringLength = builder.BuildExtractValue(host, 1, "str.len");
+                    builder.BuildStore(stringLength, slots[inst.Target].Slot);
+                    return;
+                }
                 var field = Resolve(session, inst.FieldSymbol);
                 var placeholderHost = MaterializePlaceholderValueHost(session, builder, slots,
                     inst.Object, inst.FieldSymbol, inst.ExcTarget);

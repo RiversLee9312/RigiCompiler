@@ -95,7 +95,8 @@ priv unsafe native func handle_kind(capability: Any): i32
 @NativeSymbol("handle_type_is_value")
 priv unsafe native func handle_type_is_value\<T>(): bool
 
-// 只返回引用身份是否相同，不提供地址、整数身份或哈希。
+// 只返回引用身份是否相同。不提供地址；整数身份原语仍不提供（对象身份
+// 的可观测通道是 Any.hash 的默认实现——payload 身份哈希，Map 键判等）。
 @NativeLibrary("rigi_rt")
 @NativeSymbol("place_same_target")
 priv native func place_same_target(left: Any, right: Any): bool

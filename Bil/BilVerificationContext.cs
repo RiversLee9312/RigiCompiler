@@ -107,6 +107,17 @@ namespace RigiCompiler.Bil
             // RUNTIME §26/BIL §22.5 内建 hook 经该全局函数触达）
             "core::Any$toString()@.string",
             "core::Object$toString()@.string",
+            // hash 机制（Map 键判等，用户裁定）：与 toString 同构——Any open
+            // 承诺 + Object open override 默认实现，默认体是编译器合成 fn
+            //（调 .bootstrap.rg 的 priv 全局 native any_hash）
+            "core::Any$hash()@.i64",
+            "core::Object$hash()@.i64",
+            // equals 机制（==/!= 判等，SYNTAX §13.2，用户裁定）：Any open
+            // 承诺 operator equals + Object 同形（IsOverride 仅记号）——
+            // 默认体是编译器合成 fn（双虚调 core::Any$hash 比较，
+            // equals-or-hash 判等链；$$ 即 operator canonical）
+            "core::Any$$equals(other:.any)@.bool",
+            "core::Object$$equals(other:.any)@.bool",
             // 异常根 getMessage（S10，SYNTAX §8.1）：bootstrap 抽象方法不
             // 落地符号段（EmitTypeTree 跳过 IsBuiltin），但调用点若以
             // core::Exception 静态类型 invoke（catch 到 Exception 基类型）

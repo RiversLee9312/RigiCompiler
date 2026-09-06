@@ -1058,7 +1058,8 @@ namespace RigiCompiler.Middleware.Passes
             // 文本分派是普通 MIR 调用组成的封闭 if 链，没有 wrapper
             // router 的动态包 ABI，可由既有直调/虚调挂起协议完整切分。
             if ((canonical.StartsWith("$mw.", System.StringComparison.Ordinal)
-                    && canonical != BuiltinToStringDispatchPass.DispatchCanonical)
+                    && canonical != BuiltinToStringDispatchPass.DispatchCanonical
+                    && canonical != BuiltinToStringDispatchPass.HashDispatchCanonical)
                 || canonical.Contains("$..init.", System.StringComparison.Ordinal)
                 || canonical.Contains(ProxyBakeSupport.WrappedInfix,
                     System.StringComparison.Ordinal)

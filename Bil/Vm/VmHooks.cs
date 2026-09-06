@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace RigiCompiler.Bil.Vm
 {
     // §22.5 native hook 表（BIL_VM_DESIGN §7 / RUNTIME.md §26）：
@@ -74,6 +76,7 @@ namespace RigiCompiler.Bil.Vm
             // rigi_print_err；Console.rg 的 printErr 键保留），两键同实现
             hooks.Register("rigi_rt", "print_err", PrintErr);
             hooks.Register("rigi_rt", "any_to_string", ToStringHook);
+            hooks.Register("rigi_rt", "any_hash", HashHook);
             // MW11d-D：对象身份原语（交接 §14 listener 身份键）
 
             hooks.Register("rigi_rt", "place_same_target", PlaceSameTarget);
@@ -163,11 +166,9 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => hooks.GexcHandlerCount(args));
             hooks.Register("rigi_rt", "gexc_handler_at",
                 (ctx, args) => hooks.GexcHandlerAt(args));
-            // core.time.DateTime.now() 的私有声明未带 @NativeSymbol，
-            // 默认符号 = 函数名本身（与 coroutine.rg 的 time_now 同一
-            // native 符号两声明，VM 两键同实现）
-            hooks.Register("rigi_rt", "rigi_time_now",
-                (ctx, args) => ctx.Dispatch.TimeNow(args));
+            // 注：core.time 与 core.coroutine 的 rigi_time_now 声明均显式
+            // @NativeSymbol("time_now")（缺省名键 rigi_time_now 曾在此
+            // 兜底注册，time.rg 补注解后为死键已删——§22.5 表外键拒绝）
             hooks.Register("rigi_rt", "i64_to_string", I64ToString);
             hooks.Register("rigi_rt", "u64_to_string", U64ToString);
             hooks.Register("rigi_rt", "f32_to_string", F32ToString);
@@ -268,6 +269,44 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("any_to_string 需要恰好 1 个参数");
             }
             return new VmString(arguments[0].ToStandardText());
+        }
+
+        // any_hash（Map 键判等，用户裁定）：任意胖值取 i64 哈希——String 按
+        // 内容（.NET string 哈希）、标量按值（数值取载荷、f64 按位型、bool/
+        // char 按值）、enum case 按 case 符号；对象/其余引用值按身份
+        //（RuntimeHelpers.GetHashCode）；null/装箱 null 固定 0。同一宿主内
+        // 同值必同哈希（同内容 VmString 两实例相等、同一对象两次调用相等）；
+        // VM 与 native 两宿主数值不要求一致
+        private static VmValue HashHook(VmContext context, IReadOnlyList<VmValue> arguments)
+        {
+            if (arguments.Count != 1)
+            {
+                throw new VmException("any_hash 需要恰好 1 个参数");
+            }
+            var value = arguments[0] is VmAny any ? any.Payload : arguments[0];
+            if (value is VmNullable nullable) value = nullable.Value is VmNull ? null : nullable.Value;
+            var hash = value switch
+            {
+                null => 0L,
+                VmNull => 0L,
+                VmString text => text.Value.GetHashCode(),
+                VmEnum single => single.CaseSymbol.GetHashCode(),
+                VmI8 payload => payload.Value,
+                VmI16 payload => payload.Value,
+                VmI32 payload => payload.Value,
+                VmI64 payload => payload.Value,
+                VmU8 payload => payload.Value,
+                VmU16 payload => payload.Value,
+                VmU32 payload => payload.Value,
+                VmU64 payload => unchecked((long)payload.Value),
+                VmF32 payload => BitConverter.SingleToInt32Bits(payload.Value),
+                VmF64 payload => BitConverter.DoubleToInt64Bits(payload.Value),
+                VmBool payload => payload.Value ? 1L : 0L,
+                VmChar payload => payload.Value,
+                // 对象/数组/span 等引用值：宿主身份哈希（进程内稳定）
+                _ => RuntimeHelpers.GetHashCode(value),
+            };
+            return new VmI64(hash);
         }
 
         private static VmValue PlaceSameTarget(VmContext context, IReadOnlyList<VmValue> arguments)

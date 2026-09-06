@@ -515,6 +515,72 @@ uint8_t rigi_place_same_target(const void *left, const void *right)
     return leftPayload == rightPayload;
 }
 
+/* FNV-1a 64（Map 键判等的哈希底座）：offset basis 14695981039346656037、
+ * prime 1099511628211；只承诺同一宿主内同字节序列同哈希。 */
+static uint64_t rigi_fnv1a64(const uint8_t *data, size_t len)
+{
+    uint64_t hash = 14695981039346656037ULL;
+    size_t i;
+    for (i = 0; i < len; i++)
+    {
+        hash ^= data[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+/*
+ * Any 哈希原语（Map 键判等，用户裁定）：与 rigi_any_to_string 同布局的
+ * 16B 槽指针。三分语义：tag1 String 对 data 字节取 FNV-1a 64（内容哈希）；
+ * tag0 标量对 payload 8 字节取 FNV-1a 64（按值）；tag2 对象与 tag1 非
+ * String 堆值对 payload（堆指针）取 FNV-1a 64（身份——不直接返回裸指针，
+ * 避免地址可直接观察）。null/装箱 null 固定 0。与 VM 宿主的数值不要求
+ * 一致；同值必同哈希只在本进程内成立。
+ */
+int64_t rigi_any_hash(const void *anySlot)
+{
+    uint64_t type_id;
+    uint64_t payload;
+    uint64_t tag;
+    const RigiTypeSheet *sheet;
+
+    if (anySlot == NULL)
+    {
+        return 0;
+    }
+    memcpy(&type_id, anySlot, sizeof(type_id));
+    memcpy(&payload, (const char *)anySlot + 8, sizeof(payload));
+    if (type_id == 0 && payload == 0)
+    {
+        return 0;
+    }
+    tag = type_id >> RIGI_TAG_SHIFT;
+    if (tag == RIGI_TAG_OBJECT && payload == 0)
+    {
+        return 0;
+    }
+    if (tag == RIGI_TAG_HEAP_VALUE)
+    {
+        sheet = (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
+        if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_STRING) != 0)
+        {
+            /* String 内容哈希（空串 payload 0 → 与 null 同值，Map 判等
+             * 还有 toString 精比兜底，不引入误合并） */
+            if (payload == 0)
+            {
+                return 0;
+            }
+            {
+                const rigi_string *block = (const rigi_string *)(uintptr_t)payload;
+                return (int64_t)rigi_fnv1a64((const uint8_t *)block->data,
+                    (size_t)block->len);
+            }
+        }
+    }
+    /* 标量按值 / 对象与堆值按 payload 身份：同一 FNV over 8 字节 */
+    return (int64_t)rigi_fnv1a64((const uint8_t *)&payload, sizeof(payload));
+}
+
 /* Handle 固定 ABI：头 16B、隐藏胖 target 16B、可写能力位 16B。
  * target 是唯一 refMap 项；普通析构、循环扫描与 teardown 复用 ARC
  * 的既有扫描器，不能再添加第二条 release 路径。 */

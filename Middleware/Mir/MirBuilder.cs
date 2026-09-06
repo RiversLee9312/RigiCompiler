@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Middleware.Passes;
 using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Mir
@@ -46,9 +47,24 @@ namespace RigiCompiler.Middleware.Mir
 
         internal static MirFunction BuildFunction(MwContext context, BilFunction bilFn)
         {
-            var symbol = context.Symbols.FindMember(bilFn.Symbol)
-                ?? throw new MwNotSupportedException(
-                    $"MW1 不支持无符号段声明的 fn（预定义合成体）: {bilFn.Symbol}");
+            // Any/Object 的默认 equals 合成 fn（==/!= 判等，用户裁定）同样
+            // 无符号段声明——MirReachability 恒收编，此处以合成成员符号建
+            // MIR（签名仅 .return/.this/普通参数，无隐藏形态；体内 Any$hash
+            // invoke 走既有 FlowBuilder 重定向 + BuiltinToStringDispatchPass）
+            var symbol = context.Symbols.FindMember(bilFn.Symbol);
+            if (symbol == null)
+            {
+                if (bilFn.Symbol == BilSpellings.AnyEqualsCanonical
+                    || bilFn.Symbol == BilSpellings.ObjectEqualsCanonical)
+                {
+                    symbol = ProxyBakeSupport.SyntheticMember(bilFn.Symbol, null);
+                }
+                else
+                {
+                    throw new MwNotSupportedException(
+                        $"MW1 不支持无符号段声明的 fn（预定义合成体）: {bilFn.Symbol}");
+                }
+            }
 
             // .args：.return 在前，其后按 §7.2 序登记——.this / 固定泛型
             // .generic.T（.typeid）/ 泛型包 .generic.<Pack>（.array/.map）/
