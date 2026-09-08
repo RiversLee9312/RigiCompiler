@@ -601,12 +601,16 @@ namespace RigiCompiler.Middleware.Emit
             return (fn, type);
         }
 
-        // 值语义四面族 / String ARC 声明（裸 i64/指针，不走 StringIn/StringOut）
+        // ownership region / 值语义四面族 / String ARC 声明（裸 i64/指针，
+        // 不走 StringIn/StringOut）
         internal static (LLVMValueRef Fn, LLVMTypeRef Type) DeclareArcFace(
             ModuleBuilder.Session session, string symbol)
         {
             return symbol switch
             {
+                RuntimeFaces.RegionEnter or RuntimeFaces.RegionExit =>
+                    DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
+                        System.Array.Empty<LLVMTypeRef>()),
                 RuntimeFaces.RefAcquire => DeclareHelperFace(session, symbol, LLVMTypeRef.Int64,
                     new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
                 RuntimeFaces.RefRelease => DeclareHelperFace(session, symbol, LLVMTypeRef.Void,

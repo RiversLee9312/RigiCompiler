@@ -305,8 +305,10 @@ shared），单一 pass 可安全处理跨 Coroutine 的混合候选闭包（loc
 > **MW12 落地形态**：§23.3 隐藏 yield GCAlarm 的 native 降级 = `region_enter`
 > 内**阻塞等平台事件**——region 内禁止挂起点 + 同步函数无法挂起，阻塞 OS
 > 线程是唯一直译；阻塞期间协程不迁移。cFlag 用 OS 线程槽（懒认领的 256 槽
-> cache-line 独占注册表）即满足 §23.1 身份要求。codegen 零变化（RcInjection
-> region 协议 MW7 起常驻）。
+> cache-line 独占注册表）即满足 §23.1 身份要求。单个 ARC 面自行进入 region；
+> codegen 对“RC 更新 + 引用槽写入”的复合操作再发射一层可嵌套的外层 region，
+> 确保 macroGC 观察不到计数和引用图不一致的中间态；RcInjection 生成的托管
+> 局部 `release → copy → acquire` 三元组也由 Emit 合并进同一个外层 region。
 
 ### 4.8 运行时面（C ABI 草案）
 
@@ -319,7 +321,7 @@ rigi_rt 导出（命名待定，形态固定）：
 | `rigi_ref_acquire` / `rigi_ref_release` | 值语义四面族·胖引用槽：按 tag 分派对象/堆值/内联；生成代码只见此对 |
 | `rigi_value_acquire` / `rigi_value_release` | 值语义四面族·值类型：按 TypeSheet.refMap 走查内部胖引用/String 槽 |
 | `rigi_string_acquire` / `rigi_string_release` / `rigi_string_new` | String 槽 ARC（块头 `{atomic u32 rc, u32 reserved}`，data=块+8；字面量 rc=`0xFFFFFFFF` 永生） |
-| `region_enter/region_exit` | RUNTIME §23.3 cFlag 协议（MW12 已落地：OS 线程槽 cFlag 注册表 + region_enter 内阻塞等平台事件，无双检挂起路径）；面内自包含 |
+| `rigi_region_enter` / `rigi_region_exit` | RUNTIME §23.3 cFlag 协议（MW12 已落地：OS 线程槽 cFlag 注册表 + region_enter 内阻塞等平台事件，无双检挂起路径）；支持嵌套，单个 ARC 面自行包裹，生成代码用外层 region 覆盖复合槽位变更 |
 | `rigi_track_malloc` / `rigi_track_free` / `rigi_mem_report` | 台账三面：`RIGI_RT_MEMTRACK=1` 时跟踪堆块，进程退出未清零即 stderr + exit 1 |
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
 | `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |

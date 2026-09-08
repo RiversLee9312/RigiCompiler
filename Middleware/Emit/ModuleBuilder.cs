@@ -855,8 +855,20 @@ namespace RigiCompiler.Middleware.Emit
                 foreach (var block in fn.Blocks)
                 {
                     builder.PositionAtEnd(blockRefs[block.Id]);
-                    foreach (var inst in block.Instructions)
+                    for (var instIndex = 0; instIndex < block.Instructions.Count; instIndex++)
                     {
+                        var inst = block.Instructions[instIndex];
+                        if (instIndex + 2 < block.Instructions.Count
+                            && inst is MirReleaseSlot release
+                            && block.Instructions[instIndex + 1] is MirCopyLocal copy
+                            && block.Instructions[instIndex + 2] is MirAcquireSlot acquire
+                            && release.Local == copy.Target
+                            && acquire.Local == copy.Target)
+                        {
+                            ArcEmitter.EmitManagedCopy(this, release, copy, acquire);
+                            instIndex += 2;
+                            continue;
+                        }
                         LlvmEmitDispatchers.Visit(inst, this);
                     }
                     if (block.Id == "mw.state.0" && fn.RestoredEntrySource is { } source

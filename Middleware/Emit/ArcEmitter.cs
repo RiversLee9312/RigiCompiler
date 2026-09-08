@@ -51,6 +51,25 @@ namespace RigiCompiler.Middleware.Emit
                 EmitReleaseSlot(session, session.Builder, session.Slots, inst.Local);
         }
 
+        // RcInjection 的托管局部拷贝固定展开为 release → copy → acquire。
+        // 三条 MIR 不得各自独立发射，否则 macroGC 可在中间态观察到槽位边与
+        // RC 不一致；ModuleBuilder 识别该三元组后走本入口一次性包裹。
+        internal static void EmitManagedCopy(ModuleBuilder.Session session,
+            MirReleaseSlot release, MirCopyLocal copy, MirAcquireSlot acquire)
+        {
+            if (release.Local != copy.Target || acquire.Local != copy.Target)
+            {
+                throw new CompilerInternalException(
+                    $"托管局部拷贝序列不匹配: release ${release.Local}, copy ${copy.Target}, acquire ${acquire.Local}");
+            }
+            var builder = session.Builder;
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
+            EmitReleaseSlot(session, builder, session.Slots, release.Local);
+            CopyLocalEmitter.Visit(copy, session);
+            EmitAcquireSlot(session, builder, session.Slots, acquire.Local);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
+        }
+
         internal static void EmitAcquireSlot(ModuleBuilder.Session session,
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
@@ -110,14 +129,18 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
-        // 先 acquire 新值再 release 旧值（自赋值安全），写回 {typeid, newPayload}
+        // 先 acquire 新值再 release 旧值（自赋值安全），写回 {typeid, newPayload}。
+        // 整段必须对 macroGC 呈现为一次原子 ownership mutation：各 ARC 面内部
+        // region 会嵌套，最外层直到槽位写回后才退出。
         internal static void EmitAssignFatRef(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef typeid,
             LLVMValueRef payload)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             var newPayload = CallRefAcquire(session, builder, typeid, payload, "aref.acq");
             ReleaseFatAt(session, builder, dstAddr, "aref.old");
             builder.BuildStore(MakeFat(session, builder, typeid, newPayload), dstAddr);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         // 已持有 +1 的胖值写入（盒/alloc 产物）：只 release 旧值再 store
@@ -125,8 +148,10 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef typeid,
             LLVMValueRef payload)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             ReleaseFatAt(session, builder, dstAddr, "mref.old");
             builder.BuildStore(MakeFat(session, builder, typeid, payload), dstAddr);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         internal static (LLVMValueRef TypeId, LLVMValueRef Payload) EmitProduceFatRef(
@@ -140,23 +165,27 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef data,
             LLVMValueRef len)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             CallStringFace(session, builder, RuntimeFaces.StringAcquire, data);
             var old = builder.BuildLoad2(StringAbi.ValueType(session.Context), dstAddr,
                 "astr.old");
             CallStringFace(session, builder, RuntimeFaces.StringRelease,
                 builder.BuildExtractValue(old, 0, "astr.old.data"));
             builder.BuildStore(PackString(session, builder, data, len), dstAddr);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         internal static void EmitMoveString(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef data,
             LLVMValueRef len)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             var old = builder.BuildLoad2(StringAbi.ValueType(session.Context), dstAddr,
                 "mstr.old");
             CallStringFace(session, builder, RuntimeFaces.StringRelease,
                 builder.BuildExtractValue(old, 0, "mstr.old.data"));
             builder.BuildStore(PackString(session, builder, data, len), dstAddr);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         internal static LLVMValueRef EmitProduceString(ModuleBuilder.Session session,
@@ -170,17 +199,21 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef srcAddr,
             LLVMValueRef sheet, int size)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             CallValueFace(session, builder, RuntimeFaces.ValueAcquire, srcAddr, sheet);
             CallValueFace(session, builder, RuntimeFaces.ValueRelease, dstAddr, sheet);
             session.EmitMemCopy(builder, dstAddr, srcAddr, size);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         internal static void EmitInitRichValue(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef srcAddr,
             LLVMValueRef sheet, int size)
         {
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             CallValueFace(session, builder, RuntimeFaces.ValueAcquire, srcAddr, sheet);
             session.EmitMemCopy(builder, dstAddr, srcAddr, size);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         internal static void EmitInitRichValue(ModuleBuilder.Session session,
@@ -428,6 +461,13 @@ namespace RigiCompiler.Middleware.Emit
         {
             var (fn, fnType) = CallEmitter.DeclareArcFace(session, face);
             builder.BuildCall2(fnType, fn, new[] { addr, sheet }, "");
+        }
+
+        private static void CallRegionFace(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, string face)
+        {
+            var (fn, fnType) = CallEmitter.DeclareArcFace(session, face);
+            builder.BuildCall2(fnType, fn, System.Array.Empty<LLVMValueRef>(), "");
         }
     }
 }

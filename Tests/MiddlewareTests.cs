@@ -6863,9 +6863,18 @@ namespace RigiCompiler.Tests
                 "    pub var x: i32\n" +
                 "    pub init(v: i32) { x = v }\n" +
                 "}\n" +
+                "pub rich struct Bag {\n" +
+                "    pub var name: String\n" +
+                "    pub var node: Node\n" +
+                "    pub init(_ -> name, _ -> node)\n" +
+                "}\n" +
                 "pub func copy(n: Node): Node { return n }\n" +
+                "pub func copyString(s: String): String { return s }\n" +
+                "pub func copyBag(b: Bag): Bag { return b }\n" +
                 "pub func main(): i32 {\n" +
                 "    var n = copy(new Node(1))\n" +
+                "    var s = copyString(\"x\")\n" +
+                "    var b = copyBag(new Bag(s, n))\n" +
                 "    return n.x\n" +
                 "}\n",
                 "rc.ll.bil");
@@ -6875,6 +6884,37 @@ namespace RigiCompiler.Tests
                 ll.Contains("call i64 @rigi_ref_acquire("), ll);
             TestHarness.CheckTrue(".ll 含 rigi_ref_release",
                 ll.Contains("call void @rigi_ref_release("), ll);
+            TestHarness.CheckTrue(".ll 胖引用复合写入由同一 ownership region 包裹",
+                LlRegionContains(ll, "call i64 @rigi_ref_acquire(",
+                    "call void @rigi_ref_release(", "store { i64, i64 }"), ll);
+            TestHarness.CheckTrue(".ll String 复合写入由同一 ownership region 包裹",
+                LlRegionContains(ll, "call void @rigi_string_acquire(",
+                    "call void @rigi_string_release(", "store { ptr, i64 }"), ll);
+            TestHarness.CheckTrue(".ll rich value 复合写入由同一 ownership region 包裹",
+                LlRegionContains(ll, "call void @rigi_value_acquire(",
+                    "call void @rigi_value_release(", "@llvm.memcpy"), ll);
+        }
+
+        private static bool LlRegionContains(string ll, params string[] needles)
+        {
+            const string Enter = "call void @rigi_region_enter()";
+            const string Exit = "call void @rigi_region_exit()";
+            var start = 0;
+            while ((start = ll.IndexOf(Enter, start, StringComparison.Ordinal)) >= 0)
+            {
+                var end = ll.IndexOf(Exit, start + Enter.Length, StringComparison.Ordinal);
+                if (end < 0)
+                {
+                    return false;
+                }
+                var region = ll.Substring(start, end - start);
+                if (needles.All(n => region.Contains(n, StringComparison.Ordinal)))
+                {
+                    return true;
+                }
+                start = end + Exit.Length;
+            }
+            return false;
         }
 
         // ===== RcInjection 传播垫（MW9a 第 C 棒）=====

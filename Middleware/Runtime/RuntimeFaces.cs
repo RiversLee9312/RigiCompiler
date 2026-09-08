@@ -39,7 +39,10 @@ namespace RigiCompiler.Middleware.Runtime
         public const string SpanAlloc = "rigi_span_alloc";
         public const string AbortArrayNegativeLength = "rigi_abort_array_negative_length";
         public const string Malloc = "rigi_malloc";
-        // 值语义四面族 + String ARC（裸 i64/指针，不走 StringIn/StringOut）
+        // ownership region + 值语义四面族 + String ARC（裸 i64/指针，
+        // 不走 StringIn/StringOut）
+        public const string RegionEnter = "rigi_region_enter";
+        public const string RegionExit = "rigi_region_exit";
         public const string RefAcquire = "rigi_ref_acquire";
         public const string RefRelease = "rigi_ref_release";
         public const string ValueAcquire = "rigi_value_acquire";
