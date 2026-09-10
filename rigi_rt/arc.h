@@ -82,6 +82,7 @@ struct RigiTypeInfo
     const RigiTypeSheet *const *ifaceClosure;
     int32_t ifaceClosureCount;
     const RigiTypeSheet *nullableElement; /* 具化 Nullable<T> 的元素 sheet，其余为 NULL */
+    const RigiTypeSheet *typeIdBound; /* Type<TBound> 的边界；非类型句柄为 NULL */
     void (*destroyNative)(void *object); /* 原生资源所有权终结；不得进入 GC fence */
 };
 
@@ -127,7 +128,7 @@ void rigi_value_release(void *ptr, const RigiTypeSheet *sheet);
 void rigi_string_acquire(const char *data);
 void rigi_string_release(const char *data);
 /* 仅供已持有 GC 停世界独占权的回收路径使用。 */
-static void rigi_string_release_unfenced(const char *data);
+void rigi_string_release_unfenced(const char *data);
 char *rigi_string_new(int64_t len);   /* 分配 rc=1 字符串块，返回 data 指针 */
 
 /* region 协议（MW7a；MW12 起 fence 真协议在 macrogc.c：gc_flag 非 IDLE

@@ -198,6 +198,16 @@ namespace RigiCompiler.Middleware.Cli
                 Console.Error.WriteLine("native: " + ex.Message);
                 return 2;
             }
+            catch (CompilerInternalException ex)
+            {
+                Console.Error.WriteLine("native: 编译被拒绝：" + ex.Message);
+                return 2;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("native: 生成失败：" + ex.Message);
+                return 2;
+            }
         }
 
         private static int EmitAndLink(Bil.BilModule module, string? outPath,

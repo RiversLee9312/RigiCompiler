@@ -61,8 +61,9 @@ namespace RigiCompiler.Tests
             }
         }
 
-        private static (string Label, Action Run) Case(string label, string source) =>
-            (label, () => RunCase(label, source));
+        private static (string Label, Action Run) Case(string label, string source,
+            long maxSteps = 20_000_000) =>
+            (label, () => RunCase(label, source, maxSteps: maxSteps));
 
         private static (string Label, Action Run) BilCase(string label, string bil) =>
             (label, () => RunBilCase(label, bil));
@@ -137,6 +138,14 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    var s = \"abcd\"\n" +
                 "    if (s.length == 4L) { Console.println(\"strlen var ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("String UTF-8 length 与 characterCount",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    if ((\"序列化测试\".length == 15L) and (\"序列化测试\".characterCount == 5L)) { Console.println(\"cjk ok\") }\n" +
+                "    if ((\"👨‍👩‍👧\".length == 18L) and (\"👨‍👩‍👧\".characterCount == 5L)) { Console.println(\"family ok\") }\n" +
+                "    if ((\"🇨🇳\".length == 8L) and (\"🇨🇳\".characterCount == 2L)) { Console.println(\"flag ok\") }\n" +
                 "    return 0\n" +
                 "}\n"),
             Case("print 无换行原样输出",
@@ -1532,7 +1541,7 @@ namespace RigiCompiler.Tests
                 "fn(Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void) {\n" +
                 "    .args {\n" +
                 "        .return = .void,\n" +
-                "        .this = Choice,\n" +
+                "        .this = Choice<.generic<$.generic.T>>,\n" +
                 "        .generic.T = .typeid,\n" +
                 "        tag = .i32,\n" +
                 "        payload = .generic<$.generic.T>\n" +
@@ -6036,7 +6045,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n"),
             // R2-b㉙ 捕获 lambda 挂起：捕获 delta 的两个闭包实例
-            // 各自建 frame 下钻（callee frame 含 .capture.this 借用
+            // 各自建 frame 下钻（callee frame 含 .capture.this 拥有引用
             // 字段），结果 15,105
             Case("栈式跨界 捕获 lambda 间接调用挂起",
                 "import core.io.Console\n" +
@@ -7047,25 +7056,15 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 1\n" +
                 "}\n"),
-            // @SerializationBase 隐含 @Serializable：base-only 类 deepCopy 对拍
-            Case("序列化 @SerializationBase 隐含 Serializable",
-                "namespace core.serialization\n" +
-                "@SerializationBase\n" +
-                "pub class BaseOnly {\n" +
-                "    pub var n: i32 = 0\n" +
-                "    pub var s: String = \"\"\n" +
-                "    pub init(_ -> n, _ -> s)\n" +
-                "}\n" +
-                "@EntryPoint\n" +
+            // @SerializationBase 是独立能力，不合成 Serializable 代理。
+            Case("序列化 @SerializationBase 独立能力",
+                "func identity\\<T with SerializationBase>(value: T): T { return value }\n" +
                 "pub func main(): i32 {\n" +
-                "    var src = new BaseOnly(7, \"hi\")\n" +
-                "    var copy = deepCopy\\<BaseOnly>(src)\n" +
-                "    src.n = 9\n" +
-                "    src.s = \"bye\"\n" +
-                "    if ((copy.n == 7) and (copy.s == \"hi\")) {\n" +
-                "        if ((src.n == 9) and (src.s == \"bye\")) {\n" +
-                "            return 42\n" +
-                "        }\n" +
+                "    var src = new core.collections.List\\<i32>()\n" +
+                "    src.add(7)\n" +
+                "    var copy = identity(src)\n" +
+                "    if ((copy.getAtIndex(0L) as i32) == 7) {\n" +
+                "        return 42\n" +
                 "    }\n" +
                 "    return 1\n" +
                 "}\n"),
@@ -7076,8 +7075,7 @@ namespace RigiCompiler.Tests
             Case("MessageQueue 冒烟：post/next/EOS/release 全链",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Greeting {\n" +
                 "    pub var code: i32\n" +
@@ -7085,31 +7083,30 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> code, _ -> text)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Greeting>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Greeting>(owner, QueueHandleType.Sender)\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Greeting>(owner, QueueHandleType.Reader)\n" +
+                "    const owner = new Messenger\\<Greeting>()\n" +
+                "    const sender = owner\n" +
+                "    const reader = owner.createReader()\n" +
                 "    const live = new Greeting(7, \"hello\")\n" +
-                "    await MessageQueue.post(sender, live)\n" +
+                "    await sender.send(live)\n" +
                 "    live.code = 0\n" +
                 "    live.text = \"mutated\"\n" +
-                "    var item = await MessageQueue.next(reader)\n" +
+                "    var item = await reader.next()\n" +
                 "    if (item.isEos) { Console.println(\"FAIL eos\") }\n" +
                 "    var g = (item.item as Greeting)\n" +
                 "    Console.println(g.code.toString())\n" +
                 "    Console.println(g.text)\n" +
-                "    await MessageQueue.post(sender, new Greeting(8, \"a\"))\n" +
-                "    await MessageQueue.post(sender, new Greeting(9, \"b\"))\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    await sender.send(new Greeting(8, \"a\"))\n" +
+                "    await sender.send(new Greeting(9, \"b\"))\n" +
+                "    item = await reader.next()\n" +
                 "    g = (item.item as Greeting)\n" +
                 "    Console.println(g.code.toString())\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    item = await reader.next()\n" +
                 "    g = (item.item as Greeting)\n" +
                 "    Console.println(g.code.toString())\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    sender.dispose()\n" +
+                "    item = await reader.next()\n" +
                 "    if (item.isEos) { Console.println(\"EOS\") }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"smoke ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -7124,40 +7121,38 @@ namespace RigiCompiler.Tests
             Case("MessageQueue 对拍：broadcast 双 reader 独立 cursor",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Msg {\n" +
                 "    pub var n: i32\n" +
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    const ra = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    const rb = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
-                "    const a1 = await MessageQueue.next(ra)\n" +
-                "    const a2 = await MessageQueue.next(ra)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
+                "    const ra = owner.createReader()\n" +
+                "    const rb = owner.createReader()\n" +
+                "    await sender.send(new Msg(1))\n" +
+                "    await sender.send(new Msg(2))\n" +
+                "    const a1 = await ra.next()\n" +
+                "    const a2 = await ra.next()\n" +
                 "    Console.println(((a1.item as Msg).n).toString())\n" +
                 "    Console.println(((a2.item as Msg).n).toString())\n" +
-                "    const b1 = await MessageQueue.next(rb)\n" +
+                "    const b1 = await rb.next()\n" +
                 "    Console.println(((b1.item as Msg).n).toString())\n" +
-                "    const rc = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
-                "    const c1 = await MessageQueue.next(rc)\n" +
+                "    const rc = owner.createReader()\n" +
+                "    await sender.send(new Msg(3))\n" +
+                "    const c1 = await rc.next()\n" +
                 "    Console.println(((c1.item as Msg).n).toString())\n" +
-                "    MessageQueue.release_queue_handle(rb)\n" +
-                "    await MessageQueue.post(sender, new Msg(4))\n" +
-                "    const a3 = await MessageQueue.next(ra)\n" +
+                "    rb.dispose()\n" +
+                "    await sender.send(new Msg(4))\n" +
+                "    const a3 = await ra.next()\n" +
                 "    Console.println(((a3.item as Msg).n).toString())\n" +
-                "    const c2 = await MessageQueue.next(rc)\n" +
+                "    const c2 = await rc.next()\n" +
                 "    Console.println(((c2.item as Msg).n).toString())\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    MessageQueue.release_queue_handle(ra)\n" +
-                "    MessageQueue.release_queue_handle(rc)\n" +
+                "    sender.dispose()\n" +
+                "    ra.dispose()\n" +
+                "    rc.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -7170,8 +7165,7 @@ namespace RigiCompiler.Tests
             Case("MessageQueue 对拍：EOS 状态机（挂起唤醒/sealed/drain/复活拒绝）",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "import core.messaging.QueueItem\n" +
                 "import core.coroutine.*\n" +
                 "@Serializable\n" +
@@ -7180,39 +7174,38 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const reader = owner.createReader()\n" +
                 // 冷 Task（§18.4）：直接调 async 函数是热 Task，须
                 // new Task(func{async ...}) 才能 run()
                 "    const pending = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
-                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "        return@_ (await reader.next())\n" +
                 "    } })\n" +
                 "    pending.run()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    const sender = owner\n" +
+                "    await sender.send(new Msg(1))\n" +
                 "    const woken = await pending\n" +
                 "    if (woken.isEos) {\n" +
                 "        Console.println(\"FAIL early eos\")\n" +
                 "    } else {\n" +
                 "        Console.println((\"woken \" + ((woken.item as Msg).n).toString()))\n" +
                 "    }\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    const d1 = await MessageQueue.next(reader)\n" +
+                "    await sender.send(new Msg(2))\n" +
+                "    await sender.send(new Msg(3))\n" +
+                "    sender.dispose()\n" +
+                "    const d1 = await reader.next()\n" +
                 "    Console.println(((d1.item as Msg).n).toString())\n" +
-                "    const d2 = await MessageQueue.next(reader)\n" +
+                "    const d2 = await reader.next()\n" +
                 "    Console.println(((d2.item as Msg).n).toString())\n" +
-                "    const tail = await MessageQueue.next(reader)\n" +
+                "    const tail = await reader.next()\n" +
                 "    if (tail.isEos) { Console.println(\"EOS\") }\n" +
                 "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Sender)\n" +
+                "        await sender.send(new Msg(4))\n" +
                 "        Console.println(\"FAIL revive\")\n" +
                 "    } catch (e: core.IllegalStateException) {\n" +
                 "        Console.println(e.getMessage())\n" +
                 "    }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -7225,8 +7218,7 @@ namespace RigiCompiler.Tests
             Case("MessageQueue 对拍：接受点+顺序+outstanding 违规捕获",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "import core.messaging.QueueItem\n" +
                 "import core.coroutine.*\n" +
                 "@Serializable\n" +
@@ -7235,35 +7227,34 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
+                "    await sender.send(new Msg(1))\n" +
                 "    Console.println(\"post accepted no reader\")\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
-                "    const i1 = await MessageQueue.next(reader)\n" +
-                "    const i2 = await MessageQueue.next(reader)\n" +
-                "    const i3 = await MessageQueue.next(reader)\n" +
+                "    const reader = owner.createReader()\n" +
+                "    await sender.send(new Msg(1))\n" +
+                "    await sender.send(new Msg(2))\n" +
+                "    await sender.send(new Msg(3))\n" +
+                "    const i1 = await reader.next()\n" +
+                "    const i2 = await reader.next()\n" +
+                "    const i3 = await reader.next()\n" +
                 "    Console.println((((i1.item as Msg).n).toString() + ((i2.item as Msg).n).toString()) + ((i3.item as Msg).n).toString())\n" +
                 "    const t1 = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
-                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "        return@_ (await reader.next())\n" +
                 "    } })\n" +
                 "    t1.run()\n" +
                 "    yield\n" +
-                "    const t2 = MessageQueue.next(reader)\n" +
+                "    const t2 = reader.next()\n" +
                 "    try {\n" +
                 "        const bad = await t2\n" +
                 "        Console.println(\"FAIL outstanding\")\n" +
                 "    } catch (e: core.IllegalStateException) {\n" +
                 "        Console.println(e.getMessage())\n" +
                 "    }\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    sender.dispose()\n" +
                 "    const eos = await t1\n" +
                 "    if (eos.isEos) { Console.println(\"EOS\") }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -7273,44 +7264,43 @@ namespace RigiCompiler.Tests
             // 违规直抛（不捕获）：Reader 上 post → IllegalStateException
             // 穿透 await 到 run 协程顶层（VM 未观察失败；native 顶层
             // reporter + exit 1）
-            FailCase("MessageQueue 违规：Reader 上 post 直抛",
+            FailCase("MessageQueue 违规：封存后发送直抛",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Msg {\n" +
                 "    pub var n: i32\n" +
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(reader, new Msg(1))\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const reader = owner.createReader()\n" +
+                "    owner.dispose()\n" +
+                "    reader.dispose()\n" +
+                "    await owner.send(new Msg(1))\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
                 "    run()\n" +
                 "    return 0\n" +
                 "}\n",
-                "该句柄不能 post"),
+                "队列已 sealed"),
             // 重复释放：墓碑诊断直抛（同步路径，main 内直接触发）
-            FailCase("MessageQueue 违规：重复释放句柄直抛",
+            Case("MessageQueue：重复 dispose 幂等",
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Msg {\n" +
                 "    pub var n: i32\n" +
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
+                "    sender.dispose()\n" +
+                "    sender.dispose()\n" +
                 "    return 0\n" +
-                "}\n",
-                "句柄重复释放"),
+                "}\n"),
             // ===== MW11d-D Reader/Receiver/Messenger 高层 API 对拍 =====：
             // 与 Tests/BilVmTests.Messaging.cs 同款源；VM 参考，native
             // 逐字节同 stdout/退出码
@@ -8000,11 +7990,13 @@ namespace RigiCompiler.Tests
             Case("序列化值类型开放泛型兼容", SerializationGraphCorpus("serialization_graph_value")),
             Case("闭环动态字符串回收不重入fence", SerializationGraphCorpus("serialization_graph_gc_strings")),
             Case("序列化非法引用与异常后上下文隔离", SerializationGraphCorpus("serialization_graph_errors")),
+            Case("MQ OOP 复杂生命周期与分段回收", MessagingLifecycleSource),
+            Case("MQ 四生产者跨执行器广播与封存排空", SerializationGraphCorpus("mq_oop_concurrent")),
             Case("纯RigiMQ水位部分compact与全部drain", SerializationGraphCorpus("mq_pure_watermark")),
             Case("纯RigiMQ重复唤醒release与异常解锁", SerializationGraphCorpus("mq_pure_wakeup_release")),
             Case("泛型new隐式typeid跨挂起恢复", SerializationGraphCorpus("generic_new_after_suspend")),
             Case("泛型class序列化闭合对象头", SerializationGraphCorpus("serialization_generic_envelope")),
-            Case("双executor候选swap与最后release竞争", MqConcurrentReleaseCorpus()),
+            Case("双executor候选swap与最后release竞争", MqConcurrentReleaseCorpus(), maxSteps: 100_000_000),
             NativeErrCase("普通挂起dispose与同名元数回调布局", SerializationGraphCorpus("mq_dispose_after_suspend"),
                 "UndisposedResourceException", needlePresent: false),
             NativeErrCase("Reader跨executor重复dispose幂等", SerializationGraphCorpus("mq_reader_dispose_race"),
@@ -8033,6 +8025,28 @@ namespace RigiCompiler.Tests
             Case("同一失败Task多Compute观察者重抛", SerializationGraphCorpus("failure_shared_waiters")),
             NativeOnlyCase("普通容器删除及时释放尾槽", NativeResourceCorpus("collection_remove_resources"),
                 "void collection_remove_resource_test_marker(void) {}", "7\ncollection-remove-resources-ok\n", 0),
+            NativeOnlyCase("NativeRc 并发弱票据与恰好一次析构", NativeRcLifecycleSource,
+                NativeRcLifecycleC, "native-rc-ok\n", 0),
+            Case("显式 shared 泛型约束", SerializationGraphCorpus("shared_generic_constraint")),
+            Case("具名参数 Pair 重建而非泛型转换", SerializationGraphCorpus("kwargs_typed_pair")),
+            Case("类型句柄来源与泛型可空转换守卫", SerializationGraphCorpus("cast_provenance_guards")),
+            Case("非 rich wrapper 的 self 与值宿主复制", SerializationGraphCorpus("wrapper_nonrich_self")),
+            Case("wrapper 借用成员与独立闭包", SerializationGraphCorpus("wrapper_this_members")),
+            Case("wrapper 动态构造拒绝", SerializationGraphCorpus("wrapper_dynamic_new_rejected")),
+            Case("core SB 公开约束", SerializationGraphCorpus("sb_core_constraint")),
+            Case("泛型约束声明处证明", SerializationGraphCorpus("generic_proof_positive")),
+            Case("wrapper 独立宿主参数与原地写入", SerializationGraphCorpus("wrapper_self_parameter")),
+            Case("this 捕获拥有宿主并跨挂起保活", SerializationGraphCorpus("lambda_this_owned")),
+            Case("Handle 泛型身份与可写能力严格隔离", SerializationGraphCorpus("handle_nominal_identity")),
+            Case("enum 序列化判别与 rich 载荷快照", SerializationGraphCorpus("serialization_enum_snapshot")),
+            Case("源码 SB 与 Serializable 双重应用及值编解码", SerializationGraphCorpus("serialization_sb_explicit")),
+            Case("数组闭合泛型身份与嵌套转换拒绝", SerializationGraphCorpus("array_nominal_identity")),
+            Case("SB 集合使用 Serializable 深复制元素", SerializationGraphCorpus("serialization_sb_collections")),
+            Case("Parcel 内嵌容器图快照与解码隔离", SerializationGraphCorpus("serialization_parcel_snapshot")),
+            Case("循环复用托管槽后的异常清理", SerializationGraphCorpus("arc_reused_slot_exception")),
+            Case("Any 参数的动态 Type 视图精确物化", SerializationGraphCorpus("type_of_dynamic_view")),
+            NativeOnlyCase("GC 债务 64 位计量与重复登记摘除", GcDebtSource,
+                GcDebtC(), "gc-debt-ok\n", 0),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
@@ -8068,7 +8082,7 @@ namespace RigiCompiler.Tests
         }
 
         private static void RunCase(string label, string source,
-            IReadOnlyDictionary<string, string>? env = null)
+            IReadOnlyDictionary<string, string>? env = null, long maxSteps = 20_000_000)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -8078,7 +8092,9 @@ namespace RigiCompiler.Tests
                 var text = BilWriter.Write(module);
 
                 // VM 侧（行为参考实现）
-                var vm = BilVm.Run(BilReader.Read(text));
+                // 对拍也必须有执行预算；失败 Task 留下等待循环时应报告
+                // 测试失败，而不能让整个并行套件无限等待。
+                var vm = BilVm.Run(BilReader.Read(text), maxSteps: maxSteps);
                 TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
                 var expectedExit = vm.ReturnValue is VmI32 value ? value.Value : 0;
@@ -8124,7 +8140,7 @@ namespace RigiCompiler.Tests
 
                 // VM 侧（行为参考实现）：stdout/退出码即参照，stderr 经
                 // Run 收尾 drain 的事件通道产生（与 native 同文本）
-                var vm = BilVm.Run(BilReader.Read(text));
+                var vm = BilVm.Run(BilReader.Read(text), maxSteps: 20_000_000);
                 TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
                 var expectedExit = vm.ReturnValue is VmI32 value ? value.Value : 0;
@@ -9457,6 +9473,7 @@ namespace RigiCompiler.Tests
                     NormalizeNewlines(nativeOut), expectedStdout);
                 TestHarness.CheckTrue(label + "：退出码符合预期",
                     runExit == expectedExit, $"native={runExit} 期望={expectedExit} stderr={nativeErr}");
+                TestHarness.Check(label + "：无资源泄漏或运行时诊断", NormalizeNewlines(nativeErr), "");
             }
             finally
             {

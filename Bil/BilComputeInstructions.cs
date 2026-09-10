@@ -363,12 +363,12 @@ namespace RigiCompiler.Bil
 
         internal override void Execute(VmContext context, VmCoroutine coroutine)
         {
-            var receiver = coroutine.ReadVar(".this");
-            if (!VmObject.TryAsHost(receiver, out var host) || host.Host == null)
+            var host = coroutine.CurrentFrame.WrapperSelfArgument;
+            if (host == null)
             {
-                throw new VmException("get.self 要求当前 .this 为已安装宿主的 wrapper 实例");
+                throw new VmException("get.self 要求当前调用携带独立的 wrapper 宿主参数");
             }
-            coroutine.WriteVar(Target.Name, host.Host);
+            coroutine.WriteVar(Target.Name, host);
         }
     }
 

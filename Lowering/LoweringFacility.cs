@@ -72,14 +72,45 @@ namespace RigiCompiler
             return new LoweredCastExpression(origin, value, target, isSafe: false, target);
         }
 
+        // 实例方法 receiver 的定型与普通值转换分离：构造类型
+        // Host<A> 调用其定义 Host<T> 上的成员时，receiver 已是该
+        // 方法的精确宿主实例，不生成 Host<A> -> Host 的擦除 cast。
+        // 只有语义符号身份相同才能走此路；同名不同元数（Task / Task<T>）
+        // 必然是不同符号。真正的基类/接口/Any 上转仍使用受检 cast。
+        public static LoweredExpression EnsureReceiverType(BoundNode origin,
+            LoweredExpression value, TypeSymbol? declaredOwner)
+        {
+            if (declaredOwner == null || value.Type is not TypeSymbol receiverType)
+            {
+                return EnsureDeclaredType(origin, value, declaredOwner);
+            }
+            var receiverDefinition = receiverType.ConstructedFrom ?? receiverType;
+            var ownerDefinition = declaredOwner.ConstructedFrom ?? declaredOwner;
+            if (ReferenceEquals(receiverDefinition, ownerDefinition)) return value;
+            // 基类成员调用也必须使用代入后的宿主 B<i32>，不能把
+            // C<i32> -> B<T> 的合法上转误降级成 C<i32> -> 裸 B。
+            var pending = new Queue<TypeSymbol>();
+            var seen = new HashSet<TypeSymbol>();
+            pending.Enqueue(receiverType);
+            while (pending.TryDequeue(out var current))
+            {
+                if (!seen.Add(current)) continue;
+                if (ReferenceEquals(current.ConstructedFrom ?? current, ownerDefinition))
+                    return EnsureDeclaredType(origin, value, current);
+                if (current.BaseType != null) pending.Enqueue(current.BaseType);
+                foreach (var iface in current.Interfaces) pending.Enqueue(iface);
+            }
+            return EnsureDeclaredType(origin, value, declaredOwner);
+        }
+
         // ===== variadic 参数索引访问（BIL §7.1 ABI ↔ P3 体内视角桥接）=====
         // fn .args 的 .vargs.<名> = .array<.any>、.kwargs.<名> =
         // .array<.pair<.string, .any>>，而 P3 体内引用定型 Array\<元素\> /
         // Array\<Pair\<String, T\>\>——容器元素类型两视角不一致：读形态索引
         // 节点 Type 取 .nullable<ABI 元素>（Q6：get.array 内建形态结果恒
-        // 可空，§21.3 按容器声明推 .nullable<元素> 期望），读位置外包拆箱
-        // cast 回 P3 静态类型 Nullable\<元素\>（下游零适配）；写形态节点
-        // Type 取 ABI 元素类型，写值按 ABI 元素类型装箱 cast（§6.5）
+        // 可空，§21.3 按容器声明推 .nullable<元素> 期望）。位置包逐元素
+        // 装拆箱；具名包必须转换 value 并重建 Pair，禁止整对泛型强转。
+        // 写形态节点 Type 取 ABI 元素类型，写值按同一规则反向适配。
 
         // 判定：receiver 为 variadic 参数引用（P4a 产物形态——参数引用
         // 降级为 LoweredValueReferenceExpression）
@@ -130,6 +161,34 @@ namespace RigiCompiler
                 && t.GenericParameters.Count == 2)
                 ?? throw new CompilerInternalException(
                     "stdlib core::Pair 缺失（variadic 索引 ABI 元素类型依赖）");
+        }
+
+        // 仅用于具名参数包边界，适配对象数据而非放宽泛型转换。
+        public static LoweredExpression AdaptNamedArgumentPair(BoundNode origin,
+            LoweredExpression value, SemanticSymbol target, LowerEnvironment env)
+        {
+            if (ReferenceEquals(value.Type, target)) return value;
+            TypeSymbol? PairType(SemanticSymbol type)
+            {
+                if (type is TypeSymbol nullable
+                    && ReferenceEquals(nullable.ConstructedFrom, env.Unit.Symbols.Bootstrap.NullableDefinition))
+                    type = nullable.TypeArguments![0];
+                return type as TypeSymbol;
+            }
+            var definition = FindCorePairDefinition(env);
+            var sourcePair = PairType(value.Type);
+            var targetPair = PairType(target);
+            if (!ReferenceEquals(sourcePair?.ConstructedFrom, definition)
+                || !ReferenceEquals(targetPair?.ConstructedFrom, definition))
+                return EnsureDeclaredType(origin, value, target);
+            var arguments = new[] { sourcePair!.TypeArguments![1], targetPair!.TypeArguments![1] };
+            var helper = definition.Methods.Single(m => m.Name == "convertArgument");
+            var resultType = env.Unit.Symbols.GetNullable(targetPair);
+            var call = new BoundCallExpression(origin.Syntax, helper,
+                Array.Empty<BoundExpression>(), resultType, arguments);
+            var source = EnsureDeclaredType(origin, value, env.Unit.Symbols.GetNullable(sourcePair));
+            return EnsureDeclaredType(origin,
+                new LoweredCallExpression(call, helper, new[] { source }, arguments), target);
         }
     }
 }

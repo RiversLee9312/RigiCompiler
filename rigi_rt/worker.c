@@ -3,7 +3,14 @@
  * 静态名一律 rigi_worker_/rigi_sem_/rigi_smutex_ 前缀（unity build
  * 单编译单元防碰撞）。
  */
+#ifdef _WIN32
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#endif
 #include "worker.h"
+/* 内存台账声明必须显式可见，不能依赖 unity 中 arc.c 的排列位置。 */
+#include "arc.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -11,7 +18,6 @@
 #include <string.h>
 
 #ifdef _WIN32
-#define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #else
 #include <time.h>
@@ -684,9 +690,11 @@ static RigiTimer *rigi_timer_of(int64_t timer, const char *face)
     }
     uv_mutex_lock(&rigi_worker_registry_gate);
     t = rigi_alarm_find(timer, 0);
+    /* 属主验证必须在登记册闸内读取，不能先解锁再读取可能已销毁的 t。
+     * 验证成功后仅当前属主线程能销毁计时器，返回借用指针才是安全的。 */
+    if (t != NULL) rigi_timer_owner_check(t->owner, face);
     uv_mutex_unlock(&rigi_worker_registry_gate);
     if (t == NULL) return NULL;
-    rigi_timer_owner_check(t->owner, face);
     return t;
 }
 

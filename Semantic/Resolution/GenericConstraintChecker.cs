@@ -65,6 +65,8 @@ namespace RigiCompiler
                         continue;
                     }
                     parameter.Constraints.Add(new GenericConstraintInfo(constraint.Kind, bound));
+                    if (bound is TypeSymbol { ConstructedFrom: not null } constructed)
+                        env.TypeFillIns.Add((constructed, constraint.Bound.Span ?? entry.Node.Span));
                 }
             }
         }

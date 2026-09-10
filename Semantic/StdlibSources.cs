@@ -46,6 +46,7 @@ namespace RigiCompiler
                 }
                 var root = (RootASTNode)new Parser().Parse(new Lexer().Tokenize(text, sourceName));
                 root.IsCompilerLibrary = true;
+                root.IsIntrinsicDeclarations = name == "stdlib/.intrinsics.rg";
                 roots.Add(root);
             }
             // 零匹配 = EmbeddedResource 配置失效（stdlib 整体缺失）：静默返回空
@@ -56,6 +57,17 @@ namespace RigiCompiler
                     "stdlib 内嵌源缺失：程序集中未找到任何 stdlib/**/*.rg 资源（EmbeddedResource 配置失效）");
             }
             return roots;
+        }
+
+        internal static RootASTNode ParseIntrinsics()
+        {
+            using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("stdlib/.intrinsics.rg")
+                ?? throw new CompilerInternalException("内建声明源码资源缺失");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var root = (RootASTNode)new Parser().Parse(new Lexer().Tokenize(reader.ReadToEnd(), "<stdlib>/.intrinsics.rg"));
+            root.IsCompilerLibrary = true;
+            root.IsIntrinsicDeclarations = true;
+            return root;
         }
     }
 }

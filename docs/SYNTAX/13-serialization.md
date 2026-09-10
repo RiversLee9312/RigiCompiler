@@ -23,7 +23,8 @@ pub shared class Greeting {
 
 - 标在 class 声明上（`@WrapperTarget(.Entity)`），表示该类型允许跨
   MessageQueue 的复制边界。
-  自动合成也支持具体 struct 宿主；enum struct 当前不纳入自动合成入口。
+  自动合成也支持具体 struct 宿主；enum struct 作为封闭判别值按值编码，
+  可直接作为可序列化字段、容器元素或 Map 键值使用。
 - 编译器为宿主合成序列化方法（源码层不可手写，经 wrapper 暴露面触达）：
   - `obj:Serializable.toParcel(loopedRefEnabled: bool = false): Parcel`；
   - `fromParcel\<T with Serializable>(parcel: Parcel, loopedRefEnabled: bool = false): T` —— 由 Parcel
@@ -73,21 +74,26 @@ class Box<T with Serializable> { value: T }
 
 ### 20.2.3 `with Serializable` 约束
 
-泛型约束 `T with core.serialization.Serializable` 要求实参类型携带
-`@Serializable`（Entity wrapper 体系，`with` 检查应用事实）。消息类 API
-（`MessageQueue`/`Reader`/`Receiver`/`Messenger`，RUNTIME §27）的类型参数
-统一带此约束。注意：Entity wrapper 不能挂标量——`i32` 等基元不满足
-`with Serializable`（它们走 `@SerializationBase`，§20.3），因此
-`Messenger\<i32>` 不是合法形态；消息负载应当是 `@Serializable` class。
+泛型约束 `T with core.serialization.Serializable` 表示「T 具备序列化能力」，
+要求类型实际携带源码声明的 `@Serializable`，或泛型参数明确具有该约束。
+`SerializationBase` 不隐含 `Serializable`，两者也不存在 wrapper 继承关系。
+标准库中的 SB 类型同时在源码中声明 `@Serializable`；Serializable 的实现
+检测宿主是否携带 SB，再选择基元、String、Parcel 或集合的专用编解码路径。
+这不允许类型擦除、任意接口转换或改变内建类型的固定 ABI。只有
+`T with SerializationBase` 的泛型声明不能调用要求 `with Serializable` 的 API，
+需要同时声明两种能力；消息 API 的其他形状约束仍由其声明决定。
 
 ## 20.3 `@SerializationBase`（可进入序列化图的基底清单）
 
-`core.serialization.SerializationBase` 是 `@Internal` 的 Value 级
-wrapper：非 `core.serialization` 命名空间的代码不得拿它修饰自己的声明
+`core.SerializationBase` 是源码声明的 `@Internal` 非 rich Entity
+wrapper：应用限于 `core` 及其子命名空间，结合标准库命名空间保留规则，用户源码不能应用
 （`@Internal` 语义：应用面收窄，API 签名暴露与 `pub` 可见性不变）。
-内建类型的登记由编译器在符号层合成（不受 @Internal 限制）。
+内建基元、String、Array、List、Map、Parcel 均在标准库源码中同时应用
+`@SerializationBase` 和 `@Serializable`，不存在隐式登记器。
+新增 SB 宿主必须有 Serializable 中对应的编解码实现；没有实现时编译拒绝，
+不能因为 SB 标记而跳过深复制或直接复制对象引用。
 
-当前登记清单（`with SerializationBase` 恒真）：
+源码双重标注清单（集合内容仍须满足递归可序列性要求）：
 
 - 全部整数基元（i8/i16/i32/i64/u8/u16/u32/u64）、**f32/f64**、char、
   bool、String；
@@ -98,7 +104,7 @@ wrapper：非 `core.serialization` 命名空间的代码不得拿它修饰自己
 字段可序列性判定：标量/String 直收；Array/List/Map/Parcel 递归检查元素
 （或键值）类型；`@Serializable` 宿主递归其字段闭包；`T?` 递归 T。
 Map 的可序列化非 String 键也受支持，键和值分别检查闭包；集合自身仍按
-`toString()` 匹配键，不新增对象身份键语义。
+既有 `equals`/`hash` 规则匹配键，不新增对象身份键语义。
 
 ## 20.4 `@Temporary`（切断序列化边的字段 wrapper）
 
@@ -143,7 +149,7 @@ modifier 组合的**终点**，其内层不得再嵌套其它 wrapper。`Tempora
 
 `@Terminal` 是一般机制，不硬编码只检查 `Temporary`；任何 wrapper 声明均可
 标注。`@Internal`（命名空间内建应用限制）同为内建注解族：标在声明上后，
-非声明命名空间的代码不得拿它修饰自己的声明。
+声明命名空间及其子命名空间之外的代码不得拿它修饰自己的声明；此规则适用于所有 `@Internal` wrapper，而非 SB 专用豁免。
 
 ## 20.6 Parcel（序列化中间表示）
 
@@ -166,6 +172,10 @@ pub func valueAtIndex(index: i64): Any?
   **存入的 null 返回 null**（内部以哨兵区分 absent 与 null——两者不同）。
 - 取回值从 Any 槽 cast 到 T；类型不符抛 `core.CastException`（预期行为）。
 - 嵌套 Parcel 合法（Parcel 自身满足 SerializationBase）。
+- Parcel 作为被序列化对象时同样执行编解码，不是对象引用的透传通道。
+  其内容与普通字段使用同一次图上下文；跨越 Parcel 边界的共享引用与环
+  也必须保持图模式语义。解码结果不共享输入 Parcel 的可变内容。
+  SB 只选择编码方式，不豁免类型检查、节点登记或深复制。
 
 图模式的引用节点使用保留键 `..id`、`..ref`、`..data`：首次节点保存正编号、
 零引用编号及其负载，重复引用只保存目标编号。`typeName` 仍是节点类型名。
@@ -176,7 +186,7 @@ pub func valueAtIndex(index: i64): Any?
 `core.IllegalStateException`；负载类型不匹配沿 Parcel 的类型检查报错。
 编码与解码必须使用相同的模式。
 图解码按原序填入 Map 键值存储，不在祖先对象仍未填完时调用键比较；
-完整恢复后的查找与更新继续遵循 Map 原有 `toString()` 规则。
+完整恢复后的查找与更新继续遵循 Map 原有 `equals`/`hash` 规则。
 
 `..toParcel` / `..fromParcel` 是编译器为 `@Serializable` 宿主合成的序列化
 方法（`obj:Serializable.toParcel()` 源码面经编译器改写转发宿主合成体）；
@@ -187,9 +197,10 @@ pub func valueAtIndex(index: i64): Any?
 安全并发集合位于 `core`：`AtomicArray\<T>`、`AtomicList\<T>`、
 `AtomicMap\<K,V>` 均为 safe shared class。元素（Map 的键和值分别）
 须同时证明 shared-safe 与 `with Serializable`；标量/String 与裸集合
-不会仅因其可作为序列化字段便自动满足此 wrapper 约束。编译器只给
-真实标准库容器及其工厂/快照型参附加私有共享证明，显式与推断调用、
-嵌套类型以及尚未代入的外层型参均检查，用户无新增约束语法。
+不会仅因其可作为序列化字段便自动满足此 wrapper 约束，而是依靠源码
+上的真实 `@Serializable` 应用。共享安全通过公开的 `shared T` 型参
+声明证明，例如 `SomeType\<shared T>`；标准库和用户源码使用同一规则。
+显式与推断调用、嵌套类型以及尚未代入的外层型参均检查，不能附加隐藏证明。
 
 构造入口为同步方法级泛型工厂 `AtomicArray.fromArray\<E>(source)`、
 `AtomicList.fromList\<E>(source)`、`AtomicMap.fromMap\<A,B>(source)`；

@@ -23,6 +23,10 @@ namespace RigiCompiler.Tests
             TestParse("\\<out TElement>", "\\<out TElement>");
             TestParse("\\<in TElement>", "\\<in TElement>");
             TestParse("\\<out T, in U, V>", "\\<out T, in U, V>");
+            TestParse("\\<shared T>", "\\<shared T>");
+            TestParse("\\<shared out T, in shared U, V>", "\\<shared out T, shared in U, V>");
+            TestParse("\\<shared named T...>", "\\<shared named T...>");
+            TestParse("\\<shared T with Serializable>", "\\<shared T, T with Serializable>");
 
             TestHarness.Blank();
         }
@@ -83,6 +87,12 @@ namespace RigiCompiler.Tests
             TestHarness.CheckParseError("<TElement>",
                 () => ParseGenericParams("<TElement>"),
                 "Expected '\\' to start");
+            TestHarness.CheckParseError("\\<shared shared T>",
+                () => ParseGenericParams("\\<shared shared T>"), "Duplicate 'shared'");
+            TestHarness.CheckParseError("\\<shared out in T>",
+                () => ParseGenericParams("\\<shared out in T>"), "conflicting variance");
+            TestHarness.CheckParseError("\\<shared class>",
+                () => ParseGenericParams("\\<shared class>"), "Expected type parameter name");
             TestHarness.CheckParseError("\\TElement>",
                 () => ParseGenericParams("\\TElement>"),
                 "Expected '<' after");

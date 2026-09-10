@@ -134,6 +134,25 @@ namespace RigiCompiler.Tests
             TestHarness.Check(label, sb.ToString(), expected);
         }
 
+        // 资源表会随 stdlib 增长；资源语义测试应锁定所关心的值与去重，
+        // 而不是把整份 stdlib 资源编号快照复制进每个用例。
+        public static void CheckScalarResourceOnce(string label, BilModule module,
+            BilScalarType type, string literalText)
+        {
+            var count = module.Resources.OfType<BilScalarResource>().Count(resource =>
+                resource.Type == type && resource.LiteralText == literalText);
+            TestHarness.CheckTrue(label, count == 1,
+                $"{BilSpellings.Of(type)} {literalText}: {count}");
+        }
+
+        public static void CheckNullResourceOnce(string label, BilModule module,
+            string typeRef)
+        {
+            var count = module.Resources.OfType<BilNullResource>()
+                .Count(resource => resource.TypeRef == typeRef);
+            TestHarness.CheckTrue(label, count == 1, $"null type({typeRef}): {count}");
+        }
+
         private static string RenderFnShape(BilFunction function)
         {
             var resourceIds = new Dictionary<string, int>();

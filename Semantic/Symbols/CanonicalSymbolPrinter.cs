@@ -61,6 +61,24 @@ namespace RigiCompiler
             return type == null ? ".void" : PrintType(type, compact);
         }
 
+        // 泛型实例方法的 .this 必须保留宿主的开放构造形态。
+        // 例如 Task<TReturn> 方法帧使用
+        // Task<.generic<$.generic.TReturn>>，绝不投影成同名的 Task。
+        public static string PrintInstanceSelfType(TypeSymbol owner, bool compact = false)
+        {
+            if (owner.ConstructedFrom != null || owner.GenericParameters.Count == 0)
+            {
+                return PrintType(owner, compact);
+            }
+            var arguments = new List<string>(owner.GenericParameters.Count);
+            foreach (var parameter in owner.GenericParameters)
+            {
+                arguments.Add(PrintType(parameter, compact));
+            }
+            return (owner.BilStandardConstructor ?? CanonicalTypeName(owner)) + "<"
+                + string.Join(compact ? "," : ", ", arguments) + ">";
+        }
+
         // 字段 / 全局变量 / 全局常量（§5.2）：命名空间::[类名...]#[.static.]名称@字段类型。
         // cell 化的静态/全局字段（统一 cell 存储，SYNTAX §14.3）：存储类型为
         // cell 隐藏子类（值类型仍在符号 FieldType 上，语义层类型不变）

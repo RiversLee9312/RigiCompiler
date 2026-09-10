@@ -13,11 +13,6 @@ namespace RigiCompiler.Bil.Vm
         public string CaseSymbol { get; }
         public IReadOnlyList<VmValue> Payload => _payload;
         public override string TypeRef => _slots.TypeRef;
-        public VmValue? Host
-        {
-            get => _slots.Host;
-            set => _slots.Host = value;
-        }
 
         public VmEnum(string enumType, string caseSymbol, IReadOnlyList<VmValue> payload)
         {

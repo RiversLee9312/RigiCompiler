@@ -169,9 +169,11 @@ static void gexc_handlers_cleanup(void)
 int64_t rigi_gexc_register_handler(const RigiFatRef *handler)
 {
     size_t index;
-    if (handler == NULL)
+    if (handler == NULL || handler->payload == 0
+        || (handler->type_id >> RIGI_TAG_SHIFT) != RIGI_TAG_OBJECT
+        || (handler->type_id & RIGI_SHEET_MASK) == 0)
     {
-        fprintf(stderr, "rigi_rt: rigi_gexc_register_handler 参数为 NULL（编译器 bug）\n");
+        fprintf(stderr, "rigi_rt: rigi_gexc_register_handler 需要非空对象胖引用（编译器 bug）\n");
         abort();
     }
     gexc_handlers_lock();

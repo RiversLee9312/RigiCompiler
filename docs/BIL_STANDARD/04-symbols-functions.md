@@ -88,7 +88,7 @@ wrapped(WRAPPER_TYPE_REF)
 修饰符合法性必须与 `SYNTAX.md` 一致。例如：
 
 - `rich` 仅适用于 struct/enum struct 和 wrapper；
-- `wrapper` 类型**必须**显式带 `rich`——源码中 `rich` 由 `wrapper` 声明形式隐含且禁止书写，但 BIL 是显式 IR，不做该隐含（`SYNTAX.md` §14.9）；
+- `wrapper` 默认非 rich，仅显式带 `rich` 时才能持有普通对象字段或 rich 值；`get.self` 读取独立宿主参数，不属于普通字段，也不参与 rich 闭包（`SYNTAX.md` §14.9）；
 - `shared` class、`shared rich` struct 与 `shared` wrapper 的闭包必须合法；
 - 非 rich struct 与非 rich `enum-struct` 不得带 `open` 或 `abstract`；
 - `enum-struct` 不得 `open`；

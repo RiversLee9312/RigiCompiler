@@ -32,7 +32,7 @@ namespace RigiCompiler
                 dollarAppeared = false;
                 if (StringEscape.TryProcess(currentChar, out char value))
                 {
-                    currentToken.Content += value;
+                    currentToken.Append(value);
                 }
                 else
                 {
@@ -73,7 +73,7 @@ namespace RigiCompiler
                 // 挂起的 $ 确认非引导：补入内容
                 if (dollarAppeared)
                 {
-                    currentToken.Content += Notations.DOLLAR_SYMBOL;
+                    currentToken.Append(Notations.DOLLAR_SYMBOL);
                     dollarAppeared = false;
                 }
                 if (currentChar == Notations.DOUBLE_QUOTATION_MARK)
@@ -98,7 +98,7 @@ namespace RigiCompiler
                     dollarAppeared = currentChar == Notations.DOLLAR_SYMBOL;
                     if (!dollarAppeared)
                     {
-                        currentToken.Content += currentChar;
+                        currentToken.Append(currentChar);
                     }
                     return LexerLayerResult.Continue.Instance;
                 }

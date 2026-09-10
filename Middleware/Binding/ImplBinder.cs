@@ -672,8 +672,10 @@ namespace RigiCompiler.Middleware.Binding
         public static MwMemberSymbol? FindAccessor(MwSymbolTable symbols, string fieldSymbol,
             BilAccessorKind kind, string excludingFn)
         {
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
             for (var type = symbols.FindType(FieldOwnerOf(fieldSymbol));
-                type != null; type = BaseOf(symbols, type))
+                type != null && visited.Add(BilVerificationContext.DeclarationKeyOf(type.Canonical));
+                type = BaseOf(symbols, type))
             {
                 foreach (var member in type.Members)
                 {
@@ -705,10 +707,12 @@ namespace RigiCompiler.Middleware.Binding
                 collectionTypeCanonical,
                 BilVerificationContext.StripTypeArguments(collectionTypeCanonical),
             };
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
             for (var type = symbols.FindType(collectionTypeCanonical)
                     ?? symbols.FindType(
                         BilVerificationContext.StripTypeArguments(collectionTypeCanonical));
-                type != null; type = BaseOf(symbols, type))
+                type != null && visited.Add(BilVerificationContext.DeclarationKeyOf(type.Canonical));
+                type = BaseOf(symbols, type))
             {
                 hosts.Add(type.Canonical);
                 if (type.Declaration.ExtendsType is { } baseRef)

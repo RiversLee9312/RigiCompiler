@@ -18,7 +18,7 @@
  * tag2 不虚调 toString——Any/Object 默认体即调本面，虚调会无限递归
  *（与 VM hook 只走 ToStandardText、override 经方法虚派发不触达本面一致）。
  */
-#include "arc.h"
+#include "stringfmt.h"
 #include "rigi_string.h"
 #include "ryu.h"
 
@@ -32,6 +32,26 @@
 #define RIGI_DOTNET_SCI_LOW (-4)
 #define RIGI_DOTNET_F64_SCI_GE 17
 #define RIGI_DOTNET_F32_SCI_GE 9
+
+int64_t rigi_string_character_count(const rigi_string *value)
+{
+    int64_t count = 0;
+    int64_t i;
+    if (value == NULL || value->data == NULL || value->len <= 0)
+    {
+        return 0;
+    }
+    /* 编译器产生的 String 保证合法 UTF-8；每个非 continuation byte
+     * 恰好对应一个 Unicode 标量值的起始字节。 */
+    for (i = 0; i < value->len; i++)
+    {
+        if ((((uint8_t)value->data[i]) & UINT8_C(0xC0)) != UINT8_C(0x80))
+        {
+            count++;
+        }
+    }
+    return count;
+}
 
 static void rigi_set_string(rigi_string *out, const char *src, int64_t len)
 {
@@ -572,6 +592,10 @@ int64_t rigi_any_hash(const void *anySlot)
             }
             {
                 const rigi_string *block = (const rigi_string *)(uintptr_t)payload;
+                if (block->len < 0 || (block->len > 0 && block->data == NULL))
+                {
+                    return 0;
+                }
                 return (int64_t)rigi_fnv1a64((const uint8_t *)block->data,
                     (size_t)block->len);
             }

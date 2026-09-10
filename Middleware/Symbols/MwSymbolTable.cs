@@ -20,13 +20,18 @@ namespace RigiCompiler.Middleware.Symbols
         // 同名不同元数（Func\<TRet> / Func\<TRet, T0>）：DeclarationKey 索引
         private readonly Dictionary<string, MwTypeSymbol> _typesByDeclKey = new(StringComparer.Ordinal);
         private readonly Dictionary<string, MwMemberSymbol> _members = new(StringComparer.Ordinal);
+        // 同名不同元数类型可拥有完全相同的成员 canonical；复合键防止后
+        // 登记者被静默吞掉。旧的 canonical 索引仅作为无宿主上下文查询。
+        private readonly Dictionary<string, MwMemberSymbol> _membersByOwnerDeclKey =
+            new(StringComparer.Ordinal);
+        private readonly List<MwMemberSymbol> _memberOrder = new();
 
         public IReadOnlyCollection<MwTypeSymbol> Types => _types.Values;
         internal IReadOnlyCollection<MwTypeSymbol> Declarations => _typesByDeclKey.Values;
-        public IReadOnlyCollection<MwMemberSymbol> Members => _members.Values;
+        public IReadOnlyCollection<MwMemberSymbol> Members => _memberOrder;
 
         // 全局成员（Owner 为 null：全局函数/全局字段，§8.4.1）
-        public IEnumerable<MwMemberSymbol> GlobalMembers => _members.Values.Where(m => m.Owner == null);
+        public IEnumerable<MwMemberSymbol> GlobalMembers => _memberOrder.Where(m => m.Owner == null);
 
         public MwTypeSymbol? FindType(string canonical) =>
             _types.TryGetValue(canonical, out var symbol) ? symbol : null;
@@ -45,6 +50,13 @@ namespace RigiCompiler.Middleware.Symbols
 
         public MwMemberSymbol? FindMember(string canonical) =>
             _members.TryGetValue(canonical, out var symbol) ? symbol : null;
+
+        public MwMemberSymbol? FindMember(string canonical, string ownerTypeRef)
+        {
+            var key = BilVerificationContext.DeclarationKeyOf(MwTypeKey.Normalize(ownerTypeRef));
+            return _membersByOwnerDeclKey.TryGetValue(MemberKey(key, canonical), out var symbol)
+                ? symbol : FindMember(canonical);
+        }
 
         // MW11a：合成类型注册口（CoroutineSplitPass 的协程 frame 类型；
         // 驻留纪律同 Build——同 canonical 幂等直返，成员双登记进反查表）。
@@ -69,10 +81,7 @@ namespace RigiCompiler.Middleware.Symbols
             {
                 var memberSymbol = new MwMemberSymbol(memberDecl, typeSymbol, isExternal: false);
                 members.Add(memberSymbol);
-                if (!_members.ContainsKey(memberDecl.Symbol))
-                {
-                    _members.Add(memberDecl.Symbol, memberSymbol);
-                }
+                RegisterMember(memberSymbol, declaration.Symbol);
             }
             return typeSymbol;
         }
@@ -108,7 +117,7 @@ namespace RigiCompiler.Middleware.Symbols
                         var declKey = type.GenericParameters.Count == 0
                             ? type.Symbol
                             : type.Symbol + "<" + type.GenericParameters.Count + ">";
-                        if (_typesByDeclKey.ContainsKey(declKey)) break;
+                        if (_typesByDeclKey.ContainsKey(declKey)) continue;
                         var members = new List<MwMemberSymbol>();
                         var cases = new List<MwCaseSymbol>();
                         var typeSymbol = new MwTypeSymbol(type, isExternal, members, cases);
@@ -126,51 +135,120 @@ namespace RigiCompiler.Middleware.Symbols
                             // 顶层占位（Owner=null）被类型段条目替换升级，
                             // 否则 type.Members 丢成员（singleton get 合成
                             // 与 new 的 init 匹配依赖完整成员表）
-                            if (_members.TryGetValue(memberDecl.Symbol, out var existing))
+                            var compositeKey = MemberKey(declKey, memberDecl.Symbol);
+                            _membersByOwnerDeclKey.TryGetValue(compositeKey, out var existing);
+                            var placeholderKey = MemberKey("", memberDecl.Symbol);
+                            if (existing == null
+                                && _membersByOwnerDeclKey.TryGetValue(placeholderKey,
+                                    out var globalPlaceholder)
+                                && globalPlaceholder.Owner == null
+                                && !globalPlaceholder.IsExternal)
+                            {
+                                existing = globalPlaceholder;
+                            }
+                            if (existing != null)
                             {
                                 if (existing.Owner == null && !existing.IsExternal)
                                 {
                                     var upgraded = new MwMemberSymbol(memberDecl, typeSymbol,
-                                        isExternal);
-                                    _members[memberDecl.Symbol] = upgraded;
+                                        existing.IsExternal);
+                                    _membersByOwnerDeclKey.Remove(placeholderKey);
+                                    _membersByOwnerDeclKey[compositeKey] = upgraded;
+                                    if (_members.TryGetValue(memberDecl.Symbol, out var first)
+                                        && ReferenceEquals(first, existing))
+                                    {
+                                        _members[memberDecl.Symbol] = upgraded;
+                                    }
+                                    _memberOrder.Remove(existing);
+                                    _memberOrder.Add(upgraded);
                                     members.Add(upgraded);
                                 }
                                 continue;
                             }
                             var memberSymbol = new MwMemberSymbol(memberDecl, typeSymbol, isExternal);
                             members.Add(memberSymbol);
-                            _members.Add(memberDecl.Symbol, memberSymbol);
+                            RegisterMember(memberSymbol, declKey);
                         }
                         // enum case 登记（§8.5，MW4）：判别值在此定值——
                         // auto = 声明序从 0；res(R) = 非负整数标量资源值
                         foreach (var caseDecl in type.Members.OfType<BilCaseDeclaration>())
                         {
                             cases.Add(new MwCaseSymbol(caseDecl, typeSymbol,
-                                ResolveDiscriminant(caseDecl, cases.Count, type.Symbol)));
+                                ResolveDiscriminant(caseDecl, cases, type.Symbol)));
                         }
                         break;
                     case BilSimpleMemberDeclaration member:
-                        if (_members.ContainsKey(member.Symbol)) break;
-                        _members.Add(member.Symbol, new MwMemberSymbol(member, null, isExternal));
+                        var global = new MwMemberSymbol(member, null, isExternal);
+                        var globalKey = MemberKey("", member.Symbol);
+                        if (_membersByOwnerDeclKey.ContainsKey(globalKey)) continue;
+                        RegisterMember(global, "");
                         break;
                 }
             }
         }
 
-        // 判别值定值（verifier 已查资源存在且为非负整数标量；此处防御）
-        private uint ResolveDiscriminant(BilCaseDeclaration caseDecl, int autoIndex, string ownerSymbol)
+        private static string MemberKey(string ownerDeclKey, string canonical) =>
+            ownerDeclKey + "\0" + canonical;
+
+        private void RegisterMember(MwMemberSymbol member, string ownerDeclKey)
         {
+            var key = MemberKey(ownerDeclKey, member.Canonical);
+            if (!_membersByOwnerDeclKey.TryAdd(key, member))
+            {
+                throw new CompilerInternalException($"成员符号复合键重复: {member.Canonical}");
+            }
+            _memberOrder.Add(member);
+            _members.TryAdd(member.Canonical, member);
+        }
+
+        // 判别值定值（verifier 已查资源存在且为非负整数标量；此处防御）
+        private uint ResolveDiscriminant(BilCaseDeclaration caseDecl,
+            IReadOnlyList<MwCaseSymbol> precedingCases, string ownerSymbol)
+        {
+            uint value;
             if (caseDecl.DiscriminantResource == null)
             {
-                return (uint)autoIndex;
+                value = checked((uint)precedingCases.Count);
             }
-            if (_resources.TryGetValue(caseDecl.DiscriminantResource, out var resource)
-                && resource is BilScalarResource scalar)
+            else if (_resources.TryGetValue(caseDecl.DiscriminantResource, out var resource)
+                && resource is BilScalarResource scalar
+                && scalar.Type is BilScalarType.I8 or BilScalarType.I16 or BilScalarType.I32
+                    or BilScalarType.I64 or BilScalarType.U8 or BilScalarType.U16
+                    or BilScalarType.U32 or BilScalarType.U64)
             {
-                return (uint)BilScalarLiteral.ParseUnsigned(scalar.LiteralText);
+                try
+                {
+                    if (scalar.Type is BilScalarType.I8 or BilScalarType.I16
+                        or BilScalarType.I32 or BilScalarType.I64)
+                    {
+                        var signed = BilScalarLiteral.ParseSigned(scalar.LiteralText);
+                        if (signed < 0 || signed > uint.MaxValue) throw new OverflowException();
+                        value = (uint)signed;
+                    }
+                    else
+                    {
+                        var unsigned = BilScalarLiteral.ParseUnsigned(scalar.LiteralText);
+                        if (unsigned > uint.MaxValue) throw new OverflowException();
+                        value = (uint)unsigned;
+                    }
+                }
+                catch (Exception ex) when (ex is FormatException or OverflowException)
+                {
+                    throw new CompilerInternalException(
+                        $"enum case 判别值越界或格式非法: {scalar.LiteralText}（{ownerSymbol}）");
+                }
             }
-            throw new CompilerInternalException(
-                $"enum case 判别值资源不可解析: {caseDecl.DiscriminantResource}（{ownerSymbol}）");
+            else
+            {
+                throw new CompilerInternalException(
+                    $"enum case 判别值资源不可解析或不是整数: {caseDecl.DiscriminantResource}（{ownerSymbol}）");
+            }
+            if (precedingCases.Any(item => item.Discriminant == value))
+            {
+                throw new CompilerInternalException(
+                    $"enum case 判别值冲突: {value}（{ownerSymbol}）");
+            }
+            return value;
         }
     }
 }

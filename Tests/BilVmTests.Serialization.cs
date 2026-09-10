@@ -403,33 +403,72 @@ namespace RigiCompiler.Tests
             CheckI32("泛型 clone main 返回 42", result, 42);
         }
 
-        // @SerializationBase 隐含 @Serializable：core.serialization 内 base-only
-        // 类 deepCopy 往返（main 经 @EntryPoint 从同命名空间选为入口）
+        // @SerializationBase 是独立能力，不向宿主合成 Serializable 代理。
         private static void TestSerializationBaseImpliesSerializable()
         {
             var result = Run(
-                "namespace core.serialization\n" +
-                "@SerializationBase\n" +
-                "pub class BaseOnly {\n" +
-                "    pub var n: i32 = 0\n" +
-                "    pub var s: String = \"\"\n" +
-                "    pub init(_ -> n, _ -> s)\n" +
-                "}\n" +
-                "@EntryPoint\n" +
+                "func identity\\<T with SerializationBase>(value: T): T { return value }\n" +
                 "pub func main(): i32 {\n" +
-                "    var src = new BaseOnly(7, \"hi\")\n" +
-                "    var copy = deepCopy\\<BaseOnly>(src)\n" +
-                "    src.n = 9\n" +
-                "    src.s = \"bye\"\n" +
-                "    if ((copy.n == 7) and (copy.s == \"hi\")) {\n" +
-                "        if ((src.n == 9) and (src.s == \"bye\")) {\n" +
-                "            return 42\n" +
-                "        }\n" +
+                "    var src = new core.collections.List\\<i32>()\n" +
+                "    src.add(7)\n" +
+                "    var copy = identity(src)\n" +
+                "    if ((copy.getAtIndex(0L) as i32) == 7) {\n" +
+                "        return 42\n" +
                 "    }\n" +
                 "    return 1\n" +
                 "}\n");
-            CheckOk("@SerializationBase 隐含 Serializable deepCopy 往返", result);
-            CheckI32("base-only deepCopy main 返回 42", result, 42);
+            CheckOk("@SerializationBase 独立能力运行", result);
+            CheckI32("base-only main 返回 42", result, 42);
+        }
+
+        private static void TestSerializationDepthBudget()
+        {
+            var result = Run(
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class DepthNode {\n" +
+                "    pub var next: DepthNode?\n" +
+                "    pub init() { next = null }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const root = new DepthNode()\n" +
+                "    var tail = root\n" +
+                "    var i: i32 = 0\n" +
+                "    while (i < 300) {\n" +
+                "        const next = new DepthNode()\n" +
+                "        tail.next = next\n" +
+                "        tail = next\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    try {\n" +
+                "        const copy = deepCopy\\<DepthNode>(root)\n" +
+                "    } catch (e: core.IllegalStateException) { return 42 }\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("序列化深度预算抛语言异常", result);
+            CheckI32("序列化深度预算可捕获", result, 42);
+        }
+
+        private static void TestSerializationModeMismatch()
+        {
+            var result = Run(
+                "import core.serialization.*\n" +
+                "@Serializable\n" +
+                "pub class ModeNode {\n" +
+                "    pub var next: ModeNode?\n" +
+                "    pub init() { next = null }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const root = new ModeNode()\n" +
+                "    root.next = new ModeNode()\n" +
+                "    const wire = root:Serializable.toParcel(true)\n" +
+                "    try {\n" +
+                "        const copy = fromParcel\\<ModeNode>(wire, false)\n" +
+                "    } catch (e: core.IllegalStateException) { return 42 }\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("序列化模式错配抛语言异常", result);
+            CheckI32("图 wire 当树读取被拒", result, 42);
         }
     }
 }

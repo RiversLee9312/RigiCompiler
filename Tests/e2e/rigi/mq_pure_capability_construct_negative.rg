@@ -1,10 +1,10 @@
-// capability 没有用户可调用的构造入口。
-// expect-error: init
+// MessageQueue 是私有实现，不能由用户直接构造。
+// expect-error: inaccessible due to its accessibility level
 import core.messaging.*
 import core.serialization.Serializable
 @Serializable
 pub shared class Msg { pub init() }
 pub func main(): i32 {
-    const forged = new QueueHandle\<Msg>()
+    const forged = new MessageQueue\<Msg>()
     return 0
 }

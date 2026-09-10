@@ -12,6 +12,10 @@ namespace RigiCompiler.Middleware.Layout
     /// </summary>
     public static class LayoutEngine
     {
+        // 防止恶意 BIL 通过递归内联值类型制造负尺寸/超大分配计划。
+        // 1 MiB 足以覆盖语言正常值类型，同时给 TypeSheet 的 i32 size
+        // 与运行时分配路径留下明确、可审计的硬边界。
+        public const int MaxTypeSize = 1024 * 1024;
         // 对象头 16B（TypeSheet* 8 + RC u32 + 位打包域 u32）
         public const int ObjectHeaderSize = 16;
         // 胖引用槽 16B/16B（与 TypeLayout.ReferenceSlotSize 同值）
@@ -36,6 +40,9 @@ namespace RigiCompiler.Middleware.Layout
             foreach (var type in symbols.Declarations)
                 if (type.Declaration.GenericParameters.Count == 0) nonGenericNames.Add(type.Canonical);
             var table = new LayoutPlanTable(nonGenericNames);
+            table.FixedValueDescriptions = symbols.Declarations.Where(t => t.IsExternal
+                && t.Declaration.Kind == BilTypeKind.Struct && t.Declaration.GenericParameters.Count == 0
+                && TypeLayout.BuiltinSheetCanonicals.Contains(t.Canonical)).ToArray();
             foreach (var type in symbols.Declarations)
             {
                 if (!type.IsExternal)
@@ -294,7 +301,34 @@ namespace RigiCompiler.Middleware.Layout
             return flags;
         }
 
-        internal static int AlignUp(int offset, int alignment) =>
-            (offset + alignment - 1) / alignment * alignment;
+        internal static int CheckedAdd(int value, int increment, string context)
+        {
+            if (value < 0 || increment < 0)
+            {
+                throw new CompilerInternalException($"{context} 出现负布局尺寸");
+            }
+            var result = checked((long)value + increment);
+            if (result > MaxTypeSize)
+            {
+                throw new CompilerInternalException(
+                    $"{context} 超过单类型布局上限 {MaxTypeSize} 字节");
+            }
+            return (int)result;
+        }
+
+        internal static int AlignUp(int offset, int alignment)
+        {
+            if (offset < 0 || alignment <= 0)
+            {
+                throw new CompilerInternalException("布局偏移或对齐必须为正值");
+            }
+            var aligned = checked(((long)offset + alignment - 1) / alignment * alignment);
+            if (aligned > MaxTypeSize)
+            {
+                throw new CompilerInternalException(
+                    $"对齐后的类型布局超过上限 {MaxTypeSize} 字节");
+            }
+            return (int)aligned;
+        }
     }
 }

@@ -6,7 +6,7 @@ using RigiCompiler.Middleware.Symbols;
 namespace RigiCompiler.Middleware.Mir
 {
     // BIL→MIR wrapper 存储簇（MW10）：get/set/new.wrapper.* → 隐藏槽；
-    // get.self → 宿主回指。invoke fn(..inner) 在 CallVisitors 落 MirInnerCall。
+    // get.self → 宿主参数占位，特化后消除。invoke fn(..inner) 在 CallVisitors 落 MirInnerCall。
 
     internal sealed class GetWrapperLowering
         : MirLowerVisitor<GetWrapperLowering, GetWrapperInstruction>

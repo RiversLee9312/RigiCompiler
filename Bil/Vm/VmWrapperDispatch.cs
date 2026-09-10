@@ -1234,7 +1234,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("字段没有 wrapper 实例：" + wrapper + " @ " + fieldSymbol);
             }
-            return instance;
+            return new VmWrapperReceiver(instance, host);
         }
 
         // Entity wrapper 隐藏存储（类型应用）原地读取
@@ -1248,7 +1248,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("实体没有 wrapper 实例：" + wrapper + " @ " + host.TypeRef);
             }
-            return instance;
+            return new VmWrapperReceiver(instance, host);
         }
 
         // Method wrapper 隐藏存储（方法应用）原地读取（§14.4：HiddenMethodKey）
@@ -1263,7 +1263,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("方法没有 wrapper 实例：" + wrapper + " @ " + methodSymbol);
             }
-            return instance;
+            return new VmWrapperReceiver(instance, host);
         }
 
         // 依派发类别读取当前环 wrapper 实例（Entity 应用 vs 方法应用）

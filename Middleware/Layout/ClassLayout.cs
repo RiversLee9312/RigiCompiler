@@ -47,7 +47,8 @@ namespace RigiCompiler.Middleware.Layout
                     offset, GenericAbi.TypeIdSlotSize, GenericAbi.TypeIdSlotAlign,
                     isReferenceSlot: false, embeddedPlan: null, isHiddenTypeId: true));
                 hiddenSlots.Add((param, offset));
-                offset += GenericAbi.TypeIdSlotSize;
+                offset = LayoutEngine.CheckedAdd(offset, GenericAbi.TypeIdSlotSize,
+                    $"类型 {type.Canonical} 的隐藏 typeid");
             }
             var refEntries = new List<RefMapBuilder.RefSite>();
             if (type.Canonical == ".handle")
@@ -58,9 +59,11 @@ namespace RigiCompiler.Middleware.Layout
                 offset = LayoutEngine.AlignUp(offset, LayoutEngine.ReferenceSlotSize);
                 refEntries.Add(new RefMapBuilder.RefSite(offset,
                     TypeLayout.RefMapKindFatRef, null));
-                offset += LayoutEngine.ReferenceSlotSize;
+                offset = LayoutEngine.CheckedAdd(offset, LayoutEngine.ReferenceSlotSize,
+                    $"类型 {type.Canonical} 的隐藏 target");
                 // 独立可写能力标志，不是用户字段，也不参与引用扫描。
-                offset += LayoutEngine.ReferenceSlotSize;
+                offset = LayoutEngine.CheckedAdd(offset, LayoutEngine.ReferenceSlotSize,
+                    $"类型 {type.Canonical} 的隐藏能力标志");
             }
             // MW9b-G：基类托管位点一并回放进本类 refMap——rigi_destruct
             // 只扫对象自身 sheet 的 refMap（不走 baseTypeId 链），继承的
@@ -81,19 +84,13 @@ namespace RigiCompiler.Middleware.Layout
             {
                 var info = LayoutEngine.ClassifyFieldType(LayoutEngine.FieldTypeOf(member), symbols, table, visiting);
                 offset = LayoutEngine.AlignUp(offset, info.Alignment);
-                // lambda .capture.this：与 wrapper #.host 同口径借用，
-                // 不进 refMap——否则 Temporary 字段初始化器捕获 this 与
-                // 宿主成环，native memtrack 泄漏。
-                var thisCapture = member.Canonical.Contains(".capture.this",
-                    System.StringComparison.Ordinal);
+                // 捕获 this 也是普通拥有字段；闭包可独立逃逸，不能按字段名省略 RC。
+                // 宿主保存闭包形成的环由 macroGC 按完整 refMap 回收。
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
-                    info.IsReferenceSlot && !thisCapture, info.EmbeddedPlan,
-                    isStringSlot: info.IsStringSlot && !thisCapture));
-                if (!thisCapture)
-                {
-                    RefMapBuilder.CollectRefSite(refEntries, info, offset);
-                }
-                offset += info.Size;
+                    info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
+                RefMapBuilder.CollectRefSite(refEntries, info, offset);
+                offset = LayoutEngine.CheckedAdd(offset, info.Size,
+                    $"类型 {type.Canonical} 的字段 {member.Canonical}");
             }
             // MW10：本类 Entity / 字段-Value / Method 隐藏存储（基类槽已随
             // basePlan.Fields 拷入）
@@ -105,7 +102,8 @@ namespace RigiCompiler.Middleware.Layout
                 // Task 保存异常的内部拥有边；复用 Handle 隐藏 target 的
                 // refMap 路径，不暴露为语言字段或序列化字段。
                 refEntries.Add(new RefMapBuilder.RefSite(size, TypeLayout.RefMapKindFatRef, null));
-                size += LayoutEngine.ReferenceSlotSize;
+                size = LayoutEngine.CheckedAdd(size, LayoutEngine.ReferenceSlotSize,
+                    $"类型 {type.Canonical} 的异常拥有槽");
             }
 
             // vtable：槽 0 分发器 → 基类槽继承（override 复用基槽）→

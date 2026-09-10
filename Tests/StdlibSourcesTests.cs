@@ -53,9 +53,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("ParseAll: Count & SourceName");
 
             var roots = StdlibSources.ParseAll();
-            TestHarness.CheckTrue("ParseAll 返回恰好 13 棵 RootASTNode",
-                roots.Count == 13, $"实际 {roots.Count} 棵");
-            if (roots.Count < 13) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("ParseAll 包含独立的内建声明源码",
+                roots.Count == 15, $"实际 {roots.Count} 棵");
+            var intrinsics = roots.Single(r => r.Span?.sourceName == "<stdlib>/.intrinsics.rg");
+            TestHarness.CheckTrue("内建声明仅由受信任的载入器标记",
+                intrinsics.IsCompilerLibrary && intrinsics.IsIntrinsicDeclarations);
+            // 本节还核对其余资源的稳定排序；结构测试按资源名定位。
+            roots = roots.Where(r => !r.IsIntrinsicDeclarations).ToArray();
+            if (roots.Count < 14) { TestHarness.Blank(); return; }
 
             // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
             // collections < coroutine（'l' < 'r'）；d < e < g < m < s < t
@@ -68,7 +73,7 @@ namespace RigiCompiler.Tests
             TestHarness.Check("sourceName[3]（安全 Atomic 容器）",
                 roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic_collections.rg");
             TestHarness.Check("sourceName[10]（Place/Handle）",
-                roots[10].Span?.sourceName ?? "<null>", "<stdlib>/core/place.rg");
+                roots[11].Span?.sourceName ?? "<null>", "<stdlib>/core/place.rg");
             TestHarness.Check("sourceName[4]",
                 roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
             TestHarness.Check("sourceName[5]",
@@ -82,9 +87,9 @@ namespace RigiCompiler.Tests
             TestHarness.Check("sourceName[9]（MW11d-C core.messaging）",
                 roots[9].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
             TestHarness.Check("sourceName[11]（MW11d core.serialization）",
-                roots[11].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
+                roots[12].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
             TestHarness.Check("sourceName[12]（MW11c core.time）",
-                roots[12].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
+                roots[13].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
 
             TestHarness.Blank();
         }
@@ -108,8 +113,8 @@ namespace RigiCompiler.Tests
             // 末尾 any_to_string（§3.8 toString 机制的 priv 全局 native 触达点）；
             // any_hash（Map 键判等，同构 priv 全局 native，any_to_string 之前）；
             // String.length ext const 内建字段（VM 直读，同 Array.length 通道）
-            TestHarness.CheckTrue("顶层恰好 141 个声明（namespace + ext operator + Pair + ComparisonResult + 134 callable/Cell + String.length + any_hash + any_to_string）",
-                root.Declarations.Count == 141, $"实际 {root.Declarations.Count}");
+            TestHarness.CheckTrue("bootstrap 包含原有声明和 SerializationBase",
+                root.Declarations.Count == 140, $"实际 {root.Declarations.Count}");
             TestHarness.CheckTrue("首声明是 namespace core",
                 root.Declarations.Count > 0
                 && root.Declarations[0] is NamespaceDeclarationASTNode,
@@ -127,10 +132,10 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("有 Body（Rigi 自举实现）", fn.Body != null);
 
             // M52：core.Pair\<TKey, TValue\> 自举声明（SYNTAX §18 解构协议根）
-            var pair = root.Declarations.Count > 2
-                ? root.Declarations[2] as ClassDeclarationASTNode : null;
-            TestHarness.CheckTrue("第三声明是 class（core.Pair）", pair != null,
-                root.Declarations.Count > 2 ? root.Declarations[2].GetType().Name : "<none>");
+            var intrinsicRoot = roots.Single(r => r.IsIntrinsicDeclarations);
+            var pair = intrinsicRoot.Declarations.OfType<ClassDeclarationASTNode>()
+                .SingleOrDefault(c => c.ClassName == "Pair");
+            TestHarness.CheckTrue("内建源码声明 core.Pair", pair != null);
             if (pair != null)
             {
                 TestHarness.CheckTrue("Pair 是 open 泛型类",
@@ -139,7 +144,7 @@ namespace RigiCompiler.Tests
             }
 
             // lambda 对象模型基类族与 Cell（SYNTAX §5.2）：元数 0–32 预生成
-            var classes = root.Declarations.OfType<ClassDeclarationASTNode>().Skip(1).ToList();
+            var classes = root.Declarations.OfType<ClassDeclarationASTNode>().ToList();
             TestHarness.CheckTrue("Func 族 33 个元数变种",
                 classes.Count(c => c.ClassName == "Func") == 33,
                 $"实际 {classes.Count(c => c.ClassName == "Func")}");
@@ -166,11 +171,11 @@ namespace RigiCompiler.Tests
                 func != null && !func.Modifiers.Contains(Keywords.SHARED)
                     && func.Modifiers.Contains(Keywords.ABSTRACT));
 
-            // any_to_string（§3.8 toString 机制修订）：末尾声明，priv 全局
+            // any_to_string（§3.8 toString 机制修订）：priv 全局
             // native（@NativeLibrary/@NativeSymbol 双注解、无体、参数 Any）
-            var anyToString = root.Declarations[root.Declarations.Count - 1]
-                as CallableDeclarationASTNode;
-            TestHarness.CheckTrue("末声明是 any_to_string（priv native 全局）",
+            var anyToString = intrinsicRoot.Declarations.OfType<CallableDeclarationASTNode>()
+                .SingleOrDefault(method => method.Name == "any_to_string");
+            TestHarness.CheckTrue("any_to_string 保持 priv native 全局声明",
                 anyToString != null && anyToString.Name == "any_to_string"
                 && anyToString.Modifiers.Contains(Keywords.PRIV)
                 && anyToString.Modifiers.Contains(Keywords.NATIVE)
@@ -194,7 +199,7 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[1];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/Console.rg");
 
             TestHarness.CheckTrue("顶层恰好 2 个声明（namespace + class）",
                 root.Declarations.Count == 2, $"实际 {root.Declarations.Count}");
@@ -277,7 +282,7 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[4];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/collections.rg");
 
             // 顶层：namespace + IEnumerator/IEnumerable 接口 +
             // RangeEnumerator\<T\> 抽象基类 + RangeEnumeratorI32/RangeI32
@@ -427,11 +432,27 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[5];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/coroutine.rg");
+            // NativeRc 相关声明单独按名称断言，协程既有 API 保持顺序检查。
+            var declarations = root.Declarations.Where(node => node switch
+            {
+                ClassDeclarationASTNode c => c.ClassName is not ("CoroutineHandle" or "CoroutineCarrige"),
+                InterfaceDeclarationASTNode i => i.InterfaceName != "ICoroutineHandle",
+                CallableDeclarationASTNode f => f.Name is not ("retainCoroutine" or "rigi_native_rc_retain" or "rigi_native_rc_release"),
+                _ => true
+            }).ToList();
+            var handle = root.Declarations.OfType<ClassDeclarationASTNode>().Single(c => c.ClassName == "CoroutineHandle");
+            var carrier = root.Declarations.OfType<ClassDeclarationASTNode>().Single(c => c.ClassName == "CoroutineCarrige");
+            TestHarness.CheckTrue("CoroutineHandle 是 local，且实现 NativeRcHandle", !handle.Modifiers.Contains(Keywords.SHARED)
+                && handle.BaseClass != null && AstDescribe.Type(handle.BaseClass).Contains("NativeRcHandle"));
+            TestHarness.CheckTrue("CoroutineCarrige 是 shared 且只暴露 retain", carrier.Modifiers.Contains(Keywords.SHARED)
+                && carrier.Members.OfType<CallableDeclarationASTNode>().Where(m => m.Kind != CallableKind.Init)
+                    .All(m => m.Name == "retain"));
+
 
             // MW11c 顶层：namespace + 15 类型（Task/Task\<TReturn\> +
             // TaskState + Executor 族 4 + PollingAlarm/EventAlarm/
-            // SleepAlarm + Mutex + Timer + CoroutineLocal + I64Queue/
+            // SleepAlarm + Mutex + Timer + CoroutineLocal + CoroutineCarrigeQueue/
             // Dispatcher）+ laneOfExecutor 助手 + 32 个 rigi_ native
             // 原语 + sleep Rigi 包装（共 50 个声明）。棒5a：删
             // make_sleep_alarm；增 SleepAlarm/laneOfExecutor 与句柄
@@ -440,15 +461,15 @@ namespace RigiCompiler.Tests
             // L8 增 event_create_sticky/event_signal（用户 EventAlarm
             // 默认底座两面，§19.3）
             TestHarness.CheckTrue("顶层恰好 50 个声明（namespace + 15 类型 + 34 func）",
-                root.Declarations.Count == 50, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 50) { TestHarness.Blank(); return; }
+                declarations.Count == 50, $"实际 {declarations.Count}");
+            if (declarations.Count < 50) { TestHarness.Blank(); return; }
 
-            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            var ns = declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.coroutine",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.coroutine");
 
             TestHarness.CheckTrue("声明[1] 是非泛型 class Task（具体 shared，非 abstract）",
-                root.Declarations[1] is ClassDeclarationASTNode task0
+                declarations[1] is ClassDeclarationASTNode task0
                 && task0.ClassName == "Task"
                 && (task0.GenericParameters == null
                     || task0.GenericParameters.Parameters.Count == 0)
@@ -459,35 +480,35 @@ namespace RigiCompiler.Tests
                 && task0.Members.OfType<CallableDeclarationASTNode>()
                     .Count(m => m.Name == "run") == 2);
             TestHarness.CheckTrue("声明[2] 是泛型 class Task（具体 shared，同名不同元数）",
-                root.Declarations[2] is ClassDeclarationASTNode task1
+                declarations[2] is ClassDeclarationASTNode task1
                 && task1.ClassName == "Task"
                 && task1.GenericParameters?.Parameters.Count == 1
                 && task1.Modifiers.Contains(Keywords.SHARED)
                 && !task1.Modifiers.Contains(Keywords.ABSTRACT));
             TestHarness.CheckTrue("声明[3] 是 TaskState enum struct（六 case）",
-                root.Declarations[3] is EnumStructDeclarationASTNode taskState
+                declarations[3] is EnumStructDeclarationASTNode taskState
                 && taskState.EnumName == "TaskState"
                 && taskState.Cases.Count == 6
                 && taskState.Cases.Select(c => c.CaseName).SequenceEqual(
                     new[] { "Created", "Runnable", "Suspended", "Completed",
                         "Failed", "Cancelled" }));
             TestHarness.CheckTrue("声明[4] 是 class Executor（abstract）",
-                root.Declarations[4] is ClassDeclarationASTNode exec
+                declarations[4] is ClassDeclarationASTNode exec
                 && exec.ClassName == "Executor"
                 && exec.Modifiers.Contains(Keywords.ABSTRACT));
             TestHarness.CheckTrue("声明[5..7] 是三个内置 Executor（pub shared singleton）",
-                root.Declarations[5] is ClassDeclarationASTNode mainExec
+                declarations[5] is ClassDeclarationASTNode mainExec
                 && mainExec.ClassName == "MainExecutor"
-                && root.Declarations[6] is ClassDeclarationASTNode computeExec
+                && declarations[6] is ClassDeclarationASTNode computeExec
                 && computeExec.ClassName == "ComputeExecutor"
-                && root.Declarations[7] is ClassDeclarationASTNode ioExec
+                && declarations[7] is ClassDeclarationASTNode ioExec
                 && ioExec.ClassName == "IOExecutor"
                 && new[] { mainExec, computeExec, ioExec }.All(e =>
                     e.Modifiers.Contains(Keywords.SINGLETON)
                     && e.Modifiers.Contains(Keywords.SHARED)
                     && !e.Modifiers.Contains(Keywords.ABSTRACT)));
             TestHarness.CheckTrue("声明[8] 是 PollingAlarm（abstract，含 isReady 抽象方法）",
-                root.Declarations[8] is ClassDeclarationASTNode alarm
+                declarations[8] is ClassDeclarationASTNode alarm
                 && alarm.ClassName == "PollingAlarm"
                 && alarm.Modifiers.Contains(Keywords.ABSTRACT)
                 && alarm.Members.Count == 1
@@ -496,7 +517,7 @@ namespace RigiCompiler.Tests
                 && ready.Modifiers.Contains(Keywords.ABSTRACT)
                 && ready.Body == null);
             TestHarness.CheckTrue("声明[9] 是 EventAlarm（abstract，L8 增 ensureHandle/signal 底座面）",
-                root.Declarations[9] is ClassDeclarationASTNode eventAlarm
+                declarations[9] is ClassDeclarationASTNode eventAlarm
                 && eventAlarm.ClassName == "EventAlarm"
                 && eventAlarm.Modifiers.Contains(Keywords.ABSTRACT)
                 && eventAlarm.Members.OfType<CallableDeclarationASTNode>()
@@ -504,13 +525,13 @@ namespace RigiCompiler.Tests
                 && eventAlarm.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "signal"));
             TestHarness.CheckTrue("声明[10] 是 SleepAlarm : EventAlarm（priv shared）",
-                root.Declarations[10] is ClassDeclarationASTNode sleepAlarm
+                declarations[10] is ClassDeclarationASTNode sleepAlarm
                 && sleepAlarm.ClassName == "SleepAlarm"
                 && sleepAlarm.Modifiers.Contains(Keywords.PRIV)
                 && sleepAlarm.Modifiers.Contains(Keywords.SHARED)
                 && sleepAlarm.BaseClass != null);
             TestHarness.CheckTrue("声明[11] 是 Mutex（具体 shared，嵌套 Lock + acquire/release/runSynchronously）",
-                root.Declarations[11] is ClassDeclarationASTNode mutex
+                declarations[11] is ClassDeclarationASTNode mutex
                 && mutex.ClassName == "Mutex"
                 && mutex.Modifiers.Contains(Keywords.SHARED)
                 && !mutex.Modifiers.Contains(Keywords.ABSTRACT)
@@ -523,7 +544,7 @@ namespace RigiCompiler.Tests
                 && mutex.Members.OfType<CallableDeclarationASTNode>()
                     .Count(m => m.Name == "runSynchronously") == 2);
             TestHarness.CheckTrue("声明[12] 是 Timer : EventAlarm（嵌套 RepeatOption 三 case）",
-                root.Declarations[12] is ClassDeclarationASTNode timer
+                declarations[12] is ClassDeclarationASTNode timer
                 && timer.ClassName == "Timer"
                 && timer.Modifiers.Contains(Keywords.SHARED)
                 && timer.BaseClass != null
@@ -533,7 +554,7 @@ namespace RigiCompiler.Tests
                         && nested.Cases.Select(c => c.CaseName).SequenceEqual(
                             new[] { "NoRepeat", "Repeat", "InfiniteRepeat" })));
             TestHarness.CheckTrue("声明[13] 是泛型 class CoroutineLocal（具体 shared，withValue/get）",
-                root.Declarations[13] is ClassDeclarationASTNode coroutineLocal
+                declarations[13] is ClassDeclarationASTNode coroutineLocal
                 && coroutineLocal.ClassName == "CoroutineLocal"
                 && coroutineLocal.GenericParameters?.Parameters.Count == 1
                 && coroutineLocal.Modifiers.Contains(Keywords.SHARED)
@@ -545,18 +566,18 @@ namespace RigiCompiler.Tests
                 && coroutineLocal.Members.OfType<CallableDeclarationASTNode>()
                     .Count(m => m.Name == "withValue") == 2);
             // 棒4a：§17.4 Rigi 世界调度逻辑（内部 API，均 priv）
-            TestHarness.CheckTrue("声明[14] 是 I64Queue（priv 内部环形队列）",
-                root.Declarations[14] is ClassDeclarationASTNode i64Queue
-                && i64Queue.ClassName == "I64Queue"
+            TestHarness.CheckTrue("声明[14] 是 CoroutineCarrigeQueue（priv 内部环形队列）",
+                declarations[14] is ClassDeclarationASTNode i64Queue
+                && i64Queue.ClassName == "CoroutineCarrigeQueue"
                 && i64Queue.Modifiers.Contains(Keywords.PRIV));
             TestHarness.CheckTrue("声明[15] 是 Dispatcher（priv shared singleton）",
-                root.Declarations[15] is ClassDeclarationASTNode dispatcher
+                declarations[15] is ClassDeclarationASTNode dispatcher
                 && dispatcher.ClassName == "Dispatcher"
                 && dispatcher.Modifiers.Contains(Keywords.PRIV)
                 && dispatcher.Modifiers.Contains(Keywords.SHARED)
                 && dispatcher.Modifiers.Contains(Keywords.SINGLETON));
             TestHarness.CheckTrue("声明[16] 是 laneOfExecutor 模块级助手（非 native，有体）",
-                root.Declarations[16] is CallableDeclarationASTNode laneOf
+                declarations[16] is CallableDeclarationASTNode laneOf
                 && laneOf.Name == "laneOfExecutor"
                 && !laneOf.Modifiers.Contains(Keywords.NATIVE)
                 && laneOf.Modifiers.Contains(Keywords.PRIV)
@@ -584,7 +605,7 @@ namespace RigiCompiler.Tests
             for (int i = 0; i < expectedNatives.Length; i++)
             {
                 var index = i + 17;
-                if (root.Declarations[index] is CallableDeclarationASTNode nativeFunc)
+                if (declarations[index] is CallableDeclarationASTNode nativeFunc)
                 {
                     TestHarness.CheckTrue($"声明[{index}] 是 {expectedNatives[i]} priv native",
                         nativeFunc.Name == expectedNatives[i]
@@ -596,11 +617,11 @@ namespace RigiCompiler.Tests
                 else
                 {
                     TestHarness.CheckTrue($"声明[{index}] 是 {expectedNatives[i]} native",
-                        false, root.Declarations[index].GetType().Name);
+                        false, declarations[index].GetType().Name);
                 }
             }
             TestHarness.CheckTrue("声明[49] 是 sleep Rigi 包装（非 native，有体）",
-                root.Declarations[49] is CallableDeclarationASTNode sleep
+                declarations[49] is CallableDeclarationASTNode sleep
                 && sleep.Name == "sleep"
                 && !sleep.Modifiers.Contains(Keywords.NATIVE)
                 && sleep.Body != null
@@ -622,7 +643,7 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[6];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/disposable.rg");
 
             TestHarness.CheckTrue("顶层恰好 2 个声明（namespace + interface）",
                 root.Declarations.Count == 2, $"实际 {root.Declarations.Count}");
@@ -655,7 +676,7 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[7];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/exceptions.rg");
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
             // NoSuchMethodException/DividedByZeroException/OutOfBoundException/
@@ -696,7 +717,8 @@ namespace RigiCompiler.Tests
                     if (!wantAbstract)
                     {
                         var init = exceptionClass.Members.OfType<CallableDeclarationASTNode>()
-                            .FirstOrDefault(m => m.Kind == CallableKind.Init);
+                            .FirstOrDefault(m => m.Kind == CallableKind.Init
+                                && m.Parameters.Parameters.Count == 1);
                         TestHarness.CheckTrue($"{expected[i]} 自持 init（单 String 参数）",
                             init != null
                             && init.Parameters.Parameters.Count == 1
@@ -728,7 +750,7 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[8];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/global_exceptions.rg");
 
             TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + 2 class）",
                 root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
@@ -766,14 +788,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Structure: namespace core.time");
 
             var roots = StdlibSources.ParseAll();
-            if (roots.Count < 13)
+            if (roots.Count < 14)
             {
-                TestHarness.CheckTrue("ParseAll 至少 13 棵（结构断言前置）", false,
+                TestHarness.CheckTrue("ParseAll 至少 14 棵（结构断言前置）", false,
                     $"实际 {roots.Count} 棵");
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[12];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/time.rg");
 
             // 顶层：namespace + TimeStamp/TimeSpan/DateTime 3 个 struct
             // + rigi_time_now native（共 5 个声明，RUNTIME §19.7/§17.4）
@@ -840,7 +862,7 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2h. serialization 结构（MW11d：namespace core.serialization + 3 wrapper）=====
+        // ===== 2h. serialization 结构与 core 的 SB 声明 =====
         private static void TestSerializationStructure()
         {
             TestHarness.Section("Structure: namespace core.serialization");
@@ -853,9 +875,9 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[11];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/serialization.rg");
 
-            TestHarness.CheckTrue("顶层恰好 8 个声明（namespace + 私有上下文 + 3 wrapper + Parcel + fromParcel + deepCopy）",
+            TestHarness.CheckTrue("serialization 不再声明 SerializationBase",
                 root.Declarations.Count == 8, $"实际 {root.Declarations.Count}");
             if (root.Declarations.Count < 8) { TestHarness.Blank(); return; }
 
@@ -863,13 +885,17 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("首声明是 namespace core.serialization",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.serialization");
 
-            TestHarness.CheckTrue("声明[1] 是私有 SerializationGraphContext",
-                root.Declarations[1] is ClassDeclarationASTNode graph
+            TestHarness.CheckTrue("声明[1] 是私有动态解码入口",
+                root.Declarations[1] is CallableDeclarationASTNode decoder
+                && decoder.Name == "decodeAnyValue" && decoder.Modifiers.Contains(Keywords.PRIV)
+                && decoder.Body != null);
+            TestHarness.CheckTrue("声明[2] 是私有 SerializationGraphContext",
+                root.Declarations[2] is ClassDeclarationASTNode graph
                 && graph.ClassName == "SerializationGraphContext"
                 && graph.Modifiers.Contains(Keywords.PRIV));
-            TestHarness.CheckTrue("声明[2] 是 SerializationBase wrapper",
-                root.Declarations[2] is WrapperDeclarationASTNode baseW
-                && baseW.WrapperName == "SerializationBase");
+            TestHarness.CheckTrue("SerializationBase 位于 core 自举源码且非 rich",
+                roots[0].Declarations.OfType<WrapperDeclarationASTNode>().Any(baseW =>
+                    baseW.WrapperName == "SerializationBase" && !baseW.Modifiers.Contains(Keywords.RICH)));
             TestHarness.CheckTrue("声明[3] 是 Serializable wrapper",
                 root.Declarations[3] is WrapperDeclarationASTNode ser
                 && ser.WrapperName == "Serializable");
@@ -911,34 +937,24 @@ namespace RigiCompiler.Tests
                 TestHarness.Blank();
                 return;
             }
-            var root = roots[9];
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/messaging.rg");
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.messaging",
                 ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.messaging");
-            TestHarness.CheckTrue("含 QueueHandleType enum struct（三 case）",
-                root.Declarations.OfType<EnumStructDeclarationASTNode>()
-                    .Any(e => e.EnumName == "QueueHandleType" && e.Cases.Count == 3
-                        && e.Cases.Select(c => c.CaseName).SequenceEqual(
-                            new[] { "Reader", "Owner", "Sender" })));
-            // MW11d-C：QueueHandle/QueueItem 落地为 shared class——设计
-            // 定型于 native 尚无泛型值类型构造的时期（G1 已补齐该能力，
-            // 见 Middleware GenericAbi/ConstructedLayout）；capability
-            // 语义由 id 承载，与对象身份无关，维持 class 形态不变
-            TestHarness.CheckTrue("含 QueueHandle / QueueItem class",
-                root.Declarations.OfType<ClassDeclarationASTNode>()
-                    .Any(s => s.ClassName == "QueueHandle")
-                && root.Declarations.OfType<ClassDeclarationASTNode>()
-                    .Any(s => s.ClassName == "QueueItem"));
-            TestHarness.CheckTrue("含 MessageQueue class（create_queue/post/next）",
-                root.Declarations.OfType<ClassDeclarationASTNode>()
-                    .Any(c => c.ClassName == "MessageQueue"
-                        && c.Members.OfType<CallableDeclarationASTNode>()
-                            .Any(m => m.Name == "create_queue" && m.Modifiers.Contains(Keywords.STATIC))
-                        && c.Members.OfType<CallableDeclarationASTNode>()
-                            .Any(m => m.Name == "post")
-                        && c.Members.OfType<CallableDeclarationASTNode>()
-                            .Any(m => m.Name == "next")));
+            var classes = root.Declarations.OfType<ClassDeclarationASTNode>().ToArray();
+            TestHarness.CheckTrue("旧 Queue handle 与 Endpoint 已删除",
+                !classes.Any(c => c.ClassName is "QueueHandle" or "QueueEndpoint")
+                && !root.Declarations.OfType<EnumStructDeclarationASTNode>()
+                    .Any(e => e.EnumName == "QueueHandleType"));
+            TestHarness.CheckTrue("MessageQueue 私有对象封装全部 MQ 操作",
+                classes.Any(c => c.ClassName == "MessageQueue" && c.Modifiers.Contains(Keywords.PRIV)
+                    && new[] { "post", "next", "createReader", "closeReader", "close" }.All(name =>
+                        c.Members.OfType<CallableDeclarationASTNode>()
+                            .Any(m => m.Name == name && !m.Modifiers.Contains(Keywords.STATIC)))));
+            TestHarness.CheckTrue("MQ 消息泛型显式声明 shared",
+                classes.Where(c => c.GenericParameters?.Parameters.Count > 0)
+                    .All(c => c.GenericParameters!.Parameters.All(p => p.RequiresSharedSafe)));
 
             TestHarness.Blank();
         }
@@ -957,7 +973,8 @@ namespace RigiCompiler.Tests
                 return;
             }
 
-            TestHarness.Check("Console Root 描述串", AstDescribe.Root(roots[1]),
+            TestHarness.Check("Console Root 描述串", AstDescribe.Root(roots.Single(
+                r => r.Span?.sourceName == "<stdlib>/core/Console.rg")),
                 "namespace core.io; pub class Console {" +
                 @"@NativeLibrary(Str(""rigi_rt"")) @NativeSymbol(Str(""print"")) priv static native func print(text: String), " +
                 @"@NativeLibrary(Str(""rigi_rt"")) @NativeSymbol(Str(""printErr"")) priv static native func printErr(text: String), " +

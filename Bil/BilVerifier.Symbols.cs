@@ -15,6 +15,7 @@ namespace RigiCompiler.Bil
             // 段内符号不重复（类型符号与成员符号各自唯一）
             VerifySectionDuplicates(context.Module.LocalSymbols, "LocalSymbols", errors);
             VerifySectionDuplicates(context.Module.ExternalSymbols, "ExternalSymbols", errors);
+            VerifyReservedSymbolNamespaces(context.Module.LocalSymbols, errors);
 
             // fn 定义必须对应 LocalSymbols 方法声明（§9.1）；符号形态合法。
             // S11e：builtin 宿主的编译器合成 fn 定义（如 Any.call??? 默认
@@ -98,9 +99,11 @@ namespace RigiCompiler.Bil
                     if (entry is BilTypeDeclaration type)
                     {
                         VerifyTypeDeclaration(context, type, errors);
+                        VerifyEnumDiscriminants(context, type, errors);
                     }
                 }
             }
+            VerifyInheritanceCycles(context, errors);
 
             // enum case 声明（§8.5）：宿主必须是 enum-struct（查不到声明时降级跳过）；
             // discriminant res(R) 必须引用 Resources 中已登记的资源
@@ -202,6 +205,16 @@ namespace RigiCompiler.Bil
             }
             else
             {
+                // 类型段内成员不得伪造 canonical 宿主。否则 Middleware 会把
+                // 字段登记到另一类型名下，进而让布局与读写宽度发生分裂。
+                var parsedOwner = isMethod
+                    ? ParseMethodOwner(symbol)
+                    : ParseFieldOwner(symbol);
+                if (ownerType != null && !MemberOwnerMatches(parsedOwner, ownerType))
+                {
+                    errors.Add(new BilVerificationError("21.2", symbol,
+                        $"成员符号宿主 \"{parsedOwner}\" 与声明宿主 \"{ownerType}\" 不一致"));
+                }
                 var expectStatic = declaration.Kind is BilMemberKind.StaticMethod
                     or BilMemberKind.StaticField;
                 if (expectStatic != symbolStatic)
@@ -412,6 +425,240 @@ namespace RigiCompiler.Bil
             }
         }
 
+        private static readonly HashSet<string> ReservedBuiltinTypeSymbols = new(
+            System.StringComparer.Ordinal)
+        {
+            "core::Any", "core::Object", "core::ValueType", "core::Enum",
+            "core::Wrapper", "core::i8", "core::i16", "core::i32", "core::i64",
+            "core::u8", "core::u16", "core::u32", "core::u64", "core::float",
+            "core::double", "core::bool", "core::char", "core::String", "core::Type",
+            "core::Span", "core::SharedSpan", "core::Nullable", "core::Box",
+            "core::Array", "core::Map",
+        };
+
+        private static void VerifyReservedSymbolNamespaces(
+            List<BilSymbolSectionEntry> localSymbols, List<BilVerificationError> errors)
+        {
+            foreach (var entry in localSymbols)
+            {
+                if (entry is BilTypeDeclaration type)
+                {
+                    var canonical = BilVerificationContext.NormalizeTypeRef(type.Symbol);
+                    if (type.Symbol.Length == 0
+                        || type.Symbol.Any(char.IsWhiteSpace)
+                        || type.Symbol.Any(char.IsControl))
+                    {
+                        errors.Add(new BilVerificationError("21.1", type.Symbol,
+                            "类型符号为空或含空白/控制字符"));
+                    }
+                    if (ReservedBuiltinTypeSymbols.Contains(canonical))
+                    {
+                        errors.Add(new BilVerificationError("21.2", type.Symbol,
+                            "本地类型不得抢占预定义内建类型符号"));
+                    }
+                    if (type.Symbol.StartsWith("$mw.", System.StringComparison.Ordinal))
+                    {
+                        errors.Add(new BilVerificationError("21.2", type.Symbol,
+                            "本地类型不得使用编译器保留的 $mw. 命名空间"));
+                    }
+                    foreach (var member in type.Members.OfType<BilSimpleMemberDeclaration>())
+                    {
+                        VerifyReservedSyntheticMember(member.Symbol, errors);
+                    }
+                }
+                else if (entry is BilSimpleMemberDeclaration member)
+                {
+                    VerifyReservedSyntheticMember(member.Symbol, errors);
+                }
+            }
+        }
+
+        private static void VerifyReservedSyntheticMember(string symbol,
+            List<BilVerificationError> errors)
+        {
+            if (symbol.Contains("$.static.mw.", System.StringComparison.Ordinal)
+                || symbol.Contains("#.mw.singleton.", System.StringComparison.Ordinal)
+                || symbol.Contains("#..generic.", System.StringComparison.Ordinal)
+                || symbol.Contains("#.wrapper.", System.StringComparison.Ordinal)
+                || symbol.StartsWith("$mw.", System.StringComparison.Ordinal))
+            {
+                errors.Add(new BilVerificationError("21.2", symbol,
+                    "成员符号使用编译器保留的合成命名空间"));
+            }
+        }
+
+        private static void VerifyEnumDiscriminants(BilVerificationContext context,
+            BilTypeDeclaration type, List<BilVerificationError> errors)
+        {
+            if (type.Kind != BilTypeKind.EnumStruct) return;
+            var used = new HashSet<uint>();
+            var cases = type.Members.OfType<BilCaseDeclaration>().ToList();
+            for (var index = 0; index < cases.Count; index++)
+            {
+                var item = cases[index];
+                uint value;
+                if (item.DiscriminantResource == null)
+                {
+                    value = checked((uint)index);
+                }
+                else if (!context.ResourcesByName.TryGetValue(item.DiscriminantResource,
+                    out var resource))
+                {
+                    continue; // 缺资源由既有检查报错。
+                }
+                else if (resource is not BilScalarResource scalar
+                    || scalar.Type is not (BilScalarType.I8 or BilScalarType.I16
+                        or BilScalarType.I32 or BilScalarType.I64 or BilScalarType.U8
+                        or BilScalarType.U16 or BilScalarType.U32 or BilScalarType.U64)
+                    || !TryParseDiscriminant(scalar, out value))
+                {
+                    errors.Add(new BilVerificationError("21.2", item.QualifiedName,
+                        "enum case 判别值必须是 0..4294967295 的整数资源"));
+                    continue;
+                }
+                if (!used.Add(value))
+                {
+                    errors.Add(new BilVerificationError("21.2", item.QualifiedName,
+                        $"enum case 判别值冲突：{value}"));
+                }
+            }
+        }
+
+        private static bool TryParseDiscriminant(BilScalarResource scalar, out uint value)
+        {
+            value = 0;
+            try
+            {
+                if (scalar.Type is BilScalarType.I8 or BilScalarType.I16
+                    or BilScalarType.I32 or BilScalarType.I64)
+                {
+                    var signed = BilScalarLiteral.ParseSigned(scalar.LiteralText);
+                    if (signed < 0 || signed > uint.MaxValue) return false;
+                    value = (uint)signed;
+                    return true;
+                }
+                var unsigned = BilScalarLiteral.ParseUnsigned(scalar.LiteralText);
+                if (unsigned > uint.MaxValue) return false;
+                value = (uint)unsigned;
+                return true;
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException)
+            {
+                return false;
+            }
+        }
+
+        private static bool MemberOwnerMatches(string parsedOwner, string declarationOwner)
+        {
+            if (StringComparer.Ordinal.Equals(parsedOwner, declarationOwner)) return true;
+
+            // MemberEntries 用 TypeKey（Foo<元数>）区分同名泛型声明，成员
+            // canonical 则允许 Foo 或 Foo<T,U> 两种模板宿主写法。比较时既
+            // 校验声明头，也校验显式模板实参数，仍能拦截跨宿主伪造。
+            var marker = declarationOwner.LastIndexOf('<');
+            if (marker <= 0 || !declarationOwner.EndsWith(">", StringComparison.Ordinal)
+                || !int.TryParse(declarationOwner.Substring(marker + 1,
+                    declarationOwner.Length - marker - 2), out var arity))
+            {
+                return false;
+            }
+            var declarationHead = declarationOwner.Substring(0, marker);
+            if (StringComparer.Ordinal.Equals(parsedOwner, declarationHead)) return true;
+            if (!StringComparer.Ordinal.Equals(
+                    BilVerificationContext.StripTypeArguments(parsedOwner), declarationHead))
+            {
+                return false;
+            }
+            var angle = parsedOwner.IndexOf('<');
+            var arguments = angle >= 0 && parsedOwner.EndsWith(">", StringComparison.Ordinal)
+                ? BilVerificationContext.SplitTopLevel(parsedOwner.Substring(angle + 1,
+                    parsedOwner.Length - angle - 2))
+                : new List<string>();
+            return arguments.Count == arity;
+        }
+
+        // extends / implements / 接口继承统一按声明键建图，并用显式 DFS
+        // 拒绝环。必须在 Middleware 布局前完成，防止递归布局与 iMap 规划爆栈。
+        private static void VerifyInheritanceCycles(BilVerificationContext context,
+            List<BilVerificationError> errors)
+        {
+            var graph = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var section in new[]
+                { context.Module.LocalSymbols, context.Module.ExternalSymbols })
+            {
+                foreach (var type in section.OfType<BilTypeDeclaration>())
+                {
+                    var key = type.GenericParameters.Count == 0 ? type.Symbol
+                        : type.Symbol + "<" + type.GenericParameters.Count + ">";
+                    graph.TryAdd(key, new List<string>());
+                }
+            }
+            foreach (var section in new[]
+                { context.Module.LocalSymbols, context.Module.ExternalSymbols })
+            {
+                foreach (var type in section.OfType<BilTypeDeclaration>())
+                {
+                    var key = type.GenericParameters.Count == 0 ? type.Symbol
+                        : type.Symbol + "<" + type.GenericParameters.Count + ">";
+                    var edges = graph[key];
+                    if (type.ExtendsType != null)
+                    {
+                        var target = BilVerificationContext.DeclarationKeyOf(type.ExtendsType);
+                        if (graph.ContainsKey(target)) edges.Add(target);
+                    }
+                    foreach (var iface in type.ImplementsTypes)
+                    {
+                        var target = BilVerificationContext.DeclarationKeyOf(iface);
+                        if (graph.ContainsKey(target)) edges.Add(target);
+                    }
+                }
+            }
+
+            var colors = new Dictionary<string, byte>(StringComparer.Ordinal);
+            var reported = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var start in graph.Keys)
+            {
+                if (colors.ContainsKey(start)) continue;
+                colors[start] = 1;
+                var stack = new Stack<(string Node, int Next)>();
+                stack.Push((start, 0));
+                while (stack.Count > 0)
+                {
+                    var (node, next) = stack.Pop();
+                    if (next >= graph[node].Count)
+                    {
+                        colors[node] = 2;
+                        continue;
+                    }
+                    stack.Push((node, next + 1));
+                    var target = graph[node][next];
+                    if (!colors.TryGetValue(target, out var color))
+                    {
+                        colors[target] = 1;
+                        stack.Push((target, 0));
+                    }
+                    else if (color == 1 && reported.Add(node + "\0" + target))
+                    {
+                        errors.Add(new BilVerificationError("21.2", node,
+                            $"类型继承/实现关系形成环：{node} -> {target}"));
+                    }
+                }
+            }
+        }
+
+        private static string ParseMethodOwner(string symbol)
+        {
+            BilVerificationContext.TryParseMethodSymbol(symbol, out var owner, out _, out _,
+                out _);
+            return owner;
+        }
+
+        private static string ParseFieldOwner(string symbol)
+        {
+            BilVerificationContext.TryParseFieldSymbol(symbol, out var owner, out _, out _);
+            return owner;
+        }
+
         private static void VerifyTypeDeclaration(BilVerificationContext context,
             BilTypeDeclaration type, List<BilVerificationError> errors)
         {
@@ -429,11 +676,6 @@ namespace RigiCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.8", type.Symbol,
                     $"rich 仅适用于 struct/enum-struct/wrapper（{BilSpellings.Of(type.Kind)}）"));
-            }
-            if (type.Kind == BilTypeKind.Wrapper && !rich)
-            {
-                errors.Add(new BilVerificationError("21.8", type.Symbol,
-                    "wrapper 类型必须显式带 rich"));
             }
             if (type.Kind == BilTypeKind.EnumStruct && open)
             {
@@ -643,39 +885,6 @@ namespace RigiCompiler.Bil
         }
 
         // ===== §21.2（fn 级）+ §21.7 泛型与参数包 =====
-        // MW11c 同名不同元数消歧（CanonicalSymbolPrinter.ArityDisambiguation）：
-        // 泛型定义的宿主段带裸泛型参数名单后缀（core.coroutine::Task<TResult>），
-        // 而 .this 恒为定义级裸名（core.coroutine::Task，Pair/Array 先例）——
-        // 剥掉「实参全为裸标识符」的尾部 <...> 后再按常口径比对。真实构造
-        // 宿主（ext 禁泛型定义目标，成员宿主恒为定义）不会呈现此形态，不误伤
-        private static bool ThisCompatibleWithDisambiguatedOwner(string thisTypeRef,
-            string owner)
-        {
-            var angle = owner.IndexOf('<');
-            if (angle < 0 || !owner.EndsWith(">"))
-            {
-                return false;
-            }
-            var inner = owner.Substring(angle + 1, owner.Length - angle - 2);
-            foreach (var arg in BilVerificationContext.SplitTopLevel(inner))
-            {
-                var trimmed = arg.Trim();
-                if (trimmed.Length == 0 || !Keywords.IsIdentifierStart(trimmed))
-                {
-                    return false;
-                }
-                foreach (var c in trimmed)
-                {
-                    if (!char.IsLetterOrDigit(c) && c != '_')
-                    {
-                        return false;
-                    }
-                }
-            }
-            return BilVerificationContext.TypesCompatible(thisTypeRef,
-                owner.Substring(0, angle));
-        }
-
         // .args 顺序（§7.2）与签名一致性（§9.2：参数名称和顺序必须与方法
         // 符号的规范签名一致；hidden 参数与符号互相比对的部分跳过）
         private static void VerifyFunctionSignature(BilFunctionContext context,
@@ -739,8 +948,7 @@ namespace RigiCompiler.Bil
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         "实例方法 .args 缺少 .this（应位于 .return 之后）"));
                 }
-                else if (!BilVerificationContext.TypesCompatible(args[index].TypeRef, owner)
-                    && !ThisCompatibleWithDisambiguatedOwner(args[index].TypeRef, owner))
+                else if (!context.Module.IsExactHostDeclaration(args[index].TypeRef, owner))
                 {
                     errors.Add(new BilVerificationError("21.7", function.Symbol,
                         $".this 类型 \"{args[index].TypeRef}\" 与宿主类型 \"{owner}\" 不一致"));

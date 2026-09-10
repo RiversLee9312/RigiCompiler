@@ -199,7 +199,7 @@ namespace RigiCompiler.Middleware.Passes
                 CoroLocalInherit = Global("rigi_coro_local_inherit("),
                 NoteSpawn = DispatcherFn("noteSpawn"),
                 NoteTerminal = DispatcherFn("noteTerminal"),
-                Publish = DispatcherFn("publish"),
+                Publish = DispatcherFn("publishNative"),
                 PublishAll = DispatcherFn("publishAll"),
                 LaneOfCurrent = DispatcherFn("laneOfCurrent"),
             };
@@ -1164,7 +1164,7 @@ namespace RigiCompiler.Middleware.Passes
 
         // 单条落参：直落 = 调用点实参槽；TypeIdConst = MirGetTypeId
         // 常量 typeid；CallerTypeId = 调用方 .generic.* 局部转抄；
-        // ReceiverTypeIdField = 运行期从接收者实例隐藏 typeid 字段
+        // ReceiverTypeIdOwner/Parameter = 运行期读取接收者真实泛型实参
         //（#..generic.）读取（泛型宿主虚派发臂——静态构造形态被
         // 接收者 cast 剥成裸模板时，真实构造实参恒在实例头隐藏槽）
         private sealed class ArgDrop
@@ -1174,7 +1174,8 @@ namespace RigiCompiler.Middleware.Passes
             internal MirType? OperandTargetType;
             internal string? TypeIdTypeRef;
             internal string? CallerTypeIdLocal;
-            internal string? ReceiverTypeIdField;
+            internal string? ReceiverTypeIdOwner;
+            internal string? ReceiverTypeIdParameter;
             internal MirOperand? ReceiverTypeIdOperand;
         }
 
@@ -1543,6 +1544,7 @@ namespace RigiCompiler.Middleware.Passes
             MirNewValue newValue => newValue.ExcTarget,
             MirGetField getField => getField.ExcTarget,
             MirAwait awaitInst => awaitInst.ExcTarget,
+            MirYieldAlarm yieldAlarm => yieldAlarm.ExcTarget,
             _ => null,
         };
 
@@ -1688,6 +1690,9 @@ namespace RigiCompiler.Middleware.Passes
                 case MirGetTypeIdVar getTypeIdVar:
                     AddOperandUse(getTypeIdVar.Value, live);
                     break;
+                case MirGetClassTypeArgument argument:
+                    AddOperandUse(argument.Receiver, live);
+                    break;
                 case MirWrapNullable wrap:
                     AddOperandUse(wrap.Source, live);
                     break;
@@ -1757,6 +1762,7 @@ namespace RigiCompiler.Middleware.Passes
             MirNewArray newArray => newArray.Target,
             MirGetTypeId getTypeId => getTypeId.Target,
             MirGetTypeIdVar getTypeIdVar => getTypeIdVar.Target,
+            MirGetClassTypeArgument argument => argument.Target,
             MirWrapNullable wrap => wrap.Target,
             MirUnwrapNullable unwrap => unwrap.Target,
             MirBoxAny box => box.Target,
@@ -2235,9 +2241,8 @@ namespace RigiCompiler.Middleware.Passes
                         FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
                             site.CalleeFrameCanonical, parameter.Name,
                             parameter.Type.Canonical),
-                        ReceiverTypeIdField = GenericAbi.HiddenFieldSymbol(
-                            owner.Canonical,
-                            parameter.Name.Substring(".generic.".Length)),
+                        ReceiverTypeIdOwner = GenericAbi.PlanKey(owner),
+                        ReceiverTypeIdParameter = parameter.Name.Substring(".generic.".Length),
                         ReceiverTypeIdOperand = runtimeTypeIdReceiver,
                     });
                 }
@@ -2276,8 +2281,8 @@ namespace RigiCompiler.Middleware.Passes
                     if (owner.Declaration.Kind != BilTypeKind.Class || args.Count == 0)
                         throw new MwNotSupportedException(
                             "B-2 嵌套开放类级 typeid 缺少 class 接收者: " + callee.Symbol.Canonical);
-                    drop.ReceiverTypeIdField = GenericAbi.HiddenFieldSymbol(owner.Canonical,
-                        parameter.Name.Substring(".generic.".Length));
+                    drop.ReceiverTypeIdOwner = GenericAbi.PlanKey(owner);
+                    drop.ReceiverTypeIdParameter = parameter.Name.Substring(".generic.".Length);
                     drop.ReceiverTypeIdOperand = runtimeTypeIdReceiver ?? args[0];
                 }
                 site.Drops.Add(drop);
@@ -2509,8 +2514,15 @@ namespace RigiCompiler.Middleware.Passes
             {
                 return template;
             }
-            return new MwTypeSymbol(GenericTaskSheetIdentity(taskTypeRef, template),
-                template);
+            var identity = GenericTaskSheetIdentity(taskTypeRef, template);
+            // 状态机切分会引入 BIL 中尚未出现的 Task<R>（例如被污染的
+            // 同步返回函数）。为该实际构造补布局，不能依赖发射器回退模板。
+            if (GenericAbi.IsClosedConstructed(identity) && context.Layout != null)
+                ConstructedLayout.ResolveConstructed(identity, context.Symbols, context.Layout,
+                    new HashSet<string>(System.StringComparer.Ordinal),
+                    new HashSet<string>(context.Module.Functions.Select(f => f.Symbol),
+                        System.StringComparer.Ordinal));
+            return new MwTypeSymbol(identity, template);
         }
 
         // 声明形 Task<TReturn> 会让 Layout.Find 命中模板后 WriteHiddenTypeIds
@@ -2849,11 +2861,11 @@ namespace RigiCompiler.Middleware.Passes
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
-                else if (drop.ReceiverTypeIdField != null)
+                else if (drop.ReceiverTypeIdOwner != null)
                 {
                     var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
-                    headInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
-                        drop.ReceiverTypeIdField, tid));
+                    headInsts.Add(new MirGetClassTypeArgument(drop.ReceiverTypeIdOperand!,
+                        drop.ReceiverTypeIdOwner, drop.ReceiverTypeIdParameter!, tid));
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
@@ -2981,11 +2993,11 @@ namespace RigiCompiler.Middleware.Passes
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
-                else if (drop.ReceiverTypeIdField != null)
+                else if (drop.ReceiverTypeIdOwner != null)
                 {
                     var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
-                    headInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
-                        drop.ReceiverTypeIdField, tid));
+                    headInsts.Add(new MirGetClassTypeArgument(drop.ReceiverTypeIdOperand!,
+                        drop.ReceiverTypeIdOwner, drop.ReceiverTypeIdParameter!, tid));
                     headInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                         drop.FrameFieldSymbol));
                 }
@@ -3183,11 +3195,11 @@ namespace RigiCompiler.Middleware.Passes
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
                     }
-                    else if (drop.ReceiverTypeIdField != null)
+                    else if (drop.ReceiverTypeIdOwner != null)
                     {
                         var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
-                        newInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand!,
-                            drop.ReceiverTypeIdField, tid));
+                        newInsts.Add(new MirGetClassTypeArgument(drop.ReceiverTypeIdOperand!,
+                            drop.ReceiverTypeIdOwner, drop.ReceiverTypeIdParameter!, tid));
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid), calleeOp,
                             drop.FrameFieldSymbol));
                     }
@@ -3411,13 +3423,13 @@ namespace RigiCompiler.Middleware.Passes
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
                     }
-                    else if (drop.ReceiverTypeIdField != null)
+                    else if (drop.ReceiverTypeIdOwner != null)
                     {
                         // R2-a：类级 typeid 运行期取自接收者实例隐
                         // 藏字段（首入块执行，接收者槽仍活跃）
                         var tid = fresh("$mw.tid.arg.", MirType.Of(".typeid"));
-                        newInsts.Add(new MirGetField(drop.ReceiverTypeIdOperand ?? receiverOp,
-                            drop.ReceiverTypeIdField, tid));
+                        newInsts.Add(new MirGetClassTypeArgument(drop.ReceiverTypeIdOperand ?? receiverOp,
+                            drop.ReceiverTypeIdOwner, drop.ReceiverTypeIdParameter!, tid));
                         newInsts.Add(new MirSetField(new MirLocalOperand(tid),
                             calleeOp, drop.FrameFieldSymbol));
                     }
@@ -3543,27 +3555,22 @@ namespace RigiCompiler.Middleware.Passes
             var cancelId = waitId + ".cancel";
             var taskOp = new MirLocalOperand(awaitInst.TaskSlot);
             var gateField = TaskField(awaitedTaskTypeRef, "gate", ".i64");
-            var handleField = TaskField(awaitedTaskTypeRef, "handle", ".i64");
 
             resumeFn.AddBlock(new MirBlock(headId, headInsts, new MirBranch(waitId)));
 
             // wait：acquire → 冷启动分支 → 寄存
             var gate = fresh("$mw.await.gate.", I64);
-            var th = fresh("$mw.await.th.", I64);
-            var zeroH = fresh("$mw.await.z.", I64);
-            var isCold = fresh("$mw.await.cold.", Bool);
+            var hasRuntime = fresh("$mw.await.runtime.", Bool);
             var waitInsts = new List<MirInst>
             {
                 new MirGetField(taskOp, gateField, gate),
                 new MirCall(syms.MutexAcquire,
                     new List<MirOperand> { new MirLocalOperand(gate) }, null),
-                new MirGetField(taskOp, handleField, th),
-                new MirLoadResource(ProxyWildcardAbi.AddI64Resource(context, 0), zeroH),
-                new MirBinaryIntrinsic(BilBinaryOp.CmpEq, new MirLocalOperand(th),
-                    new MirLocalOperand(zeroH), I64, I64, Bool, isCold),
+                new MirCall(TaskFn(context, awaitedTaskTypeRef, "hasRuntime"),
+                    new List<MirOperand> { taskOp }, hasRuntime),
             };
             resumeFn.AddBlock(new MirBlock(waitId, waitInsts,
-                new MirCondBranch(new MirLocalOperand(isCold), coldId, regId)));
+                new MirCondBranch(new MirLocalOperand(hasRuntime), regId, coldId)));
 
             // 冷 Task 首次 await（§18.3/§18.4）：同一临界区内一次性判定
             // ——赢家 spawn-into（当前 Executor）+ noteSpawn + publish，
@@ -3581,7 +3588,6 @@ namespace RigiCompiler.Middleware.Passes
             }, new MirCondBranch(new MirLocalOperand(stGo), coldGoId, regId)));
 
             var dispC = fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
-            var h2 = fresh("$mw.await.h2.", I64);
             resumeFn.AddBlock(new MirBlock(coldGoId, new List<MirInst>
             {
                 new MirCall(TaskFn(context, awaitedTaskTypeRef, "spawnIntoLocked"),
@@ -3589,10 +3595,8 @@ namespace RigiCompiler.Middleware.Passes
                 new MirCall(syms.DispatcherGet, new List<MirOperand>(), dispC),
                 new MirCall(syms.NoteSpawn,
                     new List<MirOperand> { new MirLocalOperand(dispC) }, null),
-                new MirGetField(taskOp, handleField, h2),
-                new MirCall(syms.Publish,
-                    new List<MirOperand> { new MirLocalOperand(dispC),
-                        new MirLocalOperand(h2) }, null),
+                new MirCall(TaskFn(context, awaitedTaskTypeRef, "publishRuntime"),
+                    new List<MirOperand> { taskOp }, null),
             }, new MirBranch(regId)));
 
             // reg：存活跃槽 + state=N（临界区内，见上注释）→
@@ -3646,7 +3650,7 @@ namespace RigiCompiler.Middleware.Passes
                     TaskField(awaitedTaskTypeRef, "result",
                         ".nullable<" + resultType.Canonical + ">"), rn));
                 doneInsts.Add(new MirUnwrapNullable(new MirLocalOperand(rn),
-                    resultType, awaitInst.ResultSlot));
+                    resultType, awaitInst.ResultSlot, awaitInst.ExcTarget));
             }
             resumeFn.AddBlock(new MirBlock(doneId, doneInsts,
                 new MirBranch(ContBlockId(point))));
@@ -3916,6 +3920,11 @@ namespace RigiCompiler.Middleware.Passes
                 ContBlockId(point))));
 
             var pr = Fresh("$mw.poll.pr.", I32);
+            // probe 内用户 isReady 抛出时，普通 MirCall 的 pending 检查须
+            // 直接落探测失败臂；否则会绕到 resume 函数级传播垫，跳过
+            // yield 点保存的词法 try/catch。
+            var probeFailTarget = new MirBlock(failId, new List<MirInst>(),
+                new MirUnreachable());
             var probeTable = new BilSwitchTableResource(
                 "$mw.coroutine.probe." + _resourceCounter++, ".i32",
                 new[] { "-1", "0", "1" });
@@ -3923,7 +3932,8 @@ namespace RigiCompiler.Middleware.Passes
             resumeFn.AddBlock(new MirBlock(probeId, new List<MirInst>
             {
                 new MirCall(EnsurePollProbe(context, mir),
-                    new List<MirOperand> { new MirLocalOperand(alarmSlot) }, pr),
+                    new List<MirOperand> { new MirLocalOperand(alarmSlot) }, pr,
+                    probeFailTarget),
             }, new MirSwitch(new MirLocalOperand(pr), probeTable,
                 new[] { failId, waitId, readyId }, "mw.state.bad")));
 
@@ -3960,9 +3970,23 @@ namespace RigiCompiler.Middleware.Passes
             // RcInjection resume 垫尾同构——统一走 EmitFailTerminal）；
             // B-2 Plain 走链式上传（ret FAILED——与 RcInjection plain
             // 垫尾同口径，托管槽 release 由标准 ret 出口配平）
-            var failInsts = new List<MirInst>();
+            var curF = Fresh("$mw.poll.cur.", I64);
+            var failInsts = new List<MirInst>
+            {
+                new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), curF),
+                new MirCall(syms.PollClear,
+                    new List<MirOperand> { new MirLocalOperand(curF) }, null),
+            };
             MirTerminator failRet;
-            if (taskFieldSymbol != null)
+            var yieldInst = (MirYieldAlarm)point.Inst;
+            if (yieldInst.ExcTarget != null)
+            {
+                var exc = Fresh("$mw.poll.exc.", Any);
+                failInsts.Add(new MirTakePending(exc));
+                failInsts.Add(new MirThrow(new MirLocalOperand(exc), yieldInst.ExcTarget));
+                failRet = new MirBranch(yieldInst.ExcTarget.Id);
+            }
+            else if (taskFieldSymbol != null)
             {
                 failRet = EmitFailTerminal(context, mir, resumeFn, failInsts,
                     taskFieldSymbol, taskTypeRef!, syms);
@@ -4055,7 +4079,8 @@ namespace RigiCompiler.Middleware.Passes
                 TaskField(taskTypeRef, "gate", ".i64"), gate));
             insts.Add(new MirCall(syms.MutexAcquire,
                 new List<MirOperand> { new MirLocalOperand(gate) }, null));
-            var drained = freshManaged("$mw.drained.", MirType.Of(".array<.i64>"));
+            var drained = freshManaged("$mw.drained.",
+                MirType.Of(".array<core.coroutine::CoroutineCarrige>"));
             insts.Add(new MirCall(TaskFn(context, taskTypeRef, failed ? "fail" : "complete"),
                 new List<MirOperand> { new MirLocalOperand(task) }, drained));
             insts.Add(new MirCall(syms.MutexRelease,
@@ -4238,7 +4263,7 @@ namespace RigiCompiler.Middleware.Passes
             insts.Add(new MirCall(syms.CoroutineSetLane,
                 new List<MirOperand> { new MirLocalOperand(handle),
                     new MirLocalOperand(lane) }, null));
-            insts.Add(new MirCall(TaskFn(context, taskTypeRef, "attachRuntime"),
+            insts.Add(new MirCall(TaskFn(context, taskTypeRef, "attachRuntimeNative"),
                 new List<MirOperand> { new MirLocalOperand(outTask),
                     new MirLocalOperand(handle) }, null));
             insts.Add(new MirCall(syms.NoteSpawn,
@@ -4493,8 +4518,8 @@ namespace RigiCompiler.Middleware.Passes
                 hitInsts.Add(new MirCall(helper,
                     new List<MirOperand> { thisOp, new MirLocalOperand(typed) },
                     handle));
-                hitInsts.Add(new MirSetField(new MirLocalOperand(handle), thisOp,
-                    TaskField(taskDecl, "coldHandle", ".i64")));
+                hitInsts.Add(new MirCall(TaskFn(context, taskDecl, "attachCold"),
+                    new List<MirOperand> { thisOp, new MirLocalOperand(handle) }, null));
                 blocks.Add(new MirBlock(hitId, hitInsts, new MirRet(null)));
             }
 
@@ -4692,8 +4717,9 @@ namespace RigiCompiler.Middleware.Passes
                 new MirSetField(new MirLocalOperand(gate), new MirLocalOperand(task),
                     TaskField(taskTypeRef, "gate", ".i64")),
                 new MirCoroutineCreate(frame, resumeSymbol, handle),
-                new MirSetField(new MirLocalOperand(handle), new MirLocalOperand(task),
-                    TaskField(taskTypeRef, "coldHandle", ".i64")),
+                new MirCall(TaskFn(context, taskTypeRef, "attachCold"),
+                    new List<MirOperand> { new MirLocalOperand(task),
+                        new MirLocalOperand(handle) }, null),
             };
             factory.AddBlock(new MirBlock("entry", insts,
                 new MirRet(new MirLocalOperand(task))));

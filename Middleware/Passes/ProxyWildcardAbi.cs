@@ -421,9 +421,8 @@ namespace RigiCompiler.Middleware.Passes
                 if (IsClassLevelTypeIdParam(hostMember, parameter.Name))
                 {
                     var tid = FreshLocal(fn, "$mw.wc.tid.", MirType.Of(".typeid"));
-                    insts.Add(new MirGetField(hostOp,
-                        GenericAbi.HiddenFieldSymbol(hostMember.Owner!.Canonical,
-                            parameter.Name.Substring(".generic.".Length)), tid));
+                    insts.Add(new MirGetClassTypeArgument(hostOp, GenericAbi.PlanKey(hostMember.Owner!),
+                        parameter.Name.Substring(".generic.".Length), tid));
                     args.Add(new MirLocalOperand(tid));
                     continue;
                 }

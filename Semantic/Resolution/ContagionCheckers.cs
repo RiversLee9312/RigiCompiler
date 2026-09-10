@@ -138,6 +138,8 @@ namespace RigiCompiler
                 case TypeKind.Interface:
                     return HolderCategory.None;
                 case TypeKind.Wrapper:
+                    // self 是独立的宿主回指，不在 Fields 表；普通字段不享受其豁免。
+                    if (!type.IsRich) return HolderCategory.PlainStruct;
                     return type.IsShared ? HolderCategory.SharedWrapper : HolderCategory.WrapperPlain;
                 case TypeKind.Class:
                     return type.IsShared ? HolderCategory.SharedClass : HolderCategory.LocalClass;

@@ -563,7 +563,8 @@ namespace RigiCompiler
                 return 2;
             }
 
-            long maxSteps = 0;
+            // CLI 默认也有高预算，防止不受信 BIL 无限递归永久占住进程。
+            long maxSteps = 1_000_000_000;
             if (result.Has("--max-steps"))
             {
                 string raw = result.Get("--max-steps")![0];

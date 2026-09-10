@@ -59,10 +59,6 @@ namespace RigiCompiler
             // 未代入快照）：必须在消费基类链的全部后续阶段（OverrideChecker/
             // Contagion/FieldClosure 等）之前
             unit.Symbols.BackfillConstructedBaseTypes();
-            // MW11d A4：内建类型合成 SerializationBase 应用——须在
-            // TypeReferenceResolver 的 with 填入检查之前，使 i32/String
-            // 等实参通过 with SerializationBase。
-            SerializationBaseRegistrar.Visit(env);
             TypeReferenceResolver.Visit(env);
             // 声明点签名泄漏检查（§16.1，bug S5 修复1）：紧随类型引用解析——
             // 签名类型刚就绪，可见性在 EntryCollector 已落定
@@ -89,9 +85,6 @@ namespace RigiCompiler
             LayoutCycleChecker.Visit(env);
             SharedSafetyGateChecker.Visit(env);
             GenericConstraintChecker.Visit(env);
-            // 继承子句填入点统一收口（F2/V-C）：用户约束 Bound 刚填充、
-            // 字段/方法签名与 rich/shared 传染均已就绪
-            InheritanceFillInChecker.Visit(env);
             // async 声明侧闸门（S8f，§4.5）依赖约束边界已解析（GenericConstraintChecker
             // 之后——闸门 5 检查约束界的共享安全），参数/返回类型同已就绪
             AsyncGateChecker.Visit(env);
@@ -100,9 +93,9 @@ namespace RigiCompiler
             StaticGenericBanChecker.Visit(env);
             VarianceChecker.Visit(env);
             WrapperApplicationChecker.Visit(env);
-            // @SerializationBase 隐含 @Serializable：源码级 SB 应用落定后、
-            // 字段检查与继承闭包检查前追加合成 Serializable 应用
-            SerializableImplicationRegistrar.Visit(env);
+            IntrinsicDeclarationChecker.Visit(env);
+            // 继承、签名和约束中的泛型填入统一证明，不依赖文件声明顺序。
+            InheritanceFillInChecker.Visit(env);
             SerializableFieldChecker.Visit(env);
             WrapperInheritanceChecker.Visit(env);
             AtomicContainerConstraintChecker.Visit(env);

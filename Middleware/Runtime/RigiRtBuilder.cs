@@ -60,6 +60,9 @@ namespace RigiCompiler.Middleware.Runtime
             //    （-I 目录 + RIGI_HAS_LIBUV 定义）一并入哈希，否则同一批源在
             //    libuv 命中/未命中间会命中同一缓存目录而串味
             string hash;
+            var compilerHash = ToolchainResolver.Fingerprint(clangPath,
+                Environment.GetEnvironmentVariable("RIGI_LLVM_SHA256"));
+            Logger.Verbose("Middleware", $"clang={Path.GetFullPath(clangPath)} SHA256={compilerHash}");
             using (var sha = SHA256.Create())
             {
                 var builder = new StringBuilder();
@@ -68,6 +71,8 @@ namespace RigiCompiler.Middleware.Runtime
                     builder.Append(fileName).Append('\n').Append(text).Append('\n');
                 }
                 builder.Append("-D_POSIX_C_SOURCE=200809L\n");
+                // 源相同但 clang 已更新时不能复用旧工具链产物。
+                builder.Append("clang-sha256=").Append(compilerHash).Append('\n');
                 if (libuv != null)
                 {
                     builder.Append("-I").Append(libuv.IncludeDir).Append('\n')
@@ -77,23 +82,39 @@ namespace RigiCompiler.Middleware.Runtime
                     sha.ComputeHash(Encoding.UTF8.GetBytes(builder.ToString())));
             }
 
-            // ③ 缓存目录：%TEMP%/rigi_rt_cache/<hash 前 16 位>/
-            var cacheDir = Path.Combine(
-                Path.GetTempPath(), "rigi_rt_cache", hash.Substring(0, 16));
+            // ③ 缓存目录落用户私有数据区，避免 /tmp 等世界可写目录中的
+            // 可预测路径被其他用户预置。POSIX 明确收紧为 0700。
+            var cacheRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "rigi", "runtime-cache");
+            Directory.CreateDirectory(cacheRoot);
+            EnsurePrivateDirectory(cacheRoot);
+            var cacheDir = Path.Combine(cacheRoot, hash.Substring(0, 16));
+            Directory.CreateDirectory(cacheDir);
+            EnsurePrivateDirectory(cacheDir);
             var bitcodePath = Path.Combine(cacheDir, "rigi_rt.bc");
+            var manifestPath = Path.Combine(cacheDir, "rigi_rt.sha256");
 
-            // ④ 命中缓存直接复用；否则解出源并现场编译
-            if (File.Exists(bitcodePath))
+            // ④ 命中时同时核对源身份与 bitcode 内容摘要。任一缺失或不符
+            // 都视为污染缓存并重新编译，绝不把未知字节交给 LLVM 解析器。
+            if (TryValidateCache(bitcodePath, manifestPath, hash))
             {
                 rebuilt = false;
                 Logger.Verbose("Middleware", $"rigi_rt 命中缓存 {bitcodePath}");
                 return bitcodePath;
             }
-            Directory.CreateDirectory(cacheDir);
-            foreach (var (fileName, text) in sources)
+
+            // 每个竞争构建使用独立私有目录；最终发布用不覆盖的原子 Move，
+            // 输掉竞态的一方只复核赢家产物，不会互相踩写。
+            var buildDir = Path.Combine(cacheDir, "build-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(buildDir);
+            EnsurePrivateDirectory(buildDir);
+            try
             {
-                File.WriteAllText(Path.Combine(cacheDir, fileName), text);
-            }
+                foreach (var (fileName, text) in sources)
+                {
+                    WriteNewText(Path.Combine(buildDir, fileName), text);
+                }
 
             // unity build 决策（MW1 定稿）：工具链无 llvm-link，多 .c 逐个编成
             // .bc 后无法合并；-c 配多文件又禁止 -o。故生成 unity.c 逐文件
@@ -109,36 +130,110 @@ namespace RigiCompiler.Middleware.Runtime
                     unity.Append("#include \"").Append(fileName).Append("\"\n");
                 }
             }
-            var unityPath = Path.Combine(cacheDir, "unity.c");
-            File.WriteAllText(unityPath, unity.ToString());
+                var unityPath = Path.Combine(buildDir, "unity.c");
+                WriteNewText(unityPath, unity.ToString());
 
             // win/linux 通用参数；不传目标三元组，用 clang 默认宿主目标。
             // libuv 命中时加 -I<include> 与 -DRIGI_HAS_LIBUV=1（棒2 的 uv 用法
             // 一律包在 #ifdef RIGI_HAS_LIBUV 内，未命中时零影响）
-            var args = new List<string>
-            {
-                "-emit-llvm", "-c", "-O1", "-std=c11", "-Wall",
-                "-D_POSIX_C_SOURCE=200809L",
-            };
-            if (libuv != null)
-            {
-                args.Add("-I" + libuv.IncludeDir);
-                args.Add("-DRIGI_HAS_LIBUV=1");
+                var candidatePath = Path.Combine(buildDir, "rigi_rt.bc");
+                var args = new List<string>
+                {
+                    "-emit-llvm", "-c", "-O1", "-std=c11", "-Wall",
+                    "-D_POSIX_C_SOURCE=200809L",
+                };
+                if (libuv != null)
+                {
+                    args.Add("-I" + libuv.IncludeDir);
+                    args.Add("-DRIGI_HAS_LIBUV=1");
+                }
+                args.Add(unityPath);
+                args.Add("-o");
+                args.Add(candidatePath);
+                var exitCode = ExternalProcess.Run(clangPath, args,
+                    out _, out var stderr,
+                    workingDirectory: buildDir);
+                if (exitCode != 0 || !File.Exists(candidatePath))
+                {
+                    throw new InvalidOperationException(
+                        $"rigi_rt 现场编译失败（clang 退出码 {exitCode}）：\n{stderr.Trim()}");
+                }
+
+                var bitcodeHash = ComputeFileSha256(candidatePath);
+                try
+                {
+                    File.Move(candidatePath, bitcodePath, overwrite: false);
+                    WriteNewText(manifestPath, hash + "\n" + bitcodeHash + "\n");
+                }
+                catch (IOException)
+                {
+                    // 另一进程可能已经发布；只接受完整且校验通过的赢家。
+                    var validWinner = false;
+                    // bitcode 与 manifest 是两个原子发布步骤；给赢家一个很短的
+                    // 完成窗口，避免输家恰好落在两步之间时误报冲突。
+                    for (var attempt = 0; attempt < 20 && !validWinner; attempt++)
+                    {
+                        validWinner = TryValidateCache(bitcodePath, manifestPath, hash);
+                        if (!validWinner) System.Threading.Thread.Sleep(10);
+                    }
+                    if (!validWinner)
+                    {
+                        throw new InvalidOperationException("rigi_rt 并发缓存发布冲突且赢家产物校验失败");
+                    }
+                }
+                rebuilt = true;
+                Logger.Verbose("Middleware", $"rigi_rt 已现场编译 {bitcodePath}");
+                return bitcodePath;
             }
-            args.Add(unityPath);
-            args.Add("-o");
-            args.Add(bitcodePath);
-            var exitCode = ExternalProcess.Run(clangPath, args,
-                out var stdout, out var stderr,
-                workingDirectory: cacheDir);
-            if (exitCode != 0 || !File.Exists(bitcodePath))
+            finally
             {
-                throw new InvalidOperationException(
-                    $"rigi_rt 现场编译失败（clang 退出码 {exitCode}）：\n{stderr.Trim()}");
+                if (Directory.Exists(buildDir)) Directory.Delete(buildDir, recursive: true);
             }
-            rebuilt = true;
-            Logger.Verbose("Middleware", $"rigi_rt 已现场编译 {bitcodePath}");
-            return bitcodePath;
+        }
+
+        private static bool TryValidateCache(string bitcodePath, string manifestPath,
+            string sourceHash)
+        {
+            if (!File.Exists(bitcodePath) || !File.Exists(manifestPath)) return false;
+            try
+            {
+                var lines = File.ReadAllLines(manifestPath);
+                return lines.Length >= 2
+                    && StringComparer.Ordinal.Equals(lines[0], sourceHash)
+                    && StringComparer.OrdinalIgnoreCase.Equals(lines[1],
+                        ComputeFileSha256(bitcodePath));
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static string ComputeFileSha256(string path)
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.Read);
+            using var sha = SHA256.Create();
+            return Convert.ToHexString(sha.ComputeHash(stream));
+        }
+
+        private static void WriteNewText(string path, string text)
+        {
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None);
+            using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            writer.Write(text);
+        }
+
+        private static void EnsurePrivateDirectory(string path)
+        {
+            if (OperatingSystem.IsWindows()) return;
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite
+                | UnixFileMode.UserExecute);
         }
     }
 }

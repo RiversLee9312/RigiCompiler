@@ -65,7 +65,7 @@ namespace RigiCompiler.Middleware.Emit
                 var described = session.LoadLocal(builder, slots, operand);
                 var view = BoxEmitter.ResolveTypeIdViewSheet(session, builder, described, type);
                 return BoxEmitter.PackFat(session, builder, view, BoxEmitter.TagInline,
-                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "ck.tid");
+                    builder.BuildPtrToInt(described, LLVMTypeRef.Int64, "ck.tid.payload"), "ck.tid");
             }
             if (MirBuilder.IsScalarOrString(type) || session.IsInlineValueType(type, out _))
             {

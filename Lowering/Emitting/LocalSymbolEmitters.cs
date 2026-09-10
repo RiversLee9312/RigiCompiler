@@ -115,166 +115,31 @@ namespace RigiCompiler
             }
         }
 
-        // 内建类型的 native 方法声明 + toString 合成体（SYNTAX §3.8 修订）。
-        // 内建类型自身不声明（EmitTypeTree 跳过 IsBuiltin——基元经 BIL 别名
-        // 投影而非符号引用）。
-        // native 成员声明循环：bootstrap 已无 native 实例成员（toString 机制
-        // 修订后 Any/Object.toString 改合成体，Exception.getMessage 抽象化），
-        // 仅防御保留；call??? 排除逻辑不变——它经方法 hook 表
-        // （VmHooks.RegisterMethod）按符号命中，不走 (lib, symbol) 表——若
-        // 声明进 LocalSymbols 会抢在方法 hook 之前被 TryResolveNative 路由到
-        // 不存在的 rigi_rt/call???。抽象方法不落地；具体子类的 override 经
-        // EmitTypeTree 正常发射 fn 定义，调用点 invoke 指向子类 override 或
-        // 抽象根符号（后者由 VM ResolveDispatch 按逻辑 TypeSheet 多态派发）。
+        // 内建声明不改变固定类型布局；源码成员按普通函数体绑定与发射。
         public static void EmitBuiltinNativeMethods(EmitEnvironment env)
         {
-            foreach (var property in typeof(BootstrapSymbols).GetProperties(
-                BindingFlags.Public | BindingFlags.Instance))
+            if (!env.Unit.SourceFiles.Any(f => f.IsIntrinsicDeclarations)) return;
+            foreach (var builtin in env.Unit.Symbols.Bootstrap.SourceTypes.Values.Where(t => t.IsBuiltin))
             {
-                // Exception 懒解析：无 stdlib 时 getter 抛；源码化后亦非 IsBuiltin
-                if (property.Name == "Exception") continue;
-                if (property.GetValue(env.Unit.Symbols.Bootstrap) is not TypeSymbol
-                    { IsBuiltin: true } builtinType) continue;
-                foreach (var method in builtinType.Methods)
+                // 外部声明只描述固定 ABI 类型的源码成员/能力，不定义物理布局。
+                // 实现函数仍在本地段，外部描述接受与本地声明相同的签名验证。
+                var description = new BilTypeDeclaration("core::" + builtin.Name, MapTypeKind(builtin.Kind));
+                description.GenericParameters.AddRange(builtin.GenericParameters.Select(p => p.Name));
+                foreach (var app in builtin.AppliedWrappers)
+                    description.Modifiers.Add(new BilWrappedModifier(CanonicalSymbolPrinter.PrintType(app.Wrapper)));
+                foreach (var iface in builtin.Interfaces)
+                    description.ImplementsTypes.Add(CanonicalSymbolPrinter.PrintType(iface));
+                foreach (var method in builtin.Methods)
                 {
-                    if (!method.IsNative) continue;
-                    if (ReferenceEquals(method, env.Unit.Symbols.Bootstrap.CallWildcard)) continue;
-                    env.CurrentSliceNs = RootNsOf(builtinType);
-                    env.AddLocalSymbol(EmitMethodDeclaration(method));
+                    if (method.ExtTargetPath != null) continue;
+                    env.CurrentSliceNs = RootNsOf(builtin);
+                    var member = EmitMethodDeclaration(method);
+                    if (!method.IsSynthetic) env.AddLocalSymbol(member);
+                    description.Members.Add(member);
                 }
+                env.CurrentSliceNs = RootNsOf(builtin);
+                if (builtin.AppliedWrappers.Count != 0) env.AddExternalSymbol(description);
             }
-            // toString 合成体：Any/Object 的 toString 是 open 普通方法（非
-            // native 成员），默认实现体在此合成——.this 直传 any_to_string
-            //（.bootstrap.rg 的 priv 全局 native；经符号图取 canonical）。
-            // fn 无对应符号段声明（内建宿主不进 LocalSymbols），§21.2 对应
-            // 检查由内建宿主豁免承担（IsPredefinedTypeHost，同 Any.call???
-            // 先例）；用户 override 经 VM ResolveDispatch 防御扫描命中实际
-            // 类型槽，未 override 时回退 FindFunction 命中本合成体。
-            // 无 stdlib 的夹具编译（符号图无 any_to_string）跳过合成
-            if (env.Unit.Symbols.Bootstrap.Core.Methods.FirstOrDefault(
-                    m => m.Name == "any_to_string") is { } anyToString)
-            {
-                EmitSynthesizedBuiltinDefaultBody(env, env.Unit.Symbols.Bootstrap.Any,
-                    "toString", anyToString);
-                EmitSynthesizedBuiltinDefaultBody(env, env.Unit.Symbols.Bootstrap.Object,
-                    "toString", anyToString);
-            }
-            // hash 合成体（Map 键判等，用户裁定）：与 toString 完全同构——
-            // Any/Object 的 hash 默认体 = .this（装箱 .any）→ invoke any_hash
-            // → ret i64；无 stdlib 的夹具编译同样跳过
-            if (env.Unit.Symbols.Bootstrap.Core.Methods.FirstOrDefault(
-                    m => m.Name == "any_hash") is { } anyHash)
-            {
-                EmitSynthesizedBuiltinDefaultBody(env, env.Unit.Symbols.Bootstrap.Any,
-                    "hash", anyHash);
-                EmitSynthesizedBuiltinDefaultBody(env, env.Unit.Symbols.Bootstrap.Object,
-                    "hash", anyHash);
-                // equals 合成体（==/!= 判等，SYNTAX §13.2，用户裁定）：默认
-                // 体 = 双虚调 hash 比较——equals-or-hash 判等链，绝不涉
-                // toString。门控与 toString/hash 不同：equals 不依赖
-                // .bootstrap.rg 的 native 声明（Bootstrap 承诺本身即门控），
-                // 但体内 invoke 的 core::Any$hash 合成 fn 必须已在场——
-                // 随 any_hash 分支一并发射（无 stdlib 的夹具编译整体跳过）
-                if (env.Unit.Symbols.Bootstrap.Any.Methods.Any(m => m.Name == "equals"))
-                {
-                    EmitSynthesizedEqualsDefaultBody(env, env.Unit.Symbols.Bootstrap.Any);
-                    EmitSynthesizedEqualsDefaultBody(env, env.Unit.Symbols.Bootstrap.Object);
-                }
-            }
-        }
-
-        // 单个内建默认实现体（toString/hash 共用模板）：
-        //   fn(core::Any$toString()@.string) / fn(core::Object$toString()@.string)
-        //   （hash 同形：core::Any$hash()@.i64 / core::Object$hash()@.i64）
-        //   .args = .return:返回投影 + .this:宿主投影；
-        //   entry：.this 非 .any 时先 cast 装箱（§12.1，§21.3 实参精确匹配），
-        //          invoke fn(native 全局)，ret 结果
-        //          （全局函数 canonical 带 $ 名段，同 $main 形态）
-        private static void EmitSynthesizedBuiltinDefaultBody(EmitEnvironment env, TypeSymbol owner,
-            string methodName, MethodSymbol nativeGlobal)
-        {
-            var method = owner.Methods.First(m => m.Name == methodName);
-            var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(method));
-            function.Args.Add(new BilArgDeclaration(".return",
-                CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType)));
-            var thisType = CanonicalSymbolPrinter.PrintType(owner);
-            function.Args.Add(new BilArgDeclaration(".this", thisType));
-            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
-            BilVariableOperand receiver = BilOp.Var(".this");
-            var tempCount = 0;
-            if (thisType != ".any")
-            {
-                function.Vars.Add(new BilVarDeclaration(".any", ".t0"));
-                entry.Instructions.Add(new CastInstruction(receiver, BilOp.Var(".t0"),
-                    BilOp.Type(".any"), isSafe: false));
-                receiver = BilOp.Var(".t0");
-                tempCount = 1;
-            }
-            var resultName = ".t" + tempCount;
-            function.Vars.Add(new BilVarDeclaration(
-                CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType), resultName));
-            entry.Instructions.Add(new InvokeInstruction(
-                BilOp.Fn(CanonicalSymbolPrinter.PrintMethod(nativeGlobal)),
-                BilOp.Var(resultName), new[] { receiver }));
-            entry.Instructions.Add(new RetInstruction(BilOp.Var(resultName)));
-            function.Blocks.Add(entry);
-            env.CurrentSliceNs = RootNsOf(owner);
-            env.AddFunction(function);
-        }
-
-        // equals 默认实现体（SYNTAX §13.2，用户裁定）：Any/Object 的
-        // operator equals 默认体 = 双虚调 hash 比较——
-        //   fn(core::Any$$equals(other:.any)@.bool)
-        //   （Object 同形：core::Object$$equals(other:.any)@.bool；$$ 即
-        //   operator canonical）
-        //   .args = .return:.bool + .this:宿主投影 + other:.any；
-        //   entry：.this 非 .any 时先 cast 装箱（§12.1，§21.3 实参精确匹配，
-        //   同 toString/hash 模板）→ h1 = invoke fn(core::Any$hash()@.i64)
-        //   （thisAny）→ h2 = invoke 同 fn（other）→ cmp.eq → ret r。
-        //   用户 override 的 hash 经虚派发生效；键类型自声明的 operator
-        //   equals 则运行期最派生覆盖本默认体（equals-or-hash 链）
-        private static void EmitSynthesizedEqualsDefaultBody(EmitEnvironment env,
-            TypeSymbol owner)
-        {
-            var method = owner.Methods.First(m => m.Name == "equals");
-            var hashFn = CanonicalSymbolPrinter.PrintMethod(
-                env.Unit.Symbols.Bootstrap.Any.Methods.First(m => m.Name == "hash"));
-            var function = new BilFunction(CanonicalSymbolPrinter.PrintMethod(method));
-            function.Args.Add(new BilArgDeclaration(".return",
-                CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType)));
-            var thisType = CanonicalSymbolPrinter.PrintType(owner);
-            function.Args.Add(new BilArgDeclaration(".this", thisType));
-            function.Args.Add(new BilArgDeclaration("other",
-                CanonicalSymbolPrinter.PrintTypeReference(method.Parameters[0].Type)));
-            var entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
-            BilVariableOperand receiver = BilOp.Var(".this");
-            var tempCount = 0;
-            if (thisType != ".any")
-            {
-                function.Vars.Add(new BilVarDeclaration(".any", ".t0"));
-                entry.Instructions.Add(new CastInstruction(receiver, BilOp.Var(".t0"),
-                    BilOp.Type(".any"), isSafe: false));
-                receiver = BilOp.Var(".t0");
-                tempCount = 1;
-            }
-            var leftHashName = ".t" + tempCount;
-            var rightHashName = ".t" + (tempCount + 1);
-            var resultName = ".t" + (tempCount + 2);
-            function.Vars.Add(new BilVarDeclaration(".i64", leftHashName));
-            function.Vars.Add(new BilVarDeclaration(".i64", rightHashName));
-            function.Vars.Add(new BilVarDeclaration(
-                CanonicalSymbolPrinter.PrintTypeReference(method.ReturnType), resultName));
-            entry.Instructions.Add(new InvokeInstruction(
-                BilOp.Fn(hashFn), BilOp.Var(leftHashName), new[] { receiver }));
-            entry.Instructions.Add(new InvokeInstruction(
-                BilOp.Fn(hashFn), BilOp.Var(rightHashName),
-                new[] { BilOp.Var(method.Parameters[0].Name) }));
-            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.CmpEq,
-                BilOp.Var(leftHashName), BilOp.Var(rightHashName), BilOp.Var(resultName)));
-            entry.Instructions.Add(new RetInstruction(BilOp.Var(resultName)));
-            function.Blocks.Add(entry);
-            env.CurrentSliceNs = RootNsOf(owner);
-            env.AddFunction(function);
         }
 
         private static void EmitTypeTree(TypeSymbol type, EmitEnvironment env)
@@ -282,10 +147,11 @@ namespace RigiCompiler
             // 内建 bootstrap 符号（基元/层级根）不声明：经 BIL 别名投影引用；
             // ErrorType 是毒化单例，同样不进符号段
             if (type.IsBuiltin || type is ErrorTypeSymbol) return;
+            if (type.SourceFile is { IsIntrinsicDeclarations: true } source
+                && !env.Unit.SourceFiles.Contains(source)) return;
             if (type.BilAlias == ".handle")
             {
-                // 两个源码能力类型共用唯一非泛型运行时对象，不携带用户字段/方法。
-                if (type.Name == "MutableHandle") return;
+                // 仅内部存储固定布局；公开泛型 Handle 按普通类完整发射。
                 var handle = new BilTypeDeclaration(".handle", BilTypeKind.Class);
                 handle.Modifiers.Add(new BilAccessibilityModifier(BilAccessibility.Public));
                 handle.Modifiers.Add(new BilKeywordModifier(BilKeyword.Shared));
@@ -317,7 +183,7 @@ namespace RigiCompiler
                 });
             }
             // 修饰符（§8.2）：访问（全显式）→ open/abstract/singleton → rich/shared
-            // （wrapper 恒 rich 也显式输出——BIL 是显式 IR，不做源码的隐含）
+            // wrapper 与 struct 一样只输出源码显式声明的 rich。
             declaration.Modifiers.Add(new BilAccessibilityModifier(MapAccessibility(type.Accessibility)));
             if (type.IsOpen) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Open));
             if (type.IsAbstract) declaration.Modifiers.Add(new BilKeywordModifier(BilKeyword.Abstract));

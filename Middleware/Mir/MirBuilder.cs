@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Passes;
@@ -180,7 +181,10 @@ namespace RigiCompiler.Middleware.Mir
                     constructedTypeRef: baseRef);
             }
             var key = current.SignatureKey;
-            for (var type = baseType; type != null; type = BaseOf(context.Symbols, type))
+            var visited = new HashSet<string>(System.StringComparer.Ordinal);
+            for (var type = baseType;
+                type != null && visited.Add(GenericAbi.PlanKey(type));
+                type = BaseOf(context.Symbols, type))
             {
                 foreach (var member in type.Members)
                 {
@@ -255,16 +259,6 @@ namespace RigiCompiler.Middleware.Mir
             {
                 return true;
             }
-            // MW11d-D：形参代入后为具体构造形态（Host<.i32>）而实参静态
-            // 类型是定义级裸名（Host——$.this/局部声明形态）——声明级同型
-            // 即放行（VM ParametersMatch 同口径降级；§14.1 编译期已选定
-            // 唯一目标，此处只是验证）。两侧都带类型实参的实质分歧
-            //（Host<.i32> vs Host<.string>）不在此放宽范围
-            if (expectedSubst.Contains('<') != actualSubst.Contains('<')
-                && StripTypeArguments(expectedSubst) == StripTypeArguments(actualSubst))
-            {
-                return true;
-            }
             var actualType = symbols.FindTypeByRef(actualSubst)
                 ?? symbols.FindTypeByRef(actual);
             var extends = actualType?.Declaration.ExtendsType;
@@ -280,26 +274,18 @@ namespace RigiCompiler.Middleware.Mir
             return MwTypeKey.Normalize(extendsSubst) == MwTypeKey.Normalize(expectedSubst);
         }
 
-        // 去类型实参（声明级比较用）：Host<A<B>> → Host
-        private static string StripTypeArguments(string typeRef)
-        {
-            var angle = typeRef.IndexOf('<');
-            return angle < 0 ? typeRef : typeRef.Substring(0, angle);
-        }
-
         // ConstructedTypeCollector.Substitute 只替换 `.generic<…>` 占位；
         // init 签名里的 `AsyncFunc<TReturn>` 是声明形裸参数名，需按构造
         // 代入表改写成实参
         private static string SubstituteBareParams(string typeRef,
             Dictionary<string, string> substitution)
         {
-            var result = typeRef;
-            foreach (var pair in substitution)
-            {
-                result = result.Replace("<" + pair.Key + ">", "<" + pair.Value + ">",
-                    System.StringComparison.Ordinal);
-            }
-            return result;
+            // 单次扫描、按完整尖括号 token 代入，避免 Dictionary 枚举次序
+            // 以及某个实参文本再次命中后续参数名而产生二次替换。
+            return Regex.Replace(typeRef, @"<([^<>]+)>", match =>
+                substitution.TryGetValue(match.Groups[1].Value, out var replacement)
+                    ? "<" + replacement + ">"
+                    : match.Value);
         }
 
         // ..init.wrapper 按名 + 实参个数解析（VM TryFindInitWrapper 同

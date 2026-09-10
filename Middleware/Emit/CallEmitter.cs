@@ -140,12 +140,17 @@ namespace RigiCompiler.Middleware.Emit
             IReadOnlyList<MirOperand> args, string? result, MirBlock? excTarget,
             string? hostConstructedRef = null)
         {
+            if (callee.Value == session.CurrentFunction)
+            {
+                EmitSelfRecursionStackGuard(session, builder, excTarget);
+            }
             var temps = new List<ArcEmitter.RichTemp>();
             var boxed = new List<ArcEmitter.FatTemp>();
             var receiverWritebacks = new List<ReceiverWriteback>();
             var callArgs = MarshalArgs(session, builder, slots, callee.Mir, args, result, temps,
                 boxed, hostConstructedRef, excTarget, receiverWritebacks);
             var callResult = builder.BuildCall2(callee.Type, callee.Value, callArgs, "");
+            EmitPendingBeforeWriteback(session, builder, excTarget, temps, boxed);
             // 占位接收者拆箱临时槽的 .this 写回（别名语义：callee 对
             // this 的修改重装箱回源占位槽——VM 占位槽原地生效同口径；
             // callee 抛异常时经 pending 检查跳过写回，与调用方写回链
@@ -166,9 +171,58 @@ namespace RigiCompiler.Middleware.Emit
             }
             ArcEmitter.DestroyRichTemps(session, builder, temps);
             ArcEmitter.DestroyFatTemps(session, builder, boxed);
-            ExceptionEmitter.EmitPendingCheck(session, builder, excTarget);
             StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result,
                 excTarget);
+        }
+
+        private static void EmitSelfRecursionStackGuard(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirBlock? excTarget)
+        {
+            var (checkFn, checkType) = DeclareHelperFace(session,
+                RuntimeFaces.StackHasRoom, LLVMTypeRef.Int32,
+                System.Array.Empty<LLVMTypeRef>());
+            var hasRoom = builder.BuildCall2(checkType, checkFn,
+                System.Array.Empty<LLVMValueRef>(), "stack.room");
+            var fail = session.CurrentFunction.AppendBasicBlock("stack.exhausted");
+            var cont = session.CurrentFunction.AppendBasicBlock("stack.ok");
+            builder.BuildCondBr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, hasRoom,
+                    LLVMValueRef.CreateConstNull(LLVMTypeRef.Int32), "stack.room.ok"),
+                cont, fail);
+            builder.PositionAtEnd(fail);
+            ExceptionEmitter.EmitThrowNewException(session, builder,
+                "core::RuntimeException", "text",
+                new[] { session.InternStringConstant("原生递归调用栈余量不足") },
+                excTarget);
+            builder.PositionAtEnd(cont);
+        }
+
+        private static void EmitPendingBeforeWriteback(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirBlock? excTarget, List<ArcEmitter.RichTemp> temps,
+            List<ArcEmitter.FatTemp> boxed)
+        {
+            if (excTarget == null)
+            {
+                ExceptionEmitter.EmitPendingCheck(session, builder, null);
+                return;
+            }
+            var blocks = session.CurrentBlocks
+                ?? throw new CompilerInternalException("调用异常边缺少当前函数块映射");
+            var (pendingFn, pendingType) = DeclareHelperFace(session,
+                RuntimeFaces.ExcPending, PointerType(), System.Array.Empty<LLVMTypeRef>());
+            var pending = builder.BuildCall2(pendingType, pendingFn,
+                System.Array.Empty<LLVMValueRef>(), "call.pending");
+            var fail = session.CurrentFunction.AppendBasicBlock("call.fail");
+            var cont = session.CurrentFunction.AppendBasicBlock("call.cont");
+            builder.BuildCondBr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, pending,
+                    LLVMValueRef.CreateConstNull(PointerType()), "call.has.pending"),
+                fail, cont);
+            builder.PositionAtEnd(fail);
+            ArcEmitter.DestroyRichTemps(session, builder, temps);
+            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            builder.BuildBr(blocks[excTarget.Id]);
+            builder.PositionAtEnd(cont);
         }
 
         // 标量/String/胖引用结果回存（值类型返回经 out 槽直写，无需回存）
@@ -255,7 +309,8 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     var expectType = i < expected.Count ? expected[i].Type : null;
                     values.Add(CoerceArg(session, builder, slots, args[i],
-                        expectType, thisAliases && i == 0, temps, boxed, excTarget,
+                        expectType, (thisAliases && i == 0)
+                            || (i < expected.Count && expected[i].Name == Passes.WrapperSelfParameterPass.SelfParameter), temps, boxed, excTarget,
                         receiverWritebacks));
                 }
                 return values.ToArray();
@@ -275,7 +330,8 @@ namespace RigiCompiler.Middleware.Emit
                 if (thisAliases && argIndex == 0 && hostConstructedRef != null)
                     expectType = MirType.Of(hostConstructedRef);
                 values.Add(CoerceArg(session, builder, slots, args[argIndex],
-                    expectType, thisAliases && argIndex == 0, temps, boxed, excTarget,
+                    expectType, (thisAliases && argIndex == 0)
+                        || parameter.Name == Passes.WrapperSelfParameterPass.SelfParameter, temps, boxed, excTarget,
                     receiverWritebacks));
                 argIndex++;
             }
@@ -542,6 +598,10 @@ namespace RigiCompiler.Middleware.Emit
             var scalarTemp = LlvmEmitEnvironment.BuildEntryAlloca(builder,
                 TypeLayout.MapType(session.Context, expected), "call.unbox.s");
             BoxEmitter.UnboxToSlot(session, builder, fat, expected, scalarTemp, actual, excTarget);
+            // String 解箱与含引用值类型一样获取所有权；调用临时槽必须配对销毁。
+            if (expected.IsString)
+                temps.Add(new ArcEmitter.RichTemp(scalarTemp,
+                    ArcEmitter.SheetOf(session, expected), TypeLayout.ReferenceSlotSize));
             return builder.BuildLoad2(TypeLayout.MapType(session.Context, expected), scalarTemp,
                 "call.unbox.ld");
         }

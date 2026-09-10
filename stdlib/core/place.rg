@@ -30,23 +30,30 @@ pub class Place\<T> implements IDisposable {
     }
 
     pub unsafe func expose(): Handle\<T> {
-        return handle_make\<Handle\<T>>((target as Any), targetKind, false) as Handle\<T>
+        const storage = handle_make\<ObjectHandleStorage>((target as Any), targetKind, false) as ObjectHandleStorage
+        return new Handle\<T>(storage)
     }
 }
 
-// 这两个声明仅保留源码类型与 unsafe 检查；编译器将成员调用投影到下列
-// 私有泛型函数，运行时统一为无泛型、无用户字段的 .handle。
-pub unsafe shared class Handle\<T> {
+// 只有内部存储使用固定 ABI；公开 Handle 的类型身份与泛型实参完整保留。
+// 这是 Rigi 对象的共享持有，不是 NativeRcHandle，也不使用弱 Carrige。
+priv unsafe shared class ObjectHandleStorage {
     priv init() {}
-    pub func load(): T { throw new RuntimeException("Handle 编译器投影缺失") }
-    pub func asMutable(): MutableHandle\<T> { throw new RuntimeException("Handle 编译器投影缺失") }
+}
+
+pub unsafe shared class Handle\<T> {
+    priv const capability: ObjectHandleStorage
+    protected init(capability: Any) { this.capability = capability as ObjectHandleStorage }
+    pub func load(): T { unsafe seq { return handle_load\<T>(capability) } }
+    pub func asMutable(): MutableHandle\<T> { unsafe seq { return handle_asMutable\<T>(capability) } }
 }
 
 pub unsafe shared class MutableHandle\<T> {
-    priv init() {}
-    pub func load(): T { throw new RuntimeException("Handle 编译器投影缺失") }
-    pub func asMutable(): MutableHandle\<T> { throw new RuntimeException("Handle 编译器投影缺失") }
-    pub func store(value: T) { throw new RuntimeException("Handle 编译器投影缺失") }
+    priv const capability: ObjectHandleStorage
+    protected init(capability: Any) { this.capability = capability as ObjectHandleStorage }
+    pub func load(): T { unsafe seq { return handle_load\<T>(capability) } }
+    pub func asMutable(): MutableHandle\<T> { unsafe seq { return handle_asMutable\<T>(capability) } }
+    pub func store(value: T) { unsafe seq { handle_store\<T>(capability, value) } }
 }
 
 priv unsafe func handle_load\<T>(capability: Any): T {
@@ -59,7 +66,8 @@ priv unsafe func handle_load\<T>(capability: Any): T {
 
 priv unsafe func handle_asMutable\<T>(capability: Any): MutableHandle\<T> {
     if ((handle_kind(capability) == 1) and handle_type_is_value\<T>()) {
-        return handle_make\<Handle\<T>>(handle_target(capability), 1, true) as MutableHandle\<T>
+        const storage = handle_make\<ObjectHandleStorage>(handle_target(capability), 1, true) as ObjectHandleStorage
+        return new MutableHandle\<T>(storage)
     }
     throw new ImmutablePlaceException()
 }

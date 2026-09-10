@@ -189,7 +189,7 @@ static _Thread_local _Atomic uint32_t *gc_my_cflag = NULL;
 typedef struct
 {
     void *object;
-    long size;
+    int64_t size;
 } GcCandidate;
 static GcCandidate *gc_ledger = NULL;
 static size_t gc_ledger_len = 0;
@@ -212,10 +212,11 @@ static void gc_ledger_release(void)
 }
 
 /* 债务与触发（RUNTIME §22.3）：全局原子债务 + 阈值 + 原子 pending 去重 */
-static _Atomic long gc_debt = 0;
-static long gc_threshold = 1L << 20; /* 默认 1 MiB，RIGI_RT_GC_THRESHOLD 覆盖 */
+static _Atomic int64_t gc_debt = 0;
+static int64_t gc_threshold = INT64_C(1) << 20; /* 默认 1 MiB，RIGI_RT_GC_THRESHOLD 覆盖 */
 static _Atomic int gc_pending = 0;
 static _Atomic int gc_stop = 0;
+static _Atomic int gc_closed = 0; /* shutdown 完成后候选账本不可复活。 */
 static _Atomic int gc_in_collect = 0;
 static _Atomic long gc_fence_waits = 0; /* ENTERING 阻塞次数（诊断口径） */
 static int gc_started = 0;
@@ -878,21 +879,21 @@ void rigi_gc_region_fence_exit(void)
 /* 候选登记与摘除（release / 析构路径钩子）                               */
 /* ------------------------------------------------------------------ */
 
-static long gc_object_size(void *object, const RigiTypeSheet *sheet)
+static int64_t gc_object_size(void *object, const RigiTypeSheet *sheet)
 {
     if ((sheet->typeFlags & RIGI_TYPE_ARRAY) != 0)
     {
         const RigiTypeSheet *elemSheet =
             *(RigiTypeSheet *const *)((char *)object + 16);
         int32_t len = *(int32_t *)((char *)object + 24);
-        long stride = (elemSheet != NULL
+        int64_t stride = (elemSheet != NULL
                 && (elemSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0
                 && elemSheet->typeSize > 0)
-            ? (long)elemSheet->typeSize
+            ? (int64_t)elemSheet->typeSize
             : 16L;
-        return 32L + (long)len * stride;
+        return INT64_C(32) + (int64_t)len * stride;
     }
-    return (long)sheet->typeSize;
+    return (int64_t)sheet->typeSize;
 }
 
 /* 无引用出边的对象不可能成环（§22.3 候选定义的廉价过滤） */
@@ -926,14 +927,19 @@ static bool gc_may_cycle(void *object, const RigiTypeSheet *sheet)
 static void gc_note_release_locked(void *object, const RigiTypeSheet *sheet)
 {
     RigiObjectHeader *h = (RigiObjectHeader *)object;
-    long size;
+    int64_t size;
     uint32_t idx;
-    long debt;
+    int64_t debt;
     int expected;
 
     if (object == NULL || sheet == NULL)
     {
         return;
+    }
+    if (atomic_load_explicit(&gc_closed, memory_order_relaxed))
+    {
+        fprintf(stderr, "rigi_rt: GC shutdown 后登记候选（运行时生命周期错误）\n");
+        abort();
     }
     if (gc_trace_on)
     {
@@ -988,10 +994,10 @@ static void gc_note_release_locked(void *object, const RigiTypeSheet *sheet)
     if (gc_trace_on)
     {
         const RigiTypeInfo *ti = sheet->typeInfoId;
-        fprintf(stderr, "[gc] cand+ %p type=%.*s size=%ld idx=%u\n",
+        fprintf(stderr, "[gc] cand+ %p type=%.*s size=%lld idx=%u\n",
             object, ti != NULL ? (int)ti->name.len : 0,
             ti != NULL && ti->name.data != NULL ? ti->name.data : "",
-            size, (unsigned)idx);
+            (long long)size, (unsigned)idx);
     }
     debt = atomic_fetch_add_explicit(&gc_debt, size, memory_order_relaxed)
         + size;
@@ -1107,7 +1113,6 @@ static void gc_drain_cflags(void)
 static void gc_pass(void)
 {
     size_t i;
-    long round_debt = 0;
     uint32_t expected = RIGI_GC_IDLE;
     uint64_t started = gc_stats_on ? gc_now_ms() : 0;
     uint64_t marked;
@@ -1115,9 +1120,9 @@ static void gc_pass(void)
 
     if (gc_trace_on)
     {
-        fprintf(stderr, "[gc] pass begin ledger=%zu debt=%ld\n",
+        fprintf(stderr, "[gc] pass begin ledger=%zu debt=%lld\n",
             gc_ledger_len,
-            atomic_load_explicit(&gc_debt, memory_order_relaxed));
+            (long long)atomic_load_explicit(&gc_debt, memory_order_relaxed));
     }
 
     /* （1）STARTING 独占启动 + GCAlarm 复位；单一 GC 协程，CAS 恒成功 */
@@ -1135,13 +1140,16 @@ static void gc_pass(void)
     gc_drain_cflags();
     /* （4）PROCESSING：托管引用图与 ARC 计数对普通 Coroutine 冻结 */
     atomic_store_explicit(&gc_flag, RIGI_GC_PROCESSING, memory_order_seq_cst);
+    /* 与 mutator 的二次检查构成完整握手：PROCESSING 发布前后跨越的
+     * store/load 竞态必须再排空一次，不能只依赖 x86 的强内存序。 */
+    atomic_thread_fence(memory_order_seq_cst);
+    gc_drain_cflags();
 
     /* （5）染色与清理（账本锁全程：与 fence 冻结配合，双保险） */
     gc_ledger_acquire();
     atomic_store_explicit(&gc_in_collect, 1, memory_order_relaxed);
     for (i = 0; i < gc_ledger_len; i++)
     {
-        round_debt += gc_ledger[i].size;
         gc_mark_gray(gc_ledger[i].object, &gc_trace_stack);
     }
     if (gc_trace_on)
@@ -1206,13 +1214,11 @@ static void gc_pass(void)
     gc_whites.len = 0;
     atomic_store_explicit(&gc_in_collect, 0, memory_order_relaxed);
 
-    /* 账本整轮出清，债务按本轮处理量扣除（保留新积累部分） */
+    /* 账本锁与 mutator fence 仍持有，且收集期禁止新增候选；账本整轮
+     * 出清时债务精确归零，不再重复减去已由摘除路径扣过的体积。
+     * 债务统一用 int64_t，避免 Windows 的 32 位 long 在大图上溢出。 */
     gc_ledger_len = 0;
-    {
-        long cur = atomic_load_explicit(&gc_debt, memory_order_relaxed);
-        long sub = round_debt < cur ? round_debt : cur;
-        atomic_fetch_sub_explicit(&gc_debt, sub, memory_order_relaxed);
-    }
+    atomic_store_explicit(&gc_debt, 0, memory_order_relaxed);
     gc_ledger_release();
 
     /* 结束前 fence：清理与元数据写入不得重排到 IDLE 发布之后 */
@@ -1308,7 +1314,7 @@ void rigi_gc_init(void)
     env = getenv("RIGI_RT_GC_THRESHOLD");
     if (env != NULL && env[0] != '\0')
     {
-        long v = strtol(env, NULL, 10);
+        int64_t v = strtoll(env, NULL, 10);
         if (v > 0)
         {
             gc_threshold = v;
@@ -1370,6 +1376,8 @@ void rigi_gc_shutdown(void)
     gc_thread_valid = 0;
 #endif
     gc_started = 0;
+    gc_ledger_acquire();
+    atomic_store_explicit(&gc_closed, 1, memory_order_relaxed);
     /* GC 自持资源全部走台账配对释放（shutdown 先于 mem_report 执行） */
     gc_vec_destroy(&gc_trace_stack);
     gc_vec_destroy(&gc_whites);
@@ -1377,6 +1385,7 @@ void rigi_gc_shutdown(void)
     gc_ledger = NULL;
     gc_ledger_len = 0;
     gc_ledger_cap = 0;
+    gc_ledger_release();
     gc_event_destroy(&gc_wake);
     gc_event_destroy(&gc_alarm);
 }

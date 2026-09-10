@@ -148,7 +148,7 @@ namespace RigiCompiler
                     callReceiver = LowerExpressionDispatcher.Visit(call.Receiver, ctx, env);
                     if (callReceiver != null)
                     {
-                        callReceiver = LoweringFacility.EnsureDeclaredType(call, callReceiver,
+                        callReceiver = LoweringFacility.EnsureReceiverType(call, callReceiver,
                             call.Method.Owner);
                     }
                 }
@@ -176,12 +176,6 @@ namespace RigiCompiler
             for (var i = 0; i < call.Arguments.Count; i++)
                 sealedArguments.Add(sealedSlots[slotIndex++]);
             if (call.IsIndirect) indirectTarget = sealedSlots[slotIndex];
-            if (call.Receiver != null && HandleCallLowering.IsHandle(call.Method))
-            {
-                return new LoweredCallStatement(call, HandleCallLowering.Helper(call.Method, env),
-                    HandleCallLowering.Arguments(call, callReceiver!, sealedArguments, env),
-                    typeArguments: HandleCallLowering.TypeArguments(call.Receiver));
-            }
             return new LoweredCallStatement(call, call.Method, sealedArguments, callReceiver,
                 call.TypeArguments, genericPack, indirectTarget);
         }
@@ -305,7 +299,10 @@ namespace RigiCompiler
             if (target == null || value == null) return null;
             var declaredType = (SemanticSymbol?)LoweringFacility.VariadicIndexAbiTypeOfPlace(
                 target, env) ?? assignment.Target.Type;
-            value = LoweringFacility.EnsureDeclaredType(assignment, value, declaredType);
+            value = target is LoweredIndexExpression
+                { Receiver: LoweredValueReferenceExpression { Symbol: ParameterSymbol { IsNamedVariadic: true } } }
+                ? LoweringFacility.AdaptNamedArgumentPair(assignment, value, declaredType, env)
+                : LoweringFacility.EnsureDeclaredType(assignment, value, declaredType);
             return new LoweredAssignmentStatement(assignment, target, value);
         }
     }

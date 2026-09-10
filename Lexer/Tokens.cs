@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 
 namespace RigiCompiler
 {
@@ -20,8 +21,33 @@ namespace RigiCompiler
 
     public abstract class Token
     {
+        public const int MaxContentLength = 1024 * 1024;
+        private readonly StringBuilder content = new();
         public CharRange CharRange = new();
-        public abstract string Content { get; set; }
+        public virtual string Content
+        {
+            get => content.ToString();
+            set
+            {
+                content.Clear();
+                if (value.Length > MaxContentLength)
+                    throw new LexerException($"Token length exceeds {MaxContentLength} characters");
+                content.Append(value);
+            }
+        }
+        public int ContentLength => content.Length;
+        public void Append(char value)
+        {
+            if (content.Length >= MaxContentLength)
+                throw new LexerException($"Token length exceeds {MaxContentLength} characters");
+            content.Append(value);
+        }
+        public void Append(string value)
+        {
+            if (value.Length > MaxContentLength - content.Length)
+                throw new LexerException($"Token length exceeds {MaxContentLength} characters");
+            content.Append(value);
+        }
         public abstract TokenType Type { get; }
         public override string ToString()
         {
@@ -35,8 +61,6 @@ namespace RigiCompiler
         {
             Content = content;
         }
-        public override string Content { get; set; }
-
         public override TokenType Type { get; } = TokenType.Word;
     }
 
@@ -46,8 +70,6 @@ namespace RigiCompiler
         {
             Content = content;
         }
-        public override string Content { get; set; }
-
         public override TokenType Type { get; } = TokenType.Comment;
     }
 
@@ -57,8 +79,6 @@ namespace RigiCompiler
         {
             Content = content;
         }
-        public override string Content { get; set; }
-
         public override TokenType Type { get; } = TokenType.String;
     }
 
@@ -115,7 +135,7 @@ namespace RigiCompiler
     public class LineBreakToken : Token
     {
 
-        public override string Content { get; set; } = "\n";
+        public LineBreakToken() { Content = "\n"; }
 
         public override TokenType Type { get; } = TokenType.LineBreak;
     }
@@ -126,8 +146,6 @@ namespace RigiCompiler
         {
             Content = content;
         }
-        public override string Content { get; set; }
-
         public override TokenType Type { get; } = TokenType.Notation;
     }
 

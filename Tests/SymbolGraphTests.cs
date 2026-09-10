@@ -72,7 +72,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("String 在 ValueType 分支", b.String.IsValueTypeBranch);
             TestHarness.CheckTrue("Object 不在 ValueType 分支", !b.Object.IsValueTypeBranch);
             TestHarness.CheckTrue("Any 不在 ValueType 分支", !b.Any.IsValueTypeBranch);
-            TestHarness.CheckTrue("Wrapper 恒 rich", b.Wrapper.IsRich);
+            TestHarness.CheckTrue("Wrapper 默认非 rich", !b.Wrapper.IsRich);
             TestHarness.CheckTrue("String 非 rich", !b.String.IsRich);
             TestHarness.CheckTrue("i32 非 rich", !b.Int32.IsRich);
 

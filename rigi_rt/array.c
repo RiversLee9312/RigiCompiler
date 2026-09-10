@@ -41,6 +41,12 @@ void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *ele
     size_t bytes;
     RigiObjectHeader *object;
 
+    /* 类型具化失败必须在分配前拒绝，禁止创建身份被擦除的数组。 */
+    if (sheet == NULL || elemSheet == NULL)
+    {
+        fprintf(stderr, "rigi_rt: contiguous type identity unavailable\n");
+        exit(1);
+    }
     if (len < 0)
     {
         rigi_abort_array_negative_length();

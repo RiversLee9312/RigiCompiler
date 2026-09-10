@@ -43,6 +43,8 @@ namespace RigiCompiler
     {
         // 只能由内嵌标准库加载器授予；文件名或用户声明不能伪造编译器特权。
         internal bool IsCompilerLibrary { get; set; }
+        // 内建声明资源的身份，不按用户提供的 sourceName 推断。
+        internal bool IsIntrinsicDeclarations { get; set; }
 
         // 顶层条目容器：全局声明、import、namespace（以及测试驱动的顶层字面量表达式）
         [ChildAstNode] public List<ASTNode> Declarations = new List<ASTNode>();

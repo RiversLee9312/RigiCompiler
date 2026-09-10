@@ -36,8 +36,76 @@
 //   Mutex（仅供 Dispatcher 内部队列一致性，不得跨挂起点持有，与语言级
 //   异步 Mutex 严格区分）、TLS 当前上下文、rigi_time_now 时钟。
 //   CoroutineLocal 栈（coro_local_push/pop/get/inherit）、
-//   句柄/帧/fn 指针统一以 i64 承载（native 参数类型受限，§4.6）。
+//   私有 native 桥接以 i64 承载 token/帧/fn；shared 状态持 Carrige，
+//   local CoroutineHandle 经 IDisposable 管理 NativeRc 强引用。
 namespace core.coroutine
+
+// CoroutineHandle 是 NativeRcHandle 的首个落地实现：操作面只存在于
+// 当前 Coroutine 的 local object；CoroutineCarrige 是无操作能力的
+// shared 弱票据。任何 shared Rigi 状态只保存 Carrige，不保存裸 token。
+priv interface ICoroutineHandle {
+    func lane(): i32
+    func setLane(lane: i32)
+    func resume(): i64
+    func inheritLocals()
+    func armPoll()
+    func pollPending(): bool
+    func schedulePoll()
+    func clearPoll()
+    func retire()
+}
+
+priv class CoroutineHandle : core.native.NativeRcHandle\<CoroutineCarrige> implements ICoroutineHandle {
+    priv var token: i64
+
+    internal init(_ -> token)
+
+    pub override func carry(): CoroutineCarrige {
+        if (token == (0 as i64)) {
+            throw new core.IllegalStateException("CoroutineHandle 已释放")
+        }
+        return new CoroutineCarrige(token)
+    }
+
+    pub override func dispose() {
+        if (token != (0 as i64)) {
+            const held = token
+            token = (0 as i64)
+            rigi_native_rc_release(held)
+        }
+    }
+
+    pub override func lane(): i32 { return rigi_coroutine_get_lane(token) }
+    pub override func setLane(lane: i32) { rigi_coroutine_set_lane(token, lane) }
+    pub override func resume(): i64 { return rigi_coroutine_resume(token) }
+    pub override func inheritLocals() { rigi_coro_local_inherit(token) }
+    pub override func armPoll() { rigi_poll_arm(token) }
+    pub override func pollPending(): bool { return (rigi_poll_pending(token) != 0) }
+    pub override func schedulePoll() { rigi_poll_schedule(token) }
+    pub override func clearPoll() { rigi_poll_clear(token) }
+
+    // 释放 Dispatcher/执行引擎持有的初始强引用；本 Handle 自己的强引用
+    // 仍由 dispose() 交还，因而 retire 后本调用段内 payload 仍然有效。
+    pub override func retire() { rigi_coroutine_destroy(token) }
+}
+
+priv shared class CoroutineCarrige implements core.native.ICarrige {
+    priv const token: i64
+    internal init(_ -> token)
+
+    pub override func retain(): Any? {
+        if (rigi_native_rc_retain(token) == 0) { return null }
+        return new CoroutineHandle(token) as Any
+    }
+}
+
+// 唯一的 Carrige→Handle 恢复点。调用者必须检查 null；成功结果由
+// seq using 接管，禁止显式 retain/release 配对散落在业务逻辑中。
+priv func retainCoroutine(carrige: CoroutineCarrige): CoroutineHandle? {
+    const retained = carrige.retain()
+    if (retained == null) { return null }
+    return retained as CoroutineHandle
+}
 
 pub shared class Task {
     priv const body: core.AsyncAction
@@ -61,10 +129,15 @@ pub shared class Task {
         // 生效）：桥同步 cohandle lane 槽（native 半场；VM 侧
         // set_lane hook 为空操作——VM 直接读 executor backing 换算 lane）
         pub set(value: _) {
-            if (handle != (0 as i64)) {
+            if (handle != null) {
                 const lane = laneOfExecutor(value)
                 if (lane >= 0) {
-                    rigi_coroutine_set_lane(handle, lane)
+                    const retained = retainCoroutine(handle as CoroutineCarrige)
+                    if (retained != null) {
+                        seq using(const nativeHandle = retained as CoroutineHandle) {
+                            nativeHandle.setLane(lane)
+                        }
+                    }
                 }
             }
         }
@@ -96,7 +169,7 @@ pub shared class Task {
                 "Task 只允许启动一次：对已完成启动的 Task 调用 run")
         }
         spawnIntoLocked()
-        const started = coldHandle
+        const started = coldHandle as CoroutineCarrige
         rigi_sync_mutex_release(gate)
         const dispatcher = new Dispatcher()
         dispatcher.noteSpawn()
@@ -112,14 +185,21 @@ pub shared class Task {
     // await 冷启动分支（生成代码）在同一 gate 临界区内直调本方法；
     // VM 不走本方法（VmDispatch.SpawnInto 直建协程并在引擎侧继承）
     priv func spawnIntoLocked() {
-        if (coldHandle == (0 as i64)) {
+        if (coldHandle == null) {
             bindColdBody()
         }
-        rigi_coro_local_inherit(coldHandle)
-        var lane = laneOfExecutor(executor)
-        if (lane < 0) { lane = new Dispatcher().laneOfCurrent() }
-        rigi_coroutine_set_lane(coldHandle, lane)
-        attachRuntime(coldHandle)
+        const carrige = coldHandle as CoroutineCarrige
+        const retained = retainCoroutine(carrige)
+        if (retained == null) {
+            throw new core.IllegalStateException("冷 Task 的 CoroutineHandle 已释放")
+        }
+        seq using(const nativeHandle = retained as CoroutineHandle) {
+            nativeHandle.inheritLocals()
+            var lane = laneOfExecutor(executor)
+            if (lane < 0) { lane = new Dispatcher().laneOfCurrent() }
+            nativeHandle.setLane(lane)
+        }
+        attachRuntime(carrige)
     }
 
     // 不透明冷 body 的动态 spawn-into（CoroutineSplit 在 MIR 层改写为
@@ -136,17 +216,17 @@ pub shared class Task {
     // 的调用方（运行时桥）必须持有 this.gate 的 sync mutex 临界区——
     // 「登记 waiter」与「挂起协程」须在同一临界区内原子完成（挂起机制
     // 属执行引擎，桥在临界区内代为执行），对齐旧 VM VmTask._gate 不变量。
-    priv var handle: i64 = (0 as i64)
+    priv var handle: CoroutineCarrige? = null
     priv var gate: i64 = (0 as i64)
     // 状态机的内部判定投影（enum struct 等值比较开销/形态未定型，
     // 临界区内以 i32 快读；与 pub state 恒同步迁移）
     priv var stateCode: i32 = 0
     priv var observed: bool = false
-    priv var waiters: I64Queue? = null
+    priv var waiters: CoroutineCarrigeQueue? = null
     // ===== MW11c 棒5a native 半场字段 =====
     // coldHandle：构造重写（$mw.coldtask.* 工厂）预建的协程句柄，
     // spawn-into 复用（Task↔协程 1:1，§18.4）；VM 不用（VM 直建）
-    priv var coldHandle: i64 = (0 as i64)
+    priv var coldHandle: CoroutineCarrige? = null
     // failureNodeId：native 失败注册表节点 id（0 = 未登记/已摘除——
     // 异常由 native 隐藏 refMap 槽持有，不增加 shared class 的 local
     // Exception 语言字段；VM 半场恒 0，registerWaiter 跳过 native 标记）。
@@ -156,11 +236,15 @@ pub shared class Task {
     // 热 Task 运行时附着（eager spawn，§18.1）：运行时桥建对象后调用，
     // 先于任何 resume/终态路径（gate 是后续一切临界区的前置；冷 Task
     // 已在构造时建好 gate，懒建仅兜底）
-    priv func attachRuntime(coroutine: i64) {
+    priv func attachRuntime(coroutine: CoroutineCarrige) {
         handle = coroutine
         if (gate == (0 as i64)) { gate = rigi_sync_mutex_create() }
         state = .Runnable
         stateCode = 1
+    }
+
+    priv func attachRuntimeNative(coroutine: i64) {
+        attachRuntime(new CoroutineCarrige(coroutine))
     }
 
     // 冷启动一次性判定（§18.4；桥持 gate 临界区内调用）：0 = 本次启动
@@ -202,20 +286,20 @@ pub shared class Task {
             return 2
         }
         if (stateCode == 5) { return 3 }
-        if (waiters == null) { waiters = new I64Queue() }
-        (waiters as I64Queue).push(waiter)
+        if (waiters == null) { waiters = new CoroutineCarrigeQueue() }
+        (waiters as CoroutineCarrigeQueue).push(new CoroutineCarrige(waiter))
         return 0
     }
 
     // 终态迁移 + waiter 排空（桥在临界区外逐个重新发布到 waiter 自己
     // 的 Executor，§18.3）；返回被排空的 waiter 句柄数组
-    priv func complete(): Array\<i64> {
+    priv func complete(): Array\<CoroutineCarrige> {
         state = .Completed
         stateCode = 3
         return takeWaiters()
     }
 
-    priv func fail(): Array\<i64> {
+    priv func fail(): Array\<CoroutineCarrige> {
         state = .Failed
         stateCode = 4
         // 已有 waiter / 已观察：登记时 observed 已置位，失败节点不得
@@ -227,18 +311,33 @@ pub shared class Task {
         return takeWaiters()
     }
 
-    priv func cancel(): Array\<i64> {
+    priv func cancel(): Array\<CoroutineCarrige> {
         state = .Cancelled
         stateCode = 5
         return takeWaiters()
     }
 
-    priv func takeWaiters(): Array\<i64> {
-        if (waiters == null) { return core.collections.arrayOf\<i64>(0) }
-        const drained = (waiters as I64Queue).drainToArray()
+    priv func takeWaiters(): Array\<CoroutineCarrige> {
+        if (waiters == null) { return core.collections.arrayOf\<CoroutineCarrige>(0) }
+        const drained = (waiters as CoroutineCarrigeQueue).drainToArray()
         waiters = null
         return drained
     }
+
+    // 编译器生成的 cold factory 唯一写入口：裸 token 在本同步调用内
+    // 立即封装成 Carrige，不进入 shared 字段。
+    priv func attachCold(coroutine: i64) {
+        coldHandle = new CoroutineCarrige(coroutine)
+    }
+
+    priv func publishRuntime() {
+        if (handle == null) {
+            throw new core.IllegalStateException("Task 尚未附着 CoroutineHandle")
+        }
+        new Dispatcher().publish(handle as CoroutineCarrige)
+    }
+
+    priv func hasRuntime(): bool { return (handle != null) }
 }
 
 pub shared class Task\<TReturn> {
@@ -256,7 +355,19 @@ pub shared class Task\<TReturn> {
 
     pub var executor: Executor? {
         pub get
-        pub set
+        pub set(value: _) {
+            if (handle != null) {
+                const lane = laneOfExecutor(value)
+                if (lane >= 0) {
+                    const retained = retainCoroutine(handle as CoroutineCarrige)
+                    if (retained != null) {
+                        seq using(const nativeHandle = retained as CoroutineHandle) {
+                            nativeHandle.setLane(lane)
+                        }
+                    }
+                }
+            }
+        }
     } = null
 
     pub func run() {
@@ -278,7 +389,7 @@ pub shared class Task\<TReturn> {
                 "Task 只允许启动一次：对已完成启动的 Task 调用 run")
         }
         spawnIntoLocked()
-        const started = coldHandle
+        const started = coldHandle as CoroutineCarrige
         rigi_sync_mutex_release(gate)
         const dispatcher = new Dispatcher()
         dispatcher.noteSpawn()
@@ -287,14 +398,21 @@ pub shared class Task\<TReturn> {
 
     // spawn-into 临界区段（同 Task.spawnIntoLocked）
     priv func spawnIntoLocked() {
-        if (coldHandle == (0 as i64)) {
+        if (coldHandle == null) {
             bindColdBody()
         }
-        rigi_coro_local_inherit(coldHandle)
-        var lane = laneOfExecutor(executor)
-        if (lane < 0) { lane = new Dispatcher().laneOfCurrent() }
-        rigi_coroutine_set_lane(coldHandle, lane)
-        attachRuntime(coldHandle)
+        const carrige = coldHandle as CoroutineCarrige
+        const retained = retainCoroutine(carrige)
+        if (retained == null) {
+            throw new core.IllegalStateException("冷 Task 的 CoroutineHandle 已释放")
+        }
+        seq using(const nativeHandle = retained as CoroutineHandle) {
+            nativeHandle.inheritLocals()
+            var lane = laneOfExecutor(executor)
+            if (lane < 0) { lane = new Dispatcher().laneOfCurrent() }
+            nativeHandle.setLane(lane)
+        }
+        attachRuntime(carrige)
     }
 
     // 不透明冷 body 的动态 spawn-into（同 Task.bindColdBody）
@@ -304,24 +422,28 @@ pub shared class Task\<TReturn> {
     }
 
     // ===== MW11c 棒4a 运行时通道（与 Task 同纪律，§17.4）=====
-    priv var handle: i64 = (0 as i64)
+    priv var handle: CoroutineCarrige? = null
     priv var gate: i64 = (0 as i64)
     priv var stateCode: i32 = 0
     priv var observed: bool = false
-    priv var waiters: I64Queue? = null
+    priv var waiters: CoroutineCarrigeQueue? = null
     // ===== MW11c 棒5a native 半场字段（语义注释见 Task 同名成员）=====
     // result：终态结果（native 半场——DONE 尾写入后调 complete()；
     // VM 终态存 VmCoroutine，本字段恒 null）。await 成功快路径读本
     // 字段解包。TReturn 经 shared 闭包约束（§18.2）
     priv var result: TReturn? = null
     priv var failureNodeId: i64 = (0 as i64)
-    priv var coldHandle: i64 = (0 as i64)
+    priv var coldHandle: CoroutineCarrige? = null
 
-    priv func attachRuntime(coroutine: i64) {
+    priv func attachRuntime(coroutine: CoroutineCarrige) {
         handle = coroutine
         if (gate == (0 as i64)) { gate = rigi_sync_mutex_create() }
         state = .Runnable
         stateCode = 1
+    }
+
+    priv func attachRuntimeNative(coroutine: i64) {
+        attachRuntime(new CoroutineCarrige(coroutine))
     }
 
     // 冷启动一次性判定（同 Task.tryStart；桥持 gate 临界区）
@@ -357,18 +479,18 @@ pub shared class Task\<TReturn> {
             return 2
         }
         if (stateCode == 5) { return 3 }
-        if (waiters == null) { waiters = new I64Queue() }
-        (waiters as I64Queue).push(waiter)
+        if (waiters == null) { waiters = new CoroutineCarrigeQueue() }
+        (waiters as CoroutineCarrigeQueue).push(new CoroutineCarrige(waiter))
         return 0
     }
 
-    priv func complete(): Array\<i64> {
+    priv func complete(): Array\<CoroutineCarrige> {
         state = .Completed
         stateCode = 3
         return takeWaiters()
     }
 
-    priv func fail(): Array\<i64> {
+    priv func fail(): Array\<CoroutineCarrige> {
         state = .Failed
         stateCode = 4
         // 已有 waiter / 已观察：登记时 observed 已置位，失败节点不得
@@ -380,18 +502,31 @@ pub shared class Task\<TReturn> {
         return takeWaiters()
     }
 
-    priv func cancel(): Array\<i64> {
+    priv func cancel(): Array\<CoroutineCarrige> {
         state = .Cancelled
         stateCode = 5
         return takeWaiters()
     }
 
-    priv func takeWaiters(): Array\<i64> {
-        if (waiters == null) { return core.collections.arrayOf\<i64>(0) }
-        const drained = (waiters as I64Queue).drainToArray()
+    priv func takeWaiters(): Array\<CoroutineCarrige> {
+        if (waiters == null) { return core.collections.arrayOf\<CoroutineCarrige>(0) }
+        const drained = (waiters as CoroutineCarrigeQueue).drainToArray()
         waiters = null
         return drained
     }
+
+    priv func attachCold(coroutine: i64) {
+        coldHandle = new CoroutineCarrige(coroutine)
+    }
+
+    priv func publishRuntime() {
+        if (handle == null) {
+            throw new core.IllegalStateException("Task 尚未附着 CoroutineHandle")
+        }
+        new Dispatcher().publish(handle as CoroutineCarrige)
+    }
+
+    priv func hasRuntime(): bool { return (handle != null) }
 }
 
 // Task 公开状态投影（§18.2）：Running 与 Runnable 对用户不可区分，
@@ -484,7 +619,7 @@ pub shared class Mutex {
 
     priv var gate: i64
     priv var held: bool
-    priv var waiters: I64Queue?
+    priv var waiters: CoroutineCarrigeQueue?
 
     pub init() {
         gate = rigi_sync_mutex_create()
@@ -512,8 +647,8 @@ pub shared class Mutex {
             held = true
             return 0
         }
-        if (waiters == null) { waiters = new I64Queue() }
-        (waiters as I64Queue).push(waiter)
+        if (waiters == null) { waiters = new CoroutineCarrigeQueue() }
+        (waiters as CoroutineCarrigeQueue).push(new CoroutineCarrige(waiter))
         return 1
     }
 
@@ -523,15 +658,15 @@ pub shared class Mutex {
     // 否则 linux 上持锁 Mutex 析构会 abort（win 侧 uv_mutex 较宽容）
     pub func release(lock: Lock) {
         rigi_sync_mutex_acquire(gate)
-        var next: i64 = 0 as i64
+        var next: CoroutineCarrige? = null
         try {
             next = releaseNext(lock)
         } finally(e) {
             rigi_sync_mutex_release(gate)
         }
-        if (next != (0 as i64)) {
+        if (next != null) {
             const dispatcher = new Dispatcher()
-            dispatcher.publish(next)
+            dispatcher.publish(next as CoroutineCarrige)
         }
     }
 
@@ -539,7 +674,7 @@ pub shared class Mutex {
     // 抛 core.IllegalStateException。返回被唤醒的队首 waiter 句柄
     // （0=无 waiter，锁转空闲；有 waiter 则锁所有权直接移交队首，
     // held 保持 true——FIFO handoff，无 barging 窗口）
-    priv func releaseNext(lock: Lock): i64 {
+    priv func releaseNext(lock: Lock): CoroutineCarrige? {
         if (lock.released or (lock.ownerToken != gate)) {
             throw new core.IllegalStateException(
                 "Mutex.release：令牌不属于此 Mutex 或已释放")
@@ -547,10 +682,10 @@ pub shared class Mutex {
         lock.released = true
         if (waiters == null) {
             held = false
-            return (0 as i64)
+            return null
         }
-        const next = (waiters as I64Queue).tryPop()
-        if (next == (0 as i64)) { held = false }
+        const next = (waiters as CoroutineCarrigeQueue).tryPop()
+        if (next == null) { held = false }
         return next
     }
 
@@ -681,16 +816,15 @@ pub shared class CoroutineLocal\<TValue> {
 
 // ===== MW11c 棒4a：Dispatcher 与内部队列（§17.4 Rigi 世界调度逻辑）=====
 
-// i64 句柄环形队列：Dispatcher 的 runnable 队列、Task 的 waiter 链与
-// 未观察失败清单共用。令牌 0 保留（rigi_rt 交接协议：0=唤醒无任务），
-// 队列不承载 0 以外的哨兵语义
-priv shared class I64Queue {
-    priv var items: Array\<i64>
+// CoroutineCarrige 环形队列：Dispatcher runnable 队列、Task/Mutex waiter
+// 链共用。队列只保存 shared 搬运票据，不保存可操作句柄或裸 token。
+priv shared class CoroutineCarrigeQueue {
+    priv var items: Array\<CoroutineCarrige>
     priv var head: i32
     priv var count: i32
 
     pub init() {
-        items = core.collections.arrayOf\<i64>(8)
+        items = core.collections.arrayOf\<CoroutineCarrige>(8)
         head = 0
         count = 0
     }
@@ -699,7 +833,7 @@ priv shared class I64Queue {
         return (count == 0)
     }
 
-    pub func push(value: i64) {
+    pub func push(value: CoroutineCarrige) {
         if (count == items.length) { grow() }
         var slot = head + count
         if (slot >= items.length) { slot = slot - items.length }
@@ -707,10 +841,9 @@ priv shared class I64Queue {
         count = count + 1
     }
 
-    // 0 = 空（句柄恒非 0，与交接协议同口径）
-    pub func tryPop(): i64 {
-        if (count == 0) { return (0 as i64) }
-        const value = (items[head] as i64)
+    pub func tryPop(): CoroutineCarrige? {
+        if (count == 0) { return null }
+        const value = (items[head] as CoroutineCarrige)
         head = head + 1
         if (head == items.length) { head = 0 }
         count = count - 1
@@ -718,13 +851,13 @@ priv shared class I64Queue {
     }
 
     // 排空为数组（Task 终态的 waiter 发布用），队列复位
-    pub func drainToArray(): Array\<i64> {
-        const result = core.collections.arrayOf\<i64>(count)
+    pub func drainToArray(): Array\<CoroutineCarrige> {
+        const result = core.collections.arrayOf\<CoroutineCarrige>(count)
         var i: i32 = 0
         while (i < count) {
             var slot = head + i
             if (slot >= items.length) { slot = slot - items.length }
-            result[i] = (items[slot] as i64)
+            result[i] = (items[slot] as CoroutineCarrige)
             i = i + 1
         }
         head = 0
@@ -733,12 +866,12 @@ priv shared class I64Queue {
     }
 
     priv func grow() {
-        const bigger = core.collections.arrayOf\<i64>(items.length * 2)
+        const bigger = core.collections.arrayOf\<CoroutineCarrige>(items.length * 2)
         var i: i32 = 0
         while (i < count) {
             var slot = head + i
             if (slot >= items.length) { slot = slot - items.length }
-            bigger[i] = (items[slot] as i64)
+            bigger[i] = (items[slot] as CoroutineCarrige)
             i = i + 1
         }
         items = bigger
@@ -746,7 +879,7 @@ priv shared class I64Queue {
     }
 }
 
-// Dispatcher：调度逻辑主体（§17.4）——runnable 队列（I64Queue + sync
+// Dispatcher：调度逻辑主体（§17.4）——runnable 队列（CarrigeQueue + sync
 // mutex 临界区 + sem 交接协议）、live 计数/quiescence、未观察失败清单、
 // Worker 循环。棒4b 形态：三 lane（§20.1 内置 Executor 恰好三个）——
 // Main lane 恒投主 Worker（句柄 0，主线程）；Compute/IO lane 首次发布
@@ -755,9 +888,9 @@ priv shared class I64Queue {
 // 终态），非单 Executor 语义
 priv shared singleton class Dispatcher {
     priv var gate: i64
-    priv var mainQueue: I64Queue
-    priv var computeQueue: I64Queue
-    priv var ioQueue: I64Queue
+    priv var mainQueue: CoroutineCarrigeQueue
+    priv var computeQueue: CoroutineCarrigeQueue
+    priv var ioQueue: CoroutineCarrigeQueue
     priv var live: i32
     // Compute/IO 的 Worker 句柄与懒建标记（gate 内完成登记后置 started，
     // 0 是合法主 Worker 句柄，故不能以 0 当「未建」哨兵）
@@ -769,9 +902,9 @@ priv shared singleton class Dispatcher {
 
     pub init() {
         gate = rigi_sync_mutex_create()
-        mainQueue = new I64Queue()
-        computeQueue = new I64Queue()
-        ioQueue = new I64Queue()
+        mainQueue = new CoroutineCarrigeQueue()
+        computeQueue = new CoroutineCarrigeQueue()
+        ioQueue = new CoroutineCarrigeQueue()
         live = 0
         computeWorkers = core.collections.arrayOf\<i64>(0)
         computeIdle = core.collections.arrayOf\<bool>(0)
@@ -843,8 +976,13 @@ priv shared singleton class Dispatcher {
     // 生效——本发布即「下一恢复点」）；Compute/IO 首次发布时懒起
     // Worker（§20.1 Worker 懒建）。internal：Task 启动壳/生成代码/
     // 导出符号 rigi_dispatch_publish 共用
-    internal func publish(handle: i64) {
-        const lane = rigi_coroutine_get_lane(handle)
+    internal func publish(carrige: CoroutineCarrige) {
+        const retained = retainCoroutine(carrige)
+        if (retained == null) { return }
+        var lane: i32 = 0
+        seq using(const nativeHandle = retained as CoroutineHandle) {
+            lane = nativeHandle.lane()
+        }
         var worker = (0 as i64)
         rigi_sync_mutex_acquire(gate)
         if (lane == 1) {
@@ -860,7 +998,7 @@ priv shared singleton class Dispatcher {
                 }
                 computeStarted = true
             }
-            computeQueue.push(handle)
+            computeQueue.push(carrige)
             // 空闲标记与队列由同一 gate 保护；一个发布只认领一枚空闲 Worker。
             worker = (-1 as i64)
             var i: i32 = 0
@@ -877,10 +1015,10 @@ priv shared singleton class Dispatcher {
                     ioWorker = rigi_worker_create((0 as i64))
                     ioStarted = true
                 }
-                ioQueue.push(handle)
+                ioQueue.push(carrige)
                 worker = ioWorker
             } else {
-                mainQueue.push(handle)
+                mainQueue.push(carrige)
                 worker = (0 as i64)
             }
         }
@@ -914,12 +1052,18 @@ priv shared singleton class Dispatcher {
 
     // 终态 waiter 批量重发布（Task 终态桥在临界区外逐个发布到
     // waiter 自己的 Executor lane，§18.3；生成代码 DONE 尾调用）
-    internal func publishAll(waiters: Array\<i64>) {
+    internal func publishAll(waiters: Array\<CoroutineCarrige>) {
         var i: i32 = 0
         while (i < waiters.length) {
-            publish((waiters[i] as i64))
+            publish((waiters[i] as CoroutineCarrige))
             i = i + 1
         }
+    }
+
+    // Native/Middleware 回调边界：裸 token 在本同步调用内立即降为
+    // Carrige，后续 shared 存储只看搬运票据。
+    internal func publishNative(token: i64) {
+        publish(new CoroutineCarrige(token))
     }
 
     // 用户 EventAlarm 默认底座懒建（L8，§19.3）：gate 临界区内双检 +
@@ -936,20 +1080,20 @@ priv shared singleton class Dispatcher {
     }
 
     // 按 Worker 身份取本 lane 队首（0 = 空；Worker 只消费自己的 lane）
-    priv func nextFor(worker: i64): i64 {
+    priv func nextFor(worker: i64): CoroutineCarrige? {
         rigi_sync_mutex_acquire(gate)
-        var handle = (0 as i64)
+        var carrige: CoroutineCarrige? = null
         if (computeStarted and (computeIndex(worker) >= 0)) {
-            handle = computeQueue.tryPop()
+            carrige = computeQueue.tryPop()
         } else {
             if (ioStarted and (worker == ioWorker)) {
-                handle = ioQueue.tryPop()
+                carrige = ioQueue.tryPop()
             } else {
-                handle = mainQueue.tryPop()
+                carrige = mainQueue.tryPop()
             }
         }
         rigi_sync_mutex_release(gate)
-        return handle
+        return carrige
     }
 
     priv func quiescent(): bool {
@@ -973,11 +1117,14 @@ priv shared singleton class Dispatcher {
             if (quiescent()) { return }
             rigi_worker_park(worker)
             if (quiescent()) { return }
-            const handle = nextFor(worker)
-            if (handle != (0 as i64)) {
-                const code = rigi_coroutine_resume(handle)
-                if (code == (2 as i64)) {
-                    rigi_coroutine_destroy(handle)
+            const carrige = nextFor(worker)
+            if (carrige != null) {
+                const retained = retainCoroutine(carrige as CoroutineCarrige)
+                if (retained != null) {
+                    seq using(const nativeHandle = retained as CoroutineHandle) {
+                        const code = nativeHandle.resume()
+                        if (code == (2 as i64)) { nativeHandle.retire() }
+                    }
                 }
             }
             prepareComputeWait(worker)
@@ -1034,6 +1181,16 @@ priv native func rigi_coroutine_resume(handle: i64): i64
 @NativeLibrary("rigi_rt")
 @NativeSymbol("coroutine_destroy")
 priv native func rigi_coroutine_destroy(handle: i64)
+
+// NativeRc 通用强引用面。只由具体 Carrige/Handle 实现调用；Carrige
+// retain 失败返回空，Handle.dispose 幂等地交还成功取得的强引用。
+@NativeLibrary("rigi_rt")
+@NativeSymbol("native_rc_retain")
+priv native func rigi_native_rc_retain(token: i64): i32
+
+@NativeLibrary("rigi_rt")
+@NativeSymbol("native_rc_release")
+priv native func rigi_native_rc_release(token: i64)
 
 // 定时器原语：Timer 与 sleep 的时钟底座（§19.4/§19.5）。棒3 契约
 // 调整：棒2 仅 deadline 一参，缺属主 Worker/重复间隔/响铃回调通道，

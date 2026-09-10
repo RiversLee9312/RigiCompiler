@@ -243,14 +243,12 @@ RigiCompiler/
 │                                #   TypeSymbol 回挂兼识别标记））、
 │                                #   SymbolGraph 构造泛型驻留 + Freeze + Substitute
 │                                #   单源与构造类型 BaseType 创建即代入/统一回填、BootstrapSymbols
-│                                #   （String.Add intrinsic、Any.toString open 承诺
-│                                #   + Object open override 默认实现；统一 Public；
-│                                #   Array\<T> getAtIndex/setAtIndex operator——索引绑定
-│                                #   内建目标，P4b 直发 §13.6 不走 invoke；删
-│                                #   DowngradeRouter/DowngradeChain/ProxySpecialization
-│                                #   等合成槽；BootstrapSymbols.CallWildcard =
-│                                #   Any.call???（pub native rigi_rt/call???，§22.5
-│                                #   VM hook，EnsureCallWildcard 幂等，胖值签名））、
+│                                #   （从 stdlib/.intrinsics.rg 绑定固定 ABI 类型身份；
+│                                #   Any/Object 默认方法、索引运算符和 wrapper 能力
+│                                #   均来自源码声明，不用硬编码成员登记器。
+│                                #   IntrinsicDeclarationChecker 核对固定布局；
+│                                #   Array 索引 P4b 直发 §13.6；Any.call??? 的
+│                                #   默认错误处理为普通源码体，路由由后续降级负责）、
 │                                #   CanonicalSymbolPrinter
 ├── Lowering/                 # 中端 P4：依赖方向 Lowering → Semantic/Bil 单向
 │   ├── ClosureStoragePlan.cs    # 统一 cell 存储判定表（§5.2 捕获 + §14.3 wrapper 值；读 getValue/写 setValue/对象引用 + init 豁免）
@@ -527,10 +525,11 @@ RigiCompiler/
 
 Place/Handle 的编译链入口为 `Semantic/Binding/Visitors/PlaceOfVisitor.cs`
 与 `Semantic/Binding/UnsafeGates.cs`；稳定存储复用既有 Cell 工厂。
-`Lowering/Rewriters/PlaceOfRewriter.cs` 构造 Place，
-`Lowering/Rewriters/HandleCallLowering.cs` 投影能力调用；
+`Lowering/Rewriters/PlaceOfRewriter.cs` 构造 Place；Handle/MutableHandle
+保留普通具化类身份，通过标准库私有 ObjectHandleStorage 访问 Rigi 存储；
 `Bil/BilVerifier.Unsafe.cs` 验证权限及保留构造入口。原生侧复用普通引用
 计数与对象图扫描管理 `.handle` 的隐藏目标，不建立独立 MQ 注册表。
+该 Rigi 对象能力与 NativeRcHandle 的 native 互操作生命周期设施无关。
 
 ## 4. 核心设计决策（改动代码前必须理解）
 
@@ -545,7 +544,7 @@ var result = 1 + (2 * 3)     // ✅ 必须加括号
 
 ### 4.2 ⚠️ `rich` / `shared` 是类型**声明**修饰符，不是类型引用修饰符
 
-- `rich`：**仅用于 struct / enum struct / wrapper**（class 不能用）。允许值类型持有引用，但仍是值语义、unique ownership（类似 `unique_ptr`，**不是** `shared_ptr`）。wrapper 恒为 rich struct，`rich` 由声明形式隐含，显式书写是编译错误。
+- `rich`：**仅用于 struct / enum struct / wrapper**（class 不能用）。允许值类型持有引用，但仍是值语义、unique ownership（类似 `unique_ptr`，**不是** `shared_ptr`）。wrapper 默认非 rich，按需显式声明 rich；特殊宿主回指 self 不属于普通字段，不受 rich 持有规则限制。
 - `shared`：class、rich struct、wrapper 可用，表示允许跨协程共享；`singleton` class 必须 shared。
 - 二者**单向传染**：基类 rich/shared ⇒ 子类必须同标，反向可收紧（详见 SYNTAX §3.1.1）。
 - 使用类型时（变量声明、函数参数）**永远不写** `rich`/`shared`。因此 `TypeReferenceParserLayer` 不处理它们；它们属于 class/struct 声明解析的职责。

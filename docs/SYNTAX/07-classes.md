@@ -50,7 +50,7 @@ pub shared class SharedSession {
 | `priv` | 私有访问（显式，与默认一致） |
 | （无） | private（默认） |
 | `static` | 静态方法/字段 |
-| `rich` | 允许 struct 直接或间接持有 Object；仅适用于 struct/enum struct（wrapper 恒为 rich，不显式书写） |
+| `rich` | 允许值类型直接或间接持有 Object；适用于 struct/enum struct/wrapper，均按需显式声明 |
 | `shared` | 将 class 声明为可跨协程共享的对象类型，或将 rich struct / wrapper 声明为可进入共享图的值类型 |
 | `async` | 调用时创建新协程并返回 Task；函数写在声明前（`async func`）；lambda 写在 `{` 之后、参数列表之前（`func{async (...)...}`，见 §5.4） |
 | `native` | 声明无函数体的原生函数，由运行时原生方法面提供实现；仅适用于函数，须配 `@NativeLibrary`（§4.6） |

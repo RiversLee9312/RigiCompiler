@@ -20,6 +20,21 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return existing;
             }
+            if (TypeLayout.IsArray(MirType.Of(canonical)))
+            {
+                var arrayTemplate = symbols.FindTypeByRef(canonical);
+                if (arrayTemplate == null)
+                {
+                    var declaration = new BilTypeDeclaration(TypeLayout.ArrayTypeCanonical, BilTypeKind.Class);
+                    declaration.GenericParameters.Add("T");
+                    arrayTemplate = new MwTypeSymbol(declaration, true,
+                        System.Array.Empty<MwMemberSymbol>(), System.Array.Empty<MwCaseSymbol>());
+                }
+                SynthesizeArrayPlan(arrayTemplate, symbols, table, bodies);
+                return GenericAbi.IsClosedConstructed(canonical)
+                    ? SynthesizeArrayPlan(new MwTypeSymbol(canonical, arrayTemplate), symbols, table, bodies)
+                    : table.Find(GenericAbi.PlanKey(arrayTemplate));
+            }
             if (TypeLayout.IsNullable(MirType.Of(canonical)))
             {
                 if (!GenericAbi.IsClosedConstructed(canonical)) return null;
@@ -161,6 +176,27 @@ namespace RigiCompiler.Middleware.Layout
                 iMap, templatePlan.RefMap, templatePlan.EnumCases,
                 basePlan, templatePlan.HiddenTypeIdSlots,
                 VTablePlanner.CollectIfaceClosure(canonical, constructed, symbols));
+            table.Add(plan);
+            return plan;
+        }
+
+        // 数组共享固定前缀布局，但绝不共享闭合类型身份。偏移 16 已有的
+        // 元素 sheet 同时为源码实例方法提供类级 T，不新增隐藏存储。
+        private static TypeLayoutPlan SynthesizeArrayPlan(MwTypeSymbol type,
+            MwSymbolTable symbols, LayoutPlanTable table, IReadOnlySet<string>? bodies)
+        {
+            if (table.Find(GenericAbi.PlanKey(type)) is { } existing) return existing;
+            var slots = new List<string> { LayoutEngine.InitDispatchSlot };
+            slots.AddRange(LayoutEngine.InstanceMethods(type).Select(member => member.Canonical));
+            var iMap = new List<(string, int)>();
+            foreach (var iface in type.Declaration.ImplementsTypes)
+                VTablePlanner.AppendInterfaceSegment(slots, iMap, iface, symbols, table,
+                    type.Canonical, bodies);
+            var plan = new TypeLayoutPlan(type, TypeLayoutKind.Class,
+                TypeLayout.ArrayPrefixSize, LayoutEngine.ReferenceSlotSize, TypeLayoutPlan.FlagArray,
+                System.Array.Empty<FieldPlan>(), slots, iMap, System.Array.Empty<ushort>(),
+                System.Array.Empty<(MwCaseSymbol, uint)>(), null,
+                new[] { ("T", 16) }, VTablePlanner.CollectIfaceClosure(type.Canonical, type, symbols));
             table.Add(plan);
             return plan;
         }

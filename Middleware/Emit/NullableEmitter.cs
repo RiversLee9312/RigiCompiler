@@ -3,6 +3,7 @@ using LLVMSharp.Interop;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Runtime;
+using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Middleware.Emit
 {
@@ -31,7 +32,8 @@ namespace RigiCompiler.Middleware.Emit
                 var builder = session.Builder;
                 var slots = session.Slots;
                 var fat = session.LoadLocal(builder, slots, inst.Source);
-                UnwrapToSlot(session, builder, slots, fat, inst.InnerType, inst.Target);
+                UnwrapToSlot(session, builder, slots, fat, inst.InnerType, inst.Target,
+                    inst.ExcTarget);
             }
         }
 
@@ -106,7 +108,7 @@ namespace RigiCompiler.Middleware.Emit
 
         private static void UnwrapToSlot(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
-            LLVMValueRef fat, MirType inner, string target)
+            LLVMValueRef fat, MirType inner, string target, MirBlock? excTarget)
         {
             var destType = slots[target].Local.Type;
             if (MirBuilder.IsScalarOrString(destType))
@@ -115,51 +117,87 @@ namespace RigiCompiler.Middleware.Emit
             }
             else if (IsReferenceElement(session, inner) || IsReferenceElement(session, destType))
             {
+                var typeId = builder.BuildExtractValue(fat, 0, "opt.ref.typeid");
+                var payload = builder.BuildExtractValue(fat, 1, "opt.ref.payload");
+                // Any 接受任意非空类型；其它目标（包括开放泛型）必须
+                // 与当前调用帧的真实具化 sheet 核验，禁止退化为裸模板。
+                if (destType.IsAnyOrObject)
+                {
+                    var nullType = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, typeId,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
+                        "opt.ref.null.t");
+                    var nullPayload = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, payload,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
+                        "opt.ref.null.p");
+                    var nullMismatch = builder.BuildAnd(nullType, nullPayload, "opt.ref.null");
+                    var diagnosticSheet = session.TypeSheetFor("core::Any");
+                    BoxEmitter.EmitThrowOnMismatch(session, builder, nullMismatch, diagnosticSheet,
+                        MirType.Of(".nullable<" + destType.Canonical + ">"), excTarget);
+                    builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat,
+                        "opt.unwrap"), slots[target].Slot);
+                    return;
+                }
+                var targetSheet = NewEmitter.MaterializeClassSheet(session, builder,
+                    slots, destType.Canonical);
+                var (isFn, isType) = CallEmitter.DeclareHelperFace(session,
+                    RuntimeFaces.TypeIs, LLVMTypeRef.Int32,
+                    new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64, PointerType() });
+                var hit = builder.BuildCall2(isType, isFn,
+                    new[] { typeId, payload, targetSheet }, "opt.ref.is");
+                var mismatch = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, hit,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false),
+                    "opt.ref.bad");
+                // Task<T?> 完成时 result 的内层值可以合法为 null；Nullable
+                // 共用零胖值表示。目标本身仍可空时只检查非空值的元素身份。
+                if (TypeLayout.IsNullable(destType) || TypeLayout.IsGenericPlaceholder(destType))
+                {
+                    var nullBits = builder.BuildOr(typeId, payload, "opt.ref.bits");
+                    var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nullBits,
+                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "opt.ref.empty");
+                    // T 可以实际具化为 U?；不能仅凭泛型占位放行 null，
+                    // 也不能把 T? 的外层语法当作 T 本身可空的证明。
+                    var allowsNull = TypeLayout.IsNullable(destType)
+                        ? LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1, false)
+                        : IsNullableSheet(session, builder, targetSheet);
+                    var validNull = builder.BuildAnd(isNull, allowsNull, "opt.ref.valid.null");
+                    mismatch = builder.BuildAnd(mismatch, builder.BuildNot(validNull), "opt.ref.nonnull.bad");
+                }
+                BoxEmitter.EmitThrowOnMismatch(session, builder, mismatch, targetSheet,
+                    MirType.Of(".nullable<" + destType.Canonical + ">"), excTarget);
                 builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat, "opt.unwrap"),
                     slots[target].Slot);
                 return;
             }
-            var typeId = builder.BuildExtractValue(fat, 0, "opt.typeid");
-            var payload = builder.BuildExtractValue(fat, 1, "opt.payload");
-            var tag = builder.BuildLShr(typeId,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagShift, false),
-                "opt.tag");
-            var isTag0 = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagInline, false),
-                "opt.tag0");
-            var fn = session.CurrentFunction;
-            var tag0Block = fn.AppendBasicBlock("opt.tag0");
-            var tag1Block = fn.AppendBasicBlock("opt.tag1");
-            var joinBlock = fn.AppendBasicBlock("opt.join");
-            builder.BuildCondBr(isTag0, tag0Block, tag1Block);
-
-            var abi = ArrayEmitter.ElementAbi(session, inner);
-            builder.PositionAtEnd(tag0Block);
-            if (abi.Kind is ArrayElementKind.InlineValue or ArrayElementKind.String)
-            {
-                var tmp = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int64, "opt.bits");
-                builder.BuildStore(payload, tmp);
-                session.EmitMemCopy(builder, slots[target].Slot, tmp,
-                    System.Math.Min(abi.Stride, 8));
-            }
-            else
-            {
-                builder.BuildStore(UnboxScalarBits(builder, payload, inner),
-                    slots[target].Slot);
-            }
-            builder.BuildBr(joinBlock);
-
-            builder.PositionAtEnd(tag1Block);
-            var box = builder.BuildIntToPtr(payload, PointerType(), "opt.box");
-            session.EmitMemCopy(builder, slots[target].Slot, box, abi.Stride);
-            ArcEmitter.EmitValueAcquire(session, builder, slots[target].Slot, inner);
-            builder.BuildBr(joinBlock);
-
-            builder.PositionAtEnd(joinBlock);
+            BoxEmitter.UnboxToSlot(session, builder, fat, inner, slots[target].Slot,
+                MirType.Of(".nullable<" + inner.Canonical + ">"), excTarget);
         }
 
         private static bool IsReferenceElement(ModuleBuilder.Session session, MirType element) =>
             ArrayEmitter.ElementAbi(session, element).Kind == ArrayElementKind.Reference;
+
+        private static LLVMValueRef IsNullableSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef sheet)
+        {
+            var result = LlvmEmitEnvironment.BuildEntryAlloca(builder, LLVMTypeRef.Int1, "opt.nullable");
+            builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false), result);
+            var loadInfo = session.CurrentFunction.AppendBasicBlock("opt.nullable.sheet");
+            var loadElement = session.CurrentFunction.AppendBasicBlock("opt.nullable.info");
+            var done = session.CurrentFunction.AppendBasicBlock("opt.nullable.done");
+            builder.BuildCondBr(builder.BuildIsNull(sheet), done, loadInfo);
+            builder.PositionAtEnd(loadInfo);
+            var infoField = builder.BuildStructGEP2(TypeSheetEmitter.SheetStructType(session.Context),
+                sheet, (uint)TypeSheetAbi.FieldTypeInfoId, "opt.info.ptr");
+            var info = builder.BuildLoad2(PointerType(), infoField, "opt.info");
+            builder.BuildCondBr(builder.BuildIsNull(info), done, loadElement);
+            builder.PositionAtEnd(loadElement);
+            var elementField = builder.BuildStructGEP2(TypeInfoEmitter.InfoStructType(session.Context),
+                info, (uint)TypeSheetAbi.InfoFieldNullableElement, "opt.element.ptr");
+            var element = builder.BuildLoad2(PointerType(), elementField, "opt.element");
+            builder.BuildStore(builder.BuildIsNotNull(element), result);
+            builder.BuildBr(done);
+            builder.PositionAtEnd(done);
+            return builder.BuildLoad2(LLVMTypeRef.Int1, result, "opt.nullable.value");
+        }
 
         private static bool IsTag0Wrap(ArrayElementAbi abi)
         {

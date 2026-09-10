@@ -139,11 +139,10 @@ namespace RigiCompiler
                 // 参数（包约束在 DerivePack 逐推导类型检查）；不满足的候选
                 // 与同元数过滤同层静默剔除；全部剔除才回放首候选的约束诊断
                 var eligible = matching
-                    .Where(m => SatisfiesConstraints(explicitTypeArgs, m, env)).ToList();
+                    .Where(m => SatisfiesConstraints(explicitTypeArgs, m, env, receiverType)).ToList();
                 if (eligible.Count == 0)
                 {
-                    GenericConstraints.CheckArguments(explicitTypeArgs,
-                        FixedGenericParameters(matching[0]), node.Span, env);
+                    SatisfiesConstraints(explicitTypeArgs, matching[0], env, receiverType, node.Span, report: true);
                     return null;
                 }
                 // 混合候选：固定显式实参 + 包由值实参推导；代入视图用
@@ -154,7 +153,7 @@ namespace RigiCompiler
                 {
                     if (HasVariadicGenericPack(method))
                     {
-                        var pack = DerivePack(method, arguments, prebound!, node, env);
+                        var pack = DerivePack(method, arguments, prebound!, node, env, receiverType);
                         if (pack == null) return null;
                         var combined = BuildSubstitutionArgs(method, explicitTypeArgs,
                             pack.Value.PackType);
@@ -180,7 +179,7 @@ namespace RigiCompiler
                     .ToList();
                 foreach (var candidate in candidates.Where(IsGenericPackCandidate))
                 {
-                    var pack = DerivePack(candidate, arguments, prebound!, node, env);
+                    var pack = DerivePack(candidate, arguments, prebound!, node, env, receiverType);
                     if (pack == null) return null;
                     var view = ViewOf(candidate, new[] { pack.Value.PackType }, receiverType, env);
                     pool.Add(view);
@@ -195,7 +194,7 @@ namespace RigiCompiler
                     var inferred = TryInferFixedTypeArgs(candidate, arguments, prebound!,
                         receiverType, env);
                     if (inferred == null) continue;
-                    if (!SatisfiesConstraints(inferred, candidate, env))
+                    if (!SatisfiesConstraints(inferred, candidate, env, receiverType))
                     {
                         constraintFailed = true;
                         constraintWitness ??= candidate;
@@ -204,7 +203,7 @@ namespace RigiCompiler
                     }
                     if (HasVariadicGenericPack(candidate))
                     {
-                        var pack = DerivePack(candidate, arguments, prebound!, node, env);
+                        var pack = DerivePack(candidate, arguments, prebound!, node, env, receiverType);
                         if (pack == null) return null;
                         var combined = BuildSubstitutionArgs(candidate, inferred, pack.Value.PackType);
                         var view = ViewOf(candidate, combined, receiverType, env, inferred);
@@ -220,8 +219,7 @@ namespace RigiCompiler
                 {
                     if (constraintFailed && constraintWitness != null && constraintArgs != null)
                     {
-                        GenericConstraints.CheckArguments(constraintArgs,
-                            FixedGenericParameters(constraintWitness), node.Span, env);
+                        SatisfiesConstraints(constraintArgs, constraintWitness, env, receiverType, node.Span, report: true);
                     }
                     else
                     {
@@ -350,7 +348,7 @@ namespace RigiCompiler
             {
                 var inferred = TryInferFromBoundArgs(candidate, boundArgs, receiverType, env);
                 if (inferred == null) continue;
-                if (!SatisfiesConstraints(inferred, candidate, env))
+                if (!SatisfiesConstraints(inferred, candidate, env, receiverType))
                 {
                     constraintFailed = true;
                     constraintWitness ??= candidate;
@@ -363,8 +361,7 @@ namespace RigiCompiler
             {
                 if (constraintFailed && constraintWitness != null && constraintArgs != null)
                 {
-                    GenericConstraints.CheckArguments(constraintArgs,
-                        FixedGenericParameters(constraintWitness), node.Span, env);
+                    SatisfiesConstraints(constraintArgs, constraintWitness, env, receiverType, node.Span, report: true);
                 }
                 else if (candidates.Any(m => m.GenericParameters.Count > 0))
                 {
@@ -657,7 +654,7 @@ namespace RigiCompiler
         // BIL §7.1）。多可变泛型参数归口诊断。返回 null = 已诊断
         private static (BoundGenericVarArgsArgument Pack, SemanticSymbol PackType)? DerivePack(
             MethodSymbol method, List<ArgumentASTNode> arguments, BoundExpression?[] boundArgs,
-            ASTNode node, BindEnvironment env)
+            ASTNode node, BindEnvironment env, TypeSymbol? receiverType)
         {
             var variadics = method.GenericParameters
                 .Where(p => p.IsVariadic || p.IsNamedVariadic).ToList();
@@ -702,7 +699,11 @@ namespace RigiCompiler
                 // 逐推导类型约束检查（SYNTAX §4.3：推导出的每个类型实参
                 // 必须满足对应泛型参数的约束），失败定位到实参
                 if (!GenericConstraints.CheckArguments(new[] { type },
-                    new[] { packParameter }, argument.Value.Span ?? argument.Span, env))
+                    new[] { packParameter }, argument.Value.Span ?? argument.Span, env.Unit.Symbols, env.Error,
+                    bound => SubstituteAll(bound, Array.Empty<GenericParameterSymbol>(),
+                        Array.Empty<SemanticSymbol>(), method.Owner?.GenericParameters
+                            ?? (IReadOnlyList<GenericParameterSymbol>)Array.Empty<GenericParameterSymbol>(),
+                        HostArgumentsOf(method, receiverType, env), env) ?? bound))
                 {
                     return null;
                 }
@@ -739,9 +740,8 @@ namespace RigiCompiler
         // 身份（this 上下文、ext 成员等）。代入失败（仅防御）回退声明类型。
         // storedTypeArgs：写入视图的固定泛型实参（显式或推断；全可变包/
         // 非泛型为空）。substitution 用 typeArgs（混合形态含包容器类型）。
-        private static CandidateView ViewOf(MethodSymbol method,
-            IReadOnlyList<SemanticSymbol>? typeArgs, TypeSymbol? receiverType,
-            BindEnvironment env, IReadOnlyList<SemanticSymbol>? storedTypeArgs = null)
+        private static List<SemanticSymbol>? HostArgumentsOf(MethodSymbol method,
+            TypeSymbol? receiverType, BindEnvironment env)
         {
             List<SemanticSymbol>? hostArgs = null;
             if (method.Owner != null && receiverType != null
@@ -772,6 +772,14 @@ namespace RigiCompiler
                     }
                 }
             }
+            return hostArgs;
+        }
+
+        private static CandidateView ViewOf(MethodSymbol method,
+            IReadOnlyList<SemanticSymbol>? typeArgs, TypeSymbol? receiverType,
+            BindEnvironment env, IReadOnlyList<SemanticSymbol>? storedTypeArgs = null)
+        {
+            var hostArgs = HostArgumentsOf(method, receiverType, env);
             var generics = method.GenericParameters;
             var args = typeArgs ?? Array.Empty<SemanticSymbol>();
             IReadOnlyList<GenericParameterSymbol> hostGenerics = method.Owner != null
@@ -840,15 +848,21 @@ namespace RigiCompiler
 
         // 逐候选约束满足判定（§3.6，静默版 GenericConstraints.CheckArguments）：
         // 候选过滤层不可落诊断，此处只判不报；显式实参只对照固定泛型参数
-        // （包约束在 DerivePack）。判定语义与跳过规则（ErrorType 毒化/含未
-        // 代入泛型参数跳过）与 GenericConstraints 保持一致——全部候选均不
+        // （包约束在 DerivePack）。开放参数也须证明，只有 ErrorType 毒化
+        // 静默传播；与 GenericConstraints 保持一致——全部候选均不
         // 满足时由调用方回放 CheckArguments 产出诊断
         private static bool SatisfiesConstraints(IReadOnlyList<SemanticSymbol> typeArgs,
-            MethodSymbol candidate, BindEnvironment env)
+            MethodSymbol candidate, BindEnvironment env, TypeSymbol? receiverType,
+            CharRange? span = null, bool report = false)
         {
+            var hostArgs = HostArgumentsOf(candidate, receiverType, env);
+            IReadOnlyList<GenericParameterSymbol> hostGenerics = candidate.Owner?.GenericParameters
+                ?? (IReadOnlyList<GenericParameterSymbol>)Array.Empty<GenericParameterSymbol>();
             // 静默诊断槽复用同一门禁，推断调用不能绕过安全容器能力证明。
             return GenericConstraints.CheckArguments(typeArgs, FixedGenericParameters(candidate),
-                null, env.Unit.Symbols, static (_, _) => { });
+                span, env.Unit.Symbols, report ? env.Error : static (_, _) => { },
+                bound => SubstituteAll(bound, candidate.GenericParameters, typeArgs,
+                    hostGenerics, hostArgs, env) ?? bound);
         }
 
         // 结构映射（静默）：mapping[实参序] = 形参序；null = 结构不适用。

@@ -8,6 +8,7 @@
  */
 #include "cohandle.h"
 #include "arc.h"
+#include "native_rc.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -34,13 +35,15 @@ typedef struct RigiCoHandle
     RigiResumeFn resume;
     void *frame;
     _Atomic int64_t lane;
-    int poll_armed;          /* 仅属主线程（执行段内）读写 */
-    uint32_t poll_backoff_ms;
+    _Atomic int poll_armed;
+    _Atomic uint32_t poll_backoff_ms;
     int64_t poll_timer;      /* rigi_timer_* 句柄；0 = 无 */
     RigiLocalBind *locals;   /* 绑定栈顶；NULL = 空 */
+    int64_t token;           /* NativeRc 注册表身份；Carrige 仅携带此值 */
 } RigiCoHandle;
 
 static void rigi_ch_locals_clear(RigiCoHandle *h);
+static void rigi_ch_destroy_payload(void *payload);
 
 static RigiCoHandle *rigi_ch_of(int64_t handle, const char *face)
 {
@@ -49,7 +52,7 @@ static RigiCoHandle *rigi_ch_of(int64_t handle, const char *face)
         fprintf(stderr, "rigi_rt: %s 收到空句柄（编译器 bug）\n", face);
         abort();
     }
-    return (RigiCoHandle *)(uintptr_t)handle;
+    return (RigiCoHandle *)rigi_native_rc_payload_of(handle, face);
 }
 
 int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame)
@@ -68,12 +71,13 @@ int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame)
     h->resume = (RigiResumeFn)(uintptr_t)resume_fn;
     h->frame = (void *)(uintptr_t)frame;
     atomic_init(&h->lane, 0);
-    h->poll_armed = 0;
-    h->poll_backoff_ms = 1;
+    atomic_init(&h->poll_armed, 0);
+    atomic_init(&h->poll_backoff_ms, 1);
     h->poll_timer = 0;
     h->locals = NULL;
+    h->token = rigi_native_rc_create(h, rigi_ch_destroy_payload);
     rigi_stat_note_create();
-    return (int64_t)(uintptr_t)h;
+    return h->token;
 }
 
 int64_t rigi_coroutine_resume(int64_t handle)
@@ -102,12 +106,20 @@ int64_t rigi_coroutine_resume(int64_t handle)
 
 void rigi_coroutine_destroy(int64_t handle)
 {
-    RigiCoHandle *h = rigi_ch_of(handle, "rigi_coroutine_destroy");
+    (void)rigi_ch_of(handle, "rigi_coroutine_destroy");
+    rigi_native_rc_release(handle);
+}
+
+static void rigi_ch_destroy_payload(void *payload)
+{
+    RigiCoHandle *h = (RigiCoHandle *)payload;
     /* 轮询定时器随终态清理（VM DisposePollTimer 同口径：终态 choke
      * point 统一释放）；frame 所有权在生成代码 */
     if (h->poll_timer != 0)
     {
-        rigi_poll_clear(handle);
+        int64_t timer = h->poll_timer;
+        h->poll_timer = 0;
+        rigi_timer_destroy(timer);
     }
     rigi_ch_locals_clear(h);
 #ifdef RIGI_HAS_LIBUV
@@ -134,7 +146,8 @@ int32_t rigi_coroutine_get_lane(int64_t handle)
 
 int64_t rigi_coroutine_current(void)
 {
-    return (int64_t)(uintptr_t)rigi_tls_get_coroutine();
+    RigiCoHandle *h = (RigiCoHandle *)rigi_tls_get_coroutine();
+    return h == NULL ? 0 : h->token;
 }
 
 /* ---- PollingAlarm 轮询状态 ---- */
@@ -146,31 +159,35 @@ int64_t rigi_coroutine_current(void)
  * 保持置位，恢复块 pending 查询据此进入探测分支） */
 static void rigi_ch_poll_fired(void *ctx)
 {
-    RigiCoHandle *h = (RigiCoHandle *)ctx;
+    int64_t token = (int64_t)(uintptr_t)ctx;
+    RigiCoHandle *h = rigi_ch_of(token, "rigi_ch_poll_fired");
     int64_t timer = h->poll_timer;
     /* 到期时仍在 timer 属主线程，先摘除旧 timer 再允许协程迁移。 */
     h->poll_timer = 0;
     if (timer != 0) rigi_timer_destroy(timer);
-    rigi_dispatch_publish((int64_t)(uintptr_t)ctx);
+    rigi_dispatch_publish(token);
 }
 
 void rigi_poll_arm(int64_t handle)
 {
     RigiCoHandle *h = rigi_ch_of(handle, "rigi_poll_arm");
-    h->poll_armed = 1;
-    h->poll_backoff_ms = 1;
+    atomic_store_explicit(&h->poll_armed, 1, memory_order_release);
+    atomic_store_explicit(&h->poll_backoff_ms, 1, memory_order_release);
 }
 
 int32_t rigi_poll_pending(int64_t handle)
 {
-    return rigi_ch_of(handle, "rigi_poll_pending")->poll_armed ? 1 : 0;
+    return atomic_load_explicit(
+        &rigi_ch_of(handle, "rigi_poll_pending")->poll_armed,
+        memory_order_acquire) ? 1 : 0;
 }
 
 void rigi_poll_schedule(int64_t handle)
 {
     RigiCoHandle *h = rigi_ch_of(handle, "rigi_poll_schedule");
     int64_t owner = rigi_tls_current_context();
-    uint32_t delay = h->poll_backoff_ms;
+    uint32_t delay = atomic_load_explicit(&h->poll_backoff_ms,
+        memory_order_acquire);
     if (h->poll_timer != 0)
     {
         rigi_timer_destroy(h->poll_timer);
@@ -181,14 +198,15 @@ void rigi_poll_schedule(int64_t handle)
     h->poll_timer = rigi_timer_create(owner, (int64_t)delay, 0,
         (int64_t)(uintptr_t)&rigi_ch_poll_fired, handle);
     /* 下一次退避翻倍，封顶 32ms */
-    h->poll_backoff_ms = delay >= 32 ? 32 : delay * 2;
+    atomic_store_explicit(&h->poll_backoff_ms,
+        delay >= 32 ? 32 : delay * 2, memory_order_release);
 }
 
 void rigi_poll_clear(int64_t handle)
 {
     RigiCoHandle *h = rigi_ch_of(handle, "rigi_poll_clear");
-    h->poll_armed = 0;
-    h->poll_backoff_ms = 1;
+    atomic_store_explicit(&h->poll_armed, 0, memory_order_release);
+    atomic_store_explicit(&h->poll_backoff_ms, 1, memory_order_release);
     if (h->poll_timer != 0)
     {
         int64_t timer = h->poll_timer;

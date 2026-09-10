@@ -529,7 +529,19 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef EmitAlloc(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef elemSheet, LLVMValueRef length)
         {
-            var arraySheet = session.TypeSheetFor(TypeLayout.ArrayTypeCanonical);
+            // 与 Span 一样按实际元素 sheet 选择闭合类型；未收集的具化
+            // 必须由运行时拒绝，不能伪装为裸 Array 或 Object。
+            var arraySheet = LLVMValueRef.CreateConstPointerNull(PointerType());
+            if (session.Layout != null)
+                foreach (var plan in session.Layout.Plans)
+                    if (TypeLayout.IsArray(MirType.Of(plan.Symbol.Canonical))
+                        && GenericAbi.IsClosedConstructed(plan.Symbol.Canonical)
+                        && TypeLayout.TryGetContiguousElement(MirType.Of(plan.Symbol.Canonical), out var element)
+                        && TryTypeSheetPointer(session, builder, element, out var expected))
+                        arraySheet = builder.BuildSelect(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
+                            elemSheet, expected, "arr.elem.eq"),
+                            CastToBytePtr(builder, session.TypeSheetFor(plan.Symbol.Canonical)),
+                            arraySheet, "arr.sheet.sel");
             var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.AllocArray,
                 PointerType(), new[] { PointerType(), PointerType(), LLVMTypeRef.Int32 });
             return builder.BuildCall2(fnType, fn,
@@ -540,7 +552,7 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder, LLVMValueRef objectPointer)
         {
             return CallEmitter.BuildFatReference(session, builder,
-                session.TypeSheetFor(TypeLayout.ArrayTypeCanonical), objectPointer);
+                builder.BuildLoad2(PointerType(), objectPointer, "arr.actual.sheet"), objectPointer);
         }
 
         private static LLVMValueRef EmitSpanAlloc(ModuleBuilder.Session session,
@@ -554,7 +566,7 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 闭合具化直接取全局；开放（spanOf 泛型体）按 elemSheet 在已
-        // 收集的同族具化中选择，无一则回退 Object sheet。
+        // 收集的同族具化中选择，无一则交分配入口拒绝，不能回退 Object。
         private static LLVMValueRef ResolveSpanSheet(ModuleBuilder.Session session,
             LLVMBuilderRef builder, MirType resultType, LLVMValueRef elemSheet)
         {
@@ -564,8 +576,7 @@ namespace RigiCompiler.Middleware.Emit
                 return CastToBytePtr(builder, closed);
             }
             var wantShared = TypeLayout.IsSharedSpan(resultType);
-            var fallback = CastToBytePtr(builder, session.TypeSheetFor("core::Object"));
-            var selected = fallback;
+            var selected = LLVMValueRef.CreateConstPointerNull(PointerType());
             if (session.Layout == null)
             {
                 return selected;
@@ -593,9 +604,7 @@ namespace RigiCompiler.Middleware.Emit
         private static bool TryTypeSheetPointer(ModuleBuilder.Session session,
             LLVMBuilderRef builder, MirType type, out LLVMValueRef pointer)
         {
-            var key = TypeLayout.IsArray(type)
-                ? TypeLayout.ArrayTypeCanonical
-                : TypeLayout.BuiltinSheetCanonical(type);
+            var key = TypeLayout.BuiltinSheetCanonical(type);
             if (session.TryGetTypeSheet(key, out var sheet)
                 || session.TryGetTypeSheet(type.Canonical, out sheet))
             {
@@ -731,9 +740,11 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMValueRef TypeSheetPointer(ModuleBuilder.Session session,
             LLVMBuilderRef builder, MirType type)
         {
-            var key = TypeLayout.IsArray(type)
-                ? TypeLayout.ArrayTypeCanonical
-                : TypeLayout.BuiltinSheetCanonical(type);
+            // 元素元数据先保留闭合类型身份；Nullable<T> 不得因内建
+            // 别名投影而丢掉 T，开放构造使用当前函数的隐藏 typeid。
+            if (TypeLayout.IsNullable(type) || TypeLayout.IsArray(type))
+                return NewEmitter.MaterializeClassSheet(session, builder, session.Slots, type.Canonical);
+            var key = TypeLayout.BuiltinSheetCanonical(type);
             if (session.TryGetTypeSheet(key, out var sheet)
                 || session.TryGetTypeSheet(type.Canonical, out sheet))
             {

@@ -49,7 +49,7 @@ void rigi_string_acquire(const char *data)
 }
 
 /* GC 已停世界时不能再次进入 mutator fence；共享同一字符串释放实现。 */
-static void rigi_string_release_unfenced(const char *data)
+void rigi_string_release_unfenced(const char *data)
 {
     RigiStringBlock *block;
     if (data == NULL)

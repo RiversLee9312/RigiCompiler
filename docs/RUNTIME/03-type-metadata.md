@@ -23,7 +23,7 @@
 
 ---
 
-具化 `Nullable<T>` 具有独立 TypeSheet 身份。TypeInfo 的 Native 字段序为 `name`、`sheet`、`wrappers`、`wrapperCount`、`ifaceClosure`、`ifaceClosureCount`、`nullableElement`；最后一项为 Nullable 的元素 TypeSheet 指针，其余类型为 NULL。Nullable 仍使用原胖值表示，此元数据不引入新的值对象。泛型 typeid 不得将闭合 Nullable 擦为裸 Nullable：动态 cast 接受 null，非 null 按元素类型检查；`is` 对 null 仍为 false，对非 null 按元素类型判断。
+具化 `Nullable<T>` 具有独立 TypeSheet 身份。TypeInfo 的 Native 字段序为 `name`、`sheet`、`wrappers`、`wrapperCount`、`ifaceClosure`、`ifaceClosureCount`、`nullableElement`、`typeIdBound`、`destroyNative`。`nullableElement` 为 Nullable 的元素 TypeSheet 指针，其余类型为 NULL。`typeIdBound` 仅对类型句柄 `Type<TBound>` 指向边界 TypeSheet；运行时必须先验证来源确为类型句柄，不能把普通整数当成 TypeSheet 地址。`destroyNative` 是可选的原生销毁回调。Nullable 仍使用原胖值表示，此元数据不引入新的值对象。泛型 typeid 不得将闭合 Nullable 擦为裸 Nullable：动态 cast 接受 null，非 null 按元素类型检查；`is` 对 null 仍为 false，对非 null 按元素类型判断。
 
 ## 7. vtable 模型
 

@@ -96,7 +96,7 @@ namespace RigiCompiler.Bil
             "core::u8", "core::u16", "core::u32", "core::u64",
             "core::float", "core::double", "core::bool", "core::char", "core::String",
             // 泛型内建（§3.1.2 特权类型；BIL 多经 .typeid/.nullable 构造头引用）
-            "core::Type", "core::Span", "core::SharedSpan", "core::Nullable", "core::Box",
+            "core::Type", "core::Span", "core::SharedSpan", "core::Nullable", "core::Box", "core::Array", "core::Map",
         };
 
         private static readonly string[] PredefinedMethods =
@@ -248,6 +248,7 @@ namespace RigiCompiler.Bil
         // 类型（剥泛型实参后的基名 ∈ 类型符号集合）
         public bool IsResolvableTypeRef(string typeRef)
         {
+            if (TypeNestingDepth(typeRef) > 64) return false;
             if (IsBuiltinType(typeRef))
             {
                 return true;
@@ -280,7 +281,37 @@ namespace RigiCompiler.Bil
                     return true;
                 }
             }
-            return TypeSymbols.Contains(StripTypeArguments(typeRef));
+            var arguments = TypeArgumentsOf(typeRef);
+            var head = StripTypeArguments(typeRef);
+            if (IsPredefinedTypeHost(head))
+            {
+                var arity = head == "core::Map" ? 2 : head is "core::Type" or "core::Span" or "core::SharedSpan"
+                    or "core::Nullable" or "core::Box" or "core::Array" ? 1 : 0;
+                return (arguments?.Count ?? 0) == arity
+                    && (arguments == null || arguments.All(IsResolvableTypeRef));
+            }
+            if (!TypeDeclarations.ContainsKey(DeclarationKeyOf(typeRef))) return false;
+            return arguments == null || arguments.All(IsResolvableTypeRef);
+        }
+
+        private static int TypeNestingDepth(string typeRef)
+        {
+            var depth = 0;
+            var maximum = 0;
+            foreach (var ch in typeRef)
+            {
+                if (ch == '<')
+                {
+                    depth++;
+                    if (depth > maximum) maximum = depth;
+                }
+                else if (ch == '>')
+                {
+                    depth--;
+                    if (depth < 0) return int.MaxValue;
+                }
+            }
+            return depth == 0 ? maximum : int.MaxValue;
         }
 
         // 剥泛型实参后缀（"com.example::Box<.i32>" → "com.example::Box"）——
@@ -433,21 +464,39 @@ namespace RigiCompiler.Bil
         // 协变（in/out 类型参数）归后续里程碑，届时在此放宽
         public static bool TypesCompatible(string actual, string expected)
         {
-            if (actual.Contains(".generic<") || expected.Contains(".generic<"))
-            {
-                return true;
-            }
-            return NormalizeTypeRef(actual) == NormalizeTypeRef(expected);
+            actual = NormalizeTypeRef(actual);
+            expected = NormalizeTypeRef(expected);
+            if (actual == expected) return true;
+            // 只有完整占位叶子留待运行期 typeid 检查；外层构造、元数和
+            // 其余实参仍须一致，禁止因某处含泛型就放行整个不相干类型。
+            if (IsGenericLeaf(actual) || IsGenericLeaf(expected)) return true;
+            var left = TypeArgumentsOf(actual);
+            var right = TypeArgumentsOf(expected);
+            return left != null && right != null && left.Count == right.Count
+                && StripTypeArguments(actual) == StripTypeArguments(expected)
+                && left.Zip(right).All(pair => TypesCompatible(pair.First, pair.Second));
         }
+
+        private static bool IsGenericLeaf(string typeRef) =>
+            typeRef.StartsWith(".generic<", StringComparison.Ordinal)
+            && typeRef.EndsWith(">", StringComparison.Ordinal)
+            && TypeNestingDepth(typeRef) == 1;
 
         // 调用签名的赋值兼容：在严格 canonical 相等之外，消费 BIL 类型声明中
         // 的 in/out 元数据。索引、wrapper 链等专用形态继续使用上面的严格比较。
         public bool TypesAssignable(string actual, string expected)
         {
-            if (actual.Contains(".generic<") || expected.Contains(".generic<")) return true;
+            return TypesAssignable(actual, expected,
+                new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        private bool TypesAssignable(string actual, string expected, HashSet<string> visited)
+        {
+            if (IsGenericLeaf(actual) || IsGenericLeaf(expected)) return true;
             var normalizedActual = NormalizeTypeRef(actual);
             var normalizedExpected = NormalizeTypeRef(expected);
             if (normalizedActual == normalizedExpected) return true;
+            if (TypesCompatible(normalizedActual, normalizedExpected)) return true;
             // 运行期精确类型 → 声明类型：.null / T 均可赋给 .nullable<T>
             // （is/supers 等可赋值性图；init 匹配已改为静态类型 TypesEqual）
             if (normalizedActual == ".null" && IsNullableType(normalizedExpected, out _))
@@ -455,7 +504,7 @@ namespace RigiCompiler.Bil
                 return true;
             }
             if (IsNullableType(normalizedExpected, out var nullableInner)
-                && TypesAssignable(normalizedActual, nullableInner))
+                && TypesAssignable(normalizedActual, nullableInner, visited))
             {
                 return true;
             }
@@ -474,14 +523,13 @@ namespace RigiCompiler.Bil
                         : BilGenericVariance.None;
                     if (variance == BilGenericVariance.Out)
                     {
-                        if (!TypesAssignable(actualArguments[i], expectedArguments[i])) return false;
+                        if (!TypesAssignable(actualArguments[i], expectedArguments[i], visited)) return false;
                     }
                     else if (variance == BilGenericVariance.In)
                     {
-                        if (!TypesAssignable(expectedArguments[i], actualArguments[i])) return false;
+                        if (!TypesAssignable(expectedArguments[i], actualArguments[i], visited)) return false;
                     }
-                    else if (NormalizeTypeRef(actualArguments[i])
-                        != NormalizeTypeRef(expectedArguments[i]))
+                    else if (!TypesCompatible(actualArguments[i], expectedArguments[i]))
                     {
                         return false;
                     }
@@ -489,23 +537,41 @@ namespace RigiCompiler.Bil
                 return true;
             }
 
-            return IsNominalAssignable(normalizedActual, normalizedExpected,
-                new HashSet<string>(StringComparer.Ordinal));
+            return IsNominalAssignable(normalizedActual, normalizedExpected, visited);
         }
 
         private bool IsNominalAssignable(string actual, string expected, HashSet<string> visited)
         {
             if (NormalizeTypeRef(actual) == NormalizeTypeRef(expected)) return true;
-            // 构造形态 → 自身开放宿主恒可赋值（擦除方向的 cast：B<.i32> → B；
-            // 实参信息多于目标，声明级名义包含即成立——实例方法 receiver 的
-            // 擦除 cast（BIL §7）沿 extends 链命中构造基类时经此放行）
-            if (TypeArgumentsOf(actual) != null
-                && StripTypeArguments(actual) == NormalizeTypeRef(expected)) return true;
-            if (!visited.Add(DeclarationKeyOf(actual))) return false;
+            if (visited.Count >= 256 || !visited.Add(actual + "->" + expected)) return false;
             if (!TryGetTypeDeclaration(actual, out var declaration)) return false;
+            // BIL class 省略 extends 时仍继承 Object；与源码默认基类及
+            // 原生 TypeSheet 祖先链一致，不涉及任意泛型构造间的兼容。
+            if (declaration.Kind == BilTypeKind.Class && declaration.ExtendsType == null
+                && expected == "core::Object") return true;
+            var arguments = TypeArgumentsOf(actual);
+            var replacements = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (arguments != null && arguments.Count == declaration.GenericParameters.Count)
+                for (var i = 0; i < arguments.Count; i++)
+                {
+                    replacements[".generic<$.generic." + declaration.GenericParameters[i] + ">"] = arguments[i];
+                    replacements[".generic<" + declaration.GenericParameters[i] + ">"] = arguments[i];
+                }
+            // 一次性树形代入，插入的实参不再被其它参数二次替换。
+            string Substitute(string reference)
+            {
+                if (replacements.TryGetValue(reference, out var replacement)) return replacement;
+                var parts = TypeArgumentsOf(reference);
+                return parts == null ? reference
+                    : StripTypeArguments(reference) + "<" + string.Join(",", parts.Select(Substitute)) + ">";
+            }
             if (declaration.ExtendsType != null
-                && TypesAssignable(declaration.ExtendsType, expected)) return true;
-            return declaration.ImplementsTypes.Any(iface => TypesAssignable(iface, expected));
+                && TypesAssignable(Substitute(declaration.ExtendsType), expected, visited)) return true;
+            foreach (var iface in declaration.ImplementsTypes)
+            {
+                if (TypesAssignable(Substitute(iface), expected, visited)) return true;
+            }
+            return false;
         }
 
         private static List<string>? TypeArgumentsOf(string typeRef)
@@ -555,11 +621,44 @@ namespace RigiCompiler.Bil
         // 相等（§6.4 的 Wrap ≠ Wrap\<T\> 不适用：Box\<.i32\> 的实例成员
         // 符号宿主即 Box）。归一化须在剥实参之前：cell 隐藏子类的
         // ExtendsType 投影为特权拼写 .cell<.i32>，先剥会使别名表失配
-        private static bool HostMatches(string chainNodeType, string ownerRef)
+        private bool HostMatches(string chainNodeType, string ownerRef)
         {
-            return StripTypeArguments(NormalizeTypeRef(chainNodeType))
-                == StripTypeArguments(NormalizeTypeRef(ownerRef));
+            var normalizedNode = NormalizeTypeRef(chainNodeType);
+            var normalizedOwner = NormalizeTypeRef(ownerRef);
+            // 预定义泛型的裸成员 owner 是声明身份，不是一个擦除后的值类型。
+            // 与普通声明相同，要求构造头与固定元数都吻合；此分支不参与 as/is。
+            var builtinHead = ownerRef switch
+            {
+                "core::Type" or "core::Nullable" or "core::Array" or "core::Map"
+                    or "core::Span" or "core::SharedSpan" or "core::Box" => ownerRef,
+                _ => null,
+            };
+            if (builtinHead != null)
+                return StripTypeArguments(normalizedNode) == builtinHead
+                    && TypeArgumentsOf(normalizedNode) is { } arguments
+                    && arguments.Count == (ownerRef == "core::Map" ? 2 : 1)
+                    && arguments.All(IsResolvableTypeRef);
+            var ownerKey = DeclarationKeyOf(normalizedOwner);
+            if (!TypeDeclarations.ContainsKey(ownerKey)
+                && normalizedOwner.IndexOf('<') < 0)
+            {
+                // 未消歧的成员 owner（如 Atomic$load）只在该符号唯一
+                // 对应一个类型元数时才可解析；同名 Task/Task<T>
+                // 必须由 Task 或 Task<TReturn> 各自精确区分。
+                string? unique = null;
+                foreach (var entry in TypeDeclarations)
+                {
+                    if (entry.Value.Symbol != normalizedOwner) continue;
+                    if (unique != null) return false;
+                    unique = entry.Key;
+                }
+                if (unique != null) ownerKey = unique;
+            }
+            return DeclarationKeyOf(normalizedNode) == ownerKey;
         }
+
+        public bool IsExactHostDeclaration(string typeRef, string ownerRef) =>
+            HostMatches(typeRef, ownerRef);
 
         // 沿 extends 链解析「宿主在 owner 定义处的构造形态」（成员签名
         // 泛型代入用）：从 typeRef 出发逐跳 ExtendsType，命中定义级归属

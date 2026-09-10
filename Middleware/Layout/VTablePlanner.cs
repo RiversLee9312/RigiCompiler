@@ -268,12 +268,9 @@ namespace RigiCompiler.Middleware.Layout
         internal static string KeyOf(MwSymbolTable symbols, string canonical) =>
             symbols.FindMember(canonical)!.SignatureKey;
 
-        // override 匹配：精确签名键，或名+顶层参数个数（具化 $$call(x:.i32)
-        // 对 Func$$call(arg0:.generic<T0>) 与泛型基类具化 override
-        // Base<T>.m(x:T) → m(x:.i32)）。参数个数兜底对运算符（$$ 族键以 $
-        // 开头）禁用：普通运算符的重载（同名不同参，如 $$equals(other:Base)
-        // 对 $$equals(other:Derived)）参数个数相同但语义独立，误中会错盖
-        // 基槽；$$call 保留兜底（具化槽匹配的原设计用途）
+        // override 匹配：精确签名键，或把继承槽中的泛型占位按结构统一到
+        // 成员签名。绝不能仅凭名字+参数个数覆盖，否则换了参数类型的伪
+        // override 会把调用方引到 ABI 不兼容实现。
         internal static bool CompatibleSignature(MwSymbolTable symbols, string slotCanonical,
             string memberKey)
         {
@@ -286,8 +283,9 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return true;
             }
-            if (memberKey.StartsWith("$", System.StringComparison.Ordinal)
-                && !memberKey.StartsWith("$call(", System.StringComparison.Ordinal))
+            if (!slotKey.Contains(".generic<", System.StringComparison.Ordinal)
+                || (memberKey.StartsWith("$", System.StringComparison.Ordinal)
+                    && !memberKey.StartsWith("$call(", System.StringComparison.Ordinal)))
             {
                 return false;
             }
@@ -298,7 +296,67 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return false;
             }
-            return ParameterCount(slotKey) == ParameterCount(memberKey);
+            var slotParameters = ParameterTypes(slotKey);
+            var memberParameters = ParameterTypes(memberKey);
+            if (slotParameters.Count != memberParameters.Count) return false;
+            var substitution = new Dictionary<string, string>(System.StringComparer.Ordinal);
+            for (var i = 0; i < slotParameters.Count; i++)
+            {
+                if (!TryMatchTypePattern(slotParameters[i], memberParameters[i], substitution))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static List<string> ParameterTypes(string signatureKey)
+        {
+            var open = signatureKey.IndexOf('(');
+            var close = signatureKey.LastIndexOf(')');
+            var result = new List<string>();
+            if (open < 0 || close <= open + 1) return result;
+            foreach (var part in BilVerificationContext.SplitTopLevel(
+                signatureKey.Substring(open + 1, close - open - 1)))
+            {
+                var colon = part.IndexOf(':');
+                if (colon < 0) return new List<string>();
+                result.Add(MwTypeKey.Normalize(part.Substring(colon + 1)));
+            }
+            return result;
+        }
+
+        private static bool TryMatchTypePattern(string pattern, string actual,
+            Dictionary<string, string> substitution)
+        {
+            pattern = MwTypeKey.Normalize(pattern);
+            actual = MwTypeKey.Normalize(actual);
+            if (GenericAbi.TryPlaceholderName(pattern, out var name))
+            {
+                if (substitution.TryGetValue(name, out var existing))
+                {
+                    return existing == actual;
+                }
+                substitution[name] = actual;
+                return true;
+            }
+            if (pattern == actual) return true;
+            var patternArgs = ConstructedTypeCollector.TypeArgumentsOf(pattern);
+            var actualArgs = ConstructedTypeCollector.TypeArgumentsOf(actual);
+            if (patternArgs.Count == 0 || patternArgs.Count != actualArgs.Count
+                || BilVerificationContext.StripTypeArguments(pattern)
+                    != BilVerificationContext.StripTypeArguments(actual))
+            {
+                return false;
+            }
+            for (var i = 0; i < patternArgs.Count; i++)
+            {
+                if (!TryMatchTypePattern(patternArgs[i], actualArgs[i], substitution))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         internal static int ParameterCount(string signatureKey)

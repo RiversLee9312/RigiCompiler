@@ -145,10 +145,19 @@ namespace RigiCompiler.Tests
         // core.collections 与 .bootstrap 的 EnumerateInRange 注册）
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies)
             BindUnitWithStdlib(params string[] sources)
+            => BindUnitWithStdlibSources(false, sources);
+
+        // 标准库内部测试显式标记可信 AST，用户源测试不授予此权限。
+        private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies)
+            BindUnitWithStdlibSources(bool compilerLibraryFixture, params string[] sources)
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            roots.AddRange(sources.Select(source => {
+                var root = TestHarness.ParseRoot(source);
+                root.IsCompilerLibrary = compilerLibraryFixture;
+                return root;
+            }));
             var unit = new CompilationUnit(roots.ToArray());
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);

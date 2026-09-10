@@ -277,7 +277,7 @@ namespace RigiCompiler.Middleware.Emit
             private const string DispatcherWorkerLoopCanonical =
                 "core.coroutine::Dispatcher$workerLoop(worker:.i64)@.void";
             private const string DispatcherPublishCanonical =
-                "core.coroutine::Dispatcher$publish(handle:.i64)@.void";
+                "core.coroutine::Dispatcher$publishNative(token:.i64)@.void";
 
             private void EmitDispatchWrappers(LLVMBuilderRef builder)
             {
@@ -769,12 +769,14 @@ namespace RigiCompiler.Middleware.Emit
                 // 槽即传入指针别名（SYNTAX §10 this 别名：字段写原地生效）
                 builder.PositionAtEnd(blockRefs[fn.Blocks[0].Id]);
                 var slots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(System.StringComparer.Ordinal);
-                var valueThis = fn.Symbol.Owner is { Declaration.Kind:
-                    Bil.BilTypeKind.Struct or Bil.BilTypeKind.EnumStruct
-                    or Bil.BilTypeKind.Wrapper };
+                // 烘焙后的原始体可能没有声明 owner；receiver 的真实参数形状才是 ABI 事实。
+                var valueThis = fn.Parameters.FirstOrDefault(p => p.Name == ".this") is { } receiver
+                    && IsInlineValueType(receiver.Type, out _);
                 foreach (var local in fn.Locals)
                 {
-                    if (valueThis && local.Name == ".this")
+                    if ((valueThis && local.Name == ".this")
+                        || (local.Name == Passes.WrapperSelfParameterPass.SelfParameter
+                            && fn.Parameters.Contains(local) && IsInlineValueType(local.Type, out _)))
                     {
                         continue;
                     }
@@ -834,7 +836,9 @@ namespace RigiCompiler.Middleware.Emit
                         builder.BuildStore(frameFat, slots[parameter.Name].Slot);
                         continue;
                     }
-                    if (valueThis && parameter.Name == ".this")
+                    if ((valueThis && parameter.Name == ".this")
+                        || (parameter.Name == Passes.WrapperSelfParameterPass.SelfParameter
+                            && IsInlineValueType(parameter.Type, out _)))
                     {
                         slots.Add(parameter.Name, (llvmParam, parameter));
                     }
@@ -1016,27 +1020,19 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 // G1：值类型宿主无对象头隐藏槽（类级 typeid 调用点直传，
                 // 参数已落槽）——不得对值类型 .this（裸指针）做胖引用解包
-                if (plan.HiddenTypeIdSlots.Count == 0)
+                if (plan.HiddenTypeIdSlots.Count == 0 && owner.Canonical != TypeLayout.ArrayTypeCanonical)
                 {
                     return;
                 }
                 var fat = LoadLocal(builder, slots, new MirLocalOperand(".this"));
-                var obj = builder.BuildIntToPtr(
-                    builder.BuildExtractValue(fat, 1, "this.payload"),
-                    LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "this.obj");
-                foreach (var (paramName, offset) in plan.HiddenTypeIdSlots)
+                foreach (var paramName in owner.Declaration.GenericParameters)
                 {
                     var localName = ".generic." + paramName;
                     if (!slots.ContainsKey(localName))
                     {
                         continue;
                     }
-                    var gep = builder.BuildGEP2(LLVMTypeRef.Int8, obj,
-                        new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)offset, false) },
-                        "tid.gep");
-                    var bits = builder.BuildLoad2(LLVMTypeRef.Int64, gep, "tid.bits");
-                    var ptr = builder.BuildIntToPtr(bits,
-                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "tid.ptr");
+                    var ptr = TypeIdEmitter.ReadClassArgument(this, builder, fat, GenericAbi.PlanKey(owner), paramName);
                     builder.BuildStore(ptr, slots[localName].Slot);
                 }
             }

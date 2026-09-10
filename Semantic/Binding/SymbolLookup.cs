@@ -470,12 +470,31 @@ namespace RigiCompiler
             return IsAssignableCore(from, to, symbols, null);
         }
 
+        // 约束证明允许沿显式上下界推导；不改变普通赋值/转换的语言规则。
+        internal static bool ProvesConstraintAssignable(SemanticSymbol from, SemanticSymbol to,
+            SymbolGraph symbols) => IsAssignableCore(from, to, symbols, null, constraintProof: true);
+
         private static bool IsAssignableCore(SemanticSymbol from, SemanticSymbol to,
-            SymbolGraph symbols, HashSet<GenericParameterSymbol>? visiting)
+            SymbolGraph symbols, HashSet<GenericParameterSymbol>? visiting, bool constraintProof = false)
         {
             var b = symbols.Bootstrap;
             if (ReferenceEquals(from, to)) return true;
             if (from is ErrorTypeSymbol || to is ErrorTypeSymbol) return true;
+            // 先保留来源型参身份尝试目标下界，再展开来源上界；否则
+            // U supers T 的 T→U 证明会因先把 T 展开成 Any 而丢失。
+            if (constraintProof && to is GenericParameterSymbol lowerTarget)
+            {
+                visiting ??= new HashSet<GenericParameterSymbol>();
+                if (visiting.Add(lowerTarget))
+                {
+                    try
+                    {
+                        if (lowerTarget.Constraints.Any(c => c.Kind == GenericConstraintKind.Supers
+                            && IsAssignableCore(from, c.Bound, symbols, visiting, constraintProof))) return true;
+                    }
+                    finally { visiting.Remove(lowerTarget); }
+                }
+            }
             if (from is GenericParameterSymbol fromGp)
             {
                 // g8：T → Nullable\<T\> 同型参装箱优先（to 为 Nullable 构造
@@ -487,7 +506,7 @@ namespace RigiCompiler
                 {
                     return true;
                 }
-                if (to is GenericParameterSymbol) return false;
+                if (to is GenericParameterSymbol && !constraintProof) return false;
                 // T extends B → 先界代入再判可赋（含再装箱：B → B?）。
                 // 不用 EffectiveMemberType 压扁：那会把外层 GP 界走到 Any，
                 // 丢掉 B 身份，误拒 T extends U → Nullable\<U\>
@@ -500,13 +519,13 @@ namespace RigiCompiler
                     {
                         if (constraint.Kind != GenericConstraintKind.Extends) continue;
                         hasExtends = true;
-                        if (IsAssignableCore(constraint.Bound, to, symbols, visiting))
+                        if (IsAssignableCore(constraint.Bound, to, symbols, visiting, constraintProof))
                         {
                             return true;
                         }
                     }
                     return !hasExtends
-                        && IsAssignableCore(b.Any, to, symbols, visiting);
+                        && IsAssignableCore(b.Any, to, symbols, visiting, constraintProof);
                 }
                 finally
                 {
@@ -519,25 +538,25 @@ namespace RigiCompiler
             // 装箱视图：内层比较放宽为 SemanticSymbol 口径（g8——内层为泛型
             // 参数时递归 IsAssignable 自然拒绝：TypeSymbol → GP 不可赋）
             if (ReferenceEquals(toType.ConstructedFrom, b.NullableDefinition)
-                && IsAssignableCore(fromType, toType.TypeArguments![0], symbols, visiting))
+                && IsAssignableCore(fromType, toType.TypeArguments![0], symbols, visiting, constraintProof))
             {
                 return true;
             }
             for (var t = fromType; t != null; t = t.BaseType)
             {
-                if (TypesAssignableWithVariance(t, toType, symbols, visiting)) return true;
+                if (TypesAssignableWithVariance(t, toType, symbols, visiting, constraintProof)) return true;
             }
             // 接口赋值与成员查找共用闭包：逐层代入闭合宿主，包含传递继承。
             foreach (var iface in OverrideChecker.InterfaceClosure(fromType, symbols))
             {
-                if (TypesAssignableWithVariance(iface, toType, symbols, visiting)) return true;
+                if (TypesAssignableWithVariance(iface, toType, symbols, visiting, constraintProof)) return true;
             }
             return false;
         }
 
         private static bool TypesAssignableWithVariance(SemanticSymbol? from,
             SemanticSymbol to, SymbolGraph symbols,
-            HashSet<GenericParameterSymbol>? visiting)
+            HashSet<GenericParameterSymbol>? visiting, bool constraintProof = false)
         {
             if (ReferenceEquals(from, to)) return true;
             if (from is not TypeSymbol { ConstructedFrom: { } fromDefinition,
@@ -560,13 +579,13 @@ namespace RigiCompiler
                 else if (variance == GenericVariance.Out)
                 {
                     if (!IsAssignableCore(fromArguments[i], toArguments[i], symbols,
-                        visiting))
+                        visiting, constraintProof))
                     {
                         return false;
                     }
                 }
                 else if (!IsAssignableCore(toArguments[i], fromArguments[i], symbols,
-                    visiting))
+                    visiting, constraintProof))
                 {
                     return false;
                 }

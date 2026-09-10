@@ -1,6 +1,6 @@
 // 固定wake gate可重复等待；释放挂起reader必须唤醒错误出口。
 // expect-output: 190
-// expect-output: MessageQueue: 句柄已释放或不存在
+// expect-output: MessageQueue: Reader 已释放
 // expect-output: Receiver.addListener：Receiver 已 dispose
 // expect-output: getter released
 // expect-output: getter released
@@ -14,27 +14,26 @@ pub shared class Msg {
     pub init(_ -> n)
 }
 pub func main(): i32 {
-    const owner = MessageQueue.create_queue\<Msg>()
-    const sender = MessageQueue.add_queue_handle(owner, QueueHandleType.Sender)
-    const reader = MessageQueue.add_queue_handle(owner, QueueHandleType.Reader)
+    const owner = new Messenger\<Msg>()
+    const sender = owner
+    const reader = owner.createReader()
     var i: i32 = 0
     var sum: i32 = 0
     while (i < 20) {
-        const pending = MessageQueue.next(reader)
+        const pending = reader.next()
         yield sleep(1)
-        await MessageQueue.post(sender, new Msg(i))
+        await sender.send(new Msg(i))
         const item = await pending
         sum = sum + (item.item as Msg).n
         i = i + 1
     }
     Console.println(sum.toString())
-    const pending = MessageQueue.next(reader)
+    const pending = reader.next()
     yield sleep(1)
-    MessageQueue.release_queue_handle(reader)
+    reader.dispose()
     try { await pending }
     catch (e: core.IllegalStateException) { Console.println(e.getMessage()) }
-    MessageQueue.release_queue_handle(sender)
-    MessageQueue.release_queue_handle(owner)
+    sender.dispose()
     const messenger = new Messenger\<Msg>()
     const receiver = messenger.receiver
     receiver.dispose()

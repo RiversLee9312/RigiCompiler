@@ -63,6 +63,8 @@ namespace RigiCompiler.Tests
             ("TestNumericCasts", TestNumericCasts),
             ("TestReferenceCasts", TestReferenceCasts),
             ("TestCastFailureAndSafe", TestCastFailureAndSafe),
+            ("TestGenericArityAndArgumentsAreNotCastViews",
+                TestGenericArityAndArgumentsAreNotCastViews),
             ("TestAnyBoxUnbox", TestAnyBoxUnbox),
             ("TestTypeIsSupersCase", TestTypeIsSupersCase),
             ("TestTypeWithAndGetId", TestTypeWithAndGetId),
@@ -169,6 +171,8 @@ namespace RigiCompiler.Tests
             ("TestSerializableTemporaryResume", TestSerializableTemporaryResume),
             ("TestSerializableGenericClone", TestSerializableGenericClone),
             ("TestSerializationBaseImpliesSerializable", TestSerializationBaseImpliesSerializable),
+            ("TestSerializationDepthBudget", TestSerializationDepthBudget),
+            ("TestSerializationModeMismatch", TestSerializationModeMismatch),
             ("TestMessageQueueSmokeSemantics", TestMessageQueueSmokeSemantics),
             ("TestMessageQueueCapabilityMatrix", TestMessageQueueCapabilityMatrix),
             ("TestMessageQueueLifetimeEos", TestMessageQueueLifetimeEos),
@@ -986,7 +990,6 @@ namespace RigiCompiler.Tests
                 && host.TypeRef == "Host"
                 && host.TryReadHidden(VmContext.HiddenEntityKey("Wrap"), out var stored)
                 && stored is VmObject wrapper
-                && wrapper.Host == host
                 && wrapper.TryReadField("Wrap#level@.i32", out var level)
                 && level is VmI32 n && n.Value == 9,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
@@ -999,7 +1002,7 @@ namespace RigiCompiler.Tests
             var module = GetSelfModule();
             var host = new VmObject("Host", valueType: false);
             host.WriteField("Host#n@.i32", new VmI32(9));
-            var wrapper = new VmObject("Wrap", valueType: true) { Host = host };
+            var wrapper = new VmWrapperReceiver(new VmObject("Wrap", valueType: true), host);
             var result = RunPrepared(module, "Wrap$.proxy.read()@.i32", new VmValue[] { wrapper });
             CheckOk("get.self", result);
             CheckI32("self.n", result, 9);
@@ -1199,6 +1202,37 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("cast.safe", safe);
             CheckBool("safe 产 null", safe, true);
+        }
+
+        // 同名不同元数的声明以及同一泛型声明的不同构造形态，
+        // 都不是可以通过“擦除实参”得到的运行期视图。这两条 cast
+        // 必须检查实际 TypeSheet 并失败，否则后续字段/方法 ABI 会错位。
+        private static void TestGenericArityAndArgumentsAreNotCastViews()
+        {
+            var arity = Run(
+                "pub class ArityTask { pub init() {} }\n" +
+                "pub class ArityTask\\<T> { pub init() {} }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var generic = new ArityTask\\<i32>()\n" +
+                "        var plain = (generic as ArityTask)\n" +
+                "        return 0\n" +
+                "    } catch (_: core.CastException) { return 7 }\n" +
+                "}\n");
+            CheckOk("Task<i32> 不可冒充 Task", arity);
+            CheckI32("Task<i32> → Task 抛 CastException", arity, 7);
+
+            var arguments = Run(
+                "pub class CastBox\\<T> { pub init() {} }\n" +
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var numbers = new CastBox\\<i32>()\n" +
+                "        var strings = (numbers as CastBox\\<String>)\n" +
+                "        return 0\n" +
+                "    } catch (_: core.CastException) { return 9 }\n" +
+                "}\n");
+            CheckOk("Box<i32> 不可冒充 Box<String>", arguments);
+            CheckI32("不同泛型实参抛 CastException", arguments, 9);
         }
 
         private static void TestAnyBoxUnbox()
@@ -2256,7 +2290,7 @@ namespace RigiCompiler.Tests
             var module = MethodWrapperGetSelfModule();
             var host = new VmObject("Host", valueType: false);
             host.WriteField("Host#n@.i32", new VmI32(42));
-            var wrapper = new VmObject("Timed", valueType: true) { Host = host };
+            var wrapper = new VmWrapperReceiver(new VmObject("Timed", valueType: true), host);
             var result = RunPrepared(module, "Timed$$.proxy.call(x:.i32)@.i32",
                 new VmValue[] { wrapper, new VmI32(0) });
             CheckOk("Method wrapper get.self 直构", result);
@@ -5047,10 +5081,17 @@ namespace RigiCompiler.Tests
                 "    core.io.Console.println(\"${multi.length}\")\n" +
                 "    var name = \"world\"\n" +
                 "    core.io.Console.println(\"${\"hi ${name}\".length}\")\n" +
+                "    core.io.Console.println(\"${\"序列化测试\".length}\")\n" +
+                "    core.io.Console.println(\"${\"序列化测试\".characterCount}\")\n" +
+                "    core.io.Console.println(\"${\"👨‍👩‍👧\".length}\")\n" +
+                "    core.io.Console.println(\"${\"👨‍👩‍👧\".characterCount}\")\n" +
+                "    core.io.Console.println(\"${\"🇨🇳\".length}\")\n" +
+                "    core.io.Console.println(\"${\"🇨🇳\".characterCount}\")\n" +
                 "    return 0\n" +
                 "}\n");
             CheckOk("String.length", result);
-            TestHarness.Check("length stdout", result.Stdout, "5\n11\n8\n");
+            TestHarness.Check("length/characterCount stdout", result.Stdout,
+                "5\n11\n8\n15\n5\n18\n5\n8\n2\n");
             CheckI32("main 返回 0", result, 0);
         }
 

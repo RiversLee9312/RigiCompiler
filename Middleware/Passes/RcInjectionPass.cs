@@ -341,7 +341,7 @@ namespace RigiCompiler.Middleware.Passes
                 {
                     continue;
                 }
-                if (IsExemptThis(fn, local.Name))
+                if (IsExemptThis(fn, local.Name, kinds))
                 {
                     continue;
                 }
@@ -396,10 +396,13 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 值类型宿主的 .this 是调用方存储别名，不纳入所有权
-        private static bool IsExemptThis(MirFunction fn, string name) =>
-            name == ".this"
-            && fn.Symbol.Owner?.Declaration.Kind is BilTypeKind.Struct
-                or BilTypeKind.EnumStruct or BilTypeKind.Wrapper;
+        private static bool IsExemptThis(MirFunction fn, string name,
+            Dictionary<string, ManagedSlotKind> kinds) =>
+            (name == WrapperSelfParameterPass.SelfParameter && fn.Parameters.Any(p => p.Name == name))
+            || name == ".this"
+            && (kinds[name] == ManagedSlotKind.RichValue
+                || fn.Symbol.Owner?.Declaration.Kind is BilTypeKind.Struct
+                    or BilTypeKind.EnumStruct or BilTypeKind.Wrapper);
 
         // 值类型参数的 +1 由 EmitInitRichValue 落槽建立，避免与规则 1 双计。
         // MW11a：resume fn 的 frame 参数是借用（spawn 点 move 进续体的
@@ -407,7 +410,7 @@ namespace RigiCompiler.Middleware.Passes
         private static bool ShouldAcquireParam(MirFunction fn, MirLocal parameter,
             Dictionary<string, ManagedSlotKind> kinds)
         {
-            if (IsExemptThis(fn, parameter.Name))
+            if (IsExemptThis(fn, parameter.Name, kinds))
             {
                 return false;
             }

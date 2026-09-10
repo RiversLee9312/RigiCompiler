@@ -49,6 +49,7 @@ namespace RigiCompiler.Middleware.Runtime
         public const string ValueRelease = "rigi_value_release";
         public const string StringAcquire = "rigi_string_acquire";
         public const string StringRelease = "rigi_string_release";
+        public const string StackHasRoom = "rigi_stack_has_room";
         // MW9a 异常传输三面（线程局部 pending 槽）：raise void(ptr) 写槽，
         // pending ptr() 借用查询，take ptr() 移动取走（归还形状不由 ShapeOf 表达）
         public const string ExcRaise = "rigi_exc_raise";

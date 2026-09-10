@@ -53,6 +53,7 @@ namespace RigiCompiler
     {
         public string Name;                    // 参数名（T 前缀驼峰，如 TElement）
         public GenericVariance Variance;       // 型变修饰
+        public bool RequiresSharedSafe;        // shared T：显式共享安全约束
         public bool IsVariadic;                // 位置可变参数 TArgs...
         public bool IsNamedVariadic;           // 具名可变参数 named TArgs...
 

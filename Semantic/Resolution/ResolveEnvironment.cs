@@ -46,6 +46,9 @@ namespace RigiCompiler
             inheritanceFillIns.Add((constructed, span));
         }
 
+        // 签名/约束中的类型填入必须等全部约束和 wrapper 应用解析后证明。
+        internal List<(TypeSymbol Constructed, CharRange? Span)> TypeFillIns { get; } = new();
+
         // 收集期填充（EntryCollector 专用；收集结束后三表冻结，阶段只读）
         internal void RegisterEntry(DeclEntry entry)
         {

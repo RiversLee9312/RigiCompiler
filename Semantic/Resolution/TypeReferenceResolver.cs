@@ -10,9 +10,9 @@ namespace RigiCompiler
     {
         protected override void VisitCore(ResolveEnvironment env)
         {
-            // 填入点检查（g4 框架）推迟到两循环完成之后统一执行：字段循环
+            // 填入点检查登记后待约束与 wrapper 应用就绪统一执行：字段循环
             // 先于方法签名解析，被引用构造类型的 async 成员签名此时尚未
-            // 就绪——（构造类型, 标注位置）先登记，全部签名就绪后统一收口
+            // 就绪——（构造类型, 标注位置）先登记，签名及约束就绪后统一收口
             var pendingFillIns = new List<(TypeSymbol Constructed, CharRange? Span)>();
             // 先字段（init `_ -> field` 省略类型时沿用字段类型，字段须先就绪）
             foreach (var entry in env.Entries)
@@ -69,12 +69,8 @@ namespace RigiCompiler
                     }
                 }
             }
-            // 统一收口：此时全部字段/方法签名均已解析
-            foreach (var (constructed, span) in pendingFillIns)
-            {
-                GenericConstraints.CheckConstructedType(constructed, span,
-                    env.Unit.Symbols, env.Error);
-            }
+            // 此时仅签名就绪，约束尚未解析；统一在声明解析完成后证明。
+            env.TypeFillIns.AddRange(pendingFillIns);
         }
 
         // 登记填入点（构造类型标注；非构造类型/泛型参数/毒化不登记）

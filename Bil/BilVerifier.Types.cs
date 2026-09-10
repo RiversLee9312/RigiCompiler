@@ -1008,14 +1008,20 @@ namespace RigiCompiler.Bil
             var arguments = BilVerificationContext.SplitTopLevel(hostTypeRef.Substring(
                 angle + 1, hostTypeRef.Length - angle - 2));
             if (arguments.Count != declaration.GenericParameters.Count) return typeRef;
-            var result = typeRef;
-            for (var i = 0; i < arguments.Count; i++)
+            // 一次性按树代入，不能把插入实参里的同名占位再次替换。
+            string Substitute(string reference)
             {
-                result = result.Replace(
-                    ".generic<$.generic." + declaration.GenericParameters[i] + ">",
-                    arguments[i], StringComparison.Ordinal);
+                for (var i = 0; i < arguments.Count; i++)
+                    if (reference == ".generic<$.generic." + declaration.GenericParameters[i] + ">"
+                        || reference == ".generic<" + declaration.GenericParameters[i] + ">")
+                        return arguments[i];
+                var start = reference.IndexOf('<');
+                if (start < 0 || !reference.EndsWith('>')) return reference;
+                return reference[..start] + "<" + string.Join(",",
+                    BilVerificationContext.SplitTopLevel(reference[(start + 1)..^1])
+                        .Select(Substitute)) + ">";
             }
-            return result;
+            return Substitute(typeRef);
         }
 
 
@@ -1597,7 +1603,12 @@ namespace RigiCompiler.Bil
             var current = declaration;
             while (true)
             {
-                chain.Add(current.Symbol);
+                // 声明的裸 Symbol 不含元数；保留声明形参数，否则 Box<T>
+                // 被当成未声明的 Box，旧的“不完整外部声明”回退会误收其它宿主。
+                var currentRef = current.GenericParameters.Count == 0 ? current.Symbol
+                    : current.Symbol + "<" + string.Join(",", current.GenericParameters.Select(p =>
+                        ".generic<$.generic." + p + ">")) + ">";
+                if (!chain.Add(currentRef)) break;
                 if (current.ExtendsType == null)
                 {
                     break;
@@ -1620,6 +1631,7 @@ namespace RigiCompiler.Bil
             // TypesCompatible 的严格全等（Box ≠ Box<1> 会漏掉泛型类运算符）。
             var candidates = new List<(List<(string Name, string TypeRef)> Parameters,
                 string ReturnType)>();
+            var seenMembers = new HashSet<string>(StringComparer.Ordinal);
             foreach (var (ownerType, member, _) in context.Module.MemberEntries)
             {
                 if (member.Kind is not (BilMemberKind.Method or BilMemberKind.StaticMethod)
@@ -1638,7 +1650,7 @@ namespace RigiCompiler.Bil
                 {
                     // 只认「collection 是 host 或其派生」：反向会让任何
                     // 类经 Object 命中其它类的 getAtIndex（多实现误报）。
-                    if (context.Module.IsAssignableTo(chainType, host))
+                    if (context.Module.IsExactHostDeclaration(chainType, host))
                     {
                         hostInChain = true;
                         break;
@@ -1646,7 +1658,9 @@ namespace RigiCompiler.Bil
                 }
                 if (hostInChain && parameters.Count == arity)
                 {
-                    candidates.Add((parameters, returnType));
+                    // 跨切片的外部签名与本地实现是同一成员，不能计为两次重载。
+                    // 声明冲突由符号验证负责；这里只按精确 canonical 去重。
+                    if (seenMembers.Add(member.Symbol)) candidates.Add((parameters, returnType));
                 }
             }
             if (candidates.Count == 0)
@@ -1687,7 +1701,7 @@ namespace RigiCompiler.Bil
             {
                 errors.Add(new BilVerificationError("21.3", location,
                     $"{opcode} 在 \"{collectionType}\" 上命中多个精确 {operatorName} 实现" +
-                    "（必须唯一）"));
+                    "（必须唯一）：" + string.Join("; ", seenMembers)));
                 return;
             }
             if (isGet)

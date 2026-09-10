@@ -26,13 +26,5 @@ namespace RigiCompiler.Middleware.Layout
             hostCanonical + MethodKindInfix + methodCanonical + "." + wrapperCanonical
             + "@" + wrapperCanonical;
 
-        public const string HostFieldInfix = "#.host@";
-
-        // wrapper 实例内的宿主回指（不进 refMap：借用指针，get.self 时 +1）
-        public static string HostFieldSymbol(string wrapperPlanKey) =>
-            wrapperPlanKey + HostFieldInfix + ".any";
-
-        public static bool IsHostField(string fieldSymbol) =>
-            fieldSymbol.Contains(HostFieldInfix, System.StringComparison.Ordinal);
     }
 }

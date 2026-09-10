@@ -69,7 +69,7 @@
 `rich` 与 `shared` 是 TypeSheet 可观察的类型属性，而不是引用槽上的限定符。运行时按以下域解释对象和值：
 
 - **非 rich ValueType**：不含托管引用，`refMap` 恒为空；复制、构造和栈上计算完全不进入 GC 引用图。`String` 属于本域（字符数据是特权裸缓冲区，不是托管引用，见 §4）。
-- **rich ValueType**：可以含托管引用，仍遵守值语义和 Box 的 unique ownership；复制/销毁时按 `refMap` 对内部引用执行 acquire/release。全部 wrapper 属于本域（wrapper 恒为 rich struct，见 §14）。
+- **rich ValueType**：可以含托管引用，仍遵守值语义和 Box 的 unique ownership；复制/销毁时按 `refMap` 对内部引用执行 acquire/release。只有显式 rich 的 wrapper 属于本域；wrapper 默认非 rich（见 §14）。
 - **shared rich ValueType**：rich ValueType 的共享安全子集；内部只能指向 shared Object，并只能内嵌非 rich 或 shared rich ValueType。`shared wrapper` 属于本域。
 - **local Object**：未标记 `shared` 的 class 实例，归创建它的 Coroutine 所有，引用计数由 microGC 管理。运行时计数使用原子操作以支持 Task 异常传播的多 waiter 持有；这不放宽语言的 shared 闭包限制。
 - **shared Object**：标记 `shared` 的 class 实例，可由多个 Coroutine 持有，引用计数由 microSGC 以同步 ARC 管理。

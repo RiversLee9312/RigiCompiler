@@ -80,18 +80,17 @@ namespace RigiCompiler.Middleware.Emit
             var done = session.CurrentFunction.AppendBasicBlock("iface.value.done");
             foreach (var (host, method) in values)
             {
-                var plan = session.Layout.Find(host)!;
                 var match = session.CurrentFunction.AppendBasicBlock("iface.value.match");
                 var next = session.CurrentFunction.AppendBasicBlock("iface.value.next");
                 builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, sheet,
-                    session.TypeSheetFor(plan.Symbol.Canonical), "iface.value.is"), match, next);
+                    session.TypeSheetFor(host), "iface.value.is"), match, next);
                 builder.PositionAtEnd(match);
                 var callee = session.FunctionOf(method);
                 var temps = new List<ArcEmitter.RichTemp>();
                 var boxed = new List<ArcEmitter.FatTemp>();
                 var result = builder.BuildCall2(callee.Type, callee.Value,
                     CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
-                        call.Result, temps, boxed, hostConstructedRef: plan.Symbol.Canonical,
+                        call.Result, temps, boxed, hostConstructedRef: host,
                         excTarget: call.ExcTarget), "");
                 ArcEmitter.DestroyRichTemps(session, builder, temps);
                 ArcEmitter.DestroyFatTemps(session, builder, boxed);
@@ -110,6 +109,20 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             MirCall call, MwMemberSymbol target)
         {
+            // 值类型候选未命中时不得把其载荷误读成对象头；这是动态派发的
+            // 表示边界，与静态 implements 关系无关，必须在解引用前检查。
+            var receiver = session.LoadLocal(builder, slots, call.Args[0]);
+            var tag = builder.BuildLShr(builder.BuildExtractValue(receiver, 0, "iface.object.type"),
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagShift, false), "iface.object.tag");
+            var valid = session.CurrentFunction.AppendBasicBlock("iface.object.valid");
+            var invalid = session.CurrentFunction.AppendBasicBlock("iface.object.invalid");
+            builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, tag,
+                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, BoxEmitter.TagObject, false), "iface.object.is"), valid, invalid);
+            builder.PositionAtEnd(invalid);
+            var name = ExceptionEmitter.LoadTypeDisplayNameFromSheet(session, builder, InterfaceSheetOf(session, target));
+            ExceptionEmitter.EmitThrowNewException(session, builder, "core::NoSuchMethodException",
+                "typeName", new[] { name }, call.ExcTarget);
+            builder.PositionAtEnd(valid);
             var slot = InterfaceSlotOf(session, target);
             var ifaceSheet = InterfaceSheetOf(session, target);
             var entry = EmitVTableEntry(session, builder, "rigi_imap_entry",

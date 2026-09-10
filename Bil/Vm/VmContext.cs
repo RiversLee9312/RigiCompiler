@@ -83,6 +83,14 @@ namespace RigiCompiler.Bil.Vm
             }
         }
 
+        // 阻塞原语也观察全局预算；某个 Worker 超限后，其余 Worker
+        // 不能继续停在 park/同步锁里，否则主调用永远拿不到受控失败。
+        internal void CheckStepLimit()
+        {
+            if (MaxSteps > 0 && Interlocked.Read(ref _steps) > MaxSteps)
+                throw new VmStepLimitException(MaxSteps);
+        }
+
         public string Stdout
         {
             get { lock (_stdoutLock) return _stdout.ToString(); }
@@ -448,7 +456,10 @@ namespace RigiCompiler.Bil.Vm
             {
                 return exact;
             }
-            return _typesByKey.TryGetValue(DeclarationKeyOf(typeRef), out var byKey) ? byKey : null;
+            if (_typesByKey.TryGetValue(DeclarationKeyOf(typeRef), out var byKey)) return byKey;
+            // 固定 ABI 的源码声明使用 canonical 名，值仍可持标准别名；只归一别名，不擦除泛型。
+            var canonical = BilVerificationContext.NormalizeTypeRef(typeRef);
+            return _typesByKey.TryGetValue(DeclarationKeyOf(canonical), out byKey) ? byKey : null;
         }
 
         public BilSimpleMemberDeclaration? FindMember(string symbol)
@@ -2136,20 +2147,8 @@ namespace RigiCompiler.Bil.Vm
                 // 静态类型与形参 TypesEqual（不是运行期 typeid 可赋值性）
                 if (!TypesEqual(argumentStaticTypes[i], parameters[i].TypeRef))
                 {
-                    // MW11d-D：构造泛型实参代入后形参为具体构造形态
-                    //（Host<.i32>），而实参静态类型可能是定义级裸名
-                    //（$.this / 局部声明即 Host）——编译期已 cast 校验
-                    //（§14.1），声明级同型即放行；两侧都带类型实参
-                    //（Host<.i32> vs Host<.string>）不在此放宽范围
-                    var staticType = argumentStaticTypes[i];
-                    var paramType = parameters[i].TypeRef;
-                    var staticBare = !staticType.Contains('<');
-                    var paramBare = !paramType.Contains('<');
-                    if (staticBare == paramBare
-                        || StripTypeArguments(staticType) != StripTypeArguments(paramType))
-                    {
-                        return false;
-                    }
+                    // 泛型元数和实参均参与身份；裸名不是构造类型的 ABI 视图。
+                    return false;
                 }
             }
             return true;

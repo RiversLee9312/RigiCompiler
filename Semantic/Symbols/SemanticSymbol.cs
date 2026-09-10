@@ -212,8 +212,8 @@ namespace RigiCompiler
             IsBuiltin = definition.IsBuiltin;
             IsValueTypeBranch = definition.IsValueTypeBranch;
             DerivesSharedSafetyFromTypeArgument = definition.DerivesSharedSafetyFromTypeArgument;
-            // 固定 ABI 别名不随源码泛型实参重新具化（Handle<T> 恒为 .handle）。
-            BilAlias = definition.BilAlias;
+            // 构造类型必须携带实参；别名仅属于声明，不能擦除具化身份。
+            BilAlias = null;
             IntrinsicOps = new HashSet<BilIntrinsicOp>();
             ConstructedFrom = definition;
             TypeArguments = typeArguments;
@@ -225,6 +225,9 @@ namespace RigiCompiler
         // SYNTAX §3.1.1 共享安全类型白名单（「可离开单 Coroutine 所有权域」的完整集合）
         public bool IsSharedSafe()
         {
+            // wrapper 绑定宿主：不能因普通字段非 rich 就允许其接收者跨协程逃逸。
+            // shared 资格仍须显式声明，与 self 的 rich 豁免无关。
+            if (Kind == TypeKind.Wrapper) return IsShared;
             // shared class / shared rich struct / shared wrapper
             if (IsShared) return true;
             // 非 rich ValueType（全部基元、String、Type\<T>、非 rich struct/enum struct）
@@ -674,7 +677,7 @@ namespace RigiCompiler
 
     public sealed class GenericParameterSymbol : SemanticSymbol
     {
-        // 仅真实标准库安全容器使用；不是用户可声明的泛型语法。
+        // 源码 shared T；用户与标准库走同一约束满足判定。
         internal bool RequiresSharedSafe { get; set; }
         // 类型声明泛型参数的型变方向（函数泛型参数必须保持 invariant）。
         public GenericVariance Variance { get; }

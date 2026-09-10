@@ -8,7 +8,7 @@ namespace RigiCompiler
     // 符号图容器（SEMANTIC_ARCHITECTURE §4）：编译单元唯一符号对象图的持有者。
     // 构造期两阶段（P1 建壳、P2 填内容），P2 结束 Freeze 后声明侧不可变
     // （P3/P4 只读）；构造泛型类型驻留 cache 是幂等透明派生物，不受冻结限制。
-    public sealed class SymbolGraph
+    public sealed partial class SymbolGraph
     {
         public BootstrapSymbols Bootstrap { get; }
 
@@ -22,6 +22,9 @@ namespace RigiCompiler
 
         public bool IsFrozen { get; private set; }
 
+        // 返回驻留快照；遍历期间的泛型替换仍可安全驻留新类型。
+        internal IReadOnlyList<TypeSymbol> ConstructedTypeSnapshot() => constructedTypes.Values.ToArray();
+
         // 类型引用解析失败的毒化符号单例（P2 DeclarationResolver 使用）
         public ErrorTypeSymbol ErrorType { get; }
 
@@ -30,25 +33,12 @@ namespace RigiCompiler
             GlobalNamespace = new NamespaceSymbol("");
             Bootstrap = new BootstrapSymbols(GlobalNamespace);
             ErrorType = new ErrorTypeSymbol();
-            // Q6（SYNTAX §13.2）：索引读取一律返回 T?——内建 Array/Span/SharedSpan
-            // 的 getAtIndex 返回类型由 T 改为 Nullable\<T\>。bootstrap 构造
-            // 期拿不到本图的驻留设施（GetNullable 经 constructedTypes 驻留），
-            // 故在建图后即刻回填；此回填早于任何 P1–P4 消费，语义等同声明期
-            BackfillIndexGetNullable(Bootstrap.ArrayDefinition);
-            BackfillIndexGetNullable(Bootstrap.SpanDefinition);
-            BackfillIndexGetNullable(Bootstrap.SharedSpanDefinition);
+            Bootstrap.BindSourceSignatures(this);
         }
 
         public void Freeze()
         {
             IsFrozen = true;
-        }
-
-        private void BackfillIndexGetNullable(TypeSymbol definition)
-        {
-            var getAtIndex = definition.Methods.First(m => m.Name == "getAtIndex");
-            getAtIndex.ReturnType = GetConstructedType(Bootstrap.NullableDefinition,
-                definition.GenericParameters[0]);
         }
 
         // 命名空间逐段驻留（§4.2 同一份实体恰一个实例）：同一路径必得同一

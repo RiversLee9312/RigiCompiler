@@ -9,7 +9,7 @@
 Wrapper 是绑定到被修饰实体生命周期的**值**，类似 Python 装饰器 + Java 注解的混合体。
 
 - 继承链：`MyWrapper` → `Wrapper` → `ValueType`
-- wrapper 恒为 **rich struct**：值语义、unique ownership，因此生命周期可以直接绑定被修饰的实体、方法或值（类似 `unique_ptr`，而不是引用计数共享）；`rich` 由 `wrapper` 声明形式隐含，不显式书写
+- wrapper 默认是**非 rich struct**，保持值语义与宿主绑定的生命周期；需要持有对象字段时显式声明 `rich wrapper`
 - 可选标记 `shared`，这会同时放宽可修饰的目标、收紧自身字段闭包（见 §14.9）
 - 三种目标（互斥）：`.Entity`、`.Method`、`.Value`
 - 嵌套顺序：按声明顺序从外向里
@@ -17,7 +17,7 @@ Wrapper 是绑定到被修饰实体生命周期的**值**，类似 Python 装饰
 
 ### 14.2 实体修饰器（Entity Wrapper）
 
-修饰 class、interface、wrapper、rich struct（含 rich enum struct）。非 rich struct 不是合法目标，见 §14.9。
+修饰 class、interface、wrapper、struct（含 enum struct）。非 rich 宿主只能内嵌非 rich wrapper，见 §14.9。
 
 ```rigi
 @WrapperTarget(.Entity)
@@ -92,7 +92,7 @@ pub wrapper Logged\<TTarget> {
 
 ### 14.3 值修饰器（Value Wrapper）
 
-修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌 rich struct（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；**静态字段**的 cell 存储落地在声明类的 companion singleton 实例上（与静态 Method wrapper 同一 companion，见 §14.4），cell 构造与 wrapper 安装由 companion 的 `init` 完成、VM/Middleware 在 main 前急切初始化；**局部** cell 在声明点构造；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值表达式在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。对变量类型没有额外的宿主内嵌要求。字段同时带 Value wrapper 与用户 getter/setter 时，使用点写路径为 wrapper set 链（outer→inner）→ setter → backing（setter 体内 `value` 在 BIL 中为保留字段 `..value`，直写 backing）；读路径为 backing → getter → wrapper get 链（inner→outer）。构造期 init 体内写不绕 wrapper 链，但带 setter 时仍经 setter 应用（§9.4.1）。
+修饰字段或栈上变量（`var`/`const`）。修饰实例字段时，wrapper 存放在宿主类型的 Middleware 合成隐藏存储中，因此宿主必须能够内嵌该 wrapper 的实际值类型（见 §14.9）；修饰栈上变量与静态/全局字段时，值统一由编译器合成的 cell 隐藏子类盛装（§5.2 同一机制），wrapper 应用标记挂在子类的 `value` 字段上（BIL `wrapped(W)`）；**静态字段**的 cell 存储落地在声明类的 companion singleton 实例上（与静态 Method wrapper 同一 companion，见 §14.4），cell 构造与 wrapper 安装由 companion 的 `init` 完成、VM/Middleware 在 main 前急切初始化；**局部** cell 在声明点构造；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值表达式在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。对变量类型没有额外的宿主内嵌要求。字段同时带 Value wrapper 与用户 getter/setter 时，使用点写路径为 wrapper set 链（outer→inner）→ setter → backing（setter 体内 `value` 在 BIL 中为保留字段 `..value`，直写 backing）；读路径为 backing → getter → wrapper get 链（inner→outer）。构造期 init 体内写不绕 wrapper 链，但带 setter 时仍经 setter 应用（§9.4.1）。
 
 ```rigi
 @WrapperTarget(.Value)
@@ -190,7 +190,11 @@ takeWrapper(service:Logged)          // ❌ 同上：不能作实参、返回值
 - 不可作为赋值目标（`obj:W = ...` 非法），wrapper 实例只能由 `@W(...)` 在宿主创建时安装；
 - 不可出现在任何取值位置（赋给变量、作实参、作返回值、作类型推断源），因此**无法把 wrapper 从宿主里复制出来**。
 
-理由与 §14.9 的「wrapper 恒为 rich struct」同源：wrapper 是 unique ownership 的值，生命周期与被修饰实体同生共死。允许整体取值就会造出一份脱离宿主而独立存活的 wrapper 实例，允许整体赋值就会在宿主生命周期内替换掉这份绑定——两者都直接破坏该不变量，所以在语法层封死，而不是靠约定。
+wrapper 是与宿主绑定的值，生命周期与被修饰实体同生共死；这与是否声明 rich 无关。允许整体取值就会造出一份脱离宿主而独立存活的 wrapper 实例，允许整体赋值就会替换这份绑定，因此二者都被禁止。
+
+wrapper 内的 `this` 遵守相同规则：只能用于成员访问、成员调用或索引，不能整体返回、赋值、传参、装箱或转换，也不能被闭包捕获。闭包中省略 `this` 的实例字段和方法访问、嵌套闭包捕获同样禁止；不捕获 wrapper 的闭包仍然合法。`self` 是独立的宿主引用机制，不是 wrapper 整体值。
+
+泛型和运行时 `Type<T>` 也不能用于普通构造 wrapper；运行期解析到 wrapper 的普通构造必须抛出 `NoSuchMethodException`，只能由宿主安装机制创建。
 
 wrapper 自身的字段可变性仍按普通规则由字段声明（`var`/`const`）与可见性决定；"只读"约束的是 `obj:Wrapper` 这个 place 整体，不是其成员。
 
@@ -270,25 +274,28 @@ setter：
 
 ### 14.9 wrapper 的 `rich`/`shared` 规则与目标矩阵
 
-**wrapper 恒为 rich struct。** 这是 wrapper 语义的基础而非实现细节：wrapper 实例必须与被修饰的实体、方法或值同生共死，因此它必须是 unique ownership 的值，而不是可被任意别名的引用类型。作为 rich struct，它既保有值语义，又可以持有 Object 字段。
+**wrapper 默认是非 rich struct，按需显式声明 rich。** wrapper 实例仍与被修饰实体、方法或值同生共死，不能作为普通值整体取出或替换；rich 只决定普通字段的持有能力。
 
-- `rich` 由 `wrapper` 声明形式隐含，**源码中显式书写 `rich wrapper` 是编译错误**（冗余修饰）。BIL 作为显式 IR 不做此隐含，wrapper 类型声明的修饰符列表中必须显式含 `rich`（见 `BIL_STANDARD.md` §8.2）。
-- wrapper 可以标记 `shared`，成为 shared rich 值：它的字段闭包按 §3.1.1 收紧为只能持有 shared object 与共享安全 ValueType，换来可以修饰任意目标的资格。
+- 非 rich wrapper 的普通字段只能内嵌非 rich ValueType；`rich wrapper` 可以持有对象与 rich 值。源码与 BIL 都只按显式 `rich` 标记判定。
+- wrapper 可以独立标记 `shared`。`shared wrapper` 仍非 rich；`shared rich wrapper` 的普通字段只能持有 shared object 与共享安全 ValueType。
+- `self` 是 wrapper 调用约定中的独立宿主参数，不是字段，不占 wrapper 实例存储，也不参与 rich 持有闭包。读取 wrapper place 时绑定宿主，在需要 `self` 的代理调用中与 wrapper 状态 receiver 分开传递；源码中仍仅允许在 proxy 体内使用 `self`，不扩大到普通成员或构造体。调用帧负责宿主的有效期，异步帧必须保活宿主，不能把栈借用带过挂起点。它不授予任意转换、普通字段存储或跨协程逃逸的权限。
+- 隐式填入的 `TTarget`/`TField` 与显式泛型实参同样接受字段闭包检查；宿主闭合实例化时再次代入隐藏 wrapper 存储。为拒绝无限展开的泛型存储图，补验最多展开 64 层、4096 个不同类型，超限报错而非跳过检查。
 - wrapper 不能标记 `open`/`abstract`（rich struct 的继承规则另有约束时以 §10 为准），也不能标记 `singleton`。
 
-**宿主可内嵌性（对全部三类 wrapper 生效）**：wrapper 实例存放在宿主的 Middleware 合成的隐藏存储中（命名约定 `BIL_STANDARD.md` §5.3），因此宿主类型必须允许内嵌 rich struct。由此：
+**宿主可内嵌性（对全部三类 wrapper 生效）**：wrapper 实例存放在宿主的 Middleware 合成的隐藏存储中（命名约定 `BIL_STANDARD.md` §5.3），因此必须满足普通值的内嵌规则。由此：
 
-- 合法的 Entity wrapper 目标是 class、interface、wrapper、rich struct、rich enum struct；
-- **非 rich struct 与非 rich enum struct 不能被任何 wrapper 修饰**，它们的字段不能挂 Value wrapper，实例方法也不能挂 Method wrapper；
-- 因此全部基元类型、`String`、`Type\<T>`、`Span\<T>` 都不可被修饰；
+- Entity wrapper 目标包含 class、interface、wrapper、struct、enum struct；
+- **非 rich struct、非 rich enum struct 与非 rich wrapper 只能内嵌非 rich wrapper**；Entity、实例字段 Value 与实例方法 Method 应用均遵守本条；
+- 内建类型的源码声明同样遵守上述规则，标记应用不得改变内建类型既定 ABI；
+- 无实例字段、无代理、无嵌套 wrapper 存储且构造为空的非 rich wrapper 是纯标记，不需要实例存储；这是一条通用规则，不专属于 SerializationBase。固定 ABI 内建类型只接受这种纯标记应用，不能因源码声明可扩展而改变数值、String 或容器的物理布局。
 - 修饰栈上变量、全局/静态字段、全局/静态方法时不涉及宿主内嵌，本条不适用；栈上变量与全局/静态字段上 Value wrapper 的存储形态见 §14.3（统一 cell 隐藏子类，非宿主内嵌）。
 
 **shared 目标矩阵**：
 
 | wrapper | 可修饰的目标 | 自身字段闭包 |
 |---|---|---|
-| `shared wrapper` | 全部合法目标（含 shared 类型、全局/静态成员） | 按 §3.1.1 的 shared 闭包收紧 |
-| 非 shared `wrapper` | 仅非 shared 目标（下表四类） | 按 §3.1.1 的 rich 闭包，可持有 local object |
+| `shared wrapper` / `shared rich wrapper` | 全部满足内嵌规则的目标（含 shared 类型、全局/静态成员） | 非 rich 仅非 rich 值；rich 按 shared 闭包收紧 |
+| 非 shared `wrapper` / `rich wrapper` | 仅非 shared 目标（下表四类），且满足内嵌规则 | 非 rich 仅非 rich 值；rich 可持有 local object |
 
 非 shared wrapper 可修饰的「非 shared 目标」是：
 
@@ -301,7 +308,7 @@ setter：
 
 **interface 目标的传染校验**：interface 本身不产生实例，被修饰 interface 的 wrapper 实例落在每个实现者上。因此：
 
-- 被修饰的 interface 的所有实现者必须自身是合法 wrapper 目标（class、rich struct、rich enum struct）；
+- 被修饰的 interface 的所有实现者必须自身满足对应 wrapper 的内嵌规则；
 - 被**非 shared** wrapper 修饰的 interface **不得被 shared 类型实现**（否则 shared 实现者会获得一个可能持有 local object 的隐藏存储）。
 
 这两条在实现者声明处检查并报错，而不是在 interface 声明处。

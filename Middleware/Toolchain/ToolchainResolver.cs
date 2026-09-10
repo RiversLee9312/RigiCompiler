@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace RigiCompiler.Middleware.Toolchain
 {
@@ -12,6 +13,18 @@ namespace RigiCompiler.Middleware.Toolchain
     /// </summary>
     public static class ToolchainResolver
     {
+        // 用户指定的工具链是显式信任输入。允许部署方钉住摘要；无钉值时
+        // 仍记录实际内容身份，不能把“文件存在”表述为已验证发行来源。
+        public static string Fingerprint(string path, string? expectedSha256 = null)
+        {
+            using var stream = File.OpenRead(path);
+            var actual = Convert.ToHexString(SHA256.HashData(stream));
+            if (!string.IsNullOrEmpty(expectedSha256)
+                && !StringComparer.OrdinalIgnoreCase.Equals(actual, expectedSha256.Trim()))
+                throw new InvalidOperationException($"工具链 SHA256 不匹配：{path}");
+            return actual;
+        }
+
         // 缓存目录识别用 RID：Windows→win-x64，Linux→linux-x64
         private static string Rid =>
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win-x64" : "linux-x64";

@@ -14,7 +14,7 @@ namespace RigiCompiler
         {
             if (Char.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
             {
-                currentToken.Content += currentChar;
+                currentToken.Append(currentChar);
                 return LexerLayerResult.Continue.Instance;
             }
             else

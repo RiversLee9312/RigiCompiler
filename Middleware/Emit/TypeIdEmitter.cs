@@ -11,14 +11,51 @@ namespace RigiCompiler.Middleware.Emit
     /// </summary>
     internal static class TypeIdEmitter
     {
+        internal sealed class ClassArgument : LlvmEmitVisitor<ClassArgument, MirGetClassTypeArgument>
+        {
+            protected override void VisitCore(MirGetClassTypeArgument inst, ModuleBuilder.Session session)
+            {
+                var fat = session.LoadLocal(session.Builder, session.Slots, inst.Receiver);
+                session.Builder.BuildStore(ReadClassArgument(session, session.Builder, fat,
+                    inst.Owner, inst.Parameter), session.Slots[inst.Target].Slot);
+            }
+        }
+
+        internal static LLVMValueRef ReadClassArgument(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef receiver, string owner, string parameter)
+        {
+            // owner 是含元数的布局键，不是把“2”当作一个实参的 Map<2> 类型引用。
+            var plan = session.Layout?.Find(owner)
+                ?? throw new CompilerInternalException("泛型实参读取缺少宿主布局: " + owner);
+            var symbol = plan.Symbol;
+            if (!symbol.Declaration.GenericParameters.Contains(parameter))
+                throw new CompilerInternalException("泛型实参不属于宿主: " + owner + "." + parameter);
+            int offset;
+            if (symbol.Canonical == TypeLayout.ArrayTypeCanonical)
+                offset = TypeLayout.ArrayElemSheetOffset;
+            else
+            {
+                var index = plan.HiddenTypeIdSlots.ToList().FindIndex(slot => slot.ParamName == parameter);
+                if (index < 0) throw new CompilerInternalException("宿主没有泛型实参存储: " + owner);
+                offset = plan.HiddenTypeIdSlots[index].Offset;
+            }
+            // Array 元素 sheet 位于固定前缀；普通泛型类使用已验证的隐藏槽。
+            // 两者都读取真实实例信息，不从静态边界猜测运行期实参。
+            var ptr = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            var obj = builder.BuildIntToPtr(builder.BuildExtractValue(receiver, 1, "typearg.payload"), ptr);
+            var slotPtr = builder.BuildGEP2(LLVMTypeRef.Int8, obj,
+                new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)offset) }, "typearg.slot");
+            return builder.BuildLoad2(ptr, slotPtr, "typearg.sheet");
+        }
+
         internal sealed class OfType : LlvmEmitVisitor<OfType, MirGetTypeId>
         {
             protected override void VisitCore(MirGetTypeId inst, ModuleBuilder.Session session)
             {
                 var builder = session.Builder;
                 var slots = session.Slots;
-                builder.BuildStore(ArrayEmitter.TypeSheetPointer(session, builder,
-                    MirType.Of(inst.TypeRef)), slots[inst.Target].Slot);
+                builder.BuildStore(NewEmitter.MaterializeClassSheet(session, builder,
+                    slots, inst.TypeRef), slots[inst.Target].Slot);
             }
         }
 

@@ -198,6 +198,9 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("AST JSONL 往返无损（Parse → Serialize → Deserialize → Serialize）");
 
+            CheckRoundTrip("显式 shared 泛型约束",
+                "pub shared class Container\\<shared T, shared out U> {}\n");
+
             // 变量声明（含嵌套泛型类型 / 可空标注 / null 字面量初始化）
             CheckRoundTrip("变量声明（泛型 + 可空）",
                 "var list: List\\<Map\\<String, i32>>? = null\n");

@@ -1,9 +1,13 @@
 // Rigi 标准库：序列化修饰器（MW11d Phase A）。
-// SerializationBase 标 @Internal：仅 core.serialization 内可应用；
-// 编译器对内建标量/String/Array 的登记不受此限（Phase A4）。
+// SerializationBase 声明在 core，应用限于标准库命名空间树。
 // Serializable 的 toParcel/fromParcel 暴露面属 Phase B。
 // Temporary 是字段 Value wrapper，懒恢复全源码实现，零编译器魔法。
 namespace core.serialization
+
+// 内部动态值解码仍由 Serializable 的真实类型实现承担；未知类型必须拒绝。
+priv func decodeAnyValue(parcel: Parcel, context: SerializationGraphContext, id: i64): Any {
+    throw new IllegalStateException("未登记的序列化类型")
+}
 
 // 编译器递归入口专用；顶层 private 限定为本标准库文件可见，用户不能
 // 构造或传递此上下文。Place<Object> 统一引用类型身份，不暴露地址或哈希。
@@ -11,10 +15,25 @@ priv class SerializationGraphContext {
     pub const enabled: bool
     priv var places: core.collections.List\<core.Place\<Object>>
     priv var decoded: core.collections.List\<Object>
+    priv var depth: i32
 
     pub init(_ -> enabled) {
         places = new core.collections.List\<core.Place\<Object>>()
         decoded = new core.collections.List\<Object>()
+        depth = 0
+    }
+
+    // 每个合成对象编解码方法占一帧。把限制放在共享上下文而非宿主
+    // 调用栈探测上，可令 VM/native 在栈耗尽前以同一语言异常失败。
+    pub func enterFrame() {
+        if (depth >= 256) {
+            throw new core.IllegalStateException("序列化对象嵌套深度超过 256")
+        }
+        depth = depth + 1
+    }
+
+    pub func leaveFrame() {
+        if (depth > 0) { depth = depth - 1 }
     }
 
     // 正数为已存在节点，负数为刚登记节点。树模式只保存活动路径。
@@ -48,11 +67,33 @@ priv class SerializationGraphContext {
 
     pub func isNewNode(id: i64): bool { return enabled and (id < 0L) }
 
-    pub func isGraphParcel(parcel: Parcel, marker: String): bool {
-        if (not enabled) { return false }
+    pub func validateParcelMode(parcel: Parcel, marker: String) {
+        var marked = false
         var i: i64 = 0L
         while (i < parcel.elementCount()) {
-            if ((parcel.keyAtIndex(i) as String) == marker) { return true }
+            if ((parcel.keyAtIndex(i) as String) == marker) { marked = true }
+            i = i + 1L
+        }
+        if (marked != enabled) {
+            throw new core.IllegalStateException(
+                "序列化 wire 模式与 loopedRefEnabled 不匹配")
+        }
+    }
+
+    // 开放 T 运行期既可能是引用类型（图 envelope），也可能是值类型
+    //（即使 enabled 也直接编码其 Parcel）。仅把 i64 的保留标记认作
+    // envelope，避免用户 Parcel 中同名 String 键造成模式误判。
+    pub func isGraphParcel(parcel: Parcel, marker: String): bool {
+        var i: i64 = 0L
+        while (i < parcel.elementCount()) {
+            if ((parcel.keyAtIndex(i) as String) == marker) {
+                const graphMarker = parcel.valueAtIndex(i) is i64
+                if (graphMarker and (not enabled)) {
+                    throw new core.IllegalStateException(
+                        "序列化 wire 模式与 loopedRefEnabled 不匹配")
+                }
+                return graphMarker
+            }
             i = i + 1L
         }
         return false
@@ -86,12 +127,6 @@ priv class SerializationGraphContext {
     }
 }
 
-@WrapperTarget(.Entity)
-@Internal
-pub shared wrapper SerializationBase {
-    pub init()
-}
-
 /**
  * 可序列化实体修饰器（MW11d-B2）。
  * 暴露面（归属本 wrapper，源码层 toParcel 经编译器改写转发宿主 ..toParcel）：
@@ -110,7 +145,7 @@ pub shared wrapper Serializable {
 
 @WrapperTarget(.Value)
 @Terminal
-pub wrapper Temporary\<TField> {
+pub rich wrapper Temporary\<TField> {
     priv var materialized: bool = false
     priv var cached: TField?
     priv var resumeStub: core.Func\<TField>
@@ -142,7 +177,9 @@ pub wrapper Temporary\<TField> {
  * 嵌套 Parcel 合法：本类标 @SerializationBase，Parcel/Parcel? 可作 element。
  */
 @SerializationBase()
+@Serializable()
 pub class Parcel implements core.collections.IEnumerable\<core.Pair\<String, Any>> {
+    @Serializable()
     priv class NullSentinel {
         pub init()
     }
@@ -203,7 +240,7 @@ pub func fromParcel\<T with Serializable>(parcel: Parcel, loopedRefEnabled: bool
 }
 
 /**
- * 深复制：toParcel 快照再 fromParcel 重建。标量不走本通道（Entity wrapper 不能挂标量）。
+   * 深复制：toParcel 快照再 fromParcel 重建；Serializable 对 SB 宿主使用基元/容器编码。
  */
 pub func deepCopy\<T with Serializable>(value: T, loopedRefEnabled: bool = false): T {
     return fromParcel\<T>(value:Serializable.toParcel(loopedRefEnabled), loopedRefEnabled)

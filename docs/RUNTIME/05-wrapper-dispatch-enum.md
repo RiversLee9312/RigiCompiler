@@ -13,11 +13,13 @@
 
 最终内联仍归 Middleware。
 
-**wrapper 值的表示**：wrapper 恒为 rich struct（`SYNTAX.md` §14.9），因此它是一个带 typeid 的胖值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；其内部托管引用字段照常经 `refMap` 参加 acquire/release。
+**wrapper 值的表示**：wrapper 默认非 rich，按需显式 rich（`SYNTAX.md` §14.9）。它是宿主内联的值，而不是独立的堆对象——没有对象头、没有对象身份、不作为独立 GC 节点被追踪；实际字段照常经 `refMap` 参加 acquire/release。
+
+`self` 来自调用约定中的独立宿主参数，wrapper 实例中没有宿主字段或相对地址。VM 的接收者实参束将状态和宿主分开传给调用帧；native 在代理特化后按精确宿主类型追加参数，`inner` 直接使用该参数。同步值宿主参数借用调用方的槽，读取 `self` 仍遵守值语义；普通字段照常拥有其内容。任何跨挂起点保存均必须经过协程帧的寿命管理，不能保留指向已返回栈帧的借用。
 
 **实例字段 / Entity 形态**（宿主内嵌）：wrapper 实例存放在宿主的 Middleware 合成隐藏存储中（命名约定见 `BIL_STANDARD.md` §5.3；存储布局是 Middleware 的实现职责，BIL 文本不再声明隐藏字段），因此：
 
-- 宿主类型必须允许内嵌 rich struct；非 rich struct 不能被修饰，这是编译期不变量，运行时无需检查。
+- 宿主类型必须允许内嵌该 wrapper；非 rich 宿主只能内嵌非 rich wrapper，这是编译期不变量，运行时无需检查。
 - 非 shared wrapper 可能持有 local object，所以只能出现在非 shared 宿主中；shared wrapper 走 microSGC 路径。
 
 **局部 / 静态 / 全局形态**（统一 cell 存储，`SYNTAX.md` §5.2 / §14.3）：被 Value wrapper 修饰的局部变量与静态/全局字段，值由编译器逐变量合成的 cell 隐藏子类盛装——子类 `extends .cell<T>` / `.readonly_cell<T>`，自持 `pub value` 字段并带 `wrapped(W)` 标记。Middleware 的烘焙识别契约 = 「继承 Cell 族 + 字段 wrapper 标记」；即使不做 Cell 特判、按普通类烘焙也可正确工作（`getValue`/`setValue` 是普通虚调用，`get.wrapper.field`/`set.wrapper.field` 走既有字段-Value 应用机制），`.cell`/`.readonly_cell` 特权拼写的特判仅供激进优化（消除 cell 间接/直读槽位等）。栈帧（或静态槽）持有的是 **cell 对象引用**；wrapper 状态内嵌于 cell 实例子类 `value` 字段的隐藏存储，生命周期与栈值/静态槽一致——非 shared wrapper 因此可合法出现在栈帧与局部 cell 路径上，而不必依赖宿主类型内嵌。**静态字段**的 cell 存储落在 companion 实例上（`BIL_STANDARD.md` §8.7），cell 构造与 wrapper 安装由 companion 的 `init` 完成（VM/Middleware main 前急切初始化）；**局部** cell 的构造时机在声明点；**全局**字段的 cell 隐藏子类即 singleton（cell 自身为共享单例，字段初值在 cell 单例的 `init` 里求值），与静态字段同由 VM/Middleware 在 main 前急切初始化。源码层全局/静态字段（含本条 cell/companion 初值）的声明初始值不得直接引用其它全局/静态字段（`SYNTAX.md` §9.3）；函数/方法调用属逃逸口，运行期不另设哨兵。

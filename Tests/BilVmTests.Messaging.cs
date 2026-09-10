@@ -11,8 +11,7 @@ namespace RigiCompiler.Tests
             var result = Run(
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Msg {\n" +
                 "    pub var n: i32\n" +
@@ -20,30 +19,29 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> n, _ -> text)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
+                "    const reader = owner.createReader()\n" +
                 "    const live = new Msg(7, \"hello\")\n" +
-                "    await MessageQueue.post(sender, live)\n" +
+                "    await sender.send(live)\n" +
                 "    live.n = 0\n" +
                 "    live.text = \"mutated\"\n" +
-                "    var item = await MessageQueue.next(reader)\n" +
+                "    var item = await reader.next()\n" +
                 "    var m = (item.item as Msg)\n" +
                 "    Console.println(m.n.toString())\n" +
                 "    Console.println(m.text)\n" +
-                "    await MessageQueue.post(sender, new Msg(8, \"a\"))\n" +
-                "    await MessageQueue.post(sender, new Msg(9, \"b\"))\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    await sender.send(new Msg(8, \"a\"))\n" +
+                "    await sender.send(new Msg(9, \"b\"))\n" +
+                "    item = await reader.next()\n" +
                 "    m = (item.item as Msg)\n" +
                 "    Console.println(m.n.toString())\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    item = await reader.next()\n" +
                 "    m = (item.item as Msg)\n" +
                 "    Console.println(m.n.toString())\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    item = await MessageQueue.next(reader)\n" +
+                "    sender.dispose()\n" +
+                "    item = await reader.next()\n" +
                 "    if (item.isEos) { Console.println(\"EOS\") }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -55,139 +53,12 @@ namespace RigiCompiler.Tests
                 result.Stdout, "7\nhello\n8\n9\nEOS\nok\n");
         }
 
-        // §8.1 capability 矩阵全 16 行：违规抛 IllegalStateException 且
-        // 消息文本精确（双端同文靠 Rigi 层统一翻译，native/VM 同错误码）
+        // 复杂生命周期场景在 VM 上另作字面量断言，避免双端同错漏检。
         private static void TestMessageQueueCapabilityMatrix()
         {
-            var result = Run(
-                "import core.io.Console\n" +
-                "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
-                "@Serializable\n" +
-                "pub shared class Msg {\n" +
-                "    pub var n: i32\n" +
-                "    pub init(_ -> n)\n" +
-                "}\n" +
-                "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                // Owner 不可派生（矩阵行 1）
-                "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Owner)\n" +
-                "        Console.println(\"FAIL owner->owner\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // Owner→Sender / Owner→Reader 合法
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    Console.println(\"owner derive ok\")\n" +
-                // Owner 不可 post / next
-                "    try {\n" +
-                "        await MessageQueue.post(owner, new Msg(1))\n" +
-                "        Console.println(\"FAIL owner post\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                "    try {\n" +
-                "        const bad = await MessageQueue.next\\<Msg>(owner)\n" +
-                "        Console.println(\"FAIL owner next\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // Sender→Sender 合法；Sender→Reader/Owner 拒绝
-                "    const sender2 = MessageQueue.add_queue_handle\\<Msg>(sender, QueueHandleType.Sender)\n" +
-                "    Console.println(\"sender derive sender ok\")\n" +
-                "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(sender, QueueHandleType.Reader)\n" +
-                "        Console.println(\"FAIL sender->reader\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(sender, QueueHandleType.Owner)\n" +
-                "        Console.println(\"FAIL sender->owner\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // Sender 可 post 不可 next
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
-                "    Console.println(\"sender post ok\")\n" +
-                "    try {\n" +
-                "        const bad = await MessageQueue.next\\<Msg>(sender)\n" +
-                "        Console.println(\"FAIL sender next\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // Reader→Reader 合法；Reader→Sender/Owner 拒绝
-                "    const reader2 = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Reader)\n" +
-                "    Console.println(\"reader derive reader ok\")\n" +
-                "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Sender)\n" +
-                "        Console.println(\"FAIL reader->sender\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Owner)\n" +
-                "        Console.println(\"FAIL reader->owner\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // Reader 不可 post 可 next（收刚才 sender 的 Msg(1)）
-                "    try {\n" +
-                "        await MessageQueue.post(reader, new Msg(2))\n" +
-                "        Console.println(\"FAIL reader post\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                "    const got = await MessageQueue.next(reader)\n" +
-                "    Console.println(((got.item as Msg).n).toString())\n" +
-                // 重复释放 / 已释放再用
-                "    MessageQueue.release_queue_handle(sender2)\n" +
-                "    try {\n" +
-                "        MessageQueue.release_queue_handle(sender2)\n" +
-                "        Console.println(\"FAIL double release\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                "    try {\n" +
-                "        await MessageQueue.post(sender2, new Msg(3))\n" +
-                "        Console.println(\"FAIL use after release\")\n" +
-                "    } catch (e: core.IllegalStateException) {\n" +
-                "        Console.println(e.getMessage())\n" +
-                "    }\n" +
-                // 收尾：全释放防看门狗
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
-                "    MessageQueue.release_queue_handle(reader2)\n" +
-                "    Console.println(\"ok\")\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    run()\n" +
-                "    return 0\n" +
-                "}\n");
-            CheckOk("MessageQueue capability 矩阵全 16 行", result);
-            TestHarness.Check("MessageQueue capability stdout 精确",
-                result.Stdout,
-                "MessageQueue: 不能派生 Owner\n" +
-                "owner derive ok\n" +
-                "MessageQueue: 该句柄不能 post\n" +
-                "MessageQueue: 该句柄不能 next\n" +
-                "sender derive sender ok\n" +
-                "MessageQueue: 不能从该句柄派生 Reader\n" +
-                "MessageQueue: 不能派生 Owner\n" +
-                "sender post ok\n" +
-                "MessageQueue: 该句柄不能 next\n" +
-                "reader derive reader ok\n" +
-                "MessageQueue: 不能从该句柄派生 Sender\n" +
-                "MessageQueue: 不能派生 Owner\n" +
-                "MessageQueue: 该句柄不能 post\n" +
-                "1\n" +
-                "MessageQueue: 句柄重复释放\n" +
-                "MessageQueue: 句柄已释放或不存在\n" +
-                "ok\n");
+            var result = Run(NativeE2ETests.MessagingLifecycleSource);
+            CheckOk("MessageQueue OOP 生命周期", result);
+            TestHarness.Check("MessageQueue 生命周期精确输出", result.Stdout, "mq-lifecycle-ok\n");
         }
 
         // §9.2/§25 EOS 状态机：Owner 活+0 Sender 不 EOS（挂起后被 post 唤醒）、
@@ -198,8 +69,7 @@ namespace RigiCompiler.Tests
             var result = Run(
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "import core.messaging.QueueItem\n" +
                 "import core.coroutine.*\n" +
                 "@Serializable\n" +
@@ -208,17 +78,17 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const reader = owner.createReader()\n" +
                 // 无 Sender 时 next 挂起而非 EOS；随后建 Sender post 唤醒之。
                 // §18.1：直接调用 async 函数是 eager 热 Task，须以
                 // new Task(func{async ...}) 造冷 Task 才能 run()
                 "    const pending = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
-                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "        return@_ (await reader.next())\n" +
                 "    } })\n" +
                 "    pending.run()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    const sender = owner\n" +
+                "    await sender.send(new Msg(1))\n" +
                 "    const woken = await pending\n" +
                 "    if (woken.isEos) {\n" +
                 "        Console.println(\"FAIL early eos\")\n" +
@@ -226,25 +96,24 @@ namespace RigiCompiler.Tests
                 "        Console.println((\"woken \" + ((woken.item as Msg).n).toString()))\n" +
                 "    }\n" +
                 // Owner 释放但 Sender 活：不 sealed 不 EOS（post 仍工作）
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
+                "    await sender.send(new Msg(2))\n" +
+                "    await sender.send(new Msg(3))\n" +
                 // Sender 释放 → sealed；已入队消息可 drain，随后 EOS
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    const d1 = await MessageQueue.next(reader)\n" +
+                "    sender.dispose()\n" +
+                "    const d1 = await reader.next()\n" +
                 "    Console.println(((d1.item as Msg).n).toString())\n" +
-                "    const d2 = await MessageQueue.next(reader)\n" +
+                "    const d2 = await reader.next()\n" +
                 "    Console.println(((d2.item as Msg).n).toString())\n" +
-                "    const tail = await MessageQueue.next(reader)\n" +
+                "    const tail = await reader.next()\n" +
                 "    if (tail.isEos) { Console.println(\"EOS\") }\n" +
                 // sealed 后不可复活：派生 Sender 拒绝
                 "    try {\n" +
-                "        const bad = MessageQueue.add_queue_handle\\<Msg>(reader, QueueHandleType.Sender)\n" +
+                "        await sender.send(new Msg(4))\n" +
                 "        Console.println(\"FAIL revive\")\n" +
                 "    } catch (e: core.IllegalStateException) {\n" +
                 "        Console.println(e.getMessage())\n" +
                 "    }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -258,7 +127,7 @@ namespace RigiCompiler.Tests
                 "2\n" +
                 "3\n" +
                 "EOS\n" +
-                "MessageQueue: 不能从该句柄派生 Sender\n" +
+                "MessageQueue: 队列已 sealed，不能 post\n" +
                 "ok\n");
         }
 
@@ -270,43 +139,41 @@ namespace RigiCompiler.Tests
             var result = Run(
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "@Serializable\n" +
                 "pub shared class Msg {\n" +
                 "    pub var n: i32\n" +
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
-                "    const ra = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    const rb = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
+                "    const ra = owner.createReader()\n" +
+                "    const rb = owner.createReader()\n" +
+                "    await sender.send(new Msg(1))\n" +
+                "    await sender.send(new Msg(2))\n" +
                 // A 快 B 慢：A 读两条不影响 B
-                "    const a1 = await MessageQueue.next(ra)\n" +
-                "    const a2 = await MessageQueue.next(ra)\n" +
+                "    const a1 = await ra.next()\n" +
+                "    const a2 = await ra.next()\n" +
                 "    Console.println(((a1.item as Msg).n).toString())\n" +
                 "    Console.println(((a2.item as Msg).n).toString())\n" +
-                "    const b1 = await MessageQueue.next(rb)\n" +
+                "    const b1 = await rb.next()\n" +
                 "    Console.println(((b1.item as Msg).n).toString())\n" +
                 // 迟来 reader 从队尾起：只见新消息
-                "    const rc = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
-                "    const c1 = await MessageQueue.next(rc)\n" +
+                "    const rc = owner.createReader()\n" +
+                "    await sender.send(new Msg(3))\n" +
+                "    const c1 = await rc.next()\n" +
                 "    Console.println(((c1.item as Msg).n).toString())\n" +
                 // 释放 B 不影响 A/C
-                "    MessageQueue.release_queue_handle(rb)\n" +
-                "    await MessageQueue.post(sender, new Msg(4))\n" +
-                "    const a3 = await MessageQueue.next(ra)\n" +
+                "    rb.dispose()\n" +
+                "    await sender.send(new Msg(4))\n" +
+                "    const a3 = await ra.next()\n" +
                 "    Console.println(((a3.item as Msg).n).toString())\n" +
-                "    const c2 = await MessageQueue.next(rc)\n" +
+                "    const c2 = await rc.next()\n" +
                 "    Console.println(((c2.item as Msg).n).toString())\n" +
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
-                "    MessageQueue.release_queue_handle(ra)\n" +
-                "    MessageQueue.release_queue_handle(rc)\n" +
+                "    sender.dispose()\n" +
+                "    ra.dispose()\n" +
+                "    rc.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +
@@ -324,8 +191,7 @@ namespace RigiCompiler.Tests
             var result = Run(
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
-                "import core.messaging.MessageQueue\n" +
-                "import core.messaging.QueueHandleType\n" +
+                "import core.messaging.Messenger\n" +
                 "import core.messaging.QueueItem\n" +
                 "import core.coroutine.*\n" +
                 "@Serializable\n" +
@@ -334,30 +200,30 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> n)\n" +
                 "}\n" +
                 "async func run() {\n" +
-                "    const owner = MessageQueue.create_queue\\<Msg>()\n" +
-                "    const sender = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Sender)\n" +
+                "    const owner = new Messenger\\<Msg>()\n" +
+                "    const sender = owner\n" +
                 // 接受点：无 reader 也完成（不等待任何接收侧）
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
+                "    await sender.send(new Msg(1))\n" +
                 "    Console.println(\"post accepted no reader\")\n" +
-                "    const reader = MessageQueue.add_queue_handle\\<Msg>(owner, QueueHandleType.Reader)\n" +
+                "    const reader = owner.createReader()\n" +
                 // 单 sender 顺序 A/B/C
-                "    await MessageQueue.post(sender, new Msg(1))\n" +
-                "    await MessageQueue.post(sender, new Msg(2))\n" +
-                "    await MessageQueue.post(sender, new Msg(3))\n" +
-                "    const i1 = await MessageQueue.next(reader)\n" +
-                "    const i2 = await MessageQueue.next(reader)\n" +
-                "    const i3 = await MessageQueue.next(reader)\n" +
+                "    await sender.send(new Msg(1))\n" +
+                "    await sender.send(new Msg(2))\n" +
+                "    await sender.send(new Msg(3))\n" +
+                "    const i1 = await reader.next()\n" +
+                "    const i2 = await reader.next()\n" +
+                "    const i3 = await reader.next()\n" +
                 "    Console.println((((i1.item as Msg).n).toString() + ((i2.item as Msg).n).toString()) + ((i3.item as Msg).n).toString())\n" +
                 // 同一 reader 并发 next 违规（t1 冷 Task 挂起中，t2 enter 被拒）。
                 // 时序握手：t1 的 next 须先 enter 并入眠，t2 才构成违规——
                 // run() 在 t1.run() 后裸 yield 一圈，让 t1（及其内层 eager
                 // next 协程）先于 t2 的 enter 在 Worker 上跑到挂起点
                 "    const t1 = new Task\\<QueueItem\\<Msg>>(func{async (): QueueItem\\<Msg> -> {\n" +
-                "        return@_ (await MessageQueue.next\\<Msg>(reader))\n" +
+                "        return@_ (await reader.next())\n" +
                 "    } })\n" +
                 "    t1.run()\n" +
                 "    yield\n" +
-                "    const t2 = MessageQueue.next(reader)\n" +
+                "    const t2 = reader.next()\n" +
                 "    try {\n" +
                 "        const bad = await t2\n" +
                 "        Console.println(\"FAIL outstanding\")\n" +
@@ -365,11 +231,10 @@ namespace RigiCompiler.Tests
                 "        Console.println(e.getMessage())\n" +
                 "    }\n" +
                 // 收尾 sealed → t1 收 EOS
-                "    MessageQueue.release_queue_handle(owner)\n" +
-                "    MessageQueue.release_queue_handle(sender)\n" +
+                "    sender.dispose()\n" +
                 "    const eos = await t1\n" +
                 "    if (eos.isEos) { Console.println(\"EOS\") }\n" +
-                "    MessageQueue.release_queue_handle(reader)\n" +
+                "    reader.dispose()\n" +
                 "    Console.println(\"ok\")\n" +
                 "}\n" +
                 "pub func main(): i32 {\n" +

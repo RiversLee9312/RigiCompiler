@@ -60,6 +60,12 @@ namespace RigiCompiler
             SliceFor(CurrentSliceNs).LocalSymbols.Add(entry);
         }
 
+        public void AddExternalSymbol(BilSymbolSectionEntry entry)
+        {
+            Module.ExternalSymbols.Add(entry);
+            SliceFor(CurrentSliceNs).ExternalSymbols.Add(entry);
+        }
+
         public void AddFunction(BilFunction function)
         {
             Module.Functions.Add(function);

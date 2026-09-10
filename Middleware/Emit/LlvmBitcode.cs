@@ -30,8 +30,15 @@ namespace RigiCompiler.Middleware.Emit
                 sbyte* message;
                 if (LLVM.CreateMemoryBufferWithContentsOfFile((sbyte*)pathPtr, &buffer, &message) != 0)
                 {
-                    var text = message != null ? new string(message) : "无法读取文件";
-                    throw new MwNotSupportedException($"rigi_rt bitcode 读取失败: {text}（{bitcodePath}）");
+                    try
+                    {
+                        var text = message != null ? new string(message) : "无法读取文件";
+                        throw new MwNotSupportedException($"rigi_rt bitcode 读取失败: {text}（{bitcodePath}）");
+                    }
+                    finally
+                    {
+                        if (message != null) LLVM.DisposeMessage(message);
+                    }
                 }
                 try
                 {
@@ -68,9 +75,16 @@ namespace RigiCompiler.Middleware.Emit
                         LlvmHost.SharedHostMachine, options);
                     if (error != null)
                     {
-                        var message = new string(LLVM.GetErrorMessage(error));
-                        LLVM.ConsumeError(error);
-                        throw new CompilerInternalException($"LLVM 优化管线失败: {message}");
+                        var message = LLVM.GetErrorMessage(error);
+                        try
+                        {
+                            throw new CompilerInternalException(
+                                $"LLVM 优化管线失败: {new string(message)}");
+                        }
+                        finally
+                        {
+                            LLVM.DisposeErrorMessage(message);
+                        }
                     }
                 }
                 finally

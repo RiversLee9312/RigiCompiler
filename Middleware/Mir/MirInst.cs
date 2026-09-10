@@ -601,7 +601,7 @@ namespace RigiCompiler.Middleware.Mir
         }
     }
 
-    // get.self：从 wrapper .this 的宿主回指槽取出 TTarget（proxy 模板）
+    // get.self：wrapper proxy 的宿主参数占位（特化后在协程切分前消除）
     public sealed class MirGetSelf : MirInst
     {
         public string Target { get; }
@@ -670,6 +670,17 @@ namespace RigiCompiler.Middleware.Mir
             Object = objectOperand;
             FieldSymbol = fieldSymbol;
         }
+    }
+
+    // 编译器内部读取接收者真实泛型实参；固定 ABI 数组不伪造普通隐藏字段。
+    public sealed class MirGetClassTypeArgument : MirInst
+    {
+        public MirOperand Receiver { get; }
+        public string Owner { get; }
+        public string Parameter { get; }
+        public string Target { get; }
+        internal MirGetClassTypeArgument(MirOperand receiver, string owner, string parameter, string target)
+        { Receiver = receiver; Owner = owner; Parameter = parameter; Target = target; }
     }
 
     // get.array 直译（内建与用户类型同形态；用户类型由
@@ -792,12 +803,15 @@ namespace RigiCompiler.Middleware.Mir
         public MirOperand Source { get; }
         public MirType InnerType { get; }
         public string Target { get; }
+        public MirBlock? ExcTarget { get; }
 
-        internal MirUnwrapNullable(MirOperand source, MirType innerType, string target)
+        internal MirUnwrapNullable(MirOperand source, MirType innerType, string target,
+            MirBlock? excTarget = null)
         {
             Source = source;
             InnerType = innerType;
             Target = target;
+            ExcTarget = excTarget;
         }
     }
 
@@ -951,16 +965,17 @@ namespace RigiCompiler.Middleware.Mir
     // 带 Alarm 的 yield 直译（split 前，MW11b 棒3；BIL §17.2
     // yield ALARM 形态）：AlarmSlot = Alarm 胖引用槽（PollingAlarm/
     // EventAlarm 运行时分类——split 产物经 MirTypeCheck 分流，MIR
-    // 不区分）。无 ExcTarget——探测异常在恢复块异步发生（对齐
-    // VM：isReady 抛出 = yield 点失败走 Task FAILED，await 点重抛），
-    // 非本指令同步抛出；split 保证消除本指令
+    // 不区分）。ExcTarget 保存 yield 点词法 try 落点；恢复期 isReady
+    // 抛出必须回到该落点，不能绕过原 try/catch。split 保证消除本指令。
     public sealed class MirYieldAlarm : MirInst
     {
         public string AlarmSlot { get; }
+        public MirBlock? ExcTarget { get; }
 
-        internal MirYieldAlarm(string alarmSlot)
+        internal MirYieldAlarm(string alarmSlot, MirBlock? excTarget)
         {
             AlarmSlot = alarmSlot;
+            ExcTarget = excTarget;
         }
     }
 

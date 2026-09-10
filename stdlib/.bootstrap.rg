@@ -10,14 +10,6 @@ pub ext operator i32.EnumerateInRange(end: i32): core.collections.IEnumerable\<i
     return new core.collections.RangeI32(this, end)
 }
 
-pub open class Pair\<TKey, TValue> {
-    pub const key: TKey
-    pub const value: TValue
-    // S9d：显式 init（§9.3）——kwargs 打包的 .pair<.string, .any> 特权
-    // 构造经此匹配（§14.1 严格匹配唯一 init）
-    pub init(_ -> key, _ -> value) { }
-}
-
 // SYNTAX §13.2：排序比较 operator compareTo 的固定返回类型
 pub enum struct ComparisonResult {}[
     Equal,
@@ -580,22 +572,20 @@ pub abstract class ReadonlyCell\<T> {
 //（core::Array#length@.i32 的 VM 直读先例）。const 保证不可写入。
 pub ext const String.length: i64
 
+// String.characterCount 返回 Unicode 标量值数量（不是 UTF-16 码元数，也不是
+// 用户感知的字素簇数量）。例如旗帜由两个区域指示符标量组成。
+pub ext const String.characterCount: i64
+
 // hash 机制的 native 触达点（Map 键判等，用户裁定）：与 any_to_string 同构
 // 的 priv 全局 native——Any/Object 的 hash 不是 native 成员，默认实现体由
 // 编译器合成为调用本函数的小 fn。文件级私有全局形态把用户挡在访问控制外
 //（§16.1），只经合成体触达；VM hook（BIL §22.5）对任意胖值取 i64 哈希
 //（String 按内容、标量按值、对象按身份，null 固定 0）。
-@NativeLibrary("rigi_rt")
-@NativeSymbol("any_hash")
-priv native func any_hash(value: Any): i64
 
 // toString 机制的 native 触达点（SYNTAX §3.8，用户裁定）：Any/Object 的
 // toString 不再是 native 成员——它们的默认实现体由编译器合成为调用本
 // 函数的小 fn。文件级私有全局形态把用户挡在访问控制外（§16.1），只经
 // 合成体触达；VM hook（BIL §22.5）对任意胖值取标准文本。
-@NativeLibrary("rigi_rt")
-@NativeSymbol("any_to_string")
-priv native func any_to_string(value: Any): String
 
 // @EntryPoint（SYNTAX §17.1 程序入口）：编译器内建方法注解，与上面的
 // @NativeLibrary/@NativeSymbol 同族——按末段名硬编码识别、不属于 wrapper
@@ -607,4 +597,11 @@ priv native func any_to_string(value: Any): String
 // @Terminal（修饰器组合终点，MW11d）：同族内建注解。标在 wrapper 声明上
 // 表示该 wrapper 处于组合终点，其内层不得再嵌套其它 wrapper。
 // @Internal（命名空间内建应用限制，MW11d）：同族内建注解。标在声明上后，
-// 非声明命名空间的代码不得拿它修饰自己的声明；API 签名暴露与 pub 可见性不变。
+// 声明命名空间子树之外不得应用；API 签名暴露与 pub 可见性不变。
+
+// 序列化基础能力：普通非 rich Entity wrapper，应用仅限标准库。
+@WrapperTarget(.Entity)
+@Internal
+pub shared wrapper SerializationBase {
+    pub init() {}
+}

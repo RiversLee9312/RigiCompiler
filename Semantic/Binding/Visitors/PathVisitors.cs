@@ -1020,6 +1020,14 @@ namespace RigiCompiler
                 env.Error(node.Span, "P3: 'this' is not available in a static context");
                 return null;
             }
+            // wrapper 接收者借用宿主的隐藏存储，不能复制成脱离宿主的普通值。
+            // 索引/调用后缀和成员链仍按接收者使用；括号内单独的 this 也不例外。
+            if (thisType is TypeSymbol { Kind: TypeKind.Wrapper }
+                && node.Head.Suffixes.Count == 0 && node.Segments.Count == 0)
+            {
+                env.Error(node.Span, "P3: Wrapper 'this' cannot be used as a value (only as a member access receiver)");
+                return null;
+            }
             // M88：模板态下 proxy 声明的 Owner 即 wrapper 类型，this 走普通
             // 实例上色（不再重写 BoundWrapperAccessExpression）
             BoundExpression receiver = new BoundThisExpression(node, thisType);

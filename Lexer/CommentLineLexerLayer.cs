@@ -13,7 +13,7 @@ namespace RigiCompiler
         {
             if (currentChar != '\n')
             {
-                currentToken.Content += currentChar;
+                currentToken.Append(currentChar);
                 return LexerLayerResult.Continue.Instance;
             }
             else

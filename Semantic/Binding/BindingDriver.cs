@@ -112,6 +112,8 @@ namespace RigiCompiler
                 BindBody(fn, symbol, fileCtx, owner);
             }, BindAccessorBodies);
             SynthesizeGlobalFieldInitializers();
+            // 函数体中的闭合泛型使用点此时已驻留，动态解码注册不可提前截断。
+            SerializationSynthesis.FinalizeDynamicDecoder(env);
             // lambda 对象模型（SYNTAX §5.2）：每个 lambda 的隐藏类 init 体与
             // $$call 体全部汇入函数体列表（捕获与否不再有区别——闭包经
             // init 的 Cell 参数传入，P4 降级为普通 new + invoke）

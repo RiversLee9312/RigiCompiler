@@ -26,17 +26,20 @@ namespace RigiCompiler
     // 字段反查，P4b 声明发射由字段槽驱动；返回/参数类型回填与修饰符合法性归 P2。
     //
     // 类型默认基类在建壳时即定（class→Object / struct→ValueType /
-    // enum struct→Enum / wrapper→Wrapper，wrapper 恒 rich §14.9）：
+    // enum struct→Enum / wrapper→Wrapper，rich 均按声明读取 §14.9）：
     // IsValueTypeBranch 构造期沿基类链传播，P2 覆盖显式基类不影响分支归属。
     public static class DeclarationCollector
     {
         public static DeclarationCollection Collect(CompilationUnit unit)
         {
             var result = new DeclarationCollection();
+            if (unit.SourceFiles.Any(f => f.IsIntrinsicDeclarations))
+                unit.Symbols.Bootstrap.Core.Methods.RemoveAll(m => m.SourceFile?.IsIntrinsicDeclarations == true);
             foreach (var file in unit.SourceFiles)
             {
                 CollectFile(unit, file, result);
             }
+            unit.Symbols.Bootstrap.RefreshCallWildcard();
             return result;
         }
 
@@ -71,6 +74,12 @@ namespace RigiCompiler
                         {
                             namespaceSeen = true;
                             fileNamespace = unit.Symbols.GetNamespace(SegmentsOf(nsDecl.Name));
+                            // 信任来自内嵌资源解析的 AST 标记，不能按文件名或路径授予。
+                            if (!file.IsCompilerLibrary
+                                && (fileNamespace.FullName == "core"
+                                    || fileNamespace.FullName.StartsWith("core.", StringComparison.Ordinal)))
+                                unit.Diagnostics.Error(DiagnosticPhase.P1, nsDecl.Span,
+                                    "Namespace 'core' and its descendants are reserved for the compiler standard library");
                             globalScope = ScopeOf(fileNamespace);
                         }
                         break;
@@ -119,7 +128,7 @@ namespace RigiCompiler
                     CollectEnumCases(unit, e, (TypeSymbol)result.SymbolOf(node)!, result);
                     break;
                 case WrapperDeclarationASTNode w:
-                    // wrapper 恒 rich（§14.9），隐式基类 Wrapper；显式写 rich 的报错归 P2
+                    // wrapper 默认非 rich（§14.9），隐式基类 Wrapper。
                     CollectType(unit, w.WrapperName, TypeKind.Wrapper, unit.Symbols.Bootstrap.Wrapper,
                         w.Modifiers, w.GenericParameters, w.Members, node, ns, declaringType, scope, result);
                     break;
@@ -143,24 +152,45 @@ namespace RigiCompiler
             ASTNode node, NamespaceSymbol ns, TypeSymbol? declaringType,
             Scope scope, DeclarationCollection result)
         {
-            var symbol = new TypeSymbol(
+            ASTNode sourceRoot = node;
+            while (sourceRoot.Parent != null) sourceRoot = sourceRoot.Parent;
+            var adopted = sourceRoot is RootASTNode { IsCompilerLibrary: true, IsIntrinsicDeclarations: true }
+                && declaringType == null && ns == unit.Symbols.Bootstrap.Core
+                && unit.Symbols.Bootstrap.SourceTypes.TryGetValue(name, out var existing)
+                && result.DeclarationOf(existing) == null ? existing : null;
+            var symbol = adopted ?? new TypeSymbol(
                 name, kind, ns, declaringType,
                 baseType: defaultBase,
-                isRich: kind == TypeKind.Wrapper || modifiers.Contains(Keywords.RICH),
+                isRich: modifiers.Contains(Keywords.RICH),
                 isShared: modifiers.Contains(Keywords.SHARED),
                 bilAlias: IsHandleDeclaration(node, ns, name) ? ".handle" : null);
-            CollectGenericParameters(symbol.GenericParameters, generics, result);
+            if (adopted != null)
+            {
+                // 采用源码的新 AST，但保留驻留类型和泛型参数身份；成员重新走 P1。
+                symbol.Methods.Clear();
+                symbol.Fields.Clear();
+                symbol.SourceFile = null;
+                if (symbol.Kind != kind || symbol.GenericParameters.Count != (generics?.Parameters.Count ?? 0))
+                    throw new CompilerInternalException("内建源码声明身份不一致：" + name);
+                if (generics != null)
+                    for (var i = 0; i < generics.Parameters.Count; i++)
+                    {
+                        symbol.GenericParameters[i].Constraints.Clear();
+                        result.Map(generics.Parameters[i], symbol.GenericParameters[i]);
+                    }
+            }
+            else CollectGenericParameters(symbol.GenericParameters, generics, result);
             result.Map(node, symbol);
             // 重复检测：同容器同名同元数类型只保留第一个（S10 定稿：类型名
             // 唯一性按「名 + 泛型参数个数」判定——Task 与 Task\<T\> 合法共存，
             // 见 SYNTAX §15.3；诊断累积，收集不中断）
             var arity = generics?.Parameters.Count ?? 0;
-            if (scope.Types.Any(t => t.Name == name && t.GenericParameters.Count == arity))
+            if (adopted == null && scope.Types.Any(t => t.Name == name && t.GenericParameters.Count == arity))
             {
                 unit.Diagnostics.Error(DiagnosticPhase.P1, node.Span,
                     $"Duplicate type declaration: '{name}'");
             }
-            else
+            else if (adopted == null)
             {
                 scope.Types.Add(symbol);
             }
@@ -176,7 +206,7 @@ namespace RigiCompiler
 
         private static bool IsHandleDeclaration(ASTNode node, NamespaceSymbol ns, string name)
         {
-            if (ns.FullName != "core" || name is not ("Handle" or "MutableHandle")) return false;
+            if (ns.FullName != "core" || name != "ObjectHandleStorage") return false;
             while (node.Parent != null) node = node.Parent;
             return node is RootASTNode { IsCompilerLibrary: true };
         }
@@ -187,6 +217,15 @@ namespace RigiCompiler
         {
             // ext 限定名（§4.4 "String.isEmpty"）：拆最后一段为成员名，前缀为目标路径原文
             var name = node.Name;
+            if (name == "call???")
+            {
+                ASTNode root = node;
+                while (root.Parent != null) root = root.Parent;
+                if (!ReferenceEquals(declaringType, unit.Symbols.Bootstrap.Any)
+                    || root is not RootASTNode { IsCompilerLibrary: true, IsIntrinsicDeclarations: true })
+                    unit.Diagnostics.Error(DiagnosticPhase.P1, node.Span,
+                        "'call???' is reserved for the intrinsic Any declaration");
+            }
             string? extTarget = null;
             if (node.Modifiers.Contains(Keywords.EXT) && name.LastIndexOf('.') is var dot && dot > 0)
             {
@@ -344,23 +383,7 @@ namespace RigiCompiler
             foreach (var p in generics.Parameters)
             {
                 var gp = new GenericParameterSymbol(p.Name, p.IsVariadic, p.IsNamedVariadic,
-                    p.Variance);
-                // 来源身份不可由用户伪造 core 命名空间取得。容器及其工厂、
-                // 快照的参数共同承担同一能力证明，所有实例化点统一验证。
-                ASTNode root = generics;
-                while (root.Parent != null) root = root.Parent;
-                ASTNode? declaration = generics.Parent;
-                while (declaration != null && declaration is not ClassDeclarationASTNode)
-                    declaration = declaration.Parent;
-                if (root is RootASTNode { IsCompilerLibrary: true }
-                    && declaration is ClassDeclarationASTNode container
-                    && container.ClassName is "AtomicArray" or "AtomicList" or "AtomicMap"
-                        or "AtomicSnapshot" or "AtomicMapSnapshot"
-                        or "QueueHandle" or "QueueItem" or "QueueState" or "MessageQueue"
-                        or "QueueReaderState" or "QueueLogSegment"
-                        or "Reader" or "Receiver" or "Messenger" or "ListenerEntry"
-                        or "PumpAdapter" or "ListenerCall")
-                    gp.RequiresSharedSafe = true;
+                    p.Variance) { RequiresSharedSafe = p.RequiresSharedSafe };
                 target.Add(gp);
                 result.Map(p, gp);
             }

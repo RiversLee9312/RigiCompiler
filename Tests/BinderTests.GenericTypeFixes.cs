@@ -15,6 +15,7 @@ namespace RigiCompiler.Tests
             TestCovariantInitUsage();
             TestConstructedTypeStaticMembers();
             TestGenericNullableFixes();
+            TestExplicitSharedGenerics();
         }
 
         // ===== g8/g10：泛型参数可空（Nullable<T>，T 为型参）——T → T? 装箱

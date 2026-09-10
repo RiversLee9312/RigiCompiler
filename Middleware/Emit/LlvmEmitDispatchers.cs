@@ -115,6 +115,9 @@ namespace RigiCompiler.Middleware.Emit
                 case MirGetTypeIdVar getTypeIdVar:
                     TypeIdEmitter.OfVar.Visit(getTypeIdVar, session);
                     break;
+                case MirGetClassTypeArgument argument:
+                    TypeIdEmitter.ClassArgument.Visit(argument, session);
+                    break;
                 case MirWrapNullable wrap:
                     NullableEmitter.Wrap.Visit(wrap, session);
                     break;

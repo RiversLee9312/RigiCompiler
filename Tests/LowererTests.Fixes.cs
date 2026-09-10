@@ -224,13 +224,13 @@ namespace RigiCompiler.Tests
                 "    return options[0]?.key if? \"\"\n" +
                 "}\n");
             CheckNoErrors("无诊断（kwargs 索引读降级）", unit2);
-            TestHarness.Check("kwargs 索引读外包 Pair 拆箱 cast（Q6）",
+            TestHarness.Check("kwargs 索引读逐元素转换并重建 Pair",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: Pair<String, String>?, .s1: String?, .b0: .breakid, " +
                 ".s2: String?, .s3: String, .b1: .breakid], " +
                 "[Assign(Local(.s0,Pair<String, String>?), " +
-                "Cast(Index(Param(options,Array<Pair<String, String>>), Int(0,i32), " +
-                "Pair<String, Any>?), Pair<String, String>?, Pair<String, String>?)); " +
+                "Call(convertArgument, [Index(Param(options,Array<Pair<String, String>>), Int(0,i32), " +
+                "Pair<String, Any>?)], Pair<String, String>?)); " +
                 "Assign(Local(.s1,String?), Const(null,String?)); " +
                 "If(Binary(CmpNe, Local(.s0,Pair<String, String>?), " +
                 "Const(null,Pair<String, String>?), bool), " +

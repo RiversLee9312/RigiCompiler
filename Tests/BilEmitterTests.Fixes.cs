@@ -211,45 +211,40 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（kwargs 索引读）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（kwargs 索引读）", module2);
-            BilTestHarness.CheckFnShape("kwargs 索引读（Q6 Pair 拆箱 cast）",
+            BilTestHarness.CheckFnShape("kwargs 索引读（逐元素转换并重建 Pair）",
                 module2, "$f()@.string",
-                ".vars { .nullable<core::Pair<.string, .string>> .s0, " +
-                ".nullable<.string> .s1, .breakid .b0, .nullable<.string> .s2, " +
-                ".string .s3, .breakid .b1, .i32 .t0, " +
-                ".nullable<core::Pair<.string, .any>> .t1, " +
-                ".nullable<core::Pair<.string, .string>> .t2, .nullable<.string> .t3, " +
-                ".nullable<core::Pair<.string, .string>> .t4, .bool .t5, " +
-                "core::Pair<.string, .string> .t6, .string .t7, .nullable<.string> .t8, " +
-                ".nullable<.string> .t9, .bool .t10, .string .t11, .string .t12 }\n" +
+                ".vars { .nullable<core::Pair<.string, .string>> .s0, .nullable<.string> .s1, .breakid .b0, .nullable<.string> .s2, .string .s3, .breakid .b1, .typeid .t0, .typeid .t1, .i32 .t2, .nullable<core::Pair<.string, .any>> .t3, .nullable<core::Pair<.string, .string>> .t4, .nullable<.string> .t5, .nullable<core::Pair<.string, .string>> .t6, .bool .t7, core::Pair<.string, .string> .t8, .string .t9, .nullable<.string> .t10, .nullable<.string> .t11, .bool .t12, .string .t13, .string .t14 }\n" +
                 ".block entry entrypoint {\n" +
-                "load res(#0) $.t0\n" +
-                "get.array $.kwargs.options $.t0 $.t1\n" +
-                "cast $.t1 $.t2 type(.nullable<core::Pair<.string, .string>>)\n" +
-                "set.var $.t2 $.s0\n" +
-                "load res(#1) $.t3\n" +
-                "set.var $.t3 $.s1\n" +
-                "load res(#2) $.t4\n" +
-                "cmp.ne $.s0 $.t4 $.t5\n" +
-                "if $.t5 blk(if0-then) none $.b0\n" +
+                "getid.type type(.any) $.t0\n" +
+                "getid.type type(.string) $.t1\n" +
+                "load res(#0) $.t2\n" +
+                "get.array $.kwargs.options $.t2 $.t3\n" +
+                "invoke fn(core::Pair$.static.convertArgument(source:.nullable<core::Pair<.string,.generic<$.generic.TFrom>>>)@.nullable<core::Pair<.string,.generic<$.generic.TTo>>>) $.t4 [$.t0, $.t1, $.t3]\n" +
+                "set.var $.t4 $.s0\n" +
+                "load res(#1) $.t5\n" +
+                "set.var $.t5 $.s1\n" +
+                "load res(#2) $.t6\n" +
+                "cmp.ne $.s0 $.t6 $.t7\n" +
+                "if $.t7 blk(if0-then) none $.b0\n" +
                 "set.var $.s1 $.s2\n" +
-                "load res(#1) $.t9\n" +
-                "cmp.ne $.s2 $.t9 $.t10\n" +
-                "if $.t10 blk(if1-then) blk(if1-else) $.b1\n" +
+                "load res(#1) $.t11\n" +
+                "cmp.ne $.s2 $.t11 $.t12\n" +
+                "if $.t12 blk(if1-then) blk(if1-else) $.b1\n" +
                 "ret $.s3\n" +
                 "}\n" +
                 ".block if0-then {\n" +
-                "cast $.s0 $.t6 type(core::Pair<.string, .string>)\n" +
-                "get.field $.t6 $.t7 field(core::Pair#key@.generic<$.generic.TKey>)\n" +
-                "cast $.t7 $.t8 type(.nullable<.string>)\n" +
-                "set.var $.t8 $.s1\n" +
+                "cast $.s0 $.t8 type(core::Pair<.string, .string>)\n" +
+                "get.field $.t8 $.t9 field(core::Pair#key@.generic<$.generic.TKey>)\n" +
+                "cast $.t9 $.t10 type(.nullable<.string>)\n" +
+                "set.var $.t10 $.s1\n" +
                 "}\n" +
                 ".block if1-then {\n" +
-                "cast $.s2 $.t11 type(.string)\n" +
-                "set.var $.t11 $.s3\n" +
+                "cast $.s2 $.t13 type(.string)\n" +
+                "set.var $.t13 $.s3\n" +
                 "}\n" +
                 ".block if1-else {\n" +
-                "load res(#3) $.t12\n" +
-                "set.var $.t12 $.s3\n" +
+                "load res(#3) $.t14\n" +
+                "set.var $.t14 $.s3\n" +
                 "}\n");
 
             // vargs 显式读改写回（Q6 后复合赋值索引形态由显式形态替代）：

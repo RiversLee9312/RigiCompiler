@@ -12,7 +12,9 @@ namespace RigiCompiler.Middleware.Layout
     // 共享函数体内的隐藏类仍需独立闭合布局；类型依赖与机器代码可达性分开收集。
     internal sealed class ConstructedCallCollector
     {
-        private sealed record Frame(BilFunction Function, Dictionary<string, string> Substitution,
+        private const int MaxAnalysisFrames = 10_000;
+        private const int MaxCallCombinations = 4096;
+        private sealed record Frame(string Key, BilFunction Function, Dictionary<string, string> Substitution,
             Dictionary<string, string> Arguments);
         private readonly MwContext context;
         private readonly Dictionary<string, BilFunction> functions;
@@ -58,7 +60,7 @@ namespace RigiCompiler.Middleware.Layout
             return collector.types;
         }
 
-        private void Enqueue(BilFunction function, Dictionary<string, string> substitution,
+        private string Enqueue(BilFunction function, Dictionary<string, string> substitution,
             Dictionary<string, string> arguments)
         {
             var key = function.Symbol + "|" + string.Join(";", substitution.OrderBy(p => p.Key)
@@ -66,10 +68,14 @@ namespace RigiCompiler.Middleware.Layout
                 .Select(p => p.Key + "=" + p.Value));
             if (visited.Add(key))
             {
-                var frame = new Frame(function, substitution, arguments);
+                if (frames.Count >= MaxAnalysisFrames)
+                    throw new MwNotSupportedException(
+                        $"具化调用分析帧超过上限 {MaxAnalysisFrames}");
+                var frame = new Frame(key, function, substitution, arguments);
                 frames.Add(frame);
                 queue.Enqueue(frame);
             }
+            return key;
         }
 
         private string Resolve(string reference, Dictionary<string, string> substitution)
@@ -100,8 +106,20 @@ namespace RigiCompiler.Middleware.Layout
                 {
                     switch (inst)
                     {
+                        case RetInstruction { Value: { } returned }:
+                            Store("return:" + frame.Key, returned.Name);
+                            break;
                         case GetIdTypeInstruction id:
                             Assign(id.Target.Name, (locals[id.Target.Name], Resolve(id.TargetType.TypeRef, frame.Substitution)));
+                            break;
+                        case GetIdVarInstruction id:
+                            // typeOf(Any) 取的是实参的动态身份，不能只登记 Type<Any>。
+                            // 沿同一调用数据流收集精确视图；装箱仍要求真实 sheet 匹配。
+                            foreach (var value in Values(id.Value.Name))
+                            {
+                                var view = Resolve(".typeid<" + value.Type + ">", frame.Substitution);
+                                Assign(id.Target.Name, (view, value.Type));
+                            }
                             break;
                         case SetVarInstruction copy:
                             Copy(copy.Source.Name, copy.Target.Name);
@@ -133,15 +151,17 @@ namespace RigiCompiler.Middleware.Layout
                             // 向上投影不改变实际对象类型，接口/lambda 基类调用也需保留宿主实参。
                             foreach (var source in Values(cast.Source.Name))
                             {
+                                // Any 可经容器/外部接口流转后才被 typeOf 消费。
+                                // 在装箱点登记真实视图，不能要求消费者还能追溯
+                                // 每一个存储槽；这只补充元数据，不放宽转换关系。
+                                if (MirType.Of(target).IsAny)
+                                    Resolve(".typeid<" + source.Type + ">", frame.Substitution);
                                 var sourceSymbol = context.Symbols.FindTypeByRef(source.Type);
-                                var targetSymbol = context.Symbols.FindTypeByRef(target);
-                                var plan = Plan(source.Type);
                                 var preserves = source.Type == target
-                                    || (sourceSymbol != null && sourceSymbol.Declaration == targetSymbol?.Declaration)
+                                    || MirType.Of(target).IsAny
                                     || (sourceSymbol?.Declaration.Kind == BilTypeKind.Class
                                         && (MirType.Of(target).IsAnyOrObject
-                                            || (targetSymbol != null && (dispatch.DerivesFrom(plan?.Symbol.Canonical ?? source.Type, targetSymbol.Canonical)
-                                                || plan?.IMap.Any(p => context.Symbols.FindTypeByRef(p.InterfaceType)?.Declaration == targetSymbol.Declaration) == true))));
+                                            || IsNominalUpcast(source.Type, target, new(StringComparer.Ordinal))));
                                 Assign(cast.Target.Name, preserves ? source : (target, null));
                             }
                             break;
@@ -190,11 +210,33 @@ namespace RigiCompiler.Middleware.Layout
 
             IEnumerable<(string Type, string? Id)[]> Actuals(IReadOnlyList<BilVariableOperand> args)
             {
-                IEnumerable<(string Type, string? Id)[]> combinations = new[] { Array.Empty<(string Type, string? Id)>() };
-                foreach (var arg in args)
-                    combinations = combinations.SelectMany(prefix => Values(arg.Name)
-                        .Select(value => prefix.Append(value).ToArray())).ToArray();
-                return combinations;
+                var choices = args.Select(arg => Values(arg.Name)).ToArray();
+                long count = 1;
+                foreach (var values in choices)
+                {
+                    count = Math.Min(MaxCallCombinations + 1L, count * values.Length);
+                }
+                if (count <= MaxCallCombinations)
+                {
+                    IEnumerable<(string Type, string? Id)[]> combinations =
+                        new[] { Array.Empty<(string Type, string? Id)>() };
+                    foreach (var values in choices)
+                        combinations = combinations.SelectMany(prefix => values
+                            .Select(value => prefix.Append(value).ToArray())).ToArray();
+                    return combinations;
+                }
+                // 组合爆炸时退化为逐参数独立扰动：保留每个参数的全部
+                // 候选传播，但不再构造笛卡尔积。
+                var baseline = choices.Select(values => values[0]).ToArray();
+                var reduced = new List<(string Type, string? Id)[]> { baseline };
+                for (var i = 0; i < choices.Length; i++)
+                foreach (var value in choices[i].Skip(1))
+                {
+                    var variant = baseline.ToArray();
+                    variant[i] = value;
+                    reduced.Add(variant);
+                }
+                return reduced;
             }
 
             void Copy(string source, string target)
@@ -242,7 +284,8 @@ namespace RigiCompiler.Middleware.Layout
                 foreach (var actual in Actuals(args))
                 {
                     var result = Call(symbol, actual.Select(a => a.Type).ToArray(), actual.Select(a => a.Id).ToArray());
-                    if (target != null && result != null) Assign(target, (result, null));
+                    if (target != null && result != null)
+                        foreach (var returned in result) Assign(target, (returned, null));
                 }
             }
 
@@ -264,8 +307,11 @@ namespace RigiCompiler.Middleware.Layout
                 or "core.coroutine::Task<TReturn>$bindColdBody()@.void")
                 || !frame.Arguments.TryGetValue(".this", out var receiver)) return;
             var owner = context.Symbols.FindMember(frame.Function.Symbol)?.Owner;
+            // 成员符号保留声明参数（Task<TReturn>），类型 Canonical 则为
+            // 裸名；不能用裸名拼字段，否则只追踪到非泛型 Task 的 body。
+            var memberOwner = frame.Function.Symbol[..frame.Function.Symbol.IndexOf('$')];
             var body = owner?.Members.FirstOrDefault(m =>
-                m.Canonical.StartsWith(owner.Canonical + "#body@", StringComparison.Ordinal));
+                m.Canonical.StartsWith(memberOwner + "#body@", StringComparison.Ordinal));
             if (body == null || !fields.TryGetValue(receiver + "|" + body.Canonical, out var values)) return;
             foreach (var value in values.ToArray())
             {
@@ -279,7 +325,24 @@ namespace RigiCompiler.Middleware.Layout
             ConstructedLayout.ResolveConstructed(type, context.Symbols, dispatch, new(StringComparer.Ordinal), bodies)
             ?? dispatch.Find(context.Symbols.FindTypeByRef(type)?.Canonical ?? type);
 
-        private string? Call(string symbol, string[] actual, string?[] ids)
+        // 数据流中的向上转换保留实际实现类型。按具化继承图比较，不能用
+        // 裸模板布局表查询闭合类型，否则工厂返回接口会丢失实现类事实。
+        private bool IsNominalUpcast(string source, string target, HashSet<string> seen)
+        {
+            source = MwTypeKey.Normalize(source);
+            target = MwTypeKey.Normalize(target);
+            if (source == target) return true;
+            if (!seen.Add(source) || seen.Count > 64
+                || context.Symbols.FindTypeByRef(source) is not { } type) return false;
+            var map = ConstructedTypeCollector.BuildSubstitution(source, type.Declaration);
+            if (type.Declaration.ExtendsType is { } parent
+                && IsNominalUpcast(ConstructedTypeCollector.Substitute(parent, map), target, seen))
+                return true;
+            return type.Declaration.ImplementsTypes.Any(iface =>
+                IsNominalUpcast(ConstructedTypeCollector.Substitute(iface, map), target, seen));
+        }
+
+        private IReadOnlyList<string>? Call(string symbol, string[] actual, string?[] ids)
         {
             if (actual.Length > 0 && context.Symbols.FindMember(symbol) is { Owner: { } dispatchOwner } target
                 && ImplBinder.BindCall(target) is VirtualCallBinding or InterfaceCallBinding)
@@ -295,8 +358,18 @@ namespace RigiCompiler.Middleware.Layout
                             if (context.Symbols.FindTypeByRef(iface)?.Declaration == dispatchOwner.Declaration)
                             { symbol = plan.VTableSlots[offset + slot]; break; }
                     }
-                    else if (dispatch.DerivesFrom(plan.Symbol.Canonical, dispatchOwner.Canonical))
-                        symbol = plan.VTableSlots[slot];
+                    else
+                    {
+                        // 闭合计划不驻留于仅模板的 dispatch 表；沿该计划自己的
+                        // BasePlan 查槽所属声明，避免对抽象方法停止可达性分析。
+                        for (var inherited = plan; inherited != null; inherited = inherited.BasePlan)
+                        {
+                            if (context.Symbols.FindTypeByRef(inherited.Symbol.Canonical)?.Declaration
+                                != dispatchOwner.Declaration) continue;
+                            symbol = plan.VTableSlots[slot];
+                            break;
+                        }
+                    }
                 }
             }
             if (!functions.TryGetValue(symbol, out var function)) return null;
@@ -335,9 +408,14 @@ namespace RigiCompiler.Middleware.Layout
             // 不完整开放上下文不凭同名参数猜测；其已知静态类型仍由原收集器保留。
             if (function.Args.Any(a => a.Name.StartsWith(".generic.", StringComparison.Ordinal)
                 && !substitution.ContainsKey(a.Name[".generic.".Length..]))) return null;
-            Enqueue(function, substitution, arguments);
+            var frameKey = Enqueue(function, substitution, arguments);
             var result = function.Args.FirstOrDefault(a => a.Name == ".return").TypeRef;
-            return result == null ? null : Resolve(result, substitution);
+            if (result == null) return null;
+            // 工厂返回抽象接口时仍须传播实际实现类型，供后续虚调用收集
+            // 其闭合布局；返回事实增加后与字段事实一样重跑已达帧。
+            if (fields.TryGetValue("return:" + frameKey, out var returned))
+                return returned.Select(value => value.Type).ToArray();
+            return new[] { Resolve(result, substitution) };
         }
     }
 }

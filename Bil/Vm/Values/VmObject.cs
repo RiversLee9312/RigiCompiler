@@ -14,7 +14,6 @@ namespace RigiCompiler.Bil.Vm
         void WriteHidden(string key, VmValue value);
         // 隐藏存储写入序（§14.4：new.wrapper.* 安装序即 wrapper 链 outer→inner）
         IReadOnlyList<string> HiddenKeysInOrder { get; }
-        VmValue? Host { get; set; }
         IVmFieldHost DeepCopySlots();
     }
 
@@ -25,7 +24,6 @@ namespace RigiCompiler.Bil.Vm
         private readonly List<string> _hiddenOrder = new List<string>();
 
         public string TypeRef { get; }
-        public VmValue? Host { get; set; }
 
         public VmInstanceSlots(string typeRef)
         {
@@ -60,7 +58,7 @@ namespace RigiCompiler.Bil.Vm
 
         public IVmFieldHost DeepCopySlots()
         {
-            var copy = new VmInstanceSlots(TypeRef) { Host = Host };
+            var copy = new VmInstanceSlots(TypeRef);
             foreach (var pair in _fields)
             {
                 copy._fields[pair.Key] = pair.Value.Copy();
@@ -102,11 +100,6 @@ namespace RigiCompiler.Bil.Vm
 
         public override string TypeRef => _slots.TypeRef;
         public bool IsValueType => _valueType;
-        public VmValue? Host
-        {
-            get => _slots.Host;
-            set => _slots.Host = value;
-        }
 
         public VmObject(string typeRef, bool valueType)
             : this(typeRef, valueType, undisposedTracker: null)

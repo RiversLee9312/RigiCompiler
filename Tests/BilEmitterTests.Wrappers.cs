@@ -862,7 +862,7 @@ namespace RigiCompiler.Tests
                 "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Logged {\n" +
+                "pub rich wrapper Logged {\n" +
                 "    pub var bag: RefBag\n" +
                 "    pub init() { bag = new RefBag() }\n" +
                 "}\n" +
@@ -959,7 +959,7 @@ namespace RigiCompiler.Tests
                 "    pub init(v: T) { item = v }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Logged {\n" +
+                "pub rich wrapper Logged {\n" +
                 "    pub var h: Holder\\<Node>\n" +
                 "    pub init() { h = new Holder\\<Node>(new Node(0)) }\n" +
                 "}\n" +
@@ -1076,7 +1076,7 @@ namespace RigiCompiler.Tests
                 "    pub init(v: i32) { x = v }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Logged {\n" +
+                "pub rich wrapper Logged {\n" +
                 "    pub var node: Node\n" +
                 "    pub init() { node = new Node(0) }\n" +
                 "}\n" +
@@ -1219,7 +1219,7 @@ namespace RigiCompiler.Tests
                 "    pub init(n: Node) { b = n }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Box {\n" +
+                "pub rich wrapper Box {\n" +
                 "    pub var a: MidVal\n" +
                 "    pub init() { a = new MidVal(new Node(0)) }\n" +
                 "}\n" +
@@ -1255,7 +1255,7 @@ namespace RigiCompiler.Tests
                 "    pub init(l: Leaf) { b = l }\n" +
                 "}\n" +
                 "@WrapperTarget(.Entity)\n" +
-                "pub wrapper Box {\n" +
+                "pub rich wrapper Box {\n" +
                 "    pub var a: MidRef\n" +
                 "    pub init() { a = new MidRef(new Leaf(0)) }\n" +
                 "}\n" +

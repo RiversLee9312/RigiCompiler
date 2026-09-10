@@ -99,7 +99,7 @@ func{ @Timed (x: i32): i32 -> x }
 - 被捕获的变量（除 `this` 与 lambda 自身参数外）一律 Cell 化：
   - 可变（`var`）捕获 → 继承 `core.Cell\<T>` 的隐藏子类；
   - 不可变（`const`）捕获 → 继承 `core.ReadonlyCell\<T>` 的隐藏子类；
-  - **`this` 捕获不套 Cell**，直接作为普通字段；
+  - **`this` 捕获不套 Cell**，直接作为普通拥有字段；闭包必须保活被捕获对象。字段名字不能豁免引用计数，宿主与闭包形成的环由循环收集器回收；
 - 隐藏类的 `.capture.*` 字段类型 = 该变量的 cell 隐藏子类（非抽象基类）；已被 wrapper 值 cell 化的变量按引用直接捕获，不套第二层 cell；
 - 被捕获变量从**声明处起**整个生命周期的读写都经过 cell 的 `getValue`/`setValue`（定义级成员引用虚派发）；
 - 之所以 `const` 也要 Cell 化：值 wrapper 对 get 的代理行为意味着按值拷贝会冻结 proxy 结果、脱钩 wrapper 状态，一律走 Cell 才能保持代理语义；

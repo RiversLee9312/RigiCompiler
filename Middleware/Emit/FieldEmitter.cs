@@ -38,6 +38,29 @@ namespace RigiCompiler.Middleware.Emit
                     builder.BuildStore(stringLength, slots[inst.Target].Slot);
                     return;
                 }
+                if (TypeLayout.IsStringCharacterCountField(inst.FieldSymbol))
+                {
+                    var host = session.LoadLocal(builder, slots, inst.Object);
+                    var hostPointer = session.StoreToTemp(builder, host);
+                    var faceName = "rigi_string_character_count";
+                    LLVMValueRef face;
+                    LLVMTypeRef faceType;
+                    if (session.TryGetFace(faceName, out var cached))
+                    {
+                        (face, faceType) = cached;
+                    }
+                    else
+                    {
+                        faceType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int64,
+                            new[] { StringAbi.PointerType(session.Context) }, false);
+                        face = session.Module.AddFunction(faceName, faceType);
+                        session.AddFace(faceName, face, faceType);
+                    }
+                    var count = builder.BuildCall2(faceType, face,
+                        new[] { hostPointer }, "str.characterCount");
+                    builder.BuildStore(count, slots[inst.Target].Slot);
+                    return;
+                }
                 var field = Resolve(session, inst.FieldSymbol);
                 var placeholderHost = MaterializePlaceholderValueHost(session, builder, slots,
                     inst.Object, inst.FieldSymbol, inst.ExcTarget);
@@ -62,11 +85,7 @@ namespace RigiCompiler.Middleware.Emit
                     placeholderHost?.Destroy(session, builder);
                     return;
                 }
-                // MW12 清偿：借用字段（.capture.this / #.host@）的读侧不再
-                // 裸取——目标是 MIR 托管槽，RcInjection 出口恒 release，
-                // 裸取 = 净 -1（宿主提前析构/UAF，macroGC 上线后暴露为
-                // 崩溃）。借用设计只豁免「字段本身不计数」（写侧 raw store
-                // + 不进 refMap 破环），读侧的临时 +1/-1 配平不破坏该设计。
+                // 所有托管字段读取都建立结果槽的拥有边，与 RcInjection 出口释放配平。
                 switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
                 {
                     case ManagedSlotKind.FatReference:
@@ -231,10 +250,6 @@ namespace RigiCompiler.Middleware.Emit
             return fieldSymbol.Substring(hash + 1, at - hash - 1);
         }
 
-        private static bool IsBorrowField(string fieldSymbol) =>
-            fieldSymbol.Contains(".capture.this", System.StringComparison.Ordinal)
-            || fieldSymbol.Contains(WrapperAbi.HostFieldInfix, System.StringComparison.Ordinal);
-
         // 宿主地址：值类型宿主 = alloca 槽地址（内联存储）；class 宿主 =
         // 胖引用 payload → 对象指针
         internal static LLVMValueRef HostBasePointer(ModuleBuilder.Session session,
@@ -296,11 +311,6 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var value = session.LoadLocal(builder, slots, source);
-            if (IsBorrowField(field.Symbol))
-            {
-                builder.BuildStore(value, pointer);
-                return;
-            }
             switch (TypeLayout.ClassifySlot(session.Layout, fieldType))
             {
                 case ManagedSlotKind.FatReference:

@@ -50,9 +50,28 @@ namespace RigiCompiler.Tests
             ("TestCoroutineLocalGetDefaultAndNull", TestCoroutineLocalGetDefaultAndNull),
             ("TestCoroutineLocalWithValueNested", TestCoroutineLocalWithValueNested),
             ("TestCoroutineLocalSpawnInherit", TestCoroutineLocalSpawnInherit),
+            ("TestStepBudgetStopsWorkers", TestStepBudgetStopsWorkers),
         };
 
         // ===== 辅助 =====
+
+        private static void TestStepBudgetStopsWorkers()
+        {
+            foreach (var executor in new[] { "MainExecutor", "ComputeExecutor", "IOExecutor" })
+            {
+                var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                    "import core.coroutine.*\n" +
+                    "pub func main(): i32 {\n" +
+                    "    const task = new Task(func{async () -> { while (true) { yield } }})\n" +
+                    "    task.run(new " + executor + "())\n" +
+                    "    await task\n    return 0\n}\n");
+                TestHarness.CheckTrue(executor + " 预算用例编译通过", !unit.Diagnostics.HasErrors);
+                if (unit.Diagnostics.HasErrors) continue;
+                var result = BilVm.Run(module, maxSteps: 100_000);
+                TestHarness.CheckTrue(executor + " 超限返回而非遗留 Worker 等待",
+                    result.Exception is VmStepLimitException, result.Exception?.ToString() ?? "无异常");
+            }
+        }
 
         private static BilVmResult Run(string source)
         {

@@ -1,7 +1,8 @@
 /*
  * 协程句柄原语（MW11c 棒3，RUNTIME §17.4）：薄封装 resume fn + frame，
  * 供 Rigi 世界的 Dispatcher 以「create/resume/destroy」驱动编译器状态机
- * fn。归属 Task 在 Rigi 世界（frame.$mw.task / Task.handle）。MW11a 的
+ * fn。归属 Task 在 Rigi 世界；跨协程只传 NativeRc token/Carrige，
+ * 不传裸 RigiCoHandle 指针。MW11a 的
  * RigiCoroutine 七态实体已随棒5a 拆除：
  * 本面只管「跑一个执行段」，状态机与调度语义全在 Rigi 世界。
  * 纯 C11，双编译形态真实现（零 uv 依赖）；台账配对（track_malloc/free）。
@@ -26,8 +27,9 @@ int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame);
  * 诊断 abort */
 int64_t rigi_coroutine_resume(int64_t handle);
 
-/* 终态后释放句柄（frame 不在此释放——所有权纪律同上）；句柄随后失效。
- * handle == 0 诊断 abort */
+/* 终态后释放运行时持有的初始强引用（frame 不在此释放——所有权纪律
+ * 同上）；若仍有 local CoroutineHandle，实体延迟到最后一份强引用
+ * dispose 后销毁。handle == 0 诊断 abort。 */
 void rigi_coroutine_destroy(int64_t handle);
 
 /* ---- MW11c 棒5a：Executor lane 与 PollingAlarm 轮询状态 ---- */

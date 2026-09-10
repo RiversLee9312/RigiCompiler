@@ -8,7 +8,7 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// wrapper 隐藏槽发射（MW10 内存路径）：get/set/new.wrapper.* →
-    /// <see cref="WrapperAbi"/> 字段 GEP；get.self 读宿主回指（不进 refMap）。
+    /// <see cref="WrapperAbi"/> 字段 GEP；self 已由前置 pass 改为精确宿主参数。
     /// invoke fn(..inner) 由 ProxyBaking 改写为 MirCall 后再发射。
     /// </summary>
     internal static class WrapperEmitter
@@ -155,8 +155,6 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 NewEmitter.EmitInitValueOnSlot(session, builder, slots, pointer, inst.WrapperType,
                     inst.InitWrapper, inst.Init, userArgs);
-                WriteHostBackref(session, builder, slots, inst.Host, hostType, inst.WrapperType,
-                    pointer);
                 ArcEmitter.DestroyRichTemps(session, builder, temps);
             }
         }
@@ -165,61 +163,8 @@ namespace RigiCompiler.Middleware.Emit
         {
             protected override void VisitCore(MirGetSelf inst, ModuleBuilder.Session session)
             {
-                var builder = session.Builder;
-                var slots = session.Slots;
-                if (!slots.ContainsKey(".this"))
-                {
-                    throw new CompilerInternalException("get.self 要求当前 fn 有 .this");
-                }
-                var thisType = slots[".this"].Local.Type.Canonical;
-                var field = FieldEmitter.Resolve(session, HostFieldSymbolOf(session, thisType));
-                var pointer = FieldEmitter.FieldPointer(session, builder, slots,
-                    new MirLocalOperand(".this"), field.Offset);
-                var fat = builder.BuildLoad2(TypeLayout.FatReferenceType(session.Context),
-                    pointer, "self.host");
-                var targetType = slots[inst.Target].Local.Type;
-                if (session.IsInlineValueType(targetType, out _))
-                {
-                    var payload = builder.BuildExtractValue(fat, 1, "self.pl");
-                    var src = builder.BuildIntToPtr(payload,
-                        LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "self.src");
-                    ArcEmitter.EmitInitRichValue(session, builder, slots[inst.Target].Slot,
-                        src, targetType);
-                    return;
-                }
-                builder.BuildStore(
-                    ArcEmitter.ProduceFatValue(session, builder, fat, "self"),
-                    slots[inst.Target].Slot);
+                throw new CompilerInternalException("get.self 必须在协程切分前改写为独立宿主参数");
             }
-        }
-
-        private static void WriteHostBackref(ModuleBuilder.Session session, LLVMBuilderRef builder,
-            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirOperand host,
-            string hostType, string wrapperType, LLVMValueRef wrapperPointer)
-        {
-            var field = FieldEmitter.Resolve(session, HostFieldSymbolOf(session, wrapperType));
-            var dest = FieldEmitter.ByteGep(builder, wrapperPointer, field.Offset, "wrap.host");
-            LLVMValueRef fat;
-            if (host is MirLocalOperand local
-                && session.IsInlineValueType(slots[local.Name].Local.Type, out _))
-            {
-                fat = CallEmitter.BuildFatReference(session, builder,
-                    session.TypeSheetFor(hostType), slots[local.Name].Slot);
-            }
-            else
-            {
-                fat = session.LoadLocal(builder, slots, host);
-            }
-            builder.BuildStore(fat, dest);
-        }
-
-        private static string HostFieldSymbolOf(ModuleBuilder.Session session, string wrapperCanonical)
-        {
-            if (session.Symbols.FindTypeByRef(wrapperCanonical) is { } type)
-            {
-                return WrapperAbi.HostFieldSymbol(GenericAbi.PlanKey(type));
-            }
-            return WrapperAbi.HostFieldSymbol(wrapperCanonical);
         }
 
         private static void CopyHidden(ModuleBuilder.Session session, MirOperand host,

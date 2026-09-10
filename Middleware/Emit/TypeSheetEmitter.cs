@@ -189,6 +189,15 @@ namespace RigiCompiler.Middleware.Emit
             var extends = plan.Symbol.Declaration.ExtendsType;
             if (string.IsNullOrEmpty(extends))
             {
+                // BIL 的 class 可省略默认 Object 基类；运行期祖先链必须
+                // 仍包含这个真实父类型，否则开放泛型中 Node → Object
+                // 的检查会失败。只补默认根，不擦除任何构造类型实参。
+                if (plan.Kind == TypeLayoutKind.Class
+                    && (plan.TypeFlags & TypeLayoutPlan.FlagInlineValue) == 0
+                    && !MwTypeKey.IsObject(plan.Symbol.Canonical)
+                    && !MwTypeKey.IsAny(plan.Symbol.Canonical)
+                    && sheetGlobals.TryGetValue("core::Object", out var objectSheet))
+                    return objectSheet;
                 return nullPointer;
             }
             var normalized = MwTypeKey.Normalize(extends);

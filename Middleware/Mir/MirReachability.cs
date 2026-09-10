@@ -209,7 +209,7 @@ namespace RigiCompiler.Middleware.Mir
         private static readonly string[] CoroutineRuntimeTypes =
         {
             "core.coroutine::Dispatcher",
-            "core.coroutine::I64Queue",
+            "core.coroutine::CoroutineCarrigeQueue",
             "core.coroutine::Task",
             "core.coroutine::Task<TReturn>",
             "core.coroutine::SleepAlarm",
@@ -1001,15 +1001,16 @@ namespace RigiCompiler.Middleware.Mir
         {
             foreach (var type in context.Symbols.Types)
             {
-                if (type.IsExternal
-                    || type.Declaration.Kind is not (BilTypeKind.Class
+                if (type.Declaration.Kind is not (BilTypeKind.Class
                         or BilTypeKind.Struct or BilTypeKind.EnumStruct))
                 {
                     continue;
                 }
                 foreach (var member in type.Members)
                 {
-                    if (member.Declaration.Kind != BilMemberKind.Method)
+                    // 固定 ABI 类型可以有本地源码构造体；外部的是布局描述，
+                    // 不是这些函数的实现。仍不为纯外部成员凭空生成函数体。
+                    if (member.IsExternal || member.Declaration.Kind != BilMemberKind.Method)
                     {
                         continue;
                     }
@@ -1068,6 +1069,8 @@ namespace RigiCompiler.Middleware.Mir
             IReadOnlyList<BilVariableOperand> arguments,
             Dictionary<string, string> localTypes, List<string> edges)
         {
+            // BIL 数组 new 是元素字面量，不是源码 init 调用（与 NewLowering 同口径）。
+            if (Layout.TypeLayout.IsArray(MirType.Of(typeRef))) return;
             if (context.Symbols.FindTypeByRef(typeRef) is not { } type
                 || type.Declaration.Kind is not (BilTypeKind.Class
                     or BilTypeKind.Struct or BilTypeKind.EnumStruct))

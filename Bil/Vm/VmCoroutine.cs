@@ -142,6 +142,8 @@
 
     public sealed class VmCallFrame
     {
+        // 随帧保活的宿主调用参数，不属于 wrapper 状态及其字段复制。
+        internal VmValue? WrapperSelfArgument { get; set; }
         public BilFunction Function { get; }
         public Dictionary<string, VmValue> Slots { get; }
         public string? ResultSlot { get; }
@@ -310,6 +312,8 @@
             }
             for (var i = 0; i < parameters.Count; i++)
             {
+                if (parameters[i].Name == ".this" && arguments[i] is VmWrapperReceiver receiver)
+                    frame.WrapperSelfArgument = receiver.SelfArgument;
                 // .this 是 receiver：值类型方法必须原地可变（§7.3），
                 // 不得按普通实参深拷贝，否则 init/实例方法写入会丢失。
                 frame.Slots[parameters[i].Name] = parameters[i].Name == ".this"
@@ -544,6 +548,10 @@
                 throw new VmException("PollingAlarm 没有 isReady");
             }
             var depth = CallStack.Count;
+            // 每次探测结果槽都是一次性值。若保留上轮 false，isReady 本轮
+            // 抛出并被 yield 点外层 try 捕获后，会被误判成再次未就绪，
+            // 继续轮询并在 catch 已离开后让异常击穿协程。
+            CurrentFrame.Slots.Remove(VmPolling.ReadySlot);
             PushFrame(function, new[] { alarm }, VmPolling.ReadySlot);
             while (CallStack.Count > depth && State == VmCoroutineState.Running)
             {

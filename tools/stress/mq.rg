@@ -33,14 +33,14 @@ func require(value: bool) {
     if (not value) { throw new core.RuntimeException("MQ压力断言失败") }
 }
 pub shared class Producer : core.AsyncAction {
-    priv const sender: QueueHandle\<StressMessage>
+    priv const sender: Messenger\<StressMessage>
     priv const id: i32
     pub init(_ -> sender, _ -> id)
     pub override async operator call() {
         var i: i32 = 0
         var progress: i32 = 12500
         while (i < 62500) {
-            await MessageQueue.post(sender, new StressMessage(id, i))
+            await sender.send(new StressMessage(id, i))
             i = i + 1
             if (i == progress) {
                 Console.println(((("sender=" + id.toString()) + " accepted=") + i.toString()) + runtimeStatus())
@@ -48,11 +48,10 @@ pub shared class Producer : core.AsyncAction {
             }
         }
         Console.println(((("sender=" + id.toString()) + " accepted=") + i.toString()) + runtimeStatus())
-        MessageQueue.release_queue_handle(sender)
     }
 }
 pub shared class Consumer : core.AsyncAction {
-    priv const reader: QueueHandle\<StressMessage>
+    priv const reader: Reader\<StressMessage>
     priv const slow: bool
     priv const id: i32
     pub const order: Array\<i32>
@@ -63,7 +62,7 @@ pub shared class Consumer : core.AsyncAction {
         var i: i32 = 0
         var progress: i32 = 12500
         while (true) {
-            const value = await MessageQueue.next(reader)
+            const value = await reader.next()
             if (value.isEos) { break }
             const item = value.item as StressMessage
             require((item.sender >= 0) and (item.sender < 4))
@@ -81,25 +80,24 @@ pub shared class Consumer : core.AsyncAction {
         Console.println(((("reader=" + id.toString()) + " received=") + i.toString()) + runtimeStatus())
         require(((counts[0] as i32) == 62500) and ((counts[1] as i32) == 62500))
         require(((counts[2] as i32) == 62500) and ((counts[3] as i32) == 62500))
-        require((await MessageQueue.next(reader)).isEos)
-        MessageQueue.release_queue_handle(reader)
+        require((await reader.next()).isEos)
+        reader.dispose()
     }
 }
 func batch() {
-    const owner = MessageQueue.create_queue\<StressMessage>()
-    const a = new Consumer(MessageQueue.add_queue_handle(owner, QueueHandleType.Reader), false, 0)
-    const b = new Consumer(MessageQueue.add_queue_handle(owner, QueueHandleType.Reader), false, 1)
-    const c = new Consumer(MessageQueue.add_queue_handle(owner, QueueHandleType.Reader), false, 2)
-    const d = new Consumer(MessageQueue.add_queue_handle(owner, QueueHandleType.Reader), true, 3)
+    const owner = new Messenger\<StressMessage>()
+    const a = new Consumer(owner.createReader(), false, 0)
+    const b = new Consumer(owner.createReader(), false, 1)
+    const c = new Consumer(owner.createReader(), false, 2)
+    const d = new Consumer(owner.createReader(), true, 3)
     const ca = new Task(a)
     const cb = new Task(b)
     const cc = new Task(c)
     const cd = new Task(d)
-    const pa = new Task(new Producer(MessageQueue.add_queue_handle(owner, QueueHandleType.Sender), 0))
-    const pb = new Task(new Producer(MessageQueue.add_queue_handle(owner, QueueHandleType.Sender), 1))
-    const pc = new Task(new Producer(MessageQueue.add_queue_handle(owner, QueueHandleType.Sender), 2))
-    const pd = new Task(new Producer(MessageQueue.add_queue_handle(owner, QueueHandleType.Sender), 3))
-    MessageQueue.release_queue_handle(owner)
+    const pa = new Task(new Producer(owner, 0))
+    const pb = new Task(new Producer(owner, 1))
+    const pc = new Task(new Producer(owner, 2))
+    const pd = new Task(new Producer(owner, 3))
     ca.run(new IOExecutor())
     cb.run(new ComputeExecutor())
     cc.run(new IOExecutor())
@@ -112,6 +110,7 @@ func batch() {
     await pb
     await pc
     await pd
+    owner.dispose()
     await ca
     await cb
     await cc

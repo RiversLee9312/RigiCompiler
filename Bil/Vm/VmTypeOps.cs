@@ -111,6 +111,9 @@ namespace RigiCompiler.Bil.Vm
                 return false;
             }
             var resolved = ResolveTypeRef(context, coroutine, targetType);
+            if (BilVerificationContext.NormalizeTypeRef(resolved)
+                .StartsWith("core::Type<", StringComparison.Ordinal))
+                return TryCast(context, value, resolved, out _);
             if (BilVerificationContext.NormalizeTypeRef(resolved) == "core::ValueType")
                 return context.IsValueType(ActualType(value));
             return context.Types.TypesAssignable(ActualType(value), resolved);
@@ -149,7 +152,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("宿主没有 wrapper：" + wrapperType);
             }
-            return wrapper.Copy();
+            return new VmWrapperReceiver(wrapper.Copy(), host);
         }
 
         internal static VmValue GetWrapperField(VmContext context, VmValue host,
@@ -164,7 +167,7 @@ namespace RigiCompiler.Bil.Vm
             {
                 throw new VmException("字段没有 wrapper：" + wrapperType);
             }
-            return wrapper.Copy();
+            return new VmWrapperReceiver(wrapper.Copy(), host);
         }
 
         internal static bool TryCast(VmContext context, VmValue source, string targetType,
@@ -240,28 +243,34 @@ namespace RigiCompiler.Bil.Vm
                 return true;
             }
 
+            // Type<TBound> 的 T 是合法的类型边界，不是裸模板擦除。
+            // 只有 VmTypeId 才能进入本分支，普通标量不能伪造类型句柄。
+            if (source is VmTypeId typeId && normalizedTarget.StartsWith("core::Type<", StringComparison.Ordinal))
+            {
+                var bounds = BilVerificationContext.SplitTopLevel(normalizedTarget["core::Type<".Length..^1]);
+                if (bounds is { Count: 1 } && (IsAny(bounds[0])
+                    || context.Types.TypesAssignable(typeId.TypeSymbol, bounds[0])))
+                {
+                    result = source.Copy();
+                    return true;
+                }
+                return false;
+            }
+
             if (TryNumericCast(source, normalizedTarget, out var numeric))
             {
                 result = numeric;
                 return true;
             }
 
-            if (IsObject(normalizedTarget) || IsValueTypeRoot(normalizedTarget))
+            if (IsObject(normalizedTarget)
+                || (IsValueTypeRoot(normalizedTarget) && context.IsValueType(ActualType(source))))
             {
                 result = source.Copy();
                 return true;
             }
 
-            // 构造泛型类型 → 其开放宿主（实例方法 receiver 的擦除 cast，BIL §7）：
-            // Store<.i32> → Store。剥实参后缀后全等即同一类型声明。
             var actualType = ActualType(source);
-            if (BilVerificationContext.StripTypeArguments(actualType) == normalizedTarget
-                || BilVerificationContext.StripTypeArguments(actualType) == requested)
-            {
-                result = source.Copy();
-                return true;
-            }
-
             if (context.Types.TypesAssignable(actualType, requested)
                 || context.Types.TypesAssignable(actualType, normalizedTarget))
             {
@@ -269,58 +278,7 @@ namespace RigiCompiler.Bil.Vm
                 return true;
             }
 
-            // 同定义构造类型视图转换（BIL §12.1）：对应类型实参可赋值
-            // （String→Any 等）则改写视图、无数据移动；数组元素同规则。
-            if (ConstructedViewAssignable(context, actualType, requested)
-                || ConstructedViewAssignable(context, actualType, normalizedTarget))
-            {
-                result = source.Copy();
-                return true;
-            }
-
             return false;
-        }
-
-        // 同定义构造类型：头全等且逐实参视图可赋值（含 T→Any、递归构造）。
-        private static bool ConstructedViewAssignable(VmContext context, string actual,
-            string expected)
-        {
-            var actualNorm = BilVerificationContext.NormalizeTypeRef(actual);
-            var expectedNorm = BilVerificationContext.NormalizeTypeRef(expected);
-            if (actualNorm == expectedNorm) return true;
-            // Any 作类型实参时双向视图（named String... ABI Pair<,Any>
-            // ↔ P3 视角 Pair<,String>；装箱与拆箱同规则）
-            if (IsAny(expectedNorm) || IsAny(actualNorm)) return true;
-            if (context.Types.TypesAssignable(actualNorm, expectedNorm)) return true;
-
-            var actualArgs = TypeArgsOf(actualNorm);
-            var expectedArgs = TypeArgsOf(expectedNorm);
-            if (actualArgs == null || expectedArgs == null
-                || actualArgs.Count != expectedArgs.Count)
-            {
-                return false;
-            }
-            if (BilVerificationContext.StripTypeArguments(actualNorm)
-                != BilVerificationContext.StripTypeArguments(expectedNorm))
-            {
-                return false;
-            }
-            for (var i = 0; i < actualArgs.Count; i++)
-            {
-                if (!ConstructedViewAssignable(context, actualArgs[i], expectedArgs[i]))
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        private static List<string>? TypeArgsOf(string typeRef)
-        {
-            var angle = typeRef.IndexOf('<');
-            if (angle < 0 || !typeRef.EndsWith(">")) return null;
-            return BilVerificationContext.SplitTopLevel(
-                typeRef.Substring(angle + 1, typeRef.Length - angle - 2));
         }
 
         internal static VmValue CastOrThrow(VmContext context, VmCoroutine coroutine,

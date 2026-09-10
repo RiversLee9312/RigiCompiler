@@ -49,6 +49,7 @@ pub open class CastException : RuntimeException {
 }
 
 pub open class NoSuchMethodException : RuntimeException {
+    pub init() { message = "未路由的降级请求" }
     pub init(text: String) { message = text }
     // new.indirect 动态构造/run 期 init 重载解析失败：目标类型全名作实参
     pub init(typeName: String) {

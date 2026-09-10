@@ -256,6 +256,10 @@ namespace RigiCompiler.Tests
             // 指数符号后非数字 word
             TestHarness.CheckParseError("3.14e+x",
                 () => TestHarness.ParseFirstDecl("3.14e+x"), "Invalid float literal: '3.14e+'");
+            TestHarness.CheckParseError("double 正无穷",
+                () => TestHarness.ParseFirstDecl("1e999999"), "not finite");
+            TestHarness.CheckParseError("float 正无穷",
+                () => TestHarness.ParseFirstDecl("1e99f"), "not finite");
 
             TestHarness.Blank();
         }

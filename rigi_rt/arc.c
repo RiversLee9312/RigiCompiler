@@ -36,6 +36,13 @@ void rigi_region_exit(void)
 
 void *rigi_alloc(const RigiTypeSheet *desc)
 {
+    /* 具化身份缺失属于编译/运行时协议错误，不允许解引用空 sheet，
+     * 也不能分配不足以容纳对象头的伪对象。 */
+    if (desc == NULL || desc->typeSize < sizeof(RigiObjectHeader))
+    {
+        fprintf(stderr, "rigi_rt: object type identity unavailable or invalid\n");
+        exit(1);
+    }
     RigiObjectHeader *object = (RigiObjectHeader *)rigi_track_malloc(desc->typeSize);
     memset(object, 0, desc->typeSize);
     object->typeId = desc;
@@ -182,6 +189,12 @@ uint64_t rigi_ref_acquire(uint64_t type_id, uint64_t payload)
     tag = type_id >> RIGI_TAG_SHIFT;
     if (tag == RIGI_TAG_OBJECT)
     {
+        sheet = (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
+        if (sheet != NULL && (sheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0)
+        {
+            fprintf(stderr, "rigi_rt: 值类型借用地址错误进入对象 ARC（运行时 bug）\n");
+            abort();
+        }
         if (payload == 0)
         {
             rigi_region_exit();

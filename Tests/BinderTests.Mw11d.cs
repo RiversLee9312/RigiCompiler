@@ -59,13 +59,13 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 MW11d with Serializable/SerializationBase");
 
             var withBaseOk = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<i32>(0) }\n");
             CheckNoErrors("with SerializationBase 填入 i32 合法", withBaseOk.Unit);
 
             var withBaseBad = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "class Plain { pub init() }\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<Plain>(new Plain()) }\n");
@@ -91,14 +91,14 @@ namespace RigiCompiler.Tests
             TestHarness.Section("P3 MW11d-B1 List/Map/Parcel with SerializationBase");
 
             var withList = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "import core.collections.List\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<List\\<i32>>(new List\\<i32>()) }\n");
             CheckNoErrors("with SerializationBase 填入 List<i32> 合法", withList.Unit);
 
             var withMap = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "import core.collections.Map\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<Map\\<String, i32>>(new Map\\<String, i32>()) }\n");
@@ -111,14 +111,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无约束 K 上 x.hash() 解析成功", anyHashOnK.Unit);
 
             var withParcel = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "import core.serialization.Parcel\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<Parcel>(new Parcel(\"T\")) }\n");
             CheckNoErrors("with SerializationBase 填入 Parcel 合法", withParcel.Unit);
 
             var withListEnum = BindUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "import core.collections.ListEnumerator\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f(e: ListEnumerator\\<i32>) { take\\<ListEnumerator\\<i32>>(e) }\n");
@@ -148,9 +148,9 @@ namespace RigiCompiler.Tests
                 marked != null && marked.Methods.Any(m =>
                     m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
 
-            TestHarness.Section("P3 @SerializationBase 隐含 @Serializable");
+            TestHarness.Section("P3 SB 与 Serializable 必须独立声明");
 
-            var implied = BindUnitWithStdlib(
+            var implied = BindUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
                 "@SerializationBase\n" +
                 "pub class BaseMarked { pub var n: i32 = 0 }\n");
@@ -159,27 +159,44 @@ namespace RigiCompiler.Tests
                 .First(n => n.Name == "core").ChildNamespaces
                 .First(n => n.Name == "serialization").Types
                 .FirstOrDefault(t => t.Name == "BaseMarked");
-            TestHarness.CheckTrue("base-only 宿主已合成 toParcel",
-                baseMarked != null && baseMarked.Methods.Any(m =>
-                    m.Name == RigiCompiler.Bil.BilSpellings.ToParcelMethodName));
-            TestHarness.CheckTrue("base-only 宿主已合成 fromParcel",
-                baseMarked != null && baseMarked.Methods.Any(m =>
-                    m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
+            TestHarness.CheckTrue("base-only 宿主不合成 Serializable 方法",
+                baseMarked != null && !baseMarked.Methods.Any(m =>
+                    m.Name == RigiCompiler.Bil.BilSpellings.ToParcelMethodName
+                    || m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
 
-            var withSerImplied = BindUnitWithStdlib(
+            var withSerImplied = BindUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
                 "@SerializationBase\n" +
                 "class BaseTake { pub var n: i32 = 0 }\n" +
                 "func take\\<T with Serializable>(x: T) { }\n" +
                 "func f() { take\\<BaseTake>(new BaseTake()) }\n");
-            CheckNoErrors("with Serializable 填入 base-only 类合法", withSerImplied.Unit);
+            TestHarness.CheckSemanticError("只有 SB 的类型不能满足 Serializable", withSerImplied.Unit.Diagnostics,
+                "does not satisfy the 'With Serializable'");
 
             var withSerI32 = BindUnitWithStdlib(
                 "import core.serialization.Serializable\n" +
                 "func take\\<T with Serializable>(x: T) { }\n" +
                 "func f() { take\\<i32>(0) }\n");
-            TestHarness.CheckSemanticError("with Serializable 填入 i32 拒绝（§20.2.3）",
-                withSerI32.Unit.Diagnostics, "does not satisfy the 'With Serializable'");
+            CheckNoErrors("with Serializable 填入 i32 合法（源码双重应用）",
+                withSerI32.Unit);
+
+            var withSerViaParameter = BindUnitWithStdlib(
+                "import core.serialization.*\n" +
+                "func takeSer\\<T with Serializable>(x: T) { }\n" +
+                "func forward\\<U with SerializationBase>(x: U) { takeSer\\<U>(x) }\n");
+            TestHarness.CheckSemanticError("只有 SB 的泛型约束不能冒充 Serializable",
+                withSerViaParameter.Unit.Diagnostics, "does not satisfy the 'With Serializable'");
+            var fieldProof = BindUnitWithStdlib(
+                "import core.serialization.*\n" +
+                "@Serializable\nclass Envelope\\<T with SerializationBase> {\n" +
+                " pub var value: T\n pub init(_ -> value)\n}\n");
+            TestHarness.CheckSemanticError("仅 SB 泛型字段不能取得 Serializable 编码能力",
+                fieldProof.Unit.Diagnostics, "不可序列化");
+            var unknownBase = BindUnitWithStdlibSources(true,
+                "namespace core.serialization\n@SerializationBase\n@Serializable\n" +
+                "class UnknownBase { pub var value: i32 = 0 }\n");
+            TestHarness.CheckSemanticError("未知 SB 编码器拒绝而非复制引用",
+                unknownBase.Unit.Diagnostics, "未实现对应的 Serializable 编解码");
         }
     }
 }

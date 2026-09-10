@@ -213,6 +213,14 @@ namespace RigiCompiler
             }
 
             // ===== 8. 捕获落定：闭包字段 + init + init 体 =====
+            // 显式 this、隐式字段/方法访问和嵌套闭包都汇入捕获集；在生成
+            // 字段之前拒绝，不能让借用宿主的 wrapper 副本进入闭包对象。
+            if (lambdaCtx.LambdaThisType is TypeSymbol { Kind: TypeKind.Wrapper }
+                && lambdaCtx.CapturedSymbols.Any(symbol => symbol is ThisSymbol))
+            {
+                env.Error(lambda.Span, "P3: A lambda cannot capture wrapper 'this'");
+                return null;
+            }
             var captures = BuildCaptures(lambda, lambdaCtx, ctx, hiddenClass, env);
             var (init, initBody) = SynthesizeInit(lambda, hiddenClass, captures);
             hiddenClass.LambdaClosure = new LambdaClosureInfo(hiddenClass, init, call, captures,

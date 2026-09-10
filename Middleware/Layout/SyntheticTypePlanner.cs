@@ -88,7 +88,8 @@ namespace RigiCompiler.Middleware.Layout
                 fields.Add(new FieldPlan(symbol, offset, info.Size, info.Alignment,
                     info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
                 RefMapBuilder.CollectRefSite(refEntries, info, offset);
-                offset += info.Size;
+                offset = LayoutEngine.CheckedAdd(offset, info.Size,
+                    $"合成类型 {frameCanonical} 的字段 {symbol}");
             }
             var size = LayoutEngine.AlignUp(offset, LayoutEngine.ReferenceSlotSize);
             var vTableSlots = new List<string>();

@@ -147,7 +147,43 @@ namespace RigiCompiler
         protected override void VisitCore(ResolveEnvironment env)
         {
             CheckWrapperApplications(env);
+            // 先登记全体应用，再检查隐式填入的 TTarget/TField：with 约束
+            // 可以引用后声明的宿主，但普通字段闭包不能因隐式泛型代入而漏查。
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph) continue;
+                var applications = ResolveEnvironment.AppliedWrappersOf(entry.Symbol);
+                if (applications == null) continue;
+                foreach (var application in applications)
+                    GenericConstraints.CheckConstructedType(application.Wrapper,
+                        application.Syntax?.Span ?? entry.Node.Span, env.Unit.Symbols, env.Error);
+            }
+            // 类型引用解析早于 wrapper 登记；补验先前已出现的闭合宿主引用。
+            foreach (var entry in env.Entries)
+            {
+                if (!entry.InGraph) continue;
+                switch (entry.Symbol)
+                {
+                    case FieldSymbol field:
+                        CheckUse(field.FieldType, entry.Node.Span);
+                        break;
+                    case MethodSymbol method:
+                        CheckUse(method.ReturnType, entry.Node.Span);
+                        foreach (var parameter in method.Parameters) CheckUse(parameter.Type, entry.Node.Span);
+                        break;
+                    case TypeSymbol type:
+                        CheckUse(type.BaseType, entry.Node.Span);
+                        foreach (var iface in type.Interfaces) CheckUse(iface, entry.Node.Span);
+                        break;
+                }
+            }
             CheckInterfaceWrapperContagion(env);
+
+            void CheckUse(SemanticSymbol? use, CharRange? span)
+            {
+                if (use is TypeSymbol type)
+                    GenericConstraints.CheckConstructedWrapperStorage(type, span, env.Unit.Symbols, env.Error);
+            }
         }
 
         private static void CheckWrapperApplications(ResolveEnvironment env)
@@ -212,7 +248,10 @@ namespace RigiCompiler
                 && wrapperType.GenericParameters.Count == 1
                 && host is TypeSymbol applicationHost)
             {
-                return symbols.GetConstructedType(wrapperType, applicationHost);
+                var selfType = applicationHost.GenericParameters.Count == 0 ? applicationHost
+                    : symbols.GetConstructedType(applicationHost,
+                        applicationHost.GenericParameters.Cast<SemanticSymbol>().ToArray());
+                return symbols.GetConstructedType(wrapperType, selfType);
             }
             if (wrapperType.WrapperTarget == WrapperTargetKind.Value
                 && wrapperType.GenericParameters.Count == 1)
@@ -229,14 +268,15 @@ namespace RigiCompiler
             return wrapperType;
         }
 
-        // @Internal wrapper：应用点文件命名空间必须等于 wrapper 声明命名空间。
-        // 编译器内部登记（SerializationBaseRegistrar）不走本检查。
+        // @Internal wrapper：允许声明命名空间及其子树，不采用文本前缀匹配。
+        // 包括内建类型在内的能力应用都从源码进入本检查。
         internal static void CheckInternalApplication(TypeSymbol wrapper, NamespaceSymbol siteNs,
             CharRange? span, Action<CharRange?, string> error)
         {
             var definition = wrapper.ConstructedFrom ?? wrapper;
             if (!definition.IsInternal) return;
-            if (ReferenceEquals(definition.Namespace, siteNs)) return;
+            for (var current = siteNs; current != null; current = current.Parent)
+                if (ReferenceEquals(definition.Namespace, current)) return;
             error(span,
                 $"'{definition.Name}' is internal and cannot be applied outside its declaring namespace");
         }
@@ -268,9 +308,8 @@ namespace RigiCompiler
                         env.Error(span, $"Entity wrapper '{wrapperType.Name}' can only be applied to type declarations");
                         return;
                     }
-                    // 宿主可内嵌性：非 rich struct/enum struct 不能被任何 wrapper 修饰
-                    if ((targetType.Kind == TypeKind.Struct || targetType.Kind == TypeKind.EnumStruct)
-                        && !targetType.IsRich)
+                    // 普通字段闭包同样覆盖隐藏 wrapper 存储；self 回指不算普通字段。
+                    if (targetType.IsValueTypeBranch && !targetType.IsRich && wrapperType.IsRich)
                     {
                         env.Error(span, $"Non-rich struct '{targetType.Name}' cannot be wrapped (§14.9)");
                     }
@@ -314,7 +353,7 @@ namespace RigiCompiler
 
         // Value/Method wrapper 的共享判定（矩阵 A/B 同构）：
         // 全局/静态目标只允许 shared wrapper；非 shared wrapper 还要求宿主类型非 shared；
-        // 非 rich struct 的实例字段/方法不能挂 wrapper（宿主须能内嵌 rich struct）。
+        // 非 rich 宿主的实例字段/方法只能挂非 rich wrapper。
         // （栈上变量属矩阵 C 恒合法，但栈上声明不进 P1/P2，归 P3。）
         private static void CheckValueMethodTarget(TypeSymbol wrapperType, CharRange? span,
             TypeSymbol? host, bool isGlobalOrStatic, string targetDescription, ResolveEnvironment env)
@@ -327,8 +366,7 @@ namespace RigiCompiler
                 }
                 return;
             }
-            if (host != null &&
-                (host.Kind == TypeKind.Struct || host.Kind == TypeKind.EnumStruct) && !host.IsRich)
+            if (host is { IsValueTypeBranch: true, IsRich: false } && wrapperType.IsRich)
             {
                 env.Error(span, $"Instance {targetDescription} of non-rich struct '{host.Name}' cannot be wrapped (§14.9)");
             }

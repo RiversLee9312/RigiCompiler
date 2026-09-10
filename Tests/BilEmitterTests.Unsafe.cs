@@ -67,6 +67,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue(".handle 唯一且无泛型/可枚举字段",
                 declaration.GenericParameters.Count == 0 && declaration.Members.Count == 0
                 && !BilWriter.Write(result.Module).Contains(".handle<"));
+            foreach (var name in new[] { "core::Handle", "core::MutableHandle" })
+            {
+                var facade = result.Module.LocalSymbols.OfType<BilTypeDeclaration>()
+                    .Single(t => t.Symbol == name);
+                TestHarness.CheckTrue(name + " 独立具化声明", facade.GenericParameters.Count == 1);
+                TestHarness.CheckTrue(name + " 普通成员体保留",
+                    result.Module.Functions.Any(f => f.Symbol.StartsWith(name + "$load(")));
+            }
             var roundtrip = BilReader.Read(BilWriter.Write(result.Module));
             BilTestHarness.CheckBilValid(".handle Reader/Writer 往返", roundtrip);
             var main = roundtrip.Functions.Single(f => f.Symbol == "$main()@.i32");

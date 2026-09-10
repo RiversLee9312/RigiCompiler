@@ -34,9 +34,10 @@ namespace RigiCompiler.Middleware.Passes
         {
             var mir = context.Mir!;
             var functions = mir.Functions.ToDictionary(fn => fn.Symbol.Canonical, StringComparer.Ordinal);
-            var sites = mir.Functions.SelectMany(fn => fn.Blocks)
-                .SelectMany(block => block.InstructionList.Select((inst, index) => (block, inst, index)))
-                .Where(site => site.inst is MirCall call && call.Target.Canonical == native).ToList();
+            var sites = mir.Functions.SelectMany(owner => owner.Blocks.SelectMany(block =>
+                    block.InstructionList.Select((inst, index) => (owner, block, inst, index))))
+                .Where(site => site.inst is MirCall call && call.Target.Canonical == native
+                    && !IsPrimitiveBox(site.owner, site.block, site.index, call)).ToList();
             if (sites.Count == 0) return;
             var candidates = context.Layout!.Plans
                 .Where(plan => plan.Kind == TypeLayoutKind.Class)
@@ -79,12 +80,29 @@ namespace RigiCompiler.Middleware.Passes
             {
                 new MirCall(nativeTarget, new List<MirOperand> { receiver }, result.Name),
             }, new MirRet(new MirLocalOperand(result.Name))));
-            foreach (var (block, inst, index) in sites)
+            foreach (var (_, block, inst, index) in sites)
             {
                 var call = (MirCall)inst;
                 block.InstructionList[index] = new MirCall(symbol, call.Args, call.Result, call.ExcTarget);
             }
             mir.AddFunction(fn);
+        }
+
+        // 紧邻的装箱已证明接收者是封闭内建值，不可能命中用户类 override。
+        // 保留原 native 调用，避免整数格式化被无关的可挂起覆写传染。
+        // 只利用本基本块的直接定义；Any、开放泛型与用户值类型仍走完整派发。
+        private static bool IsPrimitiveBox(MirFunction owner, MirBlock block, int index,
+            MirCall call)
+        {
+            if (index == 0 || call.Args.Count != 1
+                || call.Args[0] is not MirLocalOperand argument
+                || block.InstructionList[index - 1] is not MirBoxAny box
+                || box.Target != argument.Name || box.Source is not MirLocalOperand source)
+                return false;
+            var type = owner.FindLocal(source.Name).Type;
+            if (TypeLayout.IsTypeId(type)) return false;
+            return TypeLayout.ClassifyElement(type, null).Kind
+                is ArrayElementKind.Scalar or ArrayElementKind.String;
         }
 
         private static int Depth(TypeLayoutPlan plan)

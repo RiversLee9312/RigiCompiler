@@ -26,7 +26,8 @@ namespace RigiCompiler.Middleware.Mir
             flow.EnsureOpen();
             if (inst.Alarm != null)
             {
-                flow.Add(new MirYieldAlarm(inst.Alarm.Name));
+                flow.Add(new MirYieldAlarm(inst.Alarm.Name,
+                    flow.Tries.CurrentExcTarget()));
                 return;
             }
             flow.Add(new MirYieldBare());

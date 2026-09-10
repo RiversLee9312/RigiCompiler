@@ -1,4 +1,4 @@
-// 确定积压、分段回收与 capability/监听器 churn；原生测试专用台账。
+// 确定积压、分段回收与 订阅对象/监听器 churn；原生测试专用台账。
 import core.messaging.*
 import core.coroutine.*
 import core.serialization.Serializable
@@ -27,9 +27,9 @@ func require(value: bool) {
 func sample(label: String) {
     Console.println((((((label + " bytes=") + liveBytes().toString()) + " gates=") + gates().toString()) + " timer-bytes=") + timerBytes().toString())
 }
-func expectReleased(handle: QueueHandle\<Blob>) {
+func expectReleased(handle: Reader\<Blob>) {
     var denied = false
-    try { MessageQueue.release_queue_handle(handle) }
+    try { await handle.next() }
     catch (e: core.IllegalStateException) { denied = true }
     require(denied)
 }
@@ -38,62 +38,59 @@ func backlog() {
     var i: i32 = 0
     while (i < 10) { padding = padding + padding
 i = i + 1 }
-    const owner = MessageQueue.create_queue\<Blob>()
-    const sender = MessageQueue.add_queue_handle(owner, QueueHandleType.Sender)
-    const fast = MessageQueue.add_queue_handle(owner, QueueHandleType.Reader)
-    const slow = MessageQueue.add_queue_handle(owner, QueueHandleType.Reader)
+    const owner = new Messenger\<Blob>()
+    const sender = owner
+    const fast = owner.createReader()
+    const slow = owner.createReader()
     i = 0
     while (i < 10000) {
-        await MessageQueue.post(sender, new Blob(i, i.toString() + padding))
+        await sender.send(new Blob(i, i.toString() + padding))
         i = i + 1
     }
     sample("backlog=10000")
     const fullBytes = liveBytes()
     i = 0
     while (i < 6000) {
-        require(((await MessageQueue.next(fast)).item as Blob).id == i)
+        require(((await fast.next()).item as Blob).id == i)
         i = i + 1
     }
-    MessageQueue.release_queue_handle(slow)
-    const branch = MessageQueue.add_queue_handle(fast, QueueHandleType.Reader)
+    slow.dispose()
+    const branch = fast.branch()
     sample("partial=4000")
     require(liveBytes() < (fullBytes - (4000000 as i64)))
-    MessageQueue.release_queue_handle(owner)
-    MessageQueue.release_queue_handle(sender)
+    sender.dispose()
     while (i < 10000) {
-        require(((await MessageQueue.next(fast)).item as Blob).id == i)
+        require(((await fast.next()).item as Blob).id == i)
         i = i + 1
     }
-    require((await MessageQueue.next(fast)).isEos)
-    require((await MessageQueue.next(branch)).isEos)
-    MessageQueue.release_queue_handle(fast)
-    MessageQueue.release_queue_handle(branch)
-    // 仍持有全部已释放 capability 时取样，验证其不再钉住日志。
-    sample("drained-held-capabilities")
+    require((await fast.next()).isEos)
+    require((await branch.next()).isEos)
+    fast.dispose()
+    branch.dispose()
+    // 仍持有全部已释放 订阅对象 时取样，验证其不再钉住日志。
+    sample("drained-held-readers")
     require(liveBytes() < (fullBytes - (8000000 as i64)))
-    expectReleased(owner)
-    expectReleased(sender)
+    sender.dispose()
     expectReleased(fast)
     expectReleased(slow)
     expectReleased(branch)
 }
 func churnOne() {
-    const owner = MessageQueue.create_queue\<Blob>()
-    const sender = MessageQueue.add_queue_handle(owner, QueueHandleType.Sender)
-    const reader = MessageQueue.add_queue_handle(owner, QueueHandleType.Reader)
-    const branch = MessageQueue.add_queue_handle(reader, QueueHandleType.Reader)
-    MessageQueue.release_queue_handle(owner)
-    await MessageQueue.post(sender, new Blob(1, "churn"))
-    require(((await MessageQueue.next(reader)).item as Blob).id == 1)
-    require(((await MessageQueue.next(branch)).item as Blob).id == 1)
-    MessageQueue.release_queue_handle(sender)
-    require((await MessageQueue.next(reader)).isEos)
+    const owner = new Messenger\<Blob>()
+    const sender = owner
+    const reader = owner.createReader()
+    const branch = reader.branch()
+    await sender.send(new Blob(1, "churn"))
+    require(((await reader.next()).item as Blob).id == 1)
+    require(((await branch.next()).item as Blob).id == 1)
+    sender.dispose()
+    require((await reader.next()).isEos)
     var denied = false
-    try { MessageQueue.add_queue_handle(reader, QueueHandleType.Sender) }
+    try { await sender.send(new Blob(2, "sealed")) }
     catch (e: core.IllegalStateException) { denied = true }
     require(denied)
-    MessageQueue.release_queue_handle(reader)
-    MessageQueue.release_queue_handle(branch)
+    reader.dispose()
+    branch.dispose()
 }
 pub shared class Counter {
     priv const gate: Mutex = new Mutex()

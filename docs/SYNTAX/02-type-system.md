@@ -28,19 +28,19 @@ Any
     ├── bool, char
     ├── String                      // 非 rich 值类型，见 §3.1.2
     ├── Type\<T>
-    ├── Wrapper                     // 所有 wrapper 的基类；wrapper 恒为 rich struct，见 §14.9
+    ├── Wrapper                     // 所有 wrapper 的基类；默认非 rich，见 §14.9
     │   └── ... (所有 wrapper)
     └── ... (所有 struct)
 ```
 
-`String` 与 `Wrapper` 都在 `ValueType` 分支下：前者是不含托管引用的非 rich 值类型，后者是 rich 值类型。二者的定位理由分别见 §3.1.2 与 §14.9。
+`String` 与 `Wrapper` 都在 `ValueType` 分支下，默认非 rich；wrapper 可按需显式声明 rich。二者的定位理由分别见 §3.1.2 与 §14.9。
 
 ### 3.1.1 `rich` 与 `shared` 类型修饰符
 
 Rigi 将值类型按是否允许携带托管对象引用分为普通 ValueType 与 rich ValueType，并将对象按是否允许跨协程共享分为 local object 与 shared object。`rich` 和 `shared` 都是**类型声明修饰符**，不是变量或引用位置修饰符。
 
 - `rich` 仅用于 `struct`（包括 `enum struct`）与 `wrapper`。未标记 `rich` 的 struct 不得直接或间接持有任何 Object，也不得内嵌 rich struct。
-- `wrapper` 恒为 rich struct，`rich` 由声明形式隐含，源码中不再显式书写（见 §14.9）。
+- `wrapper` 默认非 rich，只有显式声明 `rich` 才能持有普通对象字段；`self` 是特殊宿主回指，不是普通字段，不受 rich 持有规则限制（见 §14.9）。
 - `shared` 可用于 `class`、`interface`，或与 `rich` 一起用于 struct，或用于 `wrapper`。`shared struct` 而没有 `rich` 是编译错误。
 - 未标记 `shared` 的 class 实例是 local object，只属于创建它的 Coroutine，不得在 Coroutine 之间共享。
 - 标记 `shared` 的 class 实例是 shared object，可以被多个 Coroutine 引用；`shared` 只表示共享资格和相应的生命周期管理，不自动使对象字段操作具备线程安全。
@@ -76,12 +76,13 @@ pub shared rich struct SharedEntry {
 | 非 rich struct | 不允许 | 仅非 rich ValueType |
 | rich struct | local object、shared object | 所有 ValueType |
 | shared rich struct | 仅 shared object | 非 rich ValueType、shared rich ValueType |
-| wrapper（非 shared） | local object、shared object | 所有 ValueType |
-| shared wrapper | 仅 shared object | 非 rich ValueType、shared rich ValueType |
+| 非 rich wrapper（含 shared） | 不允许 | 仅非 rich ValueType |
+| rich wrapper（非 shared） | local object、shared object | 所有 ValueType |
+| shared rich wrapper | 仅 shared object | 非 rich ValueType、shared rich ValueType |
 | local class | local object、shared object | 所有 ValueType |
 | shared class | 仅 shared object | 非 rich ValueType、shared rich ValueType |
 
-这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段、编译器生成的隐藏字段，以及 Middleware 合成的 wrapper 隐藏存储（§14.9）。由此保证：从任意 shared class、shared rich struct 或 shared wrapper 出发，沿字段递归遍历，不可能到达 local object 或非 shared rich 值。
+这些限制递归应用于字段、继承得到的字段、泛型实参所展开的字段、编译器生成的隐藏字段，以及 Middleware 合成的 wrapper 隐藏存储（§14.9）。wrapper 的特殊宿主回指 self 不计入普通字段闭包；普通字段不能借此豁免。由此保证：从任意 shared class、shared rich struct 或 shared wrapper 出发，沿普通字段递归遍历，不可能到达 local object 或非 shared rich 值。
 
 **泛型实例化点闭包检查**：`rich`/`shared` 属性属于类型及其布局闭包，泛型实例化后仍必须满足。每次调用方填入泛型实参（类型引用实例化、泛型调用显式实参），编译器对构造类型**自身**重跑闭包表：持有者分类取定义，字段类型代入实参后按上表直接判定，嵌套构造（如 `Box\<Wrap\<User>>`）递归到内层用户构造。因此 `struct Wrap\<T> { var v: T }` 以 `Wrap\<User>`（User 为 class）实例化是编译错误（非 rich struct 经实参持有 Object），诊断定位到填入点并注明经哪个实参引入。同理，shared 持有者经实参持 local 字段、泛型类型代入后的静态字段（本条下方闸门 1）与 async 成员签名（§4.5 闸门 2/3）的共享安全性，也在填入点统一收口。实参仍含未代入泛型参数时（泛型声明体内）跳过，由外层代入后再查。
 
@@ -101,6 +102,8 @@ pub shared rich struct SharedEntry {
 - shared rich struct、shared wrapper；
 - 非 rich ValueType（全部基元类型、`String`、`Type\<T>`、非 rich struct 与非 rich enum struct）；
 - `Nullable\<T>`，且 `T` 本身是共享安全类型（见 §3.1.2）。`T` 为泛型参数时按其 `extends` 界链推导（界为外层型参则递归；环界保守视为非共享安全）。
+
+wrapper 即使非 rich，也不会因此获得脱离宿主的共享资格；其 receiver 的共享安全仍要求显式 shared，且整体取值禁令不变。self 的 rich 豁免不改变 async 边界规则。
 
 共享安全类型是「可以离开单个 Coroutine 的所有权域」的完整白名单。跨 Coroutine 传递时：
 
@@ -124,6 +127,8 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 - `Span\<T extends ValueType>` 是**内建 class**（Object 分支，引用语义）：连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；复制与传参共享同一 buffer。索引、步长与 GC 扫描均使用内建 lowering（见 `RUNTIME.md` §5）。
 - `SharedSpan\<T>` 是 `Span\<T>` 的 shared class 变体，布局相同；元素约束收紧为「非 rich 或 shared rich ValueType」。Mutex 等同步原语由未来版本接入。
 - `String` 是**非 rich ValueType**：它不持有托管引用，`refMap` 恒为空，因此可以自由出现在全局/静态字段与 async 边界上（见 §3.1.1），无需任何 shared 标注。它的字符数据位于编译器与运行时管理的特权裸缓冲区中，不是普通 Object 字段。
+  - `String.length: i64` 是 UTF-8 编码后的**字节数**，VM 与 native 口径一致。
+  - `String.characterCount: i64` 是 Unicode 标量值数量；它不是 UTF-16 码元数，也不是用户感知的字素簇数量。例如 `"序列化测试"` 为 15/5，`"👨‍👩‍👧"` 为 18/5，`"🇨🇳"` 为 8/2（依次为 length/characterCount）。
   - **复制语义按值深拷贝**：`var b = a` 在语义上产生一份独立的字符数据。实现可以引入对用户完全透明的 copy-on-write 或不可变共享优化，但**源码语义、类型检查与用户代码一律不得假设这些优化存在**——正如 BIL 永远不得假设某种 GC 模型或 GC 行为。任何可观察到共享的行为都是实现缺陷，而不是可依赖的特性。
   - `String` 不可被继承，也不可被 wrapper 修饰（非 rich struct 的通用规则，见 §14.9）。
 - `Nullable\<T>` 属于 `Object` 分支，但其 shared 属性由 `T` 推导而非由声明给出：`T` 是共享安全类型时，`Nullable\<T>` 也是共享安全类型。内建 `Array\<T>` 同样按元素推导共享安全，但不提供并发同步；普通 `core.collections.List/Map` 不适用本规则。需要线性化并发操作时选用 `core.AtomicArray/AtomicList/AtomicMap`，API 与元素能力见 §20.7。
@@ -137,6 +142,12 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 `placeOf operand` 返回 local `core.Place\<T>`，实现 `IDisposable` 并保留目标身份。Object 使用对象自身身份；值类型的稳定局部变量、参数或全局存储复用捕获 Cell，常量使用 ReadonlyCell，临时值被拒绝。`==` / `!=` 比较目标身份；`dispose()` 释放 Place 自己的持有，不释放其他 Place/Handle 的持有。当前普通实例字段、未落地 companion 静态字段与复杂索引不支持稳定提升，必须给出诊断。
 
 `Place.expose(): Handle\<T>` 是 unsafe 能力升级入口。`Handle\<T>` 与可写变体 `MutableHandle\<T>` 是 unsafe shared object，可保留 local T，但没有普通 Rigi T 字段；两者不实现 `IDisposable`，按普通 shared ARC 生命周期释放隐藏目标。`load(): T` 对 Object 返回对象引用，对 Cell 返回正常值副本。只有逻辑 T 是 ValueType 且目标为可写 Cell 时，`asMutable()` 成功；Object、ReadonlyCell 或 `Handle\<Any>` 均抛 `core.ImmutablePlaceException`。`MutableHandle.store(T)` 写回同一 Cell。用户不能构造、继承或借 native 声明伪造 Handle。
+
+这两个类型是独立的普通具化类：`Handle<i32>`、`Handle<String>` 与
+`MutableHandle<i32>` 的身份互不等价，经 Any 的 `is`/`as` 也必须严格区分。
+它们只在私有字段中持有同一种固定布局的对象存储；底层存储不携带公开
+Handle 的类型身份，不得把 facade 擦除成该存储。此机制操作 Rigi 对象，
+与 native interop 的 NativeRcHandle/ICarrige 生命周期无关。
 
 `core.Atomic\<T>` 是 unsafe shared object，仅私有持有 Handle 与 Mutex，允许 local T。unsafe `init(T)`、`load(): T`、`mutate(Func\<T,T>)` 通过稳定参数/局部 Place 建立能力。load/mutate 是普通同步方法，内部取得异步 Mutex 后在 finally 释放；mutate 仅在回调成功返回后替换 Handle，回调抛错保留旧值（不回滚用户另行 unsafe 修改的对象）。普通回调可挂起，锁仍保持。
 
@@ -302,6 +313,13 @@ class Celsius {
 
 ### 3.6 泛型
 
+泛型形参可声明共享安全约束：`SomeType\<shared T>`。`shared T` 要求每个
+填入类型满足 §3.1.1 的共享安全定义；它不会把 local 类型转换成 shared。
+类型和函数泛型均可使用，并可组合型变、可变参数以及 extends/supers/with
+约束，例如 `shared out T`、`shared named T...`。同一前缀不得重复，in/out
+不得同时出现。开放泛型转发必须从 shared 声明或 extends 界链证明共享安全，
+可变参数包逐项验证。标准库和用户声明使用相同规则，禁止按类名隐式添加约束。
+
 泛型参数使用 `T` 前缀 + 描述性名称的驼峰命名法（如 `TResult`、`TAnother`、`TElement`）。
 
 **泛型列表语法：一律以 `\<` 开启、以 `>` 闭合。** 无论是泛型声明（类型参数列表）还是泛型使用（类型实参列表），都必须写作 `Name\<...>` 的形式：
@@ -349,7 +367,7 @@ func dump\<TItem with Serializable>(item: TItem) { ... }
 - `T extends B`：实参 `A` 满足 ⟺ `A` 可赋给 `B`（子类型/实现关系，`IsAssignable`）；`B` 是基本类型层级特权关系时同样适用（如 `Box\<i32>` 满足 `T extends ValueType`）。
 - `T supers B`：实参 `A` 满足 ⟺ `B` 可赋给 `A`（反向）。
 - `T with W`：实参 `A` 满足 ⟺ `W` 在 `A` 的 wrapper 应用集合中（编译期查类型的 `AppliedWrappers`，含 interface 传染结果；构造类型随定义传播）。`with` 约束在函数体内等价于一次 wrapper 应用：带 `with W` 约束的泛型参数 `param` 上写 `param:W` 是合法的 wrapper place（§14.5），只读禁令与应用语义同直接应用一致；wrapper 存储在实参宿主的隐藏存储中，编译器不为泛型参数合成任何存储。
-- 约束边界不得引用同一声明泛型参数列表中的参数（含嵌套泛型实参位置）——`class C\<T1 extends T2, T2>` 是编译错误（声明侧专门诊断）。引用外层可见作用域的泛型参数（如泛型宿主类型的方法约束引用宿主的 `T`）不在此列：此时边界含未替换泛型参数，使用侧检查**跳过**（不做静态拒绝，由外层调用代入后自然满足）。实参为 `ErrorType` 时静默放行（毒化传播）。
+- 约束边界不得引用同一声明泛型参数列表中的参数（含嵌套泛型实参位置）——`class C\<T1 extends T2, T2>` 是编译错误（声明侧专门诊断）。允许引用外层可见作用域的泛型参数（如方法约束引用宿主的 `T`），但必须按调用处宿主代入后证明满足约束。实参或边界尚含泛型参数也不跳过：泛型转发在声明处必须由已有的上下界、wrapper 约束与类型关系证明安全，无法证明即编译错误，不能依赖未来调用碰巧合法。`with` 构造 wrapper 的实参必须匹配，不能退化为只比较泛型定义。实参为 `ErrorType` 时静默放行（毒化传播）。
 
 **实例化点隐式限制**：除上述显式约束外，每次填入泛型实参还会对构造类型自身重跑与布局/共享安全相关的隐式限制（§3.1.1 字段闭包与静态字段闸门、§4.5 async 闸门 2/3——声明侧因泛型参数无法静态判定而跳过的部分），与显式约束同一检查通道、同一些填入点（声明侧类型标注、函数体内类型引用、泛型调用显式实参）。显式约束不满足即拒绝该类型引用；隐式限制违规落诊断后按可恢复模型继续编译。同一 （定义， 实参） 对在单次填入检查中只诊断一次。
 
@@ -466,7 +484,7 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 - **对象**（引用类型默认）按实例身份哈希——同一实例两次调用相等，不同实例（即使 `toString` 相同）哈希不同；
 - **`null`** 固定为 `0`。
 
-只承诺**同一宿主内**同值必同哈希；VM 宿主与原生宿主的哈希数值不要求一致（跨进程、跨宿主都不可持久化或比较哈希数值）。哈希不保证分布均匀，允许碰撞。典型用途是关联数组键判等：`core.collections.Map` 的键相等 = `==`（**equals-or-hash 判等链**，用户裁定）——键类型声明了 `operator equals` 走它（运行期最派生），未声明的类型走 `Any` 承诺的默认 `equals`（双虚调 `hash` 比较），hash 碰撞即判等，**绝不走 `toString`**。默认 `hash` 对对象是身份哈希，不同身份的对象键互不覆盖；值语义 `struct`/需要按字段判等的 `class` 键请 `override hash` 或实现 `operator equals`。
+只承诺**同一宿主内**同值必同哈希；VM 宿主与原生宿主的哈希数值不要求一致（跨进程、跨宿主都不可持久化或比较哈希数值）。哈希不保证分布均匀，允许碰撞。典型用途是关联数组键判等：`core.collections.Map` 的键相等 = `==`（**equals-or-hash 判等链**，用户裁定）——键类型声明了 `operator equals` 走它（运行期最派生），未声明的类型走 `Any` 承诺的默认 `equals`（双虚调 `hash` 比较），hash 碰撞即判等，**绝不走 `toString`**。因此把 `hash()` 恶意或错误地实现为常量，会令所有此类型的键互相覆盖；需要容忍哈希碰撞的键类型必须实现 `operator equals`。默认 `hash` 对对象是身份哈希，不同身份的对象键互不覆盖；值语义 `struct`/需要按字段判等的 `class` 键请 `override hash` 或实现 `operator equals`。
 
 与 `toString` 机制同构：`Any`/`Object` 的默认实现体是编译器合成的小函数，装箱接收者后调用 `.bootstrap.rg` 的文件级私有全局 `native` 函数 `any_hash`（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_hash")`）——用户代码不可直接调用它；用户类型 `override hash` 后经普通虚派发执行自身实现。
 

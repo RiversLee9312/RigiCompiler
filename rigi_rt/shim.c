@@ -6,12 +6,38 @@
  * 调用约定：默认 C 约定。
  */
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "arc.h"
 #include "rigi_string.h"
+
+/* 原生自递归调用前的轻量栈余量守卫。每个 OS 线程首次进入生成代码时
+ * 记录近似栈基准；向任一方向消耗超过 512 KiB 即要求语言层停止递归。
+ * 留出余量用于构造并传播 RuntimeException，避免触及宿主 guard page。 */
+static _Thread_local uintptr_t rigi_stack_origin = 0;
+
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+int32_t rigi_stack_has_room(void)
+{
+    volatile unsigned char marker = 0;
+    uintptr_t here = (uintptr_t)&marker;
+    uintptr_t distance;
+    if (rigi_stack_origin == 0)
+    {
+        rigi_stack_origin = here;
+        return 1;
+    }
+    distance = here > rigi_stack_origin
+        ? here - rigi_stack_origin : rigi_stack_origin - here;
+    return distance < (uintptr_t)(512u * 1024u) ? 1 : 0;
+}
 
 /* 写 stdout + fflush：fwrite 直接按 len 输出，不依赖 NUL 结尾 */
 void rigi_print(const rigi_string *text)
@@ -36,6 +62,12 @@ void rigi_print_err(const rigi_string *text)
 /* 经 rigi_string_new 分配 rc=1 字符串块并拼接 */
 void rigi_string_concat(rigi_string *out, const rigi_string *a, const rigi_string *b)
 {
+    if (out == NULL || a == NULL || b == NULL || a->len < 0 || b->len < 0
+        || a->len > INT64_MAX - b->len
+        || (a->len > 0 && a->data == NULL) || (b->len > 0 && b->data == NULL))
+    {
+        abort();
+    }
     int64_t len = a->len + b->len;
     char *data = rigi_string_new(len);
     if (len > 0)

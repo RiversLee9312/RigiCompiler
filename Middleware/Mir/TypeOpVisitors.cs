@@ -123,11 +123,19 @@ namespace RigiCompiler.Middleware.Mir
             var targetType = MirType.Of(inst.TargetType.TypeRef);
             var resultType = flow.TypeOf(inst.Target.Name);
             var excTarget = flow.Tries.CurrentExcTarget();
+            // safe cast 的失败结果是 Nullable，不能走向非空目标槽直接
+            // 拆箱的快路（否则既会抛异常，也会按错误尺寸写结果）。
+            if (inst.IsSafe)
+            {
+                flow.Add(new MirCast(flow.Local(inst.Source), inst.Target.Name, true,
+                    targetType.Canonical, null, excTarget));
+                return;
+            }
             if (TypeLayout.TryGetNullableInner(sourceType, out var unwrapInner)
                 && unwrapInner.Canonical == targetType.Canonical)
             {
                 flow.Add(new MirUnwrapNullable(flow.Local(inst.Source), unwrapInner,
-                    inst.Target.Name));
+                    inst.Target.Name, excTarget));
                 return;
             }
             if (TypeLayout.TryGetNullableInner(targetType, out var wrapInner)
@@ -153,18 +161,6 @@ namespace RigiCompiler.Middleware.Mir
                 flow.Add(new MirCast(flow.Local(inst.Source), inst.Target.Name,
                     inst.IsSafe, null, new MirLocalOperand(".generic." + phName),
                     excTarget));
-                return;
-            }
-            // 方法接收者的构造类 → 自身裸声明是 ABI 视图投影，须保留
-            // 对象原有具化身份；不能把调用方同名 T 误当作接收者的实参。
-            if (ConstructedTypeCollector.IsConstructed(sourceType.Canonical)
-                && targetType.Canonical.IndexOf('<') < 0
-                && flow.Context.Symbols.FindTypeByRef(sourceType.Canonical) is { } sourceClass
-                && sourceClass.Declaration.Kind == BilTypeKind.Class
-                && flow.Context.Symbols.FindTypeByRef(targetType.Canonical)?.Declaration
-                    == sourceClass.Declaration)
-            {
-                flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
                 return;
             }
             if (TypeLayout.IsGenericPlaceholder(sourceType))
@@ -206,20 +202,6 @@ namespace RigiCompiler.Middleware.Mir
                 flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
                 return;
             }
-            // G1：泛型值类型「构造 → 裸模板」擦除 cast（frontend 对方法调用
-            // 接收者的固定形态）——值语义恒等视图，降为拷贝并登记构造形态
-            // 供类级 typeid 合成回溯（VM：cast 改写视图 typeid、无数据移动；
-            // 值类型无视图可写，恒等即语义）
-            if (flow.IsUserValueType(sourceType)
-                && ConstructedTypeCollector.IsConstructed(sourceType.Canonical)
-                && BilVerificationContext.StripTypeArguments(
-                    MwTypeKey.Normalize(sourceType.Canonical)) == targetType.Canonical)
-            {
-                flow.NoteErasedValueHost(inst.Target.Name,
-                    MwTypeKey.Normalize(sourceType.Canonical));
-                flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
-                return;
-            }
             if (sourceType.IsAnyOrObject || MirBuilder.IsScalarOrString(sourceType)
                 || MirBuilder.IsScalarOrString(targetType)
                 || TypeLayout.IsTypeId(sourceType) || TypeLayout.IsTypeId(targetType)
@@ -229,7 +211,10 @@ namespace RigiCompiler.Middleware.Mir
                     inst.IsSafe, targetType.Canonical, null, excTarget));
                 return;
             }
-            flow.Add(new MirCopyLocal(flow.Local(inst.Source), inst.Target.Name));
+            // 非恒等引用转换一律按 BIL cast 语义检查实际 TypeSheet。这里不
+            // 推断“内部擦除视图”：BIL/stdlib 与用户代码使用同一安全边界。
+            flow.Add(new MirCast(flow.Local(inst.Source), inst.Target.Name,
+                inst.IsSafe, targetType.Canonical, null, excTarget));
         }
     }
 }

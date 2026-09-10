@@ -36,6 +36,12 @@ BilModule（BIL 内存对象模型）
 
 核心决策（修改须重新过一遍取舍）：
 
+工具链调用默认设十分钟期限，超时终止本次子进程树并报告受控错误；双路输出读取也受期限约束。`--verbose`/日志记录所用 clang 的路径与 SHA256，运行时 bitcode 缓存身份包含该摘要。部署方可通过 `RIGI_LLVM_SHA256` 钉住可信 clang 内容；未设置钉值时，`--toolchain`、`RIGI_LLVM` 和本机工具链仍属于用户显式信任输入，内容指纹本身不证明发行来源。
+
+LLVM 元数据全局名保留完整 canonical，由 LLVM API 处理文本引号转义，不将泛型逗号和类型名中的点折叠成同一字符。
+
+内部 `MirGetClassTypeArgument` 按含元数的宿主布局键读取真实实例实参：普通类读取已规划的隐藏 typeid 槽，固定 ABI 数组读取前缀中的元素 sheet；不把数组伪装成具有普通隐藏字段的类。泛型函数的 coroutine frame 名虽包含原函数签名，但 frame 声明本身是固定布局的非泛型类，是否开放必须按声明判定。
+
 1. **实现语言 C#（目标平台 .NET 10 LTS），复用 `Bil/` 生态**。Reader、对象模型、
    Verifier 已在仓库内且对中端零依赖；Middleware 是唯一新增依赖 `Bil/` 的组件。
    保持纯 BCL、无第三方依赖的仓库纪律。
@@ -363,15 +369,15 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   vtable；调用点 invoke 原名不改，链替换在烘焙中完成；
 - 隐藏存储 `.wrapper.<wrapper 类型全称>` 合成（BIL §5.3 ABI 约定；`WrapperAbi` +
   `HiddenStoragePlanner` 把 Entity/字段-Value/Method 槽写入宿主布局并进 refMap；
-  wrapper 类型本身按内联 rich struct 布局，不再用空壳）。槽身份对齐 VM 隐藏键
+  wrapper 类型本身按内联值布局，rich 由源码显式声明）。槽身份对齐 VM 隐藏键
   （`VmContext.HiddenEntityKey/FieldKey/MethodKey`）：Entity 键仅含 wrapper
   精确 TypeRef——子类重申同 ref 不另开物理槽，槽恒归首次声明（最基类）偏移、
   随 basePlan 原名逐层拷入，重申的安装与环读经发射期 extends 下探同归该槽；
   Field/Method 键含字段/方法符号，天然归声明类唯一。内存路径已落地：
   `get.wrapper` / `get.wrapper.field` 从隐藏槽值拷贝，`set.wrapper.field` 沿链
   GEP 后写内层字段，`new.wrapper.*` 在 `..init.wrapper` 的 `.this` 上调 wrapper
-  init 安装；wrapper 布局偏移 0 为宿主回指胖值（不进 refMap），`get.self`
-  从该槽 ProduceFatValue。环 receiver 槽是原地访问（SYNTAX §14.5）：各
+  init 安装；wrapper 布局偏移 0 为私有宿主回指（不进 refMap），内联值宿主
+  用相对偏移保证复制安全，`get.self` 解码后才产生普通值。环 receiver 槽是原地访问（SYNTAX §14.5）：各
   trampoline 经 `MirGetWrapper` / `MirGetWrapperMethodAddr` 取最外环隐藏槽
   地址后调首环，wrapper 状态跨调用持久；
 - pass 群构成（均为小改写 pass，读写集与排序见 MwPipeline）：
@@ -678,7 +684,7 @@ typeid 由 receiver 隐藏槽恢复，不把裸模板当作对象的构造身份
 **TypeSheet 全局名**：无角括号的既有名保持不变；构造 canonical 的 `<,>`
 转义为 `$` / `.`（空格删除），避免跨工具链引号差异。
 
-**is / supers / with（MW5 c3）**：MIR 直译 `type.is` / `type.supers` / `type.with`（含 `.indirect`）为 `MirTypeCheck`；发射调 `rigi_type_*` helper（typeid+payload 两枚 i64 + 目标 TypeSheet*，返 i32 0/1）。实际类型：tag2 取对象头 TypeSheet，tag0/tag1 掩码胖引用 typeid。TypeInfo 形态 `{name: rigi_string, sheet*, wrappers**, wrapperCount, ifaceClosure**, ifaceClosureCount, nullableElement*, destroyNative(void*)}` 与 TypeSheet 成对发射，`typeInfoId` 回指；wrappers 来自声明 `BilWrappedModifier`；ifaceClosure 为传递 implements 闭包（含接口的父接口）。泛型占位目标（`.generic<$.generic.T>`）降为 typeid 局部（与 `.indirect` 同 helper）。接口默认方法（有 fn 体）进入实现类 iMap 槽（未 override 时指向接口方法）；MirReachability 补默认方法可达边。
+**is / supers / with（MW5 c3）**：MIR 直译 `type.is` / `type.supers` / `type.with`（含 `.indirect`）为 `MirTypeCheck`；发射调 `rigi_type_*` helper（typeid+payload 两枚 i64 + 目标 TypeSheet*，返 i32 0/1）。实际类型：tag2 取对象头 TypeSheet，tag0/tag1 掩码胖引用 typeid。TypeInfo 形态 `{name: rigi_string, sheet*, wrappers**, wrapperCount, ifaceClosure**, ifaceClosureCount, nullableElement*, typeIdBound*, destroyNative(void*)}` 与 TypeSheet 成对发射，`typeInfoId` 回指；wrappers 来自声明 `BilWrappedModifier`；ifaceClosure 为传递 implements 闭包（含接口的父接口）。泛型占位目标（`.generic<$.generic.T>`）降为 typeid 局部（与 `.indirect` 同 helper）。接口默认方法（有 fn 体）进入实现类 iMap 槽（未 override 时指向接口方法）；MirReachability 补默认方法可达边。
 
 **Any/Box ABI（RUNTIME §2/§4 定稿）**：胖引用 128-bit = `{typeid: i64（最高字节
 tag）, payload: i64}`，16B 对齐。tag0（ValueType ≤8B）payload 内联值；tag1

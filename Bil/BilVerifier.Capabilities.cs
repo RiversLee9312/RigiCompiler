@@ -88,10 +88,10 @@ namespace RigiCompiler.Bil
                 if (native?.StartsWith("handle_", StringComparison.Ordinal) != true) return;
                 var caller = context.Function.Symbol;
                 var allowed = native == "handle_make"
-                    ? caller is "core::Place$expose()@.handle"
-                        or "core::$handle_asMutable(capability:.any)@.handle"
+                    ? caller is "core::Place$expose()@core::Handle<.generic<$.generic.T>>"
+                        or "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
                     : caller is "core::$handle_load(capability:.any)@.generic<$.generic.T>"
-                        or "core::$handle_asMutable(capability:.any)@.handle"
+                        or "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
                         or "core::$handle_store(capability:.any,value:.generic<$.generic.T>)@.void";
                 if (!allowed) Error("Handle 隐藏机制不能由普通 BIL 函数调用");
             }

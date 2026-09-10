@@ -14,8 +14,8 @@ namespace RigiCompiler
     //   c. async 闸门 2/3（§4.5）：async 方法的形参/返回类型代入实参后
     //      必须共享安全（声明侧泛型参数跳过的部分）；
     //   d. 嵌套构造递归（Box\<Wrap\<User>> 内层同查）。
-    // 跳过规则（§3.6 ④）：实参或边界含未替换泛型参数（声明体内，由
-    // 外层代入后再查）、实参为 ErrorType（毒化静默）、内建构造
+    // 显式约束在声明处证明，开放型参不豁免；ErrorType 仅作毒化传播。
+    // 以下隐式布局限制在实参闭合后检查；内建构造
     // （Nullable/Box/Span/SharedSpan/Type/Array/Map——闭包属性由 §3.1.2
     // 特权规则覆盖；SharedSpan 另查元素「非 rich 或 shared rich ValueType」）。
     // 诊断按 (定义, 实参) 驻留对去重：单次填入检查内同一驻留
@@ -39,14 +39,15 @@ namespace RigiCompiler
         // SymbolGraph + 诊断槽版（P2/P3 共用核心——P2 无 BindEnvironment）
         public static bool CheckArguments(IReadOnlyList<SemanticSymbol> typeArgs,
             IReadOnlyList<GenericParameterSymbol> generics, CharRange? span,
-            SymbolGraph symbols, Action<CharRange?, string> error)
+            SymbolGraph symbols, Action<CharRange?, string> error,
+            Func<SemanticSymbol, SemanticSymbol>? substituteBound = null)
         {
             var ok = true;
             for (int i = 0; i < generics.Count && i < typeArgs.Count; i++)
             {
                 var argument = typeArgs[i];
                 if (argument is ErrorTypeSymbol) continue;
-                // 必须先于开放泛型早退：外层型参也须携带共享安全证明。
+                // 外层型参也须携带共享安全证明。
                 if (generics[i].RequiresSharedSafe && !(argument switch
                     {
                         TypeSymbol type => type.IsSharedSafe(),
@@ -57,12 +58,10 @@ namespace RigiCompiler
                     error(span, $"Type argument '{BoundAnalysis.TypeDisplay(argument)}' must be shared-safe for '{generics[i].Name}'");
                     ok = false;
                 }
-                if (SymbolLookup.ContainsGenericParameter(argument) && !generics[i].RequiresSharedSafe) continue;
                 foreach (var constraint in generics[i].Constraints)
                 {
-                    var bound = constraint.Bound;
+                    var bound = substituteBound?.Invoke(constraint.Bound) ?? constraint.Bound;
                     if (bound == null) continue;
-                    if (SymbolLookup.ContainsGenericParameter(bound)) continue;
                     if (!Satisfied(constraint.Kind, argument, bound, symbols))
                     {
                         error(span,
@@ -74,6 +73,7 @@ namespace RigiCompiler
                     }
                 }
             }
+            if (ok) symbols.RecordGenericUse(generics, typeArgs);
             return ok;
         }
 
@@ -122,6 +122,39 @@ namespace RigiCompiler
             return ok;
         }
 
+        // P2 wrapper 应用登记之后，只补验之前尚不可见的隐藏存储；不重复报告
+        // 已由类型引用阶段检查过的普通字段。P3 则直接走统一构造类型检查。
+        internal static void CheckConstructedWrapperStorage(TypeSymbol type, CharRange? span,
+            SymbolGraph symbols, Action<CharRange?, string> error)
+        {
+            var visited = new HashSet<TypeSymbol>();
+            var exceeded = false;
+            Visit(type, 0);
+            void Visit(TypeSymbol current, int depth)
+            {
+                if (exceeded) return;
+                // 递归泛型可以每层产生不同的驻留类型，不能仅靠引用相等终止。
+                if (depth > 64 || visited.Count >= 4096)
+                {
+                    exceeded = true;
+                    error(span, "Wrapper storage closure expansion exceeds the safety limit");
+                    return;
+                }
+                if (!visited.Add(current) || current.ConstructedFrom is not { } definition) return;
+                if (current.TypeArguments!.Any(SymbolLookup.ContainsGenericParameter)) return;
+                foreach (var application in definition.AppliedWrappers
+                    .Concat(definition.Fields.SelectMany(f => f.AppliedWrappers))
+                    .Concat(definition.Methods.SelectMany(m => m.AppliedWrappers)))
+                    if (symbols.Substitute(application.Wrapper, definition, current) is TypeSymbol applied)
+                        CheckConstructedType(applied, span, symbols, error);
+                foreach (var argument in current.TypeArguments!)
+                    if (argument is TypeSymbol nested) Visit(nested, depth + 1);
+                foreach (var field in definition.Fields)
+                    if (symbols.Substitute(field.FieldType, definition, current) is TypeSymbol nested)
+                        Visit(nested, depth + 1);
+            }
+        }
+
         private static bool CheckConstructedType(TypeSymbol type, CharRange? span,
             SymbolGraph symbols, Action<CharRange?, string> error, CheckState state)
         {
@@ -141,6 +174,16 @@ namespace RigiCompiler
                 {
                     ok = false;
                 }
+                // 隐藏 wrapper 存储与普通字段同样属于构造类型闭包。
+                // 检查 Entity/Value/Method 的应用，避免宿主 T 实例化后漏查 TField。
+                var definition = type.ConstructedFrom;
+                var applications = definition.AppliedWrappers
+                    .Concat(definition.Fields.SelectMany(f => f.AppliedWrappers))
+                    .Concat(definition.Methods.SelectMany(m => m.AppliedWrappers));
+                foreach (var application in applications)
+                    if (symbols.Substitute(application.Wrapper, definition, type) is TypeSymbol applied
+                        && !CheckConstructedType(applied, span, symbols, error, state))
+                        ok = false;
                 foreach (var argument in type.TypeArguments)
                 {
                     if (argument is TypeSymbol { ConstructedFrom: not null } inner
@@ -290,40 +333,54 @@ namespace RigiCompiler
         {
             return kind switch
             {
-                GenericConstraintKind.Extends => SymbolLookup.IsAssignable(argument, bound, symbols),
-                GenericConstraintKind.Supers => SymbolLookup.IsAssignable(bound, argument, symbols),
+                GenericConstraintKind.Extends => SymbolLookup.ProvesConstraintAssignable(argument, bound, symbols),
+                GenericConstraintKind.Supers => SymbolLookup.ProvesConstraintAssignable(bound, argument, symbols),
                 GenericConstraintKind.With => bound is TypeSymbol wrapper
-                    && HasWrapper(argument, wrapper),
+                    && HasWrapper(argument, wrapper, symbols),
                 _ => true,
             };
         }
 
         // with 判定：wrapper 在实参的 wrapper 应用集合中（应用记录与判定边界
         // 双双取定义级——S11a 起应用携带构造代入结果，构造类型回退定义）
-        private static bool HasWrapper(SemanticSymbol argument, TypeSymbol wrapper)
+        private static bool HasWrapper(SemanticSymbol argument, TypeSymbol wrapper,
+            SymbolGraph symbols)
         {
             if (argument is GenericParameterSymbol parameter)
-                return ParameterHasWrapper(parameter, wrapper, new HashSet<GenericParameterSymbol>());
+                return ParameterHasWrapper(parameter, wrapper, symbols,
+                    new HashSet<GenericParameterSymbol>());
             var definition = argument as TypeSymbol;
             if (definition?.ConstructedFrom != null) definition = definition.ConstructedFrom;
-            return definition != null
-                && definition.AppliedWrappers.Any(w => ReferenceEquals(w.WrapperDefinition, wrapper));
+            if (definition == null) return false;
+            if (definition.AppliedWrappers.Any(w => MatchesWrapper(
+                argument is TypeSymbol constructed
+                    ? symbols.Substitute(w.Wrapper, definition, constructed) as TypeSymbol
+                    : w.Wrapper, wrapper))) return true;
+            // 能力只能来自实际源码应用；SB 不隐含 Serializable。
+            return false;
         }
 
-        private static bool ParameterHasWrapper(GenericParameterSymbol parameter, TypeSymbol wrapper,
-            HashSet<GenericParameterSymbol> visited)
+        private static bool ParameterHasWrapper(GenericParameterSymbol parameter,
+            TypeSymbol wrapper, SymbolGraph symbols, HashSet<GenericParameterSymbol> visited)
         {
             if (!visited.Add(parameter)) return false;
             foreach (var constraint in parameter.Constraints)
             {
-                if (constraint.Kind == GenericConstraintKind.With && ReferenceEquals(constraint.Bound, wrapper))
-                    return true;
+                if (constraint.Kind == GenericConstraintKind.With)
+                {
+                    var bound = constraint.Bound as TypeSymbol;
+                    if (MatchesWrapper(bound, wrapper)) return true;
+                }
                 if (constraint.Kind != GenericConstraintKind.Extends) continue;
                 if (constraint.Bound is GenericParameterSymbol outer
-                    ? ParameterHasWrapper(outer, wrapper, visited)
-                    : HasWrapper(constraint.Bound, wrapper)) return true;
+                    ? ParameterHasWrapper(outer, wrapper, symbols, visited)
+                    : HasWrapper(constraint.Bound, wrapper, symbols)) return true;
             }
             return false;
         }
+
+        private static bool MatchesWrapper(TypeSymbol? actual, TypeSymbol required) =>
+            required.ConstructedFrom != null ? ReferenceEquals(actual, required)
+                : ReferenceEquals(actual?.ConstructedFrom ?? actual, required);
     }
 }

@@ -44,6 +44,42 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Reset();
             TestHarness.Section("BilVerifier");
+            foreach (var mutation in new[] { "field", "variance", "base", "rich" })
+            {
+                var abiModule = new BilModule();
+                var array = new BilTypeDeclaration("core::Array", BilTypeKind.Class);
+                array.GenericParameters.Add("T");
+                if (mutation == "field") array.Members.Add(new BilSimpleMemberDeclaration(
+                    BilMemberKind.Field, "core::Array#payload@.i64"));
+                if (mutation == "variance") array.GenericVariances.Add(BilGenericVariance.Out);
+                if (mutation == "base") array.ExtendsType = "core::Object";
+                if (mutation == "rich") array.Modifiers.Add(new BilKeywordModifier(BilKeyword.Rich));
+                abiModule.ExternalSymbols.Add(array);
+                BilTestHarness.CheckBilInvalid("外部 Array 固定 ABI 拒绝 " + mutation,
+                    abiModule, "固定 ABI 外部描述不能改变");
+            }
+
+            TestHarness.CheckTrue("开放泛型不能掩盖不同宿主",
+                !BilVerificationContext.TypesCompatible("Box<.generic<$.generic.T>>", "Other<.i32>"));
+            TestHarness.CheckTrue("开放泛型不能掩盖元数差异",
+                !BilVerificationContext.TypesCompatible("Task<.generic<$.generic.T>>", "Task"));
+            TestHarness.CheckTrue("开放泛型不能掩盖其它实参差异",
+                !BilVerificationContext.TypesCompatible("Pair<.generic<$.generic.T>,.i32>", "Pair<.string,.string>"));
+            TestHarness.CheckTrue("开放泛型只延后占位叶子的检查",
+                BilVerificationContext.TypesCompatible("Box<.generic<$.generic.T>>", "Box<.i32>"));
+            var inheritance = new BilModule();
+            var parent = new BilTypeDeclaration("Parent", BilTypeKind.Class);
+            parent.GenericParameters.Add("T");
+            var child = new BilTypeDeclaration("Child", BilTypeKind.Class)
+                { ExtendsType = "Parent<.generic<$.generic.T>>" };
+            child.GenericParameters.Add("T");
+            inheritance.LocalSymbols.Add(parent);
+            inheritance.LocalSymbols.Add(child);
+            var inheritanceContext = new BilVerificationContext(inheritance);
+            TestHarness.CheckTrue("继承上转按实际类型参数代入",
+                inheritanceContext.TypesAssignable("Child<.i32>", "Parent<.i32>"));
+            TestHarness.CheckTrue("继承上转不得擦除不同类型参数",
+                !inheritanceContext.TypesAssignable("Child<.i32>", "Parent<.string>"));
 
             // ===== 正例：全管线产出验证器零错误 =====
             Positive("hello world",
@@ -976,6 +1012,29 @@ namespace RigiCompiler.Tests
         }
 
         // 最小合法模块：fn($main()@.i32) + 声明 + entry block（load R_0 → ret）
+        private static BilModule WrapperBorrowModule(params BilInstruction[] body)
+        {
+            var module = new BilModule();
+            var wrapper = new BilTypeDeclaration("Wrap", BilTypeKind.Wrapper);
+            wrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field, "Wrap#value@.i32"));
+            wrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method, "Wrap$read()@.i32"));
+            module.LocalSymbols.Add(wrapper);
+            var function = new BilFunction("Wrap$read()@.i32");
+            function.Args.Add(new BilArgDeclaration(".return", ".i32"));
+            function.Args.Add(new BilArgDeclaration(".this", "Wrap"));
+            function.Vars.Add(new BilVarDeclaration("Wrap", "w"));
+            function.Vars.Add(new BilVarDeclaration(".i32", "x"));
+            function.Vars.Add(new BilVarDeclaration(".any", "boxed"));
+            var block = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            block.Instructions.Add(new GetVarInstruction(BilOp.Var(".this"), BilOp.Var("w")));
+            block.Instructions.Add(new GetFieldInstruction(BilOp.Var("w"), BilOp.Var("x"), BilOp.Field("Wrap#value@.i32")));
+            block.Instructions.AddRange(body);
+            block.Instructions.Add(new RetInstruction(BilOp.Var("x")));
+            function.Blocks.Add(block);
+            module.Functions.Add(function);
+            return module;
+        }
+
         private static BilModule MinimalModule(out BilScalarResource zero,
             out BilBlock entry)
         {
@@ -1292,11 +1351,49 @@ namespace RigiCompiler.Tests
                 new BilKeywordModifier(BilKeyword.Rich)));
             BilTestHarness.CheckBilInvalid("class 带 rich", m, "rich 仅适用");
 
-            // §21.8：wrapper 未带 rich
+            // §21.8：wrapper 默认非 rich
             m = MinimalModule(out _, out _);
             m.LocalSymbols.Add(new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Wrapper,
                 new BilAccessibilityModifier(BilAccessibility.Public)));
-            BilTestHarness.CheckBilInvalid("wrapper 未带 rich", m, "必须显式带 rich");
+            BilTestHarness.CheckBilValid("wrapper 未带 rich 合法", m);
+
+            // 接收者可在函数内转发，同类型临时也不能成为普通值的逃逸通道。
+            BilTestHarness.CheckBilValid("wrapper 借用成员读取", WrapperBorrowModule());
+            foreach (var instruction in new BilInstruction[]
+            {
+                new RetInstruction(BilOp.Var("w")),
+                new CastInstruction(BilOp.Var("w"), BilOp.Var("boxed"), BilOp.Type(".any"), false),
+                new SetFieldInstruction(BilOp.Var("w"), BilOp.Var("w"), BilOp.Field("Wrap#saved@Wrap")),
+                new InvokeNoResultInstruction(BilOp.Fn("$consume(value:Wrap)@.void"), new[] { BilOp.Var("w") }),
+                new NewInstruction(BilOp.Type("Closure"), BilOp.Var("boxed"), new[] { BilOp.Var("w") }),
+                new NewInstruction(BilOp.Type("Wrap"), BilOp.Var("w"), Array.Empty<BilVariableOperand>()),
+            })
+                BilTestHarness.CheckBilInvalid("wrapper 借用逃逸 " + instruction.GetType().Name,
+                    WrapperBorrowModule(instruction), "wrapper 借用不能整体取值");
+
+            // rich 字段规则不能通过手写 BIL、保留字样的字段名或闭合泛型绕过。
+            foreach (var fieldType in new[] { ".object", ".any", ".nullable<.i32>" })
+            {
+                m = MinimalModule(out _, out _);
+                var wrapper = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Wrapper);
+                wrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                    "com.example::Wrap#self@" + fieldType));
+                m.LocalSymbols.Add(wrapper);
+                BilTestHarness.CheckBilInvalid("非 rich wrapper 普通 self 字段 " + fieldType,
+                    m, "非 rich wrapper 不能持有对象或 rich 值字段");
+            }
+            foreach (var parameterRef in new[] { ".generic<$.generic.T>", ".generic<T>" })
+            {
+                m = MinimalModule(out _, out _);
+                var wrapper = new BilTypeDeclaration("com.example::Wrap", BilTypeKind.Wrapper);
+                wrapper.GenericParameters.Add("T");
+                wrapper.Members.Add(new BilSimpleMemberDeclaration(BilMemberKind.Field,
+                    "com.example::Wrap#item@" + parameterRef));
+                m.LocalSymbols.Add(wrapper);
+                m.Functions[0].Vars.Add(new BilVarDeclaration("com.example::Wrap<.object>", "unsafeWrap"));
+                BilTestHarness.CheckBilInvalid("非 rich wrapper 闭合泛型 " + parameterRef,
+                    m, "非 rich wrapper 不能持有对象或 rich 值字段");
+            }
 
             // §21.2：资源不属于本模块
             m = MinimalModule(out _, out entryBlock);
@@ -2038,7 +2135,7 @@ namespace RigiCompiler.Tests
         private static BilModule S11Module(params BilInstruction[] body)
         {
             var module = new BilModule();
-            module.Resources.Add(new BilScalarResource("R_FC", BilScalarType.I32, "0"));
+            module.Resources.Add(new BilScalarResource("R_FC", BilScalarType.I32, "1"));
             module.Resources.Add(new BilScalarResource("R_X", BilScalarType.I32, "0"));
             module.Resources.Add(new BilScalarResource("R_LV", BilScalarType.String, "TRACE"));
 
@@ -2236,7 +2333,7 @@ namespace RigiCompiler.Tests
             module.LocalSymbols.Add(logged);
             var fn = new BilFunction(proxySym);
             fn.Args.Add(new BilArgDeclaration(".return", ".string"));
-            fn.Args.Add(new BilArgDeclaration(".this", "core.logging::Logged"));
+            fn.Args.Add(new BilArgDeclaration(".this", "core.logging::Logged<.generic<$.generic.TTarget>>"));
             fn.Args.Add(new BilArgDeclaration("arg", ".i32"));
             fn.Vars.Add(new BilVarDeclaration(".generic<$.generic.TTarget>", "self"));
             fn.Vars.Add(new BilVarDeclaration(".string", "r"));

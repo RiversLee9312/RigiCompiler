@@ -49,5 +49,18 @@ pub func main(): i32 {
     const pair = clone(new SerialPair\<SerialValue, SerialOther>(value, other), true)
     core.io.Console.println((pair.first.n + pair.second.n).toString())
     core.io.Console.println(parcel(new SerialReference(11)).typeName)
+    // 连续跨开放泛型边界装箱、复制、销毁嵌套值，覆盖副本独立获取引用。
+    // 分别覆盖 graph 与非 graph，防止只修复其中一条序列化所有权路径。
+    var round: i32 = 0
+    while (round < 32) {
+        const nestedPair = new SerialPair\<SerialValue, SerialOther>(new SerialValue(round), new SerialOther(round + 1))
+        const boxedPair = new SerialBox\<SerialPair\<SerialValue, SerialOther>>(nestedPair)
+        const copied = clone(boxedPair, (round < 16))
+        const again = clone(copied, true)
+        if ((again.value.first.n != round) or (again.value.second.n != (round + 1))) {
+            throw new core.RuntimeException("嵌套泛型值副本损坏")
+        }
+        round = round + 1
+    }
     return 0
 }

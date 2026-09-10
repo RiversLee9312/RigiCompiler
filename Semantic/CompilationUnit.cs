@@ -24,5 +24,13 @@ namespace RigiCompiler
             Diagnostics = new DiagnosticBag();
             Symbols = new SymbolGraph();
         }
+
+        // 自举签名绑定复用已经建好的图，避免构造第二套内建身份。
+        internal CompilationUnit(SymbolGraph symbols, RootASTNode source)
+        {
+            SourceFiles = new[] { source };
+            Diagnostics = new DiagnosticBag();
+            Symbols = symbols;
+        }
     }
 }

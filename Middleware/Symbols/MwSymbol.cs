@@ -129,10 +129,6 @@ namespace RigiCompiler.Middleware.Symbols
                 {
                     return false;
                 }
-                if (rest.Length > 0 && rest[0] == '$')
-                {
-                    return true;
-                }
                 return true;
             }
         }

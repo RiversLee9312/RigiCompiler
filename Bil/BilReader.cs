@@ -256,10 +256,48 @@ namespace RigiCompiler.Bil
                         if (space < 0) throw Error("标量资源缺字面量");
                         var type = ParseScalarType(value.Substring(0, space));
                         var literal = value.Substring(space + 1).Trim();
+                        ValidateScalar(type, literal);
                         _resources[name] = new BilScalarResource(name, type, literal);
                     }
                     _resourceOrder.Add(name);
                 }
+            }
+        }
+
+        private void ValidateScalar(BilScalarType type, string literal)
+        {
+            try
+            {
+                switch (type)
+                {
+                    case BilScalarType.I8: sbyte.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.I16: short.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.I32: int.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.I64: long.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.U8: byte.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.U16: ushort.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.U32: uint.Parse(literal,
+                        System.Globalization.CultureInfo.InvariantCulture); break;
+                    case BilScalarType.U64: BilScalarLiteral.ParseUnsigned(literal); break;
+                    case BilScalarType.String:
+                        if (BilScalarLiteral.DecodeString(literal).IndexOf('\0') >= 0)
+                            throw new FormatException("字符串资源含 NUL");
+                        break;
+                    case BilScalarType.Char:
+                        if (BilScalarLiteral.DecodeChar(literal) == '\0')
+                            throw new FormatException("字符资源含 NUL");
+                        break;
+                }
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException)
+            {
+                throw Error($"标量资源字面量非法或越界：{literal}");
             }
         }
 

@@ -32,21 +32,12 @@ namespace RigiCompiler.Middleware.Emit
             var targetType = inst.TargetTypeRef != null
                 ? MirType.Of(inst.TargetTypeRef)
                 : resultType;
-            // 标量/String 装入 T?（含占位 Nullable\<T\>）：走装箱包装，不是 try_cast。
-            // String 16B 超 InlineLimit，必须 WrapFromSlot（tag1 堆盒），
-            // 不可走 CastEmitter.WrapScalar 的 tag0 截 8B（否则 Mix.s 往返丢串）。
-            // indirect 形态目标类型运行期才知，不得吃此静态捷径（VM
-            // TryCast 按运行期 typeid 走数值转换/可空解包，统一归
-            // EmitDynamic 的 rigi_try_cast）
+            // 标量/String 到可空目标同样检查实际元素类型，不能因为结果
+            // 是 Nullable 就直接包装任意值（i32 -> String? 必须失败）。
             if (!inst.IsIndirect && MirBuilder.IsScalarOrString(sourceType)
                 && TypeLayout.IsNullable(resultType))
             {
-                var wrapped = sourceType.IsString
-                    ? NullableEmitter.WrapFromSlot(session, builder, slots[source.Name].Slot,
-                        sourceType)
-                    : WrapScalar(session, builder, session.LoadLocal(builder, slots, source),
-                        sourceType);
-                builder.BuildStore(wrapped, slots[inst.Target].Slot);
+                EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
                 return;
             }
             // 占位源或占位目标（`boxed as T`）须走 try_cast，不得当静态
@@ -90,10 +81,18 @@ namespace RigiCompiler.Middleware.Emit
             // 此前落 EmitFail 无条件抛 CastException。已知残留差：经
             // 具体类型航点后运行期身份（is 判定）不保留（胖 ABI 改造
             // 超出本修复范围）
-            if (IsStructUpcast(session, sourceType, targetType))
+            if (!inst.IsSafe && IsStructUpcast(session, sourceType, targetType))
             {
                 ArcEmitter.EmitCopyRichValue(session, builder, slots[inst.Target].Slot,
                     slots[source.Name].Slot, targetType);
+                return;
+            }
+            // 泛型烘焙后可能出现 Nullable<i32> → i32 等胖值到标量转换。
+            // 与 class/interface 转换一样核验实际 TypeSheet，不能因为目标
+            // 非胖值便静态判失败，也不能直接解读 payload 而跳过检查。
+            if (SourceIsFat(session, sourceType) || session.IsInlineValueType(sourceType, out _))
+            {
+                EmitDynamic(session, builder, slots, inst, source, sourceType, resultType);
                 return;
             }
             EmitFail(session, builder, slots, inst, sourceType, targetType, resultType);
@@ -138,9 +137,15 @@ namespace RigiCompiler.Middleware.Emit
                 hitFat = ArcEmitter.ProduceFatValue(session, builder, hitFat, "cast.acq");
             }
             StoreConverted(session, builder, slots, inst, sourceType, resultType, hitFat);
+            // 标量/值源临时装箱产生拥有权：胖结果接管，拆箱结果则
+            // 已独立复制内部值，必须回收中间盒子。
+            if (!SourceIsFat(session, sourceType) && !IsFatResult(session, resultType))
+                ArcEmitter.EmitReleaseFatValue(session, builder, fat);
             builder.BuildBr(join);
 
             builder.PositionAtEnd(miss);
+            if (!SourceIsFat(session, sourceType))
+                ArcEmitter.EmitReleaseFatValue(session, builder, fat);
             if (inst.IsSafe)
             {
                 builder.BuildStore(
@@ -277,7 +282,7 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // R3：值类型向上转换判定——source 声明沿 extends 链可达 target
-        //（两侧剥构造实参取模板；同型/非值类型不算）
+        //（逐层代入完整构造实参；同型/非值类型不算）
         private static bool IsStructUpcast(ModuleBuilder.Session session, MirType source,
             MirType target)
         {
@@ -286,13 +291,13 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return false;
             }
-            var targetKey = Bil.BilVerificationContext.StripTypeArguments(
-                Symbols.MwTypeKey.Normalize(target.Canonical));
-            var sourceKey = Bil.BilVerificationContext.StripTypeArguments(
-                Symbols.MwTypeKey.Normalize(source.Canonical));
+            var targetKey = Symbols.MwTypeKey.Normalize(target.Canonical);
+            var sourceKey = Symbols.MwTypeKey.Normalize(source.Canonical);
             if (sourceKey == targetKey)
             {
-                return false;
+                // 泛型 proxy 烘焙后会留下 T -> 具体宿主的恒等转换。
+                // 此处比较包含全部泛型实参的精确身份，不是同定义布局视图。
+                return true;
             }
             var sym = session.Symbols.FindTypeByRef(sourceKey);
             for (var depth = 0; sym != null && depth < 64; depth++)
@@ -301,13 +306,15 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     return false;
                 }
-                var baseKey = Bil.BilVerificationContext.StripTypeArguments(
-                    Symbols.MwTypeKey.Normalize(extendsRef));
+                var substitution = ConstructedTypeCollector.BuildSubstitution(sourceKey, sym.Declaration);
+                var baseKey = Symbols.MwTypeKey.Normalize(
+                    ConstructedTypeCollector.Substitute(extendsRef, substitution));
                 if (baseKey == targetKey)
                 {
                     return true;
                 }
                 sym = session.Symbols.FindTypeByRef(baseKey);
+                sourceKey = baseKey;
             }
             return false;
         }
@@ -349,10 +356,8 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException("cast 缺目标类型");
             }
-            if (session.Symbols.FindTypeByRef(inst.TargetTypeRef) is { } template
-                && template.Declaration.GenericParameters.Count > 0)
-                return NewEmitter.MaterializeClassSheet(session, builder, slots, inst.TargetTypeRef);
-            return TypeSheetOf(session, MirType.Of(inst.TargetTypeRef));
+            // 内建 Nullable<T> 等没有普通类声明，也必须解析闭合实参。
+            return NewEmitter.MaterializeClassSheet(session, builder, slots, inst.TargetTypeRef);
         }
 
         private static void StoreConverted(ModuleBuilder.Session session, LLVMBuilderRef builder,

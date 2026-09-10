@@ -86,6 +86,9 @@ pub class RangeI32 implements IEnumerable\<i32> {
 priv native func alloc_array\<T>(size: i32): Array\<T>
 
 pub func arrayOf\<T>(size: i32): Array\<T> {
+    if (size < 0) {
+        throw new core.OutOfBoundException((size as i64), (0 as i64))
+    }
     return alloc_array\<T>(size)
 }
 
@@ -106,27 +109,28 @@ pub func arrayOfElements\<T>(elements: T...): Array\<T> {
 // 用户代码只走 spanOf / sharedSpanOf；span_alloc / shared_span_alloc 是
 // 私有 native。二者 @NativeSymbol 均为 "span_alloc"（同一 rigi 面；
 // TypeSheet 由隐藏 typeid 与 callee 返回类型区分 Span vs SharedSpan）。
-// 约束写法与 alloc_array 对齐：不在函数上写 T extends ValueType——
-// Span/SharedSpan 定义自身携带该约束，构造点强制。
+// 包装入口必须显式证明 Span/SharedSpan 要求的值类型约束，native 不豁免。
 @NativeLibrary("rigi_rt")
 @NativeSymbol("span_alloc")
-priv native func span_alloc\<T>(size: i32): Span\<T>
+priv native func span_alloc\<T extends ValueType>(size: i32): Span\<T>
 
-pub func spanOf\<T>(size: i32): Span\<T> {
+pub func spanOf\<T extends ValueType>(size: i32): Span\<T> {
     return span_alloc\<T>(size)
 }
 
 @NativeLibrary("rigi_rt")
 @NativeSymbol("span_alloc")
-priv native func shared_span_alloc\<T>(size: i32): SharedSpan\<T>
+priv native func shared_span_alloc\<T extends ValueType>(size: i32): SharedSpan\<T>
 
-pub func sharedSpanOf\<T>(size: i32): SharedSpan\<T> {
+pub func sharedSpanOf\<T extends ValueType>(size: i32): SharedSpan\<T> {
     return shared_span_alloc\<T>(size)
 }
 
 // 动态数组使用可空内部槽，删除时清空尾槽以释放引用，扩容倍增。
 // getAtIndex 越界读 null（与语言索引协议 §13.2 对齐，方法面非 [] 运算符）；
 // removeAt 越界抛 core.OutOfBoundException。
+@SerializationBase
+@core.serialization.Serializable
 pub class List\<T> implements IEnumerable\<T> {
     priv var items: Array\<T?>
     priv var count: i32
@@ -178,6 +182,10 @@ pub class List\<T> implements IEnumerable\<T> {
     }
 
     priv func grow() {
+        if (items.length > 1073741823) {
+            throw new core.OutOfBoundException(
+                "List 容量超过 i32 可表示范围")
+        }
         const bigger = arrayOf\<T?>((items.length * 2))
         var i: i32 = 0
         while (i < count) {
@@ -216,6 +224,8 @@ pub class ListEnumerator\<T> implements IEnumerator\<T> {
 // 判等语义不变）。**绝不涉 toString**。`==` 于无约束 K 合法：Any 承诺
 // operator equals（§13.3 有效成员类型 Any 的承诺清单含 toString/hash/
 // equals）。不硬编码 String 特化。
+@SerializationBase
+@core.serialization.Serializable
 pub class Map\<K, V> implements IEnumerable\<core.Pair\<K, V>> {
     priv var ks: List\<K>
     priv var vs: List\<V>

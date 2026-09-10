@@ -171,7 +171,7 @@ SemanticSymbol
   Span 的特权 lowering 标记等）。这些由 `BootstrapSymbols` 在符号图
   初始化时直接构造。注意三条容易搞错的层级事实（2026-07-29 规范修订）：
   `String` 与 `Wrapper` 都在 `ValueType` 分支下（`String` 非 rich、
-  `Wrapper` 恒 rich）；`Nullable\<T>` 的 shared 属性由 `T` 推导而不是
+  `Wrapper` 默认非 rich）；`Nullable\<T>` 的 shared 属性由 `T` 推导而不是
   查声明修饰符；`Wrapper` 是全部 wrapper 声明的隐式基类。
 - **core.rg**：其余标准库表层（`core::Console`、`core.coroutine::Task`
   / `Executor` / Alarm 家族、`core::IDisposable`、异常类型、
@@ -400,7 +400,7 @@ native 面见 `ASYNC_LOWERING_DESIGN.md`。
 
 ### 7.1 wrapper 值语义与 BIL 形态
 
-规范把 wrapper 定为恒 rich struct，`obj:Wrapper` 为**只读 place**
+规范把 wrapper 定为默认非 rich、按需显式 rich 的值，`obj:Wrapper` 为**只读 place**
 （SYNTAX §14.5/§14.9）。相关 BIL 缺口与归属如下：
 
 - **§12.4 / §13.3 place 形态（读侧统一值拷贝）**：

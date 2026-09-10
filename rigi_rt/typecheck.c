@@ -53,7 +53,8 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
     }
     /* 内建基元/默认值类型不携带显式基类 sheet 链，ValueType 根由
      * 统一布局位判定；与 VM 的值类型分类一致。 */
-    if (target->typeInfoId != NULL && target->typeInfoId->name.len == 15
+    if (target->typeInfoId != NULL && target->typeInfoId->name.data != NULL
+        && target->typeInfoId->name.len == 15
         && memcmp(target->typeInfoId->name.data, "core::ValueType", 15) == 0)
         return (actual->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0;
     for (type = actual; type != NULL; type = type->baseTypeId)
@@ -68,6 +69,21 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
 
 int32_t rigi_type_is(uint64_t type_id, uint64_t payload, const RigiTypeSheet *target)
 {
+    if (target != NULL && target->typeInfoId != NULL
+        && target->typeInfoId->typeIdBound != NULL)
+    {
+        const RigiTypeSheet *actual = rigi_actual_sheet(type_id, payload);
+        const RigiTypeSheet *bound = target->typeInfoId->typeIdBound;
+        /* 先验证源是类型句柄，再将 payload 当 sheet；tag0 本身不足以
+         * 证明指针来源（整数、浮点等也是 tag0）。 */
+        if ((type_id >> RIGI_TAG_SHIFT) != RIGI_TAG_INLINE || payload == 0
+            || actual == NULL || actual->typeInfoId == NULL
+            || actual->typeInfoId->typeIdBound == NULL) return 0;
+        if (bound->typeInfoId != NULL && bound->typeInfoId->name.data != NULL
+            && bound->typeInfoId->name.len == 9
+            && memcmp(bound->typeInfoId->name.data, "core::Any", 9) == 0) return 1;
+        return rigi_sheet_is((const RigiTypeSheet *)(uintptr_t)payload, bound);
+    }
     if (target != NULL && target->typeInfoId != NULL
         && target->typeInfoId->nullableElement != NULL)
         return rigi_type_is(type_id, payload, target->typeInfoId->nullableElement);
@@ -432,6 +448,14 @@ int32_t rigi_try_cast(uint64_t src_type_id, uint64_t src_payload,
         return 0;
     }
     actual = rigi_actual_sheet(src_type_id, src_payload);
+    if (target != NULL && target->typeInfoId != NULL
+        && target->typeInfoId->typeIdBound != NULL)
+    {
+        if (!rigi_type_is(src_type_id, src_payload, target)) return 0;
+        *out_type_id = src_type_id;
+        *out_payload = src_payload;
+        return 1;
+    }
     if (rigi_sheet_is(actual, target))
     {
         rigi_rewrite_view(src_type_id, src_payload, target, out_type_id, out_payload);

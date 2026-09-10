@@ -5,8 +5,8 @@ using RigiCompiler.Middleware.Symbols;
 namespace RigiCompiler.Middleware.Layout
 {
     /// <summary>
-    /// MW10：按应用标记为宿主合成 wrapper 隐藏存储（内联 rich struct，
-    /// 进 refMap）。接 LayoutWrapper 实例布局，不改 TypeSheet 地址身份。
+    /// 按应用标记为宿主合成 wrapper 隐藏存储（内联值，按实际字段生成
+    /// refMap；self 独立传参，不在实例中存储）。不改 TypeSheet 地址身份。
     /// </summary>
     internal static class HiddenStoragePlanner
     {
@@ -164,13 +164,15 @@ namespace RigiCompiler.Middleware.Layout
             var plan = LayoutEngine.Resolve(wrapperType, symbols, table, visiting, null)
                 ?? throw new CompilerInternalException("wrapper 无布局计划: " + wrapperRef);
             var size = plan.Size;
-            var alignment = plan.Alignment > 0 ? plan.Alignment : 1;
+            // 零状态 wrapper 只保留寻址标记，不能通过对齐填充改变宿主 ABI。
+            var alignment = size == 0 ? 1 : (plan.Alignment > 0 ? plan.Alignment : 1);
             offset = LayoutEngine.AlignUp(offset, alignment);
             fields.Add(new FieldPlan(symbol, offset, size, alignment,
                 isReferenceSlot: false, embeddedPlan: plan));
             RefMapBuilder.CollectRefSite(refEntries, new LayoutEngine.FieldTypeInfo(
                 size, alignment, false, plan), offset);
-            offset += size;
+            offset = LayoutEngine.CheckedAdd(offset, size,
+                $"隐藏存储 {symbol}");
         }
 
         private static IEnumerable<string> WrappedOf(IReadOnlyList<BilModifier> modifiers)

@@ -17,8 +17,10 @@ namespace RigiCompiler.Tests
         {
             var source = File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!,
                 "..", "tools", "stress", "mq.rg"));
-            source = source.Replace("1000000", "8000").Replace("250000", "2000")
-                .Replace("62500", "500");
+            // 四生产者、四读者、八个以上日志段仍完整覆盖竞争形态；
+            // VM 全指令计费下控制日常预算，大吞吐量留给原生压力工具。
+            source = source.Replace("1000000", "2048").Replace("250000", "512")
+                .Replace("62500", "128");
             // 压力观测为 native 专属且顺序不确定，不进入 VM/native 输出对拍。
             source = System.Text.RegularExpressions.Regex.Replace(source,
                 @"(?m)^.*Console\.println.*runtimeStatus\(\)[^\r\n]*[\r\n]*", "");

@@ -113,15 +113,11 @@ namespace RigiCompiler.Middleware.Layout
         public static bool KeepsClassTypeIdInAbi(MwMemberSymbol? fnSymbol, bool hasThisParam) =>
             fnSymbol != null && IsValueTypeOwner(fnSymbol.Owner) && hasThisParam;
 
-        // 仅转义构造类型的 <,> 空格；无角括号的既有名（含 ::）保持不变
+        // LLVM API 接收原始名称并负责文本 IR 引号转义；保留完整 canonical
+        // 才是单射。把逗号替换为点会让 A<B,C> 与 A<B.C> 共用全局符号。
         public static string EscapeGlobalName(string prefix, string canonical)
         {
-            if (canonical.IndexOfAny(new[] { '<', '>', ',' }) < 0)
-            {
-                return prefix + canonical;
-            }
-            return prefix + canonical.Replace(" ", "", StringComparison.Ordinal)
-                .Replace('<', '$').Replace('>', '$').Replace(',', '.');
+            return prefix + canonical;
         }
     }
 }

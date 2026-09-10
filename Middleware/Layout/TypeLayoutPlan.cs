@@ -103,6 +103,11 @@ namespace RigiCompiler.Middleware.Layout
             IReadOnlyList<(string, int)>? hiddenTypeIdSlots = null,
             IReadOnlyList<string>? ifaceClosure = null)
         {
+            if (size < 0 || size > LayoutEngine.MaxTypeSize)
+            {
+                throw new CompilerInternalException(
+                    $"类型 {symbol.Canonical} 的布局尺寸 {size} 超出 0..{LayoutEngine.MaxTypeSize} 字节");
+            }
             Symbol = symbol;
             Kind = kind;
             Size = size;
@@ -132,6 +137,8 @@ namespace RigiCompiler.Middleware.Layout
         }
 
         public IReadOnlyList<TypeLayoutPlan> Plans => _order;
+        // 固定 ABI 的能力描述不进入物理布局表，避免把 i32 当成空 struct 重排。
+        internal IReadOnlyList<MwTypeSymbol> FixedValueDescriptions { get; set; } = System.Array.Empty<MwTypeSymbol>();
 
         // MW12b §25.2：core::IDisposable.dispose 实现槽目标的 fn canonical
         // 集合（LayoutEngine.Build 收尾挂载；Emit 侧函数体 prologue 据此
@@ -179,12 +186,12 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return true;
             }
-            // 顶层用户类型没有命名空间分隔符；已布局的实参是闭合类型，
-            // 不能误当声明占位而跳过构造计划（例如 Box<Value>）。
+            // 无命名空间并不代表占位符：只接受声明本身的形参列表，不能
+            // 根据字符串中有没有冒号/点把尚未布局的用户类型误判为开放形。
             var arguments = ConstructedTypeCollector.TypeArgumentsOf(typeRef);
             if (arguments.Count > 0 && arguments.All(argument => _plans.ContainsKey(argument))) return false;
-            return inner.IndexOf(':') < 0 && inner.IndexOf('.') < 0
-                && inner.IndexOf('<') < 0;
+            return _plans.TryGetValue(BilVerificationContext.DeclarationKeyOf(typeRef), out var template)
+                && arguments.SequenceEqual(template.Symbol.Declaration.GenericParameters);
         }
 
         internal void Add(TypeLayoutPlan plan)
@@ -239,9 +246,14 @@ namespace RigiCompiler.Middleware.Layout
         public IReadOnlyList<(string Host, string Method)> ValueInterfaceImplementations(string iface, string signature)
         {
             var result = new List<(string, string)>();
+            foreach (var type in FixedValueDescriptions)
+                if (type.Declaration.ImplementsTypes.Contains(iface))
+                    foreach (var method in LayoutEngine.InstanceMethods(type))
+                        if (method.SignatureKey == signature) result.Add((type.Canonical, method.Canonical));
             foreach (var plan in _order)
             {
-                if (plan.Kind != TypeLayoutKind.Struct || !plan.Symbol.Declaration.ImplementsTypes.Contains(iface)) continue;
+                if (plan.Kind is not (TypeLayoutKind.Struct or TypeLayoutKind.Enum)
+                    || !plan.Symbol.Declaration.ImplementsTypes.Contains(iface)) continue;
                 if (plan.Symbol.Declaration.GenericParameters.Count > 0
                     && !GenericAbi.IsClosedConstructed(plan.Symbol.Canonical)) continue;
                 foreach (var method in LayoutEngine.InstanceMethods(plan.Symbol))

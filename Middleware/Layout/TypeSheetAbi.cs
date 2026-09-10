@@ -29,7 +29,8 @@ namespace RigiCompiler.Middleware.Layout
         public const int InfoFieldIfaceClosure = 4;
         public const int InfoFieldIfaceClosureCount = 5;
         public const int InfoFieldNullableElement = 6;
-        public const int InfoFieldNativeDestructor = 7;
-        public const int InfoFieldCount = 8;
+        public const int InfoFieldTypeIdBound = 7;
+        public const int InfoFieldNativeDestructor = 8;
+        public const int InfoFieldCount = 9;
     }
 }

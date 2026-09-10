@@ -53,7 +53,7 @@ namespace RigiCompiler
         {
             var span = entry.Node.Span;
             var rich = modifiers.Contains(Keywords.RICH);
-            // rich 仅 struct/enum struct；wrapper 恒 rich 由声明形式隐含（§3.1.1/§14.9）
+            // rich 仅 struct/enum struct/wrapper，均须显式声明（§3.1.1/§14.9）。
             if (rich && type.Kind == TypeKind.Class)
             {
                 env.Error(span, $"'{type.Name}': 'rich' can only be applied to struct/enum struct");
@@ -61,10 +61,6 @@ namespace RigiCompiler
             if (rich && type.Kind == TypeKind.Interface)
             {
                 env.Error(span, $"'{type.Name}': 'rich' cannot be applied to interface");
-            }
-            if (rich && type.Kind == TypeKind.Wrapper)
-            {
-                env.Error(span, $"'{type.Name}': 'rich' is implied by the wrapper declaration and must not be written");
             }
             // shared 可标 interface（§3.1.1，A2：接口 async 成员的 receiver 共享
             // 安全前提）；shared 接口的传染检查归 ContagionChecker

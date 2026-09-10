@@ -59,16 +59,23 @@ namespace RigiCompiler.Bil
                 // N1（§8.4.1/§9.3）：全局/静态字段声明初始值（..globals.init），
                 // singleton 之后、main 之前
                 context.InvokeGlobalInitializers();
+                return RunProgram(context, entryPoint);
             }
             catch (VmStepLimitException ex)
             {
+                context.Dispatch.StopAfterStepLimit();
                 return new BilVmResult(context.Stdout, context.Stderr, null, ex);
             }
+        }
+
+        private static BilVmResult RunProgram(VmContext context, string? entryPoint)
+        {
             var entry = context.FindEntrypoint(entryPoint);
             // 无 Dispatcher 的直建模块（单元测试）走降级通道同步直跑
             if (!context.Dispatch.HasDispatcher)
             {
                 var standalone = context.Dispatch.RunStandalone(entry, Array.Empty<VmValue>());
+                context.CheckStepLimit();
                 // MW12b §25.2：main 之后、失败汇总之前派发 undisposed 事件
                 var standaloneDrain = context.CollectAndDispatchUndisposed();
                 return new BilVmResult(context.Stdout, context.Stderr,
@@ -77,6 +84,7 @@ namespace RigiCompiler.Bil
             var main = context.Dispatch.Spawn(entry, Array.Empty<VmValue>(), caller: null);
             context.Dispatch.MainHandle = main.Handle;
             context.Dispatch.RunMainLoop();
+            context.CheckStepLimit();
             // MW12b §25.2（VM 半场）：main/drain 之后、失败汇总之前——逼 GC
             // 收出未 dispose 对象的终结器事件，逐条真构造异常调
             // GlobalExceptionHandler.dispatch；派发失败走未捕获异常归宿。

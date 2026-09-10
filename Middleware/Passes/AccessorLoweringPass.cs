@@ -74,7 +74,8 @@ namespace RigiCompiler.Middleware.Passes
                         AccessorRules.CurrentField(fn.Symbol, fieldSymbol), inst.Target, inst.ExcTarget);
                 }
                 if (TypeLayout.IsLengthField(fieldSymbol)
-                    || TypeLayout.IsStringLengthField(fieldSymbol))
+                    || TypeLayout.IsStringLengthField(fieldSymbol)
+                    || TypeLayout.IsStringCharacterCountField(fieldSymbol))
                 {
                     // 内建 length 通道（Array/Span i32 直读 + String i64
                     // extractvalue）：ext const 无访问器，直通发射层特判

@@ -21,8 +21,24 @@ namespace RigiCompiler
     /// </summary>
     public abstract class ASTVisitor
     {
-        // 深度优先先序遍历整棵 AST（先父后子）
-        public void Visit(ASTNode root) => VisitNode(root, parent: null, via: null);
+        // 深度优先先序遍历整棵 AST（先父后子）。显式栈避免合法但恶意
+        // 深嵌套源码把宿主 CLR 调用栈击穿。
+        public void Visit(ASTNode root)
+        {
+            var stack = new Stack<(ASTNode Node, ASTNode? Parent, string? Via)>();
+            stack.Push((root, null, null));
+            while (stack.Count > 0)
+            {
+                var (node, parent, via) = stack.Pop();
+                OnNode(node, parent, via);
+                var children = new List<(ASTNode Child, string Via)>();
+                foreach (var child in EnumerateChildren(node)) children.Add(child);
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    stack.Push((children[i].Child, node, children[i].Via));
+                }
+            }
+        }
 
         // 遍历骨架（virtual：实现方可整体重载遍历逻辑）。
         // 默认：深度优先先序——先 OnNode，再递归 EnumerateChildren 枚举出的子节点。

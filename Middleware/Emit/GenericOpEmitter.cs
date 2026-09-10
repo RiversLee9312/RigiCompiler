@@ -101,7 +101,8 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 builder.PositionAtEnd(anyMiss);
             }
-            EmitOperatorMiss(session, builder, leftTid, operatorName, inst.ExcTarget);
+            EmitOperatorMiss(session, builder, leftTid, leftPayload, operatorName,
+                inst.ExcTarget);
             builder.PositionAtEnd(done);
         }
 
@@ -297,7 +298,8 @@ namespace RigiCompiler.Middleware.Emit
                 EmitUnaryCandidateArm(session, builder, slots, inst, candidate,
                     operandFat, operandTid, operandPayload, done);
             }
-            EmitOperatorMiss(session, builder, operandTid, operatorName, inst.ExcTarget);
+            EmitOperatorMiss(session, builder, operandTid, operandPayload, operatorName,
+                inst.ExcTarget);
             builder.PositionAtEnd(done);
         }
 
@@ -737,11 +739,25 @@ namespace RigiCompiler.Middleware.Emit
         // 类型显示名，VM VmException「没有用户 operator …」的对应面；
         // EmitThrowNewException 终结当前块并沿异常边传播）
         private static void EmitOperatorMiss(ModuleBuilder.Session session,
-            LLVMBuilderRef builder, LLVMValueRef leftTid, string operatorName,
+            LLVMBuilderRef builder, LLVMValueRef leftTid, LLVMValueRef leftPayload,
+            string operatorName,
             MirBlock? excTarget)
         {
             _ = operatorName;
-            var sheet = IntToPtrSheet(builder, leftTid);
+            // null 胖值的 typeid 为 0，不能直接当 TypeSheet* 解引用。
+            // 统一经 rigi_typeof 取实际 sheet，并把 NULL 映射到 .null sheet。
+            var (typeOf, typeOfType) = CallEmitter.DeclareHelperFace(session,
+                RuntimeFaces.TypeOf, PointerType(),
+                new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 });
+            var sheet = builder.BuildCall2(typeOfType, typeOf,
+                new[] { leftTid, leftPayload },
+                "gop.miss.sheet");
+            var nullSheet = LLVMValueRef.CreateConstBitCast(
+                session.TypeSheetFor(TypeLayout.NullSheetCanonical), PointerType());
+            sheet = builder.BuildSelect(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, sheet,
+                    LLVMValueRef.CreateConstNull(PointerType()), "gop.miss.null"),
+                nullSheet, sheet, "gop.miss.actual");
             var displayName = ExceptionEmitter.LoadTypeDisplayNameFromSheet(session, builder,
                 sheet);
             ExceptionEmitter.EmitThrowNewException(session, builder,

@@ -368,7 +368,7 @@ namespace RigiCompiler.Middleware.Emit
             var largeArgs = PrefixOut(block, packed);
             builder.BuildCall2(StructThunkType(session, packed.Length), thunkPtr, largeArgs, "");
             // MW9b-G：thunk 内部 miss 经 pending 接力
-            ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
+            EmitPendingCheckWithFree(session, builder, inst.ExcTarget, block);
             var payload = builder.BuildPtrToInt(block, LLVMTypeRef.Int64, "dynnew.tag1.pl");
             builder.BuildStore(
                 BoxEmitter.PackFat(session, builder, sheet, BoxEmitter.TagHeapValue, payload,
@@ -377,6 +377,39 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildBr(join);
 
             builder.PositionAtEnd(join);
+        }
+
+        private static void EmitPendingCheckWithFree(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, MirBlock? excTarget, LLVMValueRef block)
+        {
+            var (pendingFn, pendingType) = CallEmitter.DeclareHelperFace(session,
+                RuntimeFaces.ExcPending, PointerType(), System.Array.Empty<LLVMTypeRef>());
+            var pending = builder.BuildCall2(pendingType, pendingFn,
+                System.Array.Empty<LLVMValueRef>(), "dynnew.pending");
+            var fail = session.CurrentFunction.AppendBasicBlock("dynnew.free");
+            var cont = session.CurrentFunction.AppendBasicBlock("dynnew.clean");
+            builder.BuildCondBr(
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, pending,
+                    LLVMValueRef.CreateConstNull(PointerType()), "dynnew.has.pending"),
+                fail, cont);
+            builder.PositionAtEnd(fail);
+            var (freeFn, freeType) = CallEmitter.DeclareHelperFace(session,
+                "rigi_track_free", LLVMTypeRef.Void, new[] { PointerType() });
+            builder.BuildCall2(freeType, freeFn, new[] { block }, "");
+            if (excTarget != null)
+            {
+                var blocks = session.CurrentBlocks
+                    ?? throw new CompilerInternalException("动态构造异常边缺少块映射");
+                builder.BuildBr(blocks[excTarget.Id]);
+            }
+            else
+            {
+                var (haltFn, haltType) = CallEmitter.DeclareVoidFace(session,
+                    RuntimeFaces.ExcHalt);
+                builder.BuildCall2(haltType, haltFn, System.Array.Empty<LLVMValueRef>(), "");
+                builder.BuildUnreachable();
+            }
+            builder.PositionAtEnd(cont);
         }
 
         private static LLVMValueRef[] PrefixOut(LLVMValueRef slot, LLVMValueRef[] packed)

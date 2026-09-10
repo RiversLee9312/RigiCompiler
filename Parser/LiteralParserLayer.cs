@@ -541,6 +541,11 @@ namespace RigiCompiler
             try
             {
                 value = double.Parse(numberPart, CultureInfo.InvariantCulture);
+                if (!double.IsFinite(value)
+                    || (isFloat && !float.IsFinite((float)value)))
+                {
+                    throw new OverflowException("floating-point literal is not finite");
+                }
             }
             catch (Exception ex)
             {

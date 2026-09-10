@@ -62,32 +62,37 @@ namespace RigiCompiler.Middleware.Emit
         internal bool TryGetSynthetic(string name, out (LLVMValueRef Fn, LLVMTypeRef Type) value) =>
             _synthetics.TryGetValue(name, out value);
 
-        // 无运行期 sheet 的形参令牌（.nullable<...> 等）：模块内驻留
-        // canonical 串指针，调用点与分发器对称物化、指针等比较
+        // 无运行期 sheet 的形参令牌（.nullable<...> 等）：模块内驻留的
+        // 零元数据伪 sheet。调用点与分发器仅做指针等比较；若它意外流入
+        // 通用泛型数组 ABI，typeSize=16 仍是安全胖槽，不能把字符串字节
+        // 误当 RigiTypeSheet 解引用。
         internal LLVMValueRef InternCanonicalToken(string canonical)
         {
             if (_tokens.TryGetValue(canonical, out var existing))
             {
                 return existing;
             }
-            var bytes = System.Text.Encoding.UTF8.GetBytes(canonical);
-            var elems = new LLVMValueRef[bytes.Length + 1];
-            for (var i = 0; i < bytes.Length; i++)
-            {
-                elems[i] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, bytes[i], false);
-            }
-            elems[bytes.Length] = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false);
-            var arrType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)elems.Length);
-            var global = Module.AddGlobal(arrType,
+            var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            var nullPointer = LLVMValueRef.CreateConstPointerNull(pointer);
+            var i32 = LLVMTypeRef.Int32;
+            var sheetType = TypeSheetEmitter.SheetStructType(Context);
+            var fields = new LLVMValueRef[TypeSheetAbi.SheetFieldCount];
+            fields[TypeSheetAbi.FieldTypeInfoId] = nullPointer;
+            fields[TypeSheetAbi.FieldBaseTypeId] = nullPointer;
+            fields[TypeSheetAbi.FieldTypeSize] = LLVMValueRef.CreateConstInt(i32, 16, false);
+            fields[TypeSheetAbi.FieldTypeFlags] = LLVMValueRef.CreateConstInt(i32, 0, false);
+            fields[TypeSheetAbi.FieldVTableSize] = LLVMValueRef.CreateConstInt(i32, 0, false);
+            fields[TypeSheetAbi.FieldVTable] = nullPointer;
+            fields[TypeSheetAbi.FieldIMapSize] = LLVMValueRef.CreateConstInt(i32, 0, false);
+            fields[TypeSheetAbi.FieldIMap] = nullPointer;
+            fields[TypeSheetAbi.FieldRefMapSize] = LLVMValueRef.CreateConstInt(i32, 0, false);
+            fields[TypeSheetAbi.FieldRefMap] = nullPointer;
+            var global = Module.AddGlobal(sheetType,
                 GenericAbi.EscapeGlobalName("mw.init.token.", canonical));
             global.Linkage = LLVMLinkage.LLVMInternalLinkage;
             global.IsGlobalConstant = true;
-            global.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8, elems);
-            var ptr = LLVMValueRef.CreateConstInBoundsGEP2(arrType, global, new[]
-            {
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
-                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
-            });
+            global.Initializer = Context.GetConstStruct(fields, false);
+            var ptr = LLVMValueRef.CreateConstBitCast(global, pointer);
             _tokens.Add(canonical, ptr);
             return ptr;
         }
@@ -112,7 +117,11 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return global;
             }
-            // 构造 Array/Span/Nullable\<占位\> 无独立 sheet，回退定义级 builtin
+            // 闭合构造必须有独立身份。模板只服务成员布局，不能作为
+            // 缺失具化的替代品参与类型判断或分配。
+            if (GenericAbi.IsClosedConstructed(normalized))
+                throw new CompilerInternalException($"闭合 TypeSheet 缺失: {canonical}");
+            // 开放构造的定义 sheet 仅供布局查询；实际身份由调用点具化。
             if (TypeLayout.IsArray(mirType)
                 && _typeSheets.TryGetValue(TypeLayout.ArrayTypeCanonical, out global))
             {
@@ -191,6 +200,8 @@ namespace RigiCompiler.Middleware.Emit
             {
                 return global;
             }
+            if (GenericAbi.IsClosedConstructed(normalized))
+                throw new CompilerInternalException($"闭合 TypeInfo 缺失: {canonical}");
             var mirType = MirType.Of(canonical);
             if (TypeLayout.IsNullable(mirType)
                 && _typeInfos.TryGetValue(TypeLayout.NullableTypeCanonical, out global))

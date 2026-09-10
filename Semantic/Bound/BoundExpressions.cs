@@ -276,14 +276,19 @@ namespace RigiCompiler
         public IReadOnlyList<BoundExpression> Arguments { get; }
         // 声明点模板固定实参（init 参数序，洞位置 null 占位；null = 缺失）
         public IReadOnlyList<BoundExpression?>? FixedArguments { get; }
+        // 合成序列化构造已经按 init 参数序组装；仍由 BIL 校验真实 init 签名。
+        public bool ArgumentsAreInitArguments { get; }
 
         public BoundEnumCaseExpression(ASTNode syntax, EnumCaseSymbol caseSymbol,
             IReadOnlyList<BoundExpression> arguments,
-            IReadOnlyList<BoundExpression?>? fixedArguments = null) : base(syntax, caseSymbol.Owner)
+            IReadOnlyList<BoundExpression?>? fixedArguments = null,
+            bool argumentsAreInitArguments = false, TypeSymbol? constructedType = null)
+            : base(syntax, constructedType ?? caseSymbol.Owner)
         {
             Case = caseSymbol;
             Arguments = arguments;
             FixedArguments = fixedArguments;
+            ArgumentsAreInitArguments = argumentsAreInitArguments;
         }
     }
 

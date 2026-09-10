@@ -106,6 +106,10 @@ namespace RigiCompiler.Middleware.Emit
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
         {
             var (slot, local) = slots[name];
+            // 产出指令可在释放旧值之后抛异常；必须同步撤销槽位所有权，
+            // 否则传播垫会再次释放旧值。清空与释放同处一个 region，
+            // 防止 macroGC 观察到已经释放但仍挂在槽内的引用。
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             switch (TypeLayout.ClassifySlot(session.Layout, local.Type))
             {
                 case ManagedSlotKind.FatReference:
@@ -114,19 +118,28 @@ namespace RigiCompiler.Middleware.Emit
                     var typeId = builder.BuildExtractValue(fat, 0, name + ".rel.tid");
                     var payload = builder.BuildExtractValue(fat, 1, name + ".rel.pl");
                     CallRefRelease(session, builder, typeId, payload);
+                    builder.BuildStore(LLVMValueRef.CreateConstNull(
+                        TypeLayout.FatReferenceType(session.Context)), slot);
                     break;
                 }
                 case ManagedSlotKind.String:
                 {
                     var data = LoadStringData(session, builder, slot, name + ".rel");
                     CallStringFace(session, builder, RuntimeFaces.StringRelease, data);
+                    builder.BuildStore(LLVMValueRef.CreateConstNull(
+                        StringAbi.ValueType(session.Context)), slot);
                     break;
                 }
                 case ManagedSlotKind.RichValue:
                     CallValueFace(session, builder, RuntimeFaces.ValueRelease, slot,
                         SheetOf(session, local.Type));
+                    if (session.IsInlineValueType(local.Type, out var plan))
+                    {
+                        session.EmitMemSetZero(builder, slot, plan.Size);
+                    }
                     break;
             }
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         // 先 acquire 新值再 release 旧值（自赋值安全），写回 {typeid, newPayload}。
@@ -273,12 +286,11 @@ namespace RigiCompiler.Middleware.Emit
         internal static void EmitValueAcquire(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef addr, MirType type)
         {
-            var key = TypeLayout.BuiltinSheetCanonical(type);
-            if (session.TryGetTypeSheet(key, out var sheet)
-                || session.TryGetTypeSheet(type.Canonical, out sheet))
-            {
-                CallValueFace(session, builder, RuntimeFaces.ValueAcquire, addr, sheet);
-            }
+            // 开放泛型没有独立的静态 sheet，必须用运行期实参具化。
+            // 找不到静态缓存不能跳过获取：副本中的嵌套引用仍需要独立所有权。
+            var sheet = NewEmitter.MaterializeClassSheet(session, builder, session.Slots,
+                type.Canonical);
+            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, addr, sheet);
         }
 
         internal static void DestroyRichTemps(ModuleBuilder.Session session,

@@ -742,7 +742,7 @@ namespace RigiCompiler
             if (receiver == null) return null;
             if (!isWrapperPlace)
             {
-                receiver = LoweringFacility.EnsureDeclaredType(instanceCall, receiver,
+                receiver = LoweringFacility.EnsureReceiverType(instanceCall, receiver,
                     instanceCall.Method.Owner);
             }
             guard.Track(instanceCall.Receiver, receiver);
@@ -757,16 +757,6 @@ namespace RigiCompiler
             var sealedSlots = guard.Seal();
             var sealedArguments = new List<LoweredExpression>(instanceCall.Arguments.Count);
             for (var i = 1; i < sealedSlots.Count; i++) sealedArguments.Add(sealedSlots[i]);
-            if (HandleCallLowering.IsHandle(instanceCall.Method))
-            {
-                var helper = HandleCallLowering.Helper(instanceCall.Method, env);
-                var typeArguments = HandleCallLowering.TypeArguments(instanceCall.Receiver);
-                var origin = new BoundCallExpression(instanceCall.Syntax, helper,
-                    Array.Empty<BoundExpression>(), instanceCall.Type, typeArguments);
-                return new LoweredCallExpression(origin, helper,
-                    HandleCallLowering.Arguments(instanceCall, sealedSlots[0], sealedArguments, env),
-                    typeArguments);
-            }
             return new LoweredInstanceCallExpression(instanceCall, sealedSlots[0],
                 instanceCall.Method, sealedArguments, instanceCall.Type, instanceCall.TypeArguments,
                 genericPack);
@@ -876,7 +866,7 @@ namespace RigiCompiler
             // 写形态（place，Operator = setAtIndex）：Type = ABI 元素类型
             //（set.array 元素对齐，装箱 cast 目标）；读形态（Q6）：Type =
             // .nullable<ABI 元素>（get.array 内建形态结果恒为可空），外包
-            // 拆箱 cast 回 P3 静态类型 Nullable\<元素\>
+            // 位置包拆箱回 P3 静态类型；具名包逐元素转换并重建 Pair。
             var abiElementType = LoweringFacility.VariadicIndexElementType(result, env);
             if (indexAccess.Operator.Name == "setAtIndex")
             {
@@ -885,6 +875,8 @@ namespace RigiCompiler
             }
             var abiReadType = env.Unit.Symbols.GetNullable(abiElementType);
             result = new LoweredIndexExpression(indexAccess, receiver, index, abiReadType);
+            if (receiver is LoweredValueReferenceExpression { Symbol: ParameterSymbol { IsNamedVariadic: true } })
+                return LoweringFacility.AdaptNamedArgumentPair(indexAccess, result, indexAccess.Type, env);
             return new LoweredCastExpression(indexAccess, result,
                 indexAccess.Type, isSafe: false, indexAccess.Type);
         }
@@ -981,6 +973,8 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var enumCase = (BoundEnumCaseExpression)node;
+            if (enumCase.ArgumentsAreInitArguments)
+                return LowerHoleArgumentsOnly(enumCase, null, ctx, env);
             var holes = enumCase.Case.HoleParameters;
             var fixedArgs = enumCase.FixedArguments;
             var init = enumCase.Case.ResolvedInit;

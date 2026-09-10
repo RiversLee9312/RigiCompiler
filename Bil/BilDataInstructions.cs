@@ -800,10 +800,19 @@ namespace RigiCompiler.Bil
             }
             // String.length（.bootstrap.rg 的 pub ext const 声明，无 backing
             // 存储）：与 Array.length 同一 VM 直读通道——按宿主字符串实际
-            // 长度求值（裁定 i64）
+            // UTF-8 字节长度求值（裁定 i64），不得使用宿主 UTF-16 码元数。
             if (instance is VmString text && fieldSymbol == VmString.LengthFieldSymbol)
             {
-                coroutine.WriteVar(target.Name, new VmI64(text.Value.Length));
+                coroutine.WriteVar(target.Name,
+                    new VmI64(System.Text.Encoding.UTF8.GetByteCount(text.Value)));
+                return;
+            }
+            if (instance is VmString characterText
+                && fieldSymbol == VmString.CharacterCountFieldSymbol)
+            {
+                long count = 0;
+                foreach (var _ in characterText.Value.EnumerateRunes()) count++;
+                coroutine.WriteVar(target.Name, new VmI64(count));
                 return;
             }
             var raw = ReadInstanceField(instance, fieldSymbol).Copy();
@@ -1057,6 +1066,10 @@ namespace RigiCompiler.Bil
             //（VmTypeOps.ResolveTypeRef，cast/is 同一通道），init 匹配与实例
             // TypeRef 一律以具体形态落地
             typeRef = VmTypeOps.ResolveTypeRef(context, coroutine, typeRef);
+            // 泛型/typeid 擦去静态界也不能普通构造 wrapper；安装仍专走
+            // new.wrapper.*，此处不给脱离宿主的 wrapper 分配对象。
+            if (context.FindType(typeRef)?.Kind == BilTypeKind.Wrapper)
+                throw context.NoSuchMethodForType(coroutine, typeRef);
             // 具化构造 T() / new.indirect：内建标量与 String 无用户 init，
             // 产出该类型零值（SYNTAX §3.6/§3.7，i32 → 0）。不得 AllocateObject
             // 出 VmObject（打印成 ".i32" 且没有 plus）。
@@ -1180,8 +1193,8 @@ namespace RigiCompiler.Bil
                 throw new VmException("new.wrapper.* 要求 .this 为对象实例");
             }
             var wrapper = context.AllocateObject(wrapperType);
-            wrapper.Host = hostValue;
             host.WriteHidden(hiddenKey, wrapper);
+            var receiver = new VmWrapperReceiver(wrapper, hostValue);
             var initArgs = ReadArgs(coroutine, arguments);
             var wrapperInitStaticTypes = VmContext.ArgumentStaticTypes(
                 coroutine.CurrentFrame.Function, arguments, initArgs);
@@ -1196,7 +1209,7 @@ namespace RigiCompiler.Bil
             }
             if (hasInit)
             {
-                var values = new List<VmValue> { wrapper };
+                var values = new List<VmValue> { receiver };
                 values.AddRange(initArgs);
                 BilInvokeExecution.InvokeValues(context, coroutine, initSymbol, values,
                     resultSlot: null);
@@ -1209,7 +1222,7 @@ namespace RigiCompiler.Bil
                     out var wrapperInitArity) && wrapperInitArity == 0)
             {
                 BilInvokeExecution.InvokeValues(context, coroutine, wrapperInitSymbol,
-                    new List<VmValue> { wrapper }, resultSlot: null);
+                    new List<VmValue> { receiver }, resultSlot: null);
             }
         }
 

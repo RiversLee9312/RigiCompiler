@@ -8,7 +8,7 @@ namespace RigiCompiler.Middleware.Emit
 {
     /// <summary>
     /// TypeInfo 物化：每 TypeSheet 一份全局
-    /// {name, sheet, wrappers, wrapperCount, ifaceClosure, ifaceClosureCount, nullableElement, destroyNative}。
+    /// {name, sheet, wrappers, wrapperCount, ifaceClosure, ifaceClosureCount, nullableElement, typeIdBound, destroyNative}。
     /// canonical 转义同 sheet；wrappers 来自声明 BilWrappedModifier；
     /// ifaceClosure 来自布局计划的传递 implements 闭包。
     /// </summary>
@@ -16,7 +16,7 @@ namespace RigiCompiler.Middleware.Emit
     {
         // TypeInfo 结构类型（EmitOne 物化与 ExceptionEmitter 运行期读
         // name 槽互指）：{name, sheet, wrappers, wrapperCount, ifaceClosure,
-        // ifaceClosureCount, nullableElement, destroyNative}
+        // ifaceClosureCount, nullableElement, typeIdBound, destroyNative}
         internal static LLVMTypeRef InfoStructType(LLVMContextRef context)
         {
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
@@ -28,6 +28,7 @@ namespace RigiCompiler.Middleware.Emit
             fields[TypeSheetAbi.InfoFieldIfaceClosure] = pointer;
             fields[TypeSheetAbi.InfoFieldIfaceClosureCount] = LLVMTypeRef.Int32;
             fields[TypeSheetAbi.InfoFieldNullableElement] = pointer;
+            fields[TypeSheetAbi.InfoFieldTypeIdBound] = pointer;
             fields[TypeSheetAbi.InfoFieldNativeDestructor] = pointer;
             return context.GetStructType(fields, false);
         }
@@ -45,8 +46,10 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     continue;
                 }
-                EmitOne(session, canonical, canonical, type: null,
-                    System.Array.Empty<string>());
+                var description = session.Symbols.FindTypeByRef(canonical);
+                EmitOne(session, canonical, canonical, description,
+                    description == null ? System.Array.Empty<string>()
+                        : VTablePlanner.CollectIfaceClosure(canonical, description, session.Symbols));
             }
         }
 
@@ -96,6 +99,10 @@ namespace RigiCompiler.Middleware.Emit
                 TypeLayout.TryGetNullableInner(Mir.MirType.Of(key), out var nullableInner)
                     && GenericAbi.IsClosedConstructed(key)
                     ? session.TypeSheetFor(nullableInner.Canonical)
+                    : LLVMValueRef.CreateConstPointerNull(pointer),
+                TypeLayout.IsTypeId(Mir.MirType.Of(key))
+                    ? session.TypeSheetFor(ConstructedTypeCollector.TypeArgumentsOf(key)
+                        .FirstOrDefault() ?? "core::Any")
                     : LLVMValueRef.CreateConstPointerNull(pointer),
                 EmitNativeDestructor(session, key, type),
             }, false);

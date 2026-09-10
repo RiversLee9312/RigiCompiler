@@ -578,8 +578,8 @@ namespace RigiCompiler.Tests
             var (u2, _) = ResolveUnit("rich interface I { }\n");
             TestHarness.CheckSemanticError("rich interface", u2.Diagnostics, "'rich' cannot be applied to interface");
             var (u3, _) = ResolveUnit("@WrapperTarget(.Entity)\nrich wrapper W { }\n");
-            TestHarness.CheckSemanticError("wrapper 显式 rich", u3.Diagnostics,
-                "'rich' is implied by the wrapper declaration and must not be written");
+            CheckNoErrors("wrapper 可以显式 rich", u3);
+            TestHarness.CheckTrue("wrapper rich 标记按源码读取", GlobalType(u3, "W").IsRich);
             var (u4, _) = ResolveUnit("shared interface I { }\n");
             CheckNoErrors("shared interface 合法（A2）", u4);
             var (u5, _) = ResolveUnit("shared struct S { }\n");
@@ -731,8 +731,8 @@ namespace RigiCompiler.Tests
                 "rich struct OkRich { var u: LocalUser\nvar e: SharedEntry }\n" +      // rich struct ← local object / 所有 VT
                 "shared rich struct OkSharedRich {\n" +
                 "    var u: SharedUser\nvar p: Point\nvar e: SharedEntry }\n" +        // shared rich struct 允许列
-                "@WrapperTarget(.Entity)\nwrapper OkWrapper { var u: LocalUser\nvar p: Point }\n" +
-                "@WrapperTarget(.Entity)\nshared wrapper OkSharedWrapper { var u: SharedUser\nvar p: Point }\n" +
+                "@WrapperTarget(.Entity)\nrich wrapper OkWrapper { var u: LocalUser\nvar p: Point }\n" +
+                "@WrapperTarget(.Entity)\nshared rich wrapper OkSharedWrapper { var u: SharedUser\nvar p: Point }\n" +
                 "class OkLocalClass { var u: LocalUser\nvar e: RichEntry }\n" +        // local class 允许列
                 "shared class OkSharedClass {\n" +
                 "    var u: SharedUser\nvar p: Point\nvar e: SharedEntry\nvar n: SharedUser? }\n");
@@ -759,7 +759,7 @@ namespace RigiCompiler.Tests
 
             // shared wrapper 行
             var (u6, _) = ResolveUnit(ClosurePrelude +
-                "@WrapperTarget(.Entity)\nshared wrapper Bad { var u: LocalUser }\n");
+                "@WrapperTarget(.Entity)\nshared rich wrapper Bad { var u: LocalUser }\n");
             TestHarness.CheckSemanticError("shared wrapper 持 local object", u6.Diagnostics,
                 "is shared and cannot hold local object field 'u'");
 
@@ -1144,8 +1144,20 @@ namespace RigiCompiler.Tests
 
             // 宿主可内嵌性 + 矩阵 D（类型目标）
             var (u7, _) = ResolveUnit(WrapperPrelude + "@EntityW\nstruct S { }\n");
-            TestHarness.CheckSemanticError("非 rich struct 不能被修饰", u7.Diagnostics,
+            CheckNoErrors("非 rich struct 可以内嵌非 rich wrapper", u7);
+            TestHarness.CheckTrue("wrapper 默认非 rich", !GlobalType(u7, "EntityW").IsRich);
+            var (richRejected, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nrich wrapper W { }\n@W\nstruct S { }\n");
+            TestHarness.CheckSemanticError("非 rich struct 不得内嵌 rich wrapper", richRejected.Diagnostics,
                 "Non-rich struct 'S' cannot be wrapped");
+            var (fieldRejected, _) = ResolveUnit(
+                "class Ref { }\n@WrapperTarget(.Entity)\nwrapper W { var item: Ref }\n");
+            TestHarness.CheckSemanticError("非 rich wrapper 普通引用字段不豁免", fieldRejected.Diagnostics,
+                "cannot hold object field 'item'");
+            var (nestedRejected, _) = ResolveUnit(
+                "@WrapperTarget(.Entity)\nrich wrapper R { }\n@R\n@WrapperTarget(.Entity)\nwrapper W { }\n");
+            TestHarness.CheckSemanticError("非 rich wrapper 不能嵌套 rich wrapper", nestedRejected.Diagnostics,
+                "cannot be wrapped");
             var (u8, _) = ResolveUnit(WrapperPrelude + "@EntityW\nshared class C { }\n");
             TestHarness.CheckSemanticError("矩阵 D：非 shared wrapper 挂 shared 类型", u8.Diagnostics,
                 "Non-shared wrapper 'EntityW' cannot wrap shared type 'C'");
@@ -1176,8 +1188,7 @@ namespace RigiCompiler.Tests
                 "cannot wrap global or static method 'm'");
             var (u12, _) = ResolveUnit(WrapperPrelude +
                 "struct S { @MethodW\nfunc m() { } }\n");
-            TestHarness.CheckSemanticError("非 rich struct 实例方法不能挂 Method wrapper", u12.Diagnostics,
-                "Instance method 'm' of non-rich struct 'S' cannot be wrapped");
+            CheckNoErrors("非 rich struct 实例方法可以挂非 rich Method wrapper", u12);
             var (ok2, _) = ResolveUnit(WrapperPrelude +
                 "@SharedMethodW\nfunc g() { }\n" +
                 "class C { @MethodW\nfunc m() { } }\n");
@@ -1194,8 +1205,7 @@ namespace RigiCompiler.Tests
                 "cannot wrap field 'f' of shared type 'C'");
             var (u15, _) = ResolveUnit(WrapperPrelude +
                 "struct S { @ValueW\nvar f: i32 }\n");
-            TestHarness.CheckSemanticError("非 rich struct 字段不能挂 Value wrapper", u15.Diagnostics,
-                "Instance field 'f' of non-rich struct 'S' cannot be wrapped");
+            CheckNoErrors("非 rich struct 字段可以挂非 rich Value wrapper", u15);
             var (ok3, _) = ResolveUnit(WrapperPrelude +
                 "class C { @ValueW\nvar f: i32 }\n" +
                 "shared class C2 { @ValueW\nvar f: i32 }\n");
@@ -1604,14 +1614,14 @@ namespace RigiCompiler.Tests
 
             // 正例：stdlib 形态（§4.6 示例，命名空间 + 类成员 + 双注解）
             var (ok1, _) = ResolveUnit(
-                "namespace core.io\n" +
+                "namespace sample.io\n" +
                 "pub class Console {\n" +
                 "@NativeLibrary(\"rigi_rt\")\n" +
                 "@NativeSymbol(\"print\")\n" +
                 "priv static native func print(text: String)\n" +
                 "}\n");
             CheckNoErrors("stdlib 形态无诊断", ok1);
-            var print = NsOf(ok1, "core", "io").Types.Single(t => t.Name == "Console")
+            var print = NsOf(ok1, "sample", "io").Types.Single(t => t.Name == "Console")
                 .Methods.Single(m => m.Name == "print");
             TestHarness.CheckTrue("IsNative/IsStatic 标记位", print.IsNative && print.IsStatic);
             TestHarness.Check("NativeSymbol 取注解实参", print.NativeSymbol ?? "", "print");
@@ -1789,6 +1799,22 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Hidden.IsInternal 标志位",
                 NsOf(okSame, "lib").Types.Single(t => t.Name == "Hidden").IsInternal);
 
+            foreach (var site in new[] { "lib", "lib.child", "lib.child.deep", "libx", "", "other.branch" })
+            {
+                var (tree, _) = ResolveUnit(
+                    "namespace lib\n@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { pub init() }\n",
+                    (site.Length == 0 ? "" : "namespace " + site + "\n")
+                    + "import lib.Hidden\n@Hidden\nclass Applied {}\n");
+                if (site == "lib" || site.StartsWith("lib."))
+                    CheckNoErrors("Internal 子树允许 " + site, tree);
+                else
+                    CheckP2Error("Internal 子树外拒绝 " + site, tree, "is internal and cannot be applied");
+            }
+            var (parent, _) = ResolveUnit(
+                "namespace lib.child\n@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { pub init() }\n",
+                "namespace lib\nimport lib.child.Hidden\n@Hidden\nclass Applied {}\n");
+            CheckP2Error("Internal 不向父命名空间授权", parent, "is internal and cannot be applied");
+
             // @Internal 类型出现在 API 签名不报错
             var (okSig, _) = ResolveUnit(
                 "namespace lib\n" +
@@ -1861,41 +1887,42 @@ namespace RigiCompiler.Tests
                 "class Outer { pub var nested: Inner }\n");
             CheckNoErrors("嵌套 @Serializable 类型字段合法", okNested);
 
-            var (okInternalCore, _) = ResolveUnitWithStdlib(
+            var (okInternalCore, _) = ResolveUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
                 "@SerializationBase\n" +
                 "class LocalMark { }\n");
             CheckNoErrors("core.serialization 内部应用 SerializationBase 合法", okInternalCore);
 
-            // @SerializationBase 隐含 @Serializable：base-only 宿主走同一字段闸门
-            var (okBaseOnly, _) = ResolveUnitWithStdlib(
+            // @SerializationBase 仍执行序列化字段闸门，但不得向宿主合成
+            // Serializable wrapper/代理方法。
+            var (okBaseOnly, _) = ResolveUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
                 "@SerializationBase\n" +
                 "class BaseOk { pub var n: i32\n    pub var s: String }\n");
-            CheckNoErrors("@SerializationBase 标量字段合法（隐含 Serializable）", okBaseOnly);
-            TestHarness.CheckTrue("base-only 宿主已隐含 Serializable",
-                okBaseOnly.Symbols.GlobalNamespace.ChildNamespaces
+            CheckNoErrors("@SerializationBase 标量字段合法", okBaseOnly);
+            TestHarness.CheckTrue("base-only 宿主未合成 Serializable",
+                !okBaseOnly.Symbols.GlobalNamespace.ChildNamespaces
                     .First(n => n.Name == "core").ChildNamespaces
                     .First(n => n.Name == "serialization").Types
                     .First(t => t.Name == "BaseOk").AppliedWrappers
                     .Any(w => w.WrapperDefinition.Name == "Serializable"));
-            TestHarness.CheckTrue("i32 未隐含 Serializable（§20.2.3 防线）",
-                !okBaseOnly.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
-                    w.WrapperDefinition.Name == "Serializable"));
-            TestHarness.CheckTrue("Parcel 豁免未隐含 Serializable",
-                !SerializationFacts.FindParcel(okBaseOnly.Symbols)!.AppliedWrappers.Any(w =>
-                    w.WrapperDefinition.Name == "Serializable"));
+            TestHarness.CheckTrue("i32 的 Serializable 来自真实源码应用",
+                okBaseOnly.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "Serializable" && w.Syntax != null));
+            TestHarness.CheckTrue("Parcel 的 Serializable 来自真实源码应用",
+                SerializationFacts.FindParcel(okBaseOnly.Symbols)!.AppliedWrappers.Any(w =>
+                    w.WrapperDefinition.Name == "Serializable" && w.Syntax != null));
 
-            var (badBaseField, _) = ResolveUnitWithStdlib(
+            var (baseFieldIndependent, _) = ResolveUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
                 "class Plain { pub init() }\n" +
                 "@SerializationBase\n" +
                 "class BaseBox { pub var x: Plain }\n");
-            CheckP2Error("@SerializationBase 隐含字段检查", badBaseField,
-                "可序列化类型 'BaseBox' 的字段 'x' 不可序列化");
+            CheckNoErrors("@SerializationBase 不继承 Serializable 字段闸门",
+                baseFieldIndependent);
 
             var (badInternalExt, _) = ResolveUnitWithStdlib(
-                "import core.serialization.SerializationBase\n" +
+                "import core.SerializationBase\n" +
                 "@SerializationBase\n" +
                 "class C { }\n");
             CheckP2Error("外部命名空间应用 @SerializationBase", badInternalExt,
@@ -3553,10 +3580,19 @@ namespace RigiCompiler.Tests
 
         private static (CompilationUnit Unit, DeclarationCollection Decls)
             ResolveUnitWithStdlib(params string[] sources)
+            => ResolveUnitWithStdlibSources(false, sources);
+
+        // 仅隔离测试标准库内部声明；普通测试源永远不按命名空间自动授信。
+        private static (CompilationUnit Unit, DeclarationCollection Decls)
+            ResolveUnitWithStdlibSources(bool compilerLibraryFixture, params string[] sources)
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            roots.AddRange(sources.Select(source => {
+                var root = TestHarness.ParseRoot(source);
+                root.IsCompilerLibrary = compilerLibraryFixture;
+                return root;
+            }));
             var unit = new CompilationUnit(roots.ToArray());
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);

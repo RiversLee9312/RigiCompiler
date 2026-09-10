@@ -106,7 +106,7 @@ namespace RigiCompiler
             if (method.Owner != null && !method.IsStatic)
             {
                 function.Args.Add(new BilArgDeclaration(".this",
-                    CanonicalSymbolPrinter.PrintType(method.Owner)));
+                    CanonicalSymbolPrinter.PrintInstanceSelfType(method.Owner)));
             }
             // 泛型隐藏参数（S9e/S9d-2，§7.1/§7.2 序：固定泛型 → 泛型可变包）：
             // 固定 .generic.T = .typeid；位置包 .generic.TArgs = .array<.typeid>

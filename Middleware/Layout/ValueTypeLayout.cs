@@ -55,7 +55,8 @@ namespace RigiCompiler.Middleware.Layout
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
                     info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
                 RefMapBuilder.CollectRefSite(refEntries, info, offset);
-                offset += info.Size;
+                offset = LayoutEngine.CheckedAdd(offset, info.Size,
+                    $"类型 {type.Canonical} 的字段 {member.Canonical}");
                 if (info.Alignment > alignment)
                 {
                     alignment = info.Alignment;
@@ -98,12 +99,7 @@ namespace RigiCompiler.Middleware.Layout
             var offset = 0;
             var alignment = LayoutEngine.ReferenceSlotSize;
             var refEntries = new List<RefMapBuilder.RefSite>();
-            // 偏移 0：宿主回指（16B 胖值位，不进 refMap——安装时原样
-            // 写入、get.self 再 ProduceFatValue；避免宿主↔隐藏槽循环 RC）
-            fields.Add(new FieldPlan(WrapperAbi.HostFieldSymbol(GenericAbi.PlanKey(type)),
-                0, LayoutEngine.ReferenceSlotSize, LayoutEngine.ReferenceSlotSize,
-                isReferenceSlot: false, embeddedPlan: null));
-            offset = LayoutEngine.ReferenceSlotSize;
+            // self 是调用参数；实例仅含实际状态，空 wrapper 的布局大小为零。
             foreach (var member in LayoutEngine.InstanceFields(type))
             {
                 var info = LayoutEngine.ClassifyFieldType(LayoutEngine.FieldTypeOf(member),
@@ -112,12 +108,15 @@ namespace RigiCompiler.Middleware.Layout
                 fields.Add(new FieldPlan(member.Canonical, offset, info.Size, info.Alignment,
                     info.IsReferenceSlot, info.EmbeddedPlan, isStringSlot: info.IsStringSlot));
                 RefMapBuilder.CollectRefSite(refEntries, info, offset);
-                offset += info.Size;
+                offset = LayoutEngine.CheckedAdd(offset, info.Size,
+                    $"wrapper {type.Canonical} 的字段 {member.Canonical}");
                 if (info.Alignment > alignment)
                 {
                     alignment = info.Alignment;
                 }
             }
+            HiddenStoragePlanner.AppendHostSlots(type, symbols, table, visiting, fields,
+                refEntries, ref offset);
             var size = LayoutEngine.AlignUp(offset, alignment);
             return new TypeLayoutPlan(type, TypeLayoutKind.Wrapper, size, alignment,
                 LayoutEngine.TypeFlagsOf(type), fields,

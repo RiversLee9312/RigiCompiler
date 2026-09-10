@@ -21,7 +21,7 @@ namespace RigiCompiler
                     // 连续的 *：前一个 * 确定属于内容
                     if (asteriskAppeared)
                     {
-                        currentToken.Content += Notations.ASTERISK;
+                        currentToken.Append(Notations.ASTERISK);
                     }
                     asteriskAppeared = true;
                     return LexerLayerResult.Continue.Instance;
@@ -34,14 +34,14 @@ namespace RigiCompiler
                         asteriskAppeared = false;
                         return new LexerLayerResult.PopLayer(shouldKeepChar: false);
                     }
-                    currentToken.Content += currentChar;
+                    currentToken.Append(currentChar);
                     return LexerLayerResult.Continue.Instance;
                 case '\n':
                     // 挂起的 * 归入内容；注释段推送（不含换行）；换行本身以
                     // LineBreakToken 入流；新段继续收注释（层不弹出）
                     if (asteriskAppeared)
                     {
-                        currentToken.Content += Notations.ASTERISK;
+                        currentToken.Append(Notations.ASTERISK);
                         asteriskAppeared = false;
                     }
                     context.PushToken(currentToken, includesCurrentChar: false);
@@ -52,10 +52,10 @@ namespace RigiCompiler
                     // 普通字符：挂起的 * 归入内容（修复：此前孤 * 在此被静默丢弃）
                     if (asteriskAppeared)
                     {
-                        currentToken.Content += Notations.ASTERISK;
+                        currentToken.Append(Notations.ASTERISK);
                         asteriskAppeared = false;
                     }
-                    currentToken.Content += currentChar;
+                    currentToken.Append(currentChar);
                     return LexerLayerResult.Continue.Instance;
             }
         }

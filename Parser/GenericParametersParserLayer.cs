@@ -46,6 +46,7 @@ namespace RigiCompiler
         private GenericVariance pendingVariance = GenericVariance.None;
         private bool pendingVariadic = false;
         private bool pendingNamedVariadic = false;
+        private bool pendingSharedSafe = false;
 
         // TypeRef 路径：子句开头解析出的类型（可能是参数名候选或约束 Target）
         private TypeReferenceASTNode? pendingTarget = null;
@@ -75,9 +76,8 @@ namespace RigiCompiler
                 case State.ClauseStart:
                     return HandleClauseStart(currentToken, context);
                 case State.VarianceNameExpected:
-                    return HandleVarianceNameExpected(currentToken, context);
                 case State.NamedNameExpected:
-                    return HandleNamedNameExpected(currentToken, context);
+                    return HandleParameterPrefix(currentToken, context);
                 case State.PrefixParamSeen:
                     return HandlePrefixParamSeen(currentToken, context);
                 case State.Dots1:
@@ -132,6 +132,12 @@ namespace RigiCompiler
                 // 子句起点：前缀修饰词（out/in/named）或类型首 token，即当前 token（M28）
                 pendingStart = context.GetLocation().Start;
 
+                if (wt.Content == Keywords.SHARED)
+                {
+                    pendingSharedSafe = true;
+                    state = State.VarianceNameExpected;
+                    return ParserLayerResult.Continue.Instance;
+                }
                 // out/in 型变前缀
                 if (wt.Content == Keywords.OUT)
                 {
@@ -171,10 +177,38 @@ namespace RigiCompiler
         // 作为约束 Target（隐含为参数名裸符号）的 span 来源
         private CharRange? pendingNameRange;
 
+        // 前缀组合共用入口；保留首前缀 span，拒绝重复或冲突修饰。
+        private ParserLayerResult HandleParameterPrefix(Token token, ParserLayerContext context)
+        {
+            if (token is WordToken word)
+            {
+                if (word.Content == Keywords.SHARED)
+                {
+                    if (pendingSharedSafe) context.RaiseError("Duplicate 'shared' generic parameter modifier");
+                    pendingSharedSafe = true;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                if (word.Content == Keywords.IN || word.Content == Keywords.OUT)
+                {
+                    if (pendingVariance != GenericVariance.None)
+                        context.RaiseError("Duplicate or conflicting variance modifier");
+                    pendingVariance = word.Content == Keywords.IN ? GenericVariance.In : GenericVariance.Out;
+                    return ParserLayerResult.Continue.Instance;
+                }
+                if (word.Content == Keywords.NAMED)
+                {
+                    if (pendingNamedVariadic) context.RaiseError("Duplicate 'named' generic parameter modifier");
+                    pendingNamedVariadic = true;
+                    return ParserLayerResult.Continue.Instance;
+                }
+            }
+            return HandleVarianceNameExpected(token, context);
+        }
+
         // out/in 已读：等待参数名
         private ParserLayerResult HandleVarianceNameExpected(Token currentToken, ParserLayerContext context)
         {
-            if (currentToken is WordToken wt)
+            if (currentToken is WordToken wt && Keywords.IsIdentifier(wt.Content))
             {
                 pendingName = wt.Content;
                 pendingNameRange = context.GetLocation();
@@ -182,22 +216,7 @@ namespace RigiCompiler
                 return ParserLayerResult.Continue.Instance;
             }
 
-            context.RaiseError($"Expected type parameter name after variance modifier, got: {currentToken}");
-            return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
-        }
-
-        // named 已读：等待参数名
-        private ParserLayerResult HandleNamedNameExpected(Token currentToken, ParserLayerContext context)
-        {
-            if (currentToken is WordToken wt)
-            {
-                pendingName = wt.Content;
-                pendingNameRange = context.GetLocation();
-                state = State.PrefixParamSeen;
-                return ParserLayerResult.Continue.Instance;
-            }
-
-            context.RaiseError($"Expected type parameter name after 'named', got: {currentToken}");
+            context.RaiseError($"Expected type parameter name after generic modifier, got: {currentToken}");
             return new ParserLayerResult.PopLayer(TokenDisposition.Consume);
         }
 
@@ -434,7 +453,8 @@ namespace RigiCompiler
                 Name = pendingName,
                 Variance = pendingVariance,
                 IsVariadic = pendingVariadic,
-                IsNamedVariadic = pendingNamedVariadic
+                IsNamedVariadic = pendingNamedVariadic,
+                RequiresSharedSafe = pendingSharedSafe
             };
             // Start 取子句起点；防御：未记录时退化为以最近消费 token 起点的单点 span
             var prev = context.GetPreviousLocation();
@@ -454,6 +474,7 @@ namespace RigiCompiler
             pendingVariance = GenericVariance.None;
             pendingVariadic = false;
             pendingNamedVariadic = false;
+            pendingSharedSafe = false;
             pendingTarget = null;
         }
 

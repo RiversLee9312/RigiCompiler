@@ -1,0 +1,6 @@
+RigiCompiler
+Copyright 2026 RigiCompiler contributors
+
+This product includes software derived from the Ryu floating-point conversion
+library by Ulf Adams (https://github.com/ulfjack/ryu), licensed under the
+Apache License, Version 2.0.

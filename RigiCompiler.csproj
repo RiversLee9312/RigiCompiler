@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>rigic</AssemblyName>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/RiversLee9312/LatteCompiler</RepositoryUrl>
     <!-- LLVMSharp 的 bitcode 解析/模块合并/新 PM 管线入口只暴露指针签名，
          unsafe 仅限 Middleware/Emit/LlvmBitcode.cs 的编组封装内使用 -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

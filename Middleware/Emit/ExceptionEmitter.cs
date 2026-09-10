@@ -156,14 +156,26 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMValueRef LoadTypeNameFromSheet(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef sheet)
         {
+            // 错误路径本身也必须接受缺失元数据，不能在构造诊断时解引用 null。
+            var result = LlvmEmitEnvironment.BuildEntryAlloca(builder, StringAbi.ValueType(session.Context), "exc.name.result");
+            builder.BuildStore(session.InternStringConstant("<unknown>"), result);
+            var loadSheet = session.CurrentFunction.AppendBasicBlock("exc.name.sheet");
+            var loadName = session.CurrentFunction.AppendBasicBlock("exc.name.info");
+            var done = session.CurrentFunction.AppendBasicBlock("exc.name.done");
+            builder.BuildCondBr(builder.BuildIsNull(sheet, "exc.sheet.null"), done, loadSheet);
+            builder.PositionAtEnd(loadSheet);
             var sheetTy = TypeSheetEmitter.SheetStructType(session.Context);
             var infoField = builder.BuildStructGEP2(sheetTy, sheet,
                 (uint)TypeSheetAbi.FieldTypeInfoId, "exc.ti.f");
             var info = builder.BuildLoad2(PointerType(), infoField, "exc.ti");
+            builder.BuildCondBr(builder.BuildIsNull(info, "exc.info.null"), done, loadName);
+            builder.PositionAtEnd(loadName);
             var nameField = builder.BuildStructGEP2(TypeInfoEmitter.InfoStructType(session.Context),
                 info, (uint)TypeSheetAbi.InfoFieldName, "exc.name.f");
-            return builder.BuildLoad2(StringAbi.ValueType(session.Context), nameField,
-                "exc.name");
+            builder.BuildStore(builder.BuildLoad2(StringAbi.ValueType(session.Context), nameField, "exc.name"), result);
+            builder.BuildBr(done);
+            builder.PositionAtEnd(done);
+            return builder.BuildLoad2(StringAbi.ValueType(session.Context), result, "exc.name.value");
         }
 
         // 显示名口径（对齐 VM 消息拼写：内建恒点拼写、用户类型恒

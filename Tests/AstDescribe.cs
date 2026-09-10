@@ -365,6 +365,7 @@ namespace RigiCompiler.Tests
                 GenericVariance.In => "in ",
                 _ => p.IsNamedVariadic ? "named " : ""
             };
+            prefix = (p.RequiresSharedSafe ? "shared " : "") + prefix;
             var suffix = (p.IsVariadic || p.IsNamedVariadic) ? "..." : "";
             return prefix + p.Name + suffix;
         }

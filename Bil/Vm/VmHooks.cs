@@ -124,6 +124,10 @@ namespace RigiCompiler.Bil.Vm
                 (ctx, args) => ctx.Dispatch.CoroutineResume(args));
             hooks.Register("rigi_rt", "coroutine_destroy",
                 (ctx, args) => ctx.Dispatch.CoroutineDestroy(args));
+            hooks.Register("rigi_rt", "native_rc_retain",
+                (ctx, args) => ctx.Dispatch.NativeRcRetain(args));
+            hooks.Register("rigi_rt", "native_rc_release",
+                (ctx, args) => ctx.Dispatch.NativeRcRelease(args));
             hooks.Register("rigi_rt", "timer_create",
                 (ctx, args) => ctx.Dispatch.TimerCreate(args));
             hooks.Register("rigi_rt", "timer_cancel",

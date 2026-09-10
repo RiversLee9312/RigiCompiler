@@ -227,7 +227,48 @@ namespace RigiCompiler.Tests
             ("TestRefMapMw7a", TestRefMapMw7a),
             ("TestDynamicNew", TestDynamicNew),
             ("TestCapabilityConstructedCalls", () => TestCapabilityConstructedCalls()),
+            ("TestExternalProcessDeadline", TestExternalProcessDeadline),
         };
+
+        private static void TestExternalProcessDeadline()
+        {
+            TestHarness.CheckTrue("LLVM 全局名保留不同泛型形状的身份",
+                GenericAbi.EscapeGlobalName("typesheet.", "A<B,C>")
+                != GenericAbi.EscapeGlobalName("typesheet.", "A<B.C>"));
+            var probe = Path.GetTempFileName();
+            try
+            {
+                File.WriteAllText(probe, "trusted-tool");
+                var digest = RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe);
+                TestHarness.Check("工具链摘要钉值验证",
+                    RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe, digest), digest);
+                File.WriteAllText(probe, "tampered-tool");
+                var rejected = false;
+                try { RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe, digest); }
+                catch (InvalidOperationException) { rejected = true; }
+                TestHarness.CheckTrue("篡改工具链在执行前拒绝", rejected);
+            }
+            finally { File.Delete(probe); }
+            var windows = OperatingSystem.IsWindows();
+            var shell = windows ? Path.Combine(Environment.SystemDirectory, "cmd.exe") : "/bin/sh";
+            var args = windows ? new[] { "/d", "/c", "echo output & echo error 1>&2 & exit /b 7" }
+                : new[] { "-c", "printf 'output\\n'; printf 'error\\n' >&2; exit 7" };
+            var code = RigiCompiler.Middleware.Toolchain.ExternalProcess.Run(shell, args,
+                out var output, out var error, timeoutMilliseconds: 10_000);
+            TestHarness.CheckTrue("外部进程保留退出码和双路输出",
+                code == 7 && output.Trim() == "output" && error.Trim() == "error");
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            var timedOut = false;
+            try
+            {
+                RigiCompiler.Middleware.Toolchain.ExternalProcess.Run(shell,
+                    windows ? new[] { "/d", "/c", "ping -n 30 127.0.0.1 >nul" }
+                        : new[] { "-c", "sleep 30" }, out _, out _, timeoutMilliseconds: 150);
+            }
+            catch (InvalidOperationException ex) { timedOut = ex.Message.Contains("150ms"); }
+            TestHarness.CheckTrue("外部进程超时受控退出且不无限等待读管道",
+                timedOut && timer.ElapsedMilliseconds < 10_000);
+        }
 
         private static void TestCapabilityConstructedCalls(
             [System.Runtime.CompilerServices.CallerFilePath] string path = "")
@@ -806,11 +847,11 @@ namespace RigiCompiler.Tests
                 stubInsts.OfType<MirSetField>().Any(s =>
                     s.FieldSymbol.Contains("#" + CoroutineSplitPass.TaskSlotName + "@"))
                 && stubInsts.OfType<MirCall>().Any(c =>
-                    c.Target.Canonical.Contains("$attachRuntime("))
+                    c.Target.Canonical.Contains("$attachRuntimeNative("))
                 && stubInsts.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("$noteSpawn("))
                 && stubInsts.OfType<MirCall>().Any(c =>
-                    c.Target.Canonical.Contains("$publish(")));
+                    c.Target.Canonical.Contains("$publishNative(")));
             // move 免配平：create 之后不得再有 frame 槽 release（create 前
             // 的产出前置 release 放的是零值，合法）
             var createIndex = stubInsts.Select((inst, i) => (inst, i))
@@ -859,7 +900,7 @@ namespace RigiCompiler.Tests
                 && coldGo.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("$noteSpawn("))
                 && coldGo.Instructions.OfType<MirCall>().Any(c =>
-                    c.Target.Canonical.Contains("$publish(")));
+                    c.Target.Canonical.Contains("$publishRuntime(")));
             var suspend = resume.Blocks.Single(b => b.Id.Contains(".wait1.suspend"));
             TestHarness.CheckTrue("① suspend 块：直返（frame 已在 reg 临界区写完）",
                 suspend.Terminator is MirRet);
@@ -1033,7 +1074,7 @@ namespace RigiCompiler.Tests
             resume = ResumeOf(ctx, stub);
             TestHarness.CheckTrue("④ 裸 yield：publish 自重排入挂起段",
                 resume.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
-                    .Count(c => c.Target.Canonical.Contains("$publish(")) == 1
+                    .Count(c => c.Target.Canonical.Contains("$publishNative(")) == 1
                 && !resume.Blocks.SelectMany(b => b.Instructions).OfType<MirYieldBare>()
                     .Any());
             TestHarness.CheckTrue("④ yield：switch 两项 + 恢复块落原后继",
@@ -1407,7 +1448,7 @@ namespace RigiCompiler.Tests
             var signaledBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.signaled"));
             TestHarness.CheckTrue("① 已触发分支：自重排（publish）+ ret SUSPENDED",
                 signaledBlock.Instructions.OfType<MirCall>().Any(c =>
-                    c.Target.Canonical.Contains("$publish("))
+                    c.Target.Canonical.Contains("$publishNative("))
                 && signaledBlock.Terminator is MirRet);
             TestHarness.CheckTrue("① switch 两项 + 恢复块落 pollgate（不重调面）",
                 resume.Blocks[0].Terminator is MirSwitch swAlarm
@@ -1525,7 +1566,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Emit① frame sheet 全局已发射",
                 ll.Contains(GenericAbi.EscapeGlobalName("typesheet.", frameCanonical)), ll);
             TestHarness.CheckTrue("Emit① Rigi 桥方法调用（registerWaiter/publish）",
-                ll.Contains("$registerWaiter(") && ll.Contains("$publish("), ll);
+                ll.Contains("$registerWaiter(") && ll.Contains("$publishNative("), ll);
             TestHarness.CheckTrue("Emit① 导出符号包装恒发射（外部链接）",
                 ll.Contains("define void @rigi_dispatcher_entry()")
                 && ll.Contains("define void @rigi_dispatch_publish(i64"), ll);
@@ -2373,11 +2414,11 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            // §6 结构：typeInfoId 指向 TypeInfo、baseTypeId null、typeSize 48
+            // §6 结构：typeInfoId 指向 TypeInfo、默认基类 Object、typeSize 48
             //（头 16 + i32@16 + 引用槽@32）、vTableSize 2（槽 0 分发器 + get）
             TestHarness.CheckTrue("TypeSheet 全局锚点",
                 ll.Contains("@typesheet.Node = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } " +
-                    "{ ptr @typeinfo.Node, ptr null, i32 48, i32 0, i32 2, ptr @typesheet.vtable.Node, " +
+                    "{ ptr @typeinfo.Node, ptr @\"typesheet.core::Object\", i32 48, i32 0, i32 2, ptr @typesheet.vtable.Node, " +
                     "i32 0, ptr null, i32 1, ptr @typesheet.refmap.Node }"), ll);
             TestHarness.CheckTrue("TypeInfo 回指 sheet",
                 ll.Contains("@typeinfo.Node =") && ll.Contains("ptr @typesheet.Node"), ll);
@@ -2385,12 +2426,13 @@ namespace RigiCompiler.Tests
                 !ll.Contains("@typesheet.Node = internal constant { ptr, ptr, i32, i32, i32, ptr, i32, ptr, i32, ptr } " +
                     "{ ptr null,"), ll);
             TestHarness.CheckTrue("Nullable 具化 sheet 保留元素信息",
-                ll.Contains("typesheet.core::Nullable$Node$")
-                && ll.Split('\n').Any(line => line.StartsWith("@\"typeinfo.core::Nullable$Node$\" =")
-                    && line.EndsWith("ptr @typesheet.Node, ptr null }")), ll);
+                ll.Contains("typesheet.core::Nullable<Node>")
+                && ll.Split('\n').Any(line => line.StartsWith("@\"typeinfo.core::Nullable<Node>\" =")
+                    && line.EndsWith("ptr @typesheet.Node, ptr null, ptr null }")), ll);
             TestHarness.CheckTrue("TypeInfo 元素字段不改变旧字段位置",
                 TypeSheetAbi.InfoFieldNullableElement == 6
-                && TypeSheetAbi.InfoFieldNativeDestructor == 7 && TypeSheetAbi.InfoFieldCount == 8);
+                && TypeSheetAbi.InfoFieldTypeIdBound == 7
+                && TypeSheetAbi.InfoFieldNativeDestructor == 8 && TypeSheetAbi.InfoFieldCount == 9);
             // 槽 0 = 分发器；get 不可达仍为 null
             TestHarness.CheckTrue("vtable 全局锚点",
                 ll.Contains("@typesheet.vtable.Node = internal constant [2 x ptr] " +
@@ -2472,6 +2514,10 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Mark wrapper 为内联实例布局",
                 markPlan != null
                 && markPlan.Kind == RigiCompiler.Middleware.Layout.TypeLayoutKind.Wrapper);
+            TestHarness.CheckTrue("纯标记 wrapper 不含 self 存储与 refMap",
+                markPlan is { Size: 0, RefMapCount: 0 } && markPlan.Fields.Count == 0);
+            TestHarness.CheckTrue("纯标记不扩张宿主对象头",
+                taggedPlan?.Size == LayoutEngine.ObjectHeaderSize);
 
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
@@ -2609,8 +2655,9 @@ namespace RigiCompiler.Tests
                 .SelectMany(b => b.Instructions).ToList();
             TestHarness.CheckTrue("烘焙后无残留 MirInnerCall",
                 !allInsts.OfType<MirInnerCall>().Any());
-            TestHarness.CheckTrue("特化体含 get.self",
-                allInsts.OfType<MirGetSelf>().Any());
+            TestHarness.CheckTrue("特化体通过独立参数读取 self，无回指指令",
+                !allInsts.OfType<MirGetSelf>().Any()
+                && functions.Any(f => f.Parameters.Any(p => p.Name == WrapperSelfParameterPass.SelfParameter)));
             TestHarness.CheckTrue("合成 .wrapped. 原始体",
                 functions.Any(f => f.Symbol.Canonical.Contains(
                     ProxyBakeSupport.WrappedInfix)));
@@ -2834,7 +2881,8 @@ namespace RigiCompiler.Tests
 
             // get 环形参表：隐藏 typeid 形参已剔除（.this + value 二参）
             TestHarness.CheckTrue("get 环形参剔除 .generic.TValue",
-                Fn("A$.bake.Hero$hp$.get").Parameters.Count == 2);
+                Fn("A$.bake.Hero$hp$.get").Parameters.Count == 3
+                && Fn("A$.bake.Hero$hp$.get").Parameters.Last().Name == WrapperSelfParameterPass.SelfParameter);
 
             // init 写豁免：..init.field.hp 内 MirSetField 未被改写为链
             var initField = Fn("Hero$..init.field.hp");
@@ -3011,8 +3059,8 @@ namespace RigiCompiler.Tests
             // wildcard get 环：symbol 形参剔除（.this + value 二参）且
             // symbol 资源 = 字段 canonical 全串
             var aGet = Fn("Audit$.bake.S2$title$.get");
-            TestHarness.CheckTrue("wildcard get 环形参剔除 symbol（二参）",
-                aGet.Parameters.Count == 2);
+            TestHarness.CheckTrue("wildcard get 环形参剔除 symbol，追加宿主参数",
+                aGet.Parameters.Count == 3 && aGet.Parameters.Last().Name == WrapperSelfParameterPass.SelfParameter);
             TestHarness.CheckTrue("wildcard get 环 symbol 资源 = 字段 canonical",
                 aGet.Blocks.SelectMany(b => b.Instructions).OfType<MirLoadResource>().Any()
                 && context.Module.Resources.OfType<BilScalarResource>()
@@ -3342,7 +3390,7 @@ namespace RigiCompiler.Tests
 
             // 环形参：.generic 三包已擦除/代入（.this + symbol + 两包）
             TestHarness.CheckTrue("wildcard 环形参擦除 .generic 三包",
-                pingRing.Parameters.Count == 4
+                pingRing.Parameters.Count == 5 && pingRing.Parameters.Last().Name == WrapperSelfParameterPass.SelfParameter
                 && !pingRing.Parameters.Any(p => p.Name.StartsWith(".generic.")));
 
             // 动态分派块：字符串比对 + 双分支；hit 解包直进 $.wrapped.，
@@ -4223,7 +4271,8 @@ namespace RigiCompiler.Tests
                 raw.Blocks.SelectMany(b => b.Instructions).OfType<MirBinaryIntrinsic>()
                     .Any(b => b.Op == RigiCompiler.Bil.BilBinaryOp.Mul));
             TestHarness.CheckTrue("环特化剔除 .generic.TReturn 形参",
-                ring.Parameters.Count == 2 && ring.Parameters[0].Name == ".this"
+                ring.Parameters.Count == 3 && ring.Parameters.Last().Name == WrapperSelfParameterPass.SelfParameter
+                && ring.Parameters[0].Name == ".this"
                 && ring.Parameters[1].Name == "x");
 
             using var module = ModuleBuilder.Build(context, context.Mir!);
@@ -4809,7 +4858,7 @@ namespace RigiCompiler.Tests
                 ll.Contains("call ptr @rigi_typeof(i64") && ll.Contains("declare ptr @rigi_typeof(i64"),
                 ll);
             TestHarness.CheckTrue("构造 .typeid<i32> sheet",
-                ll.Contains("typesheet.core::Type$core::i32$"), ll);
+                ll.Contains("typesheet.core::Type<core::i32>"), ll);
             TestHarness.CheckTrue("typeid tag0 装箱",
                 ll.Contains("or i64") && ll.Contains("insertvalue { i64, i64 }"), ll);
             TestHarness.CheckTrue(".null 内建 sheet",
@@ -4850,11 +4899,11 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("构造 Type<i32> TypeSheet 全局",
-                ll.Contains("typesheet.core::Type$core::i32$"), ll);
+                ll.Contains("typesheet.core::Type<core::i32>"), ll);
             TestHarness.CheckTrue("构造 Type<String> TypeSheet 全局",
-                ll.Contains("typesheet.core::Type$core::String$"), ll);
+                ll.Contains("typesheet.core::Type<core::String>"), ll);
             TestHarness.CheckTrue("装箱视图用构造键而非擦除 .typeid",
-                !ll.Contains("typesheet..typeid") && ll.Contains("typesheet.core::Type$core::i32$"),
+                !ll.Contains("typesheet..typeid") && ll.Contains("typesheet.core::Type<core::i32>"),
                 ll);
             TestHarness.CheckTrue(".null sheet 锚点",
                 ll.Contains("@\"typesheet..null\"") || ll.Contains("@typesheet..null"), ll);
@@ -5064,8 +5113,8 @@ namespace RigiCompiler.Tests
                 ll.Contains("call ptr @rigi_alloc_array(ptr"), ll);
             TestHarness.CheckTrue("内建 i32 TypeSheet",
                 ll.Contains("@\"typesheet.core::i32\""), ll);
-            TestHarness.CheckTrue("共享 Array TypeSheet",
-                ll.Contains("@\"typesheet.core::Array\""), ll);
+            TestHarness.CheckTrue("Array<i32> 具有独立闭合 TypeSheet",
+                ll.Contains("@\"typesheet.core::Array<core::i32>\""), ll);
             TestHarness.CheckTrue("越界读得 null 分支",
                 ll.Contains("arr.get.oob"), ll);
 
@@ -5157,9 +5206,9 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("span_alloc 编组形状",
                 ll.Contains("call ptr @rigi_span_alloc(ptr"), ll);
             TestHarness.CheckTrue("具化 Span<i32> TypeSheet",
-                ll.Contains("typesheet.core::Span$core::i32$"), ll);
+                ll.Contains("typesheet.core::Span<core::i32>"), ll);
             TestHarness.CheckTrue("Span sheet FlagArray（size 32 + flags 16）",
-                SheetHasFlags(ll, "typesheet.core::Span$core::i32$", 32, 16), ll);
+                SheetHasFlags(ll, "typesheet.core::Span<core::i32>", 32, 16), ll);
             TestHarness.CheckTrue("i32 stride 常量 4",
                 ll.Contains("mul i64") && ll.Contains(", 4"), ll);
 
@@ -5171,9 +5220,9 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "span.shared.bil");
             TestHarness.CheckTrue("具化 SharedSpan<i32> TypeSheet",
-                sharedLl.Contains("typesheet.core::SharedSpan$core::i32$"), sharedLl);
+                sharedLl.Contains("typesheet.core::SharedSpan<core::i32>"), sharedLl);
             TestHarness.CheckTrue("SharedSpan sheet FlagArray|FlagShared（flags 18）",
-                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan$core::i32$", 32, 18),
+                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan<core::i32>", 32, 18),
                 sharedLl);
 
             var strLl = EmitLlFromSource(
@@ -5253,7 +5302,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("raw→Span 走 span_alloc",
                 spanLl.Contains("call ptr @rigi_span_alloc(ptr"), spanLl);
             TestHarness.CheckTrue("raw→Span 具化 sheet",
-                spanLl.Contains("typesheet.core::Span$core::u8$"), spanLl);
+                spanLl.Contains("typesheet.core::Span<core::u8>"), spanLl);
 
             // raw.bin → core::SharedSpan<u8>（b0101010101010101 = 0x55 0x55）
             const string sharedBil =
@@ -5301,7 +5350,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("raw→SharedSpan 走 span_alloc",
                 sharedLl.Contains("call ptr @rigi_span_alloc(ptr"), sharedLl);
             TestHarness.CheckTrue("raw→SharedSpan 具化 sheet FlagShared",
-                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan$core::u8$", 32, 18),
+                SheetHasFlags(sharedLl, "typesheet.core::SharedSpan<core::u8>", 32, 18),
                 sharedLl);
 
             // 负例：raw → .i32（字节缓冲区外目标无 §19.3 语义；VM 同拒）
@@ -5775,6 +5824,13 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue(label, caught, message);
         }
 
+        private static void ExpectGateRejectedFromBil(string text, string needle, string label)
+        {
+            var gate = BilGate.Accept(text, label);
+            TestHarness.CheckTrue(label, !gate.IsAccepted
+                && gate.Errors.Any(error => error.Contains(needle)), string.Join("; ", gate.Errors));
+        }
+
         // ===== 接口默认方法布局（iMap 槽指向接口 fn）=====
 
         private static void TestInterfaceDefaultMethods()
@@ -5907,9 +5963,9 @@ namespace RigiCompiler.Tests
             using var llvm = ModuleBuilder.Build(context, context.Mir!);
             var ll = llvm.PrintToString();
             TestHarness.CheckTrue("构造 sheet 全局（转义名）",
-                ll.Contains("typesheet.Box2$core::i32$"), ll);
+                ll.Contains("typesheet.Box2<core::i32>"), ll);
             TestHarness.CheckTrue("tag2 pack 指向构造 sheet",
-                ll.Contains("typesheet.Box2$core::i32$")
+                ll.Contains("typesheet.Box2<core::i32>")
                 && (ll.Contains("shl i64 2, 56") || ll.Contains("shl i64 2, i64 56")
                     || ll.Contains("or i64")), ll);
             TestHarness.CheckTrue("new 站 typeid 常量 store",
@@ -5952,7 +6008,7 @@ namespace RigiCompiler.Tests
             using var structLlvm = ModuleBuilder.Build(structContext, structContext.Mir!);
             var structLl = structLlvm.PrintToString();
             TestHarness.CheckTrue("构造 struct sheet 全局（转义名）",
-                structLl.Contains("typesheet.Wrap$core::i32$"), structLl);
+                structLl.Contains("typesheet.Wrap<core::i32>"), structLl);
             // init 调用：.this 槽指针 + 类级 typeid 常量 + 胖值实参
             TestHarness.CheckTrue("struct init 调用含类级 typeid 实参（TypeSheet 常量直传）",
                 structLl.Contains(
@@ -5982,7 +6038,7 @@ namespace RigiCompiler.Tests
                 "fn(Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void) {\n" +
                 "    .args {\n" +
                 "        .return = .void,\n" +
-                "        .this = Choice,\n" +
+                "        .this = Choice<.generic<$.generic.T>>,\n" +
                 "        .generic.T = .typeid,\n" +
                 "        tag = .i32,\n" +
                 "        payload = .generic<$.generic.T>\n" +
@@ -6024,7 +6080,7 @@ namespace RigiCompiler.Tests
             using var enumLlvm = ModuleBuilder.Build(enumContext, enumContext.Mir!);
             var enumLl = enumLlvm.PrintToString();
             TestHarness.CheckTrue("构造 enum sheet 全局（转义名）",
-                enumLl.Contains("typesheet.Choice$core::i32$"), enumLl);
+                enumLl.Contains("typesheet.Choice<core::i32>"), enumLl);
             TestHarness.CheckTrue("enum init 调用含类级 typeid 实参（直传）",
                 enumLl.Contains(
                     "@\"Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void\"(ptr %")
@@ -6058,7 +6114,7 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "构造类型形态",
                 "G2 构造 interface new 保留受控拒绝");
-            ExpectMwNotSupportedFromBil(
+            ExpectGateRejectedFromBil(
                 "BIL \"1.1\"\n\nMetadata {\n}\n\nResources {\n    R_0 = i32 5\n}\n\n" +
                 "LocalSymbols {\n" +
                 "    .type W = wrapper generic(T) pub rich {\n" +
@@ -6070,7 +6126,7 @@ namespace RigiCompiler.Tests
                 "fn(W$init(level:.generic<$.generic.T>)@.void) {\n" +
                 "    .args {\n" +
                 "        .return = .void,\n" +
-                "        .this = W,\n" +
+                "        .this = W<.generic<$.generic.T>>,\n" +
                 "        .generic.T = .typeid,\n" +
                 "        level = .generic<$.generic.T>\n" +
                 "    }\n" +
@@ -6095,8 +6151,8 @@ namespace RigiCompiler.Tests
                 "        ret $r\n" +
                 "    }\n" +
                 "}\n",
-                "构造类型形态",
-                "G2 构造 wrapper new 保留受控拒绝");
+                "wrapper 借用不能整体取值",
+                "G2 构造 wrapper new 在 BIL 门禁拒绝");
 
             // G4：存在未构造的泛型 operator 宿主不应拒绝实际 Num 调用。
             var genericCandidateSource =
@@ -6186,10 +6242,10 @@ namespace RigiCompiler.Tests
             using var ifaceLlvm = ModuleBuilder.Build(ifaceCtx, ifaceCtx.Mir!);
             var ifaceLl = ifaceLlvm.PrintToString();
             TestHarness.CheckTrue("构造接口 sheet 全局",
-                ifaceLl.Contains("typesheet.IBox$core::i32$"), ifaceLl);
+                ifaceLl.Contains("typesheet.IBox<core::i32>"), ifaceLl);
             TestHarness.CheckTrue("imap 引用具化接口 sheet",
-                ifaceLl.Contains("typesheet.imap.Box3$core::i32$")
-                && ifaceLl.Contains("typesheet.IBox$core::i32$"), ifaceLl);
+                ifaceLl.Contains("typesheet.imap.Box3<core::i32>")
+                && ifaceLl.Contains("typesheet.IBox<core::i32>"), ifaceLl);
 
             var (_, virtSrcModule, virtSrc) = BilTestHarness.EmitBilUnit(
                 "pub open class PairV\\<T> {\n" +
@@ -6902,8 +6958,29 @@ namespace RigiCompiler.Tests
             var start = 0;
             while ((start = ll.IndexOf(Enter, start, StringComparison.Ordinal)) >= 0)
             {
-                var end = ll.IndexOf(Exit, start + Enter.Length, StringComparison.Ordinal);
-                if (end < 0)
+                var depth = 1;
+                var cursor = start + Enter.Length;
+                var end = -1;
+                // 公共释放原语也有自己的 region；按配对深度查找外层出口，
+                // 不能把首个嵌套 exit 当作复合 ownership mutation 的结束。
+                while (depth > 0)
+                {
+                    var nextEnter = ll.IndexOf(Enter, cursor, StringComparison.Ordinal);
+                    var nextExit = ll.IndexOf(Exit, cursor, StringComparison.Ordinal);
+                    if (nextExit < 0) break;
+                    if (nextEnter >= 0 && nextEnter < nextExit)
+                    {
+                        depth++;
+                        cursor = nextEnter + Enter.Length;
+                    }
+                    else
+                    {
+                        depth--;
+                        end = nextExit;
+                        cursor = nextExit + Exit.Length;
+                    }
+                }
+                if (end < 0 || depth != 0)
                 {
                     return false;
                 }
@@ -7074,6 +7151,27 @@ namespace RigiCompiler.Tests
         // MW7a 边界：enum String payload / 嵌套 rich 折算序 / 非 rich 含 String 也产 refMap
         private static void TestRefMapMw7a()
         {
+            foreach (var kind in new[] { TypeLayout.RefMapKindFatRef, TypeLayout.RefMapKindString })
+            {
+                var maximum = TypeLayout.EncodeRefMap(kind, 0x3fff);
+                TestHarness.CheckTrue("refMap 最大 hop 保留 kind 与全部低 14 位",
+                    TypeLayout.RefMapKindOf(maximum) == kind && TypeLayout.RefMapHopOf(maximum) == 0x3fff);
+                var accepted = RefMapBuilder.BuildRefMap(Array.Empty<FieldPlan>(),
+                    new() { new(0x3fff * 16, kind, null) }, 0);
+                TestHarness.CheckTrue("refMap 按 16 字节单位接受边界布局", accepted.Single() == maximum);
+                foreach (var invalidHop in new[] { -1, 0x4000, 0xffff })
+                {
+                    var rejected = false;
+                    try { TypeLayout.EncodeRefMap(kind, invalidHop); }
+                    catch (CompilerInternalException) { rejected = true; }
+                    TestHarness.CheckTrue("refMap 拒绝越界 hop " + invalidHop, rejected);
+                }
+                var overflowRejected = false;
+                try { RefMapBuilder.BuildRefMap(Array.Empty<FieldPlan>(),
+                    new() { new(0x4000 * 16, kind, null) }, 0); }
+                catch (CompilerInternalException) { overflowRejected = true; }
+                TestHarness.CheckTrue("refMap 构建拒绝越界布局而不污染 kind", overflowRejected);
+            }
             var layout = BuildLayout(
                 "pub class Node {\n" +
                 "    pub var x: i32 = 0\n" +

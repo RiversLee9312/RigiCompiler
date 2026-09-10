@@ -54,6 +54,7 @@ namespace RigiCompiler.Middleware.Pipeline
                 .Add(new CallWildcardLoweringPass())
                 .Add(new SingletonLoweringPass())
                 .Add(new BuiltinToStringDispatchPass())
+                .Add(new WrapperSelfParameterPass())
                 .Add(new CoroutineSplitPass())
                 .Add(new RcInjectionPass());
         }

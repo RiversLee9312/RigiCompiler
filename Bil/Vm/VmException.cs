@@ -46,7 +46,7 @@ namespace RigiCompiler.Bil.Vm
         public long MaxSteps { get; }
 
         public VmStepLimitException(long maxSteps)
-            : base("VM 步数超过上限 " + maxSteps + "（--max-steps；缺省不限制）")
+            : base("VM 步数超过上限 " + maxSteps + "（可用 --max-steps 调整）")
         {
             MaxSteps = maxSteps;
         }

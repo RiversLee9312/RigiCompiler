@@ -258,16 +258,15 @@ namespace RigiCompiler
 
     // ===== 继承子句填入点统一收口（F2/V-C）=====
     //
-    // InheritanceResolver 登记的构造基类/接口在 GenericConstraintChecker
-    // 之后统一跑 g4 填入点检查：彼时用户约束 Bound 已填充（P2 填入点
-    // 唯一晚于约束解析的挂点）、被引用定义的字段/方法签名与 rich/shared
+    // 继承、签名和约束中的构造类型在 wrapper 应用就绪后统一检查：
+    // 此时用户约束 Bound 已填充，被引用定义的字段/方法签名与 rich/shared
     // 传染均已就绪。隐式限制违规只诊断不拒绝（可恢复模型，同
     // TypeReferenceResolver 收口口径）
     internal sealed class InheritanceFillInChecker : ResolverVisitor<InheritanceFillInChecker>
     {
         protected override void VisitCore(ResolveEnvironment env)
         {
-            foreach (var (constructed, span) in env.InheritanceFillIns)
+            foreach (var (constructed, span) in env.InheritanceFillIns.Concat(env.TypeFillIns))
             {
                 GenericConstraints.CheckConstructedType(constructed, span,
                     env.Unit.Symbols, env.Error);

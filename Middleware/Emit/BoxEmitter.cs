@@ -94,6 +94,8 @@ namespace RigiCompiler.Middleware.Emit
                 var described = builder.BuildLoad2(
                     TypeLayout.MapType(session.Context, sourceType), sourceSlot, "box.tidld");
                 var view = ResolveTypeIdViewSheet(session, builder, described, sourceType);
+                EmitThrowOnMismatch(session, builder, builder.BuildIsNull(view, "box.tid.missing"),
+                    described, sourceType, null);
                 var bits = builder.BuildPtrToInt(described, LLVMTypeRef.Int64, "box.tid");
                 return PackFat(session, builder, view, TagInline, bits, "box");
             }
@@ -160,20 +162,19 @@ namespace RigiCompiler.Middleware.Emit
             var tagBad = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, tag,
                 LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, expectedTag, false),
                 "unbox.tag.bad");
-            // 无界 typeid 目标（遗6，对齐 VM VmAny.Payload 直通）：Any 内
-            // typeid 的视图 sheet 是 Type<X> 构造（ResolveTypeIdViewSheet
-            // 按运行期 payload 选视图），与无界 core::Type<core::Any>
-            // 静态不等属预期——sheet 检查跳过，只查 tag（VM 对 Any 内
-            // typeid 拆箱本无守卫）。有界 Type<X> 目标保留 sheet 检查
-            //（Type<i32> 拆 Type<String> 抛 CastException 的既有口径）
-            var mismatch = TypeLayout.IsTypeId(targetType)
-                && MwTypeKey.Normalize(targetType.Canonical)
-                    == TypeLayout.TypeIdUnboundedCanonical
-                ? tagBad
-                : builder.BuildOr(tagBad,
+            var mismatch = builder.BuildOr(tagBad,
                     builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, sheetBits, wantSheet,
                         "unbox.sheet.bad"),
                     "unbox.bad");
+            if (TypeLayout.IsTypeId(targetType))
+            {
+                var (check, checkType) = CallEmitter.DeclareHelperFace(session,
+                    RuntimeFaces.TypeIs, LLVMTypeRef.Int32,
+                    new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64, PointerType() });
+                var hit = builder.BuildCall2(checkType, check, new[] { typeId, payload, sheet }, "unbox.type.bound");
+                mismatch = builder.BuildOr(tagBad, builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
+                    hit, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0), "unbox.type.bad"));
+            }
             EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
 
             if (expectedTag == TagInline)
@@ -500,7 +501,7 @@ namespace RigiCompiler.Middleware.Emit
         // ===== 检查 / 尺寸 / sheet =====
 
         // MW9b-G：不符抛 CastException（取代 rigi_abort_invalid_cast）
-        private static void EmitThrowOnMismatch(ModuleBuilder.Session session,
+        internal static void EmitThrowOnMismatch(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef mismatch, LLVMValueRef targetSheet,
             MirType fromType, MirBlock? excTarget)
         {
@@ -586,8 +587,8 @@ namespace RigiCompiler.Middleware.Emit
         internal static LLVMValueRef ResolveTypeIdViewSheet(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef describedSheet, MirType staticType)
         {
-            var selected = builder.BuildBitCast(TypeSheetOf(session, staticType),
-                PointerType(), "tid.view.fb");
+            // Type<X> 不变；未匹配时不能用静态边界或开放模板冒充真实身份。
+            var selected = LLVMValueRef.CreateConstPointerNull(PointerType());
             var described = builder.BuildBitCast(describedSheet, PointerType(), "tid.desc");
             if (session.Layout == null)
             {
@@ -618,9 +619,7 @@ namespace RigiCompiler.Middleware.Emit
         private static bool TryDescribedSheet(ModuleBuilder.Session session, MirType type,
             out LLVMValueRef sheet)
         {
-            var key = TypeLayout.IsArray(type)
-                ? TypeLayout.ArrayTypeCanonical
-                : TypeLayout.BuiltinSheetCanonical(type);
+            var key = TypeLayout.BuiltinSheetCanonical(type);
             return session.TryGetTypeSheet(key, out sheet)
                 || session.TryGetTypeSheet(type.Canonical, out sheet);
         }

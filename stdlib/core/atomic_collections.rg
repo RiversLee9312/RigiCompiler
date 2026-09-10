@@ -1,7 +1,7 @@
 namespace core
 
 // Map 快照分别存储键和值，Pair 仅由本地枚举器临时构造，不伪造其共享能力。
-pub shared class AtomicMapSnapshot\<K with core.serialization.Serializable, V with core.serialization.Serializable> implements core.collections.IEnumerable\<Pair\<K, V>> {
+pub shared class AtomicMapSnapshot\<shared K with core.serialization.Serializable, shared V with core.serialization.Serializable> implements core.collections.IEnumerable\<Pair\<K, V>> {
     priv const keys: Array\<K>
     priv const values: Array\<V>
 
@@ -32,7 +32,7 @@ pub shared class AtomicMapSnapshot\<K with core.serialization.Serializable, V wi
     }
 }
 
-pub shared class AtomicMap\<K with core.serialization.Serializable, V with core.serialization.Serializable> {
+pub shared class AtomicMap\<shared K with core.serialization.Serializable, shared V with core.serialization.Serializable> {
     priv const atomic: Atomic\<core.collections.Map\<K, V>>
 
     priv init(source: core.collections.Map\<K, V>) {
@@ -46,7 +46,7 @@ pub shared class AtomicMap\<K with core.serialization.Serializable, V with core.
         atomic = unsafe seq { new Atomic\<core.collections.Map\<K, V>>(copy) }
     }
 
-    pub static func fromMap\<A with core.serialization.Serializable, B with core.serialization.Serializable>(source: core.collections.Map\<A, B>): AtomicMap\<A, B> {
+    pub static func fromMap\<shared A with core.serialization.Serializable, shared B with core.serialization.Serializable>(source: core.collections.Map\<A, B>): AtomicMap\<A, B> {
         return new AtomicMap\<A, B>(source)
     }
 
@@ -134,7 +134,7 @@ pub shared class AtomicMap\<K with core.serialization.Serializable, V with core.
 
 
 // 快照只保存独立元素；每次枚举再复制，游标与返回对象均不反向修改快照。
-pub shared class AtomicSnapshot\<T with core.serialization.Serializable> implements core.collections.IEnumerable\<T> {
+pub shared class AtomicSnapshot\<shared T with core.serialization.Serializable> implements core.collections.IEnumerable\<T> {
     priv const items: Array\<T>
 
     pub init(source: Array\<T>) {
@@ -157,7 +157,7 @@ pub shared class AtomicSnapshot\<T with core.serialization.Serializable> impleme
     }
 }
 
-pub shared class AtomicArray\<T with core.serialization.Serializable> {
+pub shared class AtomicArray\<shared T with core.serialization.Serializable> {
     priv const atomic: Atomic\<Array\<T>>
 
     priv init(source: Array\<T>) {
@@ -172,7 +172,7 @@ pub shared class AtomicArray\<T with core.serialization.Serializable> {
         atomic = unsafe seq { new Atomic\<Array\<T>>(copy) }
     }
 
-    pub static func fromArray\<E with core.serialization.Serializable>(source: Array\<E>): AtomicArray\<E> {
+    pub static func fromArray\<shared E with core.serialization.Serializable>(source: Array\<E>): AtomicArray\<E> {
         return new AtomicArray\<E>(source)
     }
 
@@ -212,7 +212,7 @@ pub shared class AtomicArray\<T with core.serialization.Serializable> {
     }
 }
 
-pub shared class AtomicList\<T with core.serialization.Serializable> {
+pub shared class AtomicList\<shared T with core.serialization.Serializable> {
     priv const atomic: Atomic\<core.collections.List\<T>>
 
     priv init(source: core.collections.List\<T>) {
@@ -225,7 +225,7 @@ pub shared class AtomicList\<T with core.serialization.Serializable> {
         atomic = unsafe seq { new Atomic\<core.collections.List\<T>>(copy) }
     }
 
-    pub static func fromList\<E with core.serialization.Serializable>(source: core.collections.List\<E>): AtomicList\<E> {
+    pub static func fromList\<shared E with core.serialization.Serializable>(source: core.collections.List\<E>): AtomicList\<E> {
         return new AtomicList\<E>(source)
     }
 

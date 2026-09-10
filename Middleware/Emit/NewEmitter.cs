@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using LLVMSharp.Interop;
+using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Layout;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Symbols;
@@ -169,29 +170,46 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var wrapperCallArgs = AppendReceiver(fat, wrapperArgs);
                 builder.BuildCall2(wrapper.Type, wrapper.Value, wrapperCallArgs, "");
+                // wrapper 抛异常时必须跳过 init；pending 由外层构造调用点
+                // 释放未发布对象并沿异常边传播。
+                var (pendingFn, pendingType) = CallEmitter.DeclareHelperFace(session,
+                    Runtime.RuntimeFaces.ExcPending, PointerType(),
+                    System.Array.Empty<LLVMTypeRef>());
+                var pending = builder.BuildCall2(pendingType, pendingFn,
+                    System.Array.Empty<LLVMValueRef>(), "new.wrapper.pending");
+                var runInit = session.CurrentFunction.AppendBasicBlock("new.wrapper.ok");
+                var done = session.CurrentFunction.AppendBasicBlock("new.wrapper.done");
+                builder.BuildCondBr(
+                    builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, pending,
+                        LLVMValueRef.CreateConstNull(PointerType()), "new.wrapper.clean"),
+                    runInit, done);
+                builder.PositionAtEnd(runInit);
+                EmitInitIfPresent();
+                builder.BuildBr(done);
+                builder.PositionAtEnd(done);
+                return fat;
             }
             // L7：无 init 声明 + 零实参（Init = null）——alloc + wrapper
             // 缝合即完成构造（VM TryFindInit 零实参空 init 同口径）
-            if (init == null)
-            {
-                return fat;
-            }
-            var emitted = session.FunctionOf(init.Canonical);
-            var initArgs = new LLVMValueRef[userArgs.Length + 1];
-            initArgs[0] = fat;
-            for (var i = 0; i < userArgs.Length; i++)
-            {
-                initArgs[i + 1] = userArgs[i];
-            }
-            if (emitted.Value.ParamsCount != (uint)initArgs.Length)
-            {
-                throw new CompilerInternalException(
-                    $"ctor thunk 调 init 参数个数不符: {init.Canonical} " +
-                    $"llvm={emitted.Value.ParamsCount} 传入={initArgs.Length} " +
-                    $"sheet={typeCanonical}");
-            }
-            builder.BuildCall2(emitted.Type, emitted.Value, initArgs, "");
+            EmitInitIfPresent();
             return fat;
+
+            void EmitInitIfPresent()
+            {
+                if (init == null) return;
+                var emitted = session.FunctionOf(init.Canonical);
+                var initArgs = new LLVMValueRef[userArgs.Length + 1];
+                initArgs[0] = fat;
+                for (var i = 0; i < userArgs.Length; i++) initArgs[i + 1] = userArgs[i];
+                if (emitted.Value.ParamsCount != (uint)initArgs.Length)
+                {
+                    throw new CompilerInternalException(
+                        $"ctor thunk 调 init 参数个数不符: {init.Canonical} " +
+                        $"llvm={emitted.Value.ParamsCount} 传入={initArgs.Length} " +
+                        $"sheet={typeCanonical}");
+                }
+                builder.BuildCall2(emitted.Type, emitted.Value, initArgs, "");
+            }
         }
 
         // 开放 new 的隐藏实参与对象头必须指向同一具化类型。布局阶段已驻留
@@ -206,10 +224,43 @@ namespace RigiCompiler.Middleware.Emit
             if (GenericAbi.TryPlaceholderName(typeRef, out var placeholder)
                 && slots.ContainsKey(".generic." + placeholder))
                 return session.LoadLocal(builder, slots, new MirLocalOperand(".generic." + placeholder));
-            var result = session.TypeSheetFor(typeRef);
             var template = session.Symbols.FindTypeByRef(typeRef);
-            if (template == null || template.Declaration.GenericParameters.Count == 0
-                || session.Layout == null) return result;
+            // frame 名包含原函数完整 canonical（可能含 .generic<...>），
+            // 但 frame 声明自身没有泛型参数，具有唯一固定布局。必须看符号
+            // 声明而非对整个名字搜子串，否则泛型协程的 frame 分配收到 null。
+            if (template != null && template.Declaration.GenericParameters.Count == 0)
+                return session.TypeSheetFor(typeRef);
+            // 开放构造未匹配任何闭合具化时只能失败；严禁把模板身份
+            // 冒充实际类型，导致不同实参的值相互转换。
+            var result = typeRef.Contains(".generic<", System.StringComparison.Ordinal)
+                ? LLVMValueRef.CreateConstPointerNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
+                : session.TypeSheetFor(typeRef);
+            if (session.Layout == null) return result;
+            // 内建构造同样参与具化；Nullable<T>/Array<T> 不能回落为裸壳。
+            if (template == null)
+            {
+                var openArguments = ConstructedTypeCollector.TypeArgumentsOf(typeRef);
+                if (openArguments.Count == 0 || !typeRef.Contains(".generic<", System.StringComparison.Ordinal))
+                    return result;
+                var actualArguments = openArguments.Select(argument =>
+                    MaterializeClassSheet(session, builder, slots, argument, depth + 1)).ToArray();
+                var head = BilVerificationContext.StripTypeArguments(MwTypeKey.Normalize(typeRef));
+                foreach (var candidate in session.Layout.Plans)
+                {
+                    var candidateRef = candidate.Symbol.Canonical;
+                    if (!GenericAbi.IsClosedConstructed(candidateRef)
+                        || BilVerificationContext.StripTypeArguments(candidateRef) != head) continue;
+                    var arguments = ConstructedTypeCollector.TypeArgumentsOf(candidateRef);
+                    if (arguments.Count != actualArguments.Length) continue;
+                    var matches = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1);
+                    for (var i = 0; i < arguments.Count; i++)
+                        matches = builder.BuildAnd(matches, builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
+                            actualArguments[i], session.TypeSheetFor(arguments[i]), "typearg.equal"));
+                    result = builder.BuildSelect(matches, session.TypeSheetFor(candidateRef), result, "actual.sheet");
+                }
+                return result;
+            }
+            if (template.Declaration.GenericParameters.Count == 0) return result;
             var substitution = ConstructedTypeCollector.BuildSubstitution(typeRef, template.Declaration);
             if (substitution != null && !typeRef.Contains(".generic<", System.StringComparison.Ordinal))
                 return result;

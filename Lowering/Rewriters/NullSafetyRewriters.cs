@@ -107,7 +107,7 @@ namespace RigiCompiler
                 receiver = LowerExpressionDispatcher.Visit(call.Receiver, ctx, env);
                 if (receiver != null)
                 {
-                    receiver = LoweringFacility.EnsureDeclaredType(call, receiver,
+                    receiver = LoweringFacility.EnsureReceiverType(call, receiver,
                         call.Method.Owner);
                 }
             }

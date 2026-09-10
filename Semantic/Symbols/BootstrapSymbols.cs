@@ -23,7 +23,7 @@ namespace RigiCompiler
     // 无处用源码声明，由符号图初始化时直接构造；core.rg（S10）负责其余
     // 标准库表层（core::Console、Task 等），走同一条 P1/P2 路径。
     // 层级事实（SYNTAX §3.1/§3.1.2，2026-07-29 修订后三条易错点）：
-    //   String 与 Wrapper 都在 ValueType 分支下（String 非 rich、Wrapper 恒 rich）；
+    //   String 与 Wrapper 都在 ValueType 分支下（默认非 rich）；
     //   Nullable\<T> 的 shared 属性由 T 推导而不是查声明修饰符；
     //   Wrapper 是全部 wrapper 声明的隐式基类。
     // Exception 不在此直造：stdlib/core/exceptions.rg 源码声明，懒解析取参照点。
@@ -36,7 +36,7 @@ namespace RigiCompiler
         public TypeSymbol Object { get; }
         public TypeSymbol ValueType { get; }
         public TypeSymbol Enum { get; }
-        // 全部 wrapper 声明的隐式基类；wrapper 恒 rich struct（SYNTAX §14.9）
+        // 全部 wrapper 声明的隐式基类；rich 由具体声明决定（SYNTAX §14.9）
         public TypeSymbol Wrapper { get; }
         // 异常根（SYNTAX §8.1）：stdlib/core/exceptions.rg 源码声明；懒解析
         // 仿 PairDefinition / CallWildcard（构造期 stdlib 未载入）
@@ -88,328 +88,115 @@ namespace RigiCompiler
         //（具名包依赖 stdlib core.Pair，构造期 Pair 尚未载入）
         public MethodSymbol CallWildcard { get; private set; } = null!;
 
+        internal RootASTNode DeclarationSource { get; }
+        internal Dictionary<string, TypeSymbol> SourceTypes { get; } = new(StringComparer.Ordinal);
+
         internal BootstrapSymbols(NamespaceSymbol globalNamespace)
         {
-            // core 挂进全局命名空间树：用户文件的 namespace core.* 声明与
-            // bootstrap 的 core 共享同一驻留路径（GetNamespace 逐段合并）
             Core = new NamespaceSymbol("core", globalNamespace);
             globalNamespace.ChildNamespaces.Add(Core);
-
-            // 层级根。Any 是类型层级最顶端（RUNTIME：baseTypeId 仅 Any 为 NULL）——
-            // 行为近似纯多态上限，Kind 记 Interface + IsBuiltin；
-            // 用户类型与它的继承关系规则由 P2 特判
-            Any = new TypeSymbol("Any", TypeKind.Interface, Core,
-                isBuiltin: true, bilAlias: ".any");
-            Object = new TypeSymbol("Object", TypeKind.Class, Core,
-                baseType: Any, isBuiltin: true, bilAlias: ".object");
-            ValueType = new TypeSymbol("ValueType", TypeKind.Struct, Core,
-                baseType: Any, isBuiltin: true, isValueTypeBranch: true, bilAlias: ".valuetype");
-            Enum = new TypeSymbol("Enum", TypeKind.EnumStruct, Core,
-                baseType: ValueType, isBuiltin: true);
-            Wrapper = new TypeSymbol("Wrapper", TypeKind.Wrapper, Core,
-                baseType: ValueType, isRich: true, isBuiltin: true);
-            // Exception 由 stdlib/core/exceptions.rg 源码声明，不在此直造
-
-            // 数值类型：整数 = 算术 + 位运算 + 比较；浮点 = 算术 + 比较
-            // （无符号不含 Opposite——一元负号对无符号无意义）
-            Int8 = Primitive("i8", ".i8", signedInteger: true);
-            Int16 = Primitive("i16", ".i16", signedInteger: true);
-            Int32 = Primitive("i32", ".i32", signedInteger: true);
-            Int64 = Primitive("i64", ".i64", signedInteger: true);
-            UInt8 = Primitive("u8", ".u8", unsignedInteger: true);
-            UInt16 = Primitive("u16", ".u16", unsignedInteger: true);
-            UInt32 = Primitive("u32", ".u32", unsignedInteger: true);
-            UInt64 = Primitive("u64", ".u64", unsignedInteger: true);
-            Float = Primitive("float", ".f32", floating: true);
-            Double = Primitive("double", ".f64", floating: true);
-            // bool：逻辑 + 相等；char：比较全集（按码点序）；
-            // String：相等 + 拼接（S7f，SYNTAX §3.8：add 为内建字符串拼接，
-            // BIL §11.2——字符串插值与用户书写的 "a" + "b" 共用此键）
-            Bool = new TypeSymbol("bool", TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true, bilAlias: ".bool",
-                intrinsicOps: Ops(BilIntrinsicOp.And, BilIntrinsicOp.Or, BilIntrinsicOp.Not,
-                    BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe));
-            Char = new TypeSymbol("char", TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true, bilAlias: ".char",
-                intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
-                    BilIntrinsicOp.CmpLt, BilIntrinsicOp.CmpLe, BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe));
-            String = new TypeSymbol("String", TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true, bilAlias: ".string",
-                intrinsicOps: Ops(BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
-                    BilIntrinsicOp.Add));
-
-            // toString 机制（S7f，SYNTAX §3.8，用户裁定修订）：Any 承载全类型
-            // 承诺——open、可被 override、自带实现（不再是 native 成员）；Object
-            // 提供 open override 默认实现（override 关系使 SymbolLookup 遮蔽
-            // 生效，o.toString() 唯一解析到 Object 版本，消除 Any/Object 双
-            // 候选歧义）。二者均不发 BIL native 成员声明；fn 体由发射阶段合成
-            // （EmitBuiltinNativeMethods）：.this → invoke any_to_string → ret。
-            // any_to_string 是 .bootstrap.rg 的 priv 全局 native（rigi_rt/
-            // any_to_string，§22.5 内建 hook：基元标准文本、未覆写对象返回
-            // 类型 canonical 名）；用户类型 override 后经虚派发执行自身实现，
-            // 不再命中原生面
-            Any.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Any, returnType: String)
+            DeclarationSource = StdlibSources.ParseIntrinsics();
+            foreach (var node in DeclarationSource.Declarations)
             {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                // 自带实现（体由发射阶段合成）——OverrideChecker.FindImplementation
-                // 据此认定 toString 承诺已被默认实现满足
-                HasBody = true,
-            });
-            Object.Methods.Add(new MethodSymbol("toString", MethodKind.Regular,
-                owner: Object, returnType: String)
+                var shape = node switch
+                {
+                    ClassDeclarationASTNode c => (c.ClassName, TypeKind.Class, c.GenericParameters),
+                    StructDeclarationASTNode s => (s.StructName, TypeKind.Struct, s.GenericParameters),
+                    InterfaceDeclarationASTNode i => (i.InterfaceName, TypeKind.Interface, i.GenericParameters),
+                    EnumStructDeclarationASTNode e => (e.EnumName, TypeKind.EnumStruct, e.GenericParameters),
+                    WrapperDeclarationASTNode w => (w.WrapperName, TypeKind.Wrapper, w.GenericParameters),
+                    _ => ((string?)null, TypeKind.Class, (GenericParameterListASTNode?)null),
+                };
+                if (shape.Item1 is not { } name) continue;
+                var modifiers = ResolveEnvironment.ModifiersOf(node);
+                var alias = name switch
+                {
+                    "Any" => ".any", "Object" => ".object", "ValueType" => ".valuetype",
+                    "float" => ".f32", "double" => ".f64", "String" => ".string",
+                    "i8" or "i16" or "i32" or "i64" or "u8" or "u16" or "u32" or "u64"
+                        or "bool" or "char" => "." + name,
+                    _ => null,
+                };
+                var standard = name switch
+                {
+                    "Type" => ".typeid", "Nullable" => ".nullable", "Array" => ".array", "Map" => ".map",
+                    _ => null,
+                };
+                var builtin = alias != null || standard != null
+                    || name is "Enum" or "Wrapper" or "Span" or "SharedSpan" or "Box";
+                var symbol = new TypeSymbol(name, shape.Item2, Core,
+                    isRich: modifiers.Contains(Keywords.RICH), isShared: modifiers.Contains(Keywords.SHARED),
+                    isBuiltin: builtin, bilAlias: alias, bilStandardConstructor: standard,
+                    isValueTypeBranch: shape.Item2 is TypeKind.Struct or TypeKind.EnumStruct or TypeKind.Wrapper,
+                    derivesSharedSafetyFromTypeArgument: name is "Nullable" or "Array" or "Map",
+                    intrinsicOps: IntrinsicsOf(name));
+                if (shape.Item3 != null)
+                    foreach (var gp in shape.Item3.Parameters)
+                        symbol.GenericParameters.Add(new GenericParameterSymbol(gp.Name, gp.IsVariadic, gp.IsNamedVariadic,
+                            gp.Variance) { RequiresSharedSafe = gp.RequiresSharedSafe });
+                SourceTypes.Add(name, symbol);
+                Core.Types.Add(symbol);
+            }
+            Any = Require("Any"); Object = Require("Object"); ValueType = Require("ValueType");
+            Enum = Require("Enum"); Wrapper = Require("Wrapper");
+            Int8 = Require("i8"); Int16 = Require("i16"); Int32 = Require("i32"); Int64 = Require("i64");
+            UInt8 = Require("u8"); UInt16 = Require("u16"); UInt32 = Require("u32"); UInt64 = Require("u64");
+            Float = Require("float"); Double = Require("double"); Bool = Require("bool");
+            Char = Require("char"); String = Require("String");
+            TypeDefinition = Require("Type"); SpanDefinition = Require("Span"); SharedSpanDefinition = Require("SharedSpan");
+            NullableDefinition = Require("Nullable"); BoxDefinition = Require("Box");
+            ArrayDefinition = Require("Array"); MapDefinition = Require("Map");
+            foreach (var symbol in SourceTypes.Values)
             {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                IsOverride = true,
-                HasBody = true,
-            });
-
-            // hash 机制（Map 键判等，用户裁定）：与 toString 同构的 Any 承诺——
-            // open、可被 override、自带实现；Object 提供 open override 默认实现
-            //（override 关系使 SymbolLookup 遮蔽生效，o.hash() 唯一解析到
-            // Object 版本，消除 Any/Object 双候选歧义）。二者均不发 BIL native
-            // 成员声明；fn 体由发射阶段合成（EmitBuiltinNativeMethods）：
-            // .this → invoke any_hash → ret。any_hash 是 .bootstrap.rg 的 priv
-            // 全局 native（rigi_rt/any_hash，§22.5 内建 hook）：String 按内容、
-            // 标量按值、对象按 Any 槽 payload 身份（null 固定 0）；两宿主
-            //（VM/native）哈希数值不要求一致，仅同一宿主内同值必同哈希；
-            // 用户类型 override 后经虚派发执行自身实现，不再命中原生面
-            Any.Methods.Add(new MethodSymbol("hash", MethodKind.Regular,
-                owner: Any, returnType: Int64)
-            {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                // 自带实现（体由发射阶段合成）——OverrideChecker.FindImplementation
-                // 据此认定 hash 承诺已被默认实现满足
-                HasBody = true,
-            });
-            Object.Methods.Add(new MethodSymbol("hash", MethodKind.Regular,
-                owner: Object, returnType: Int64)
-            {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                IsOverride = true,
-                HasBody = true,
-            });
-
-            // equals 机制（==/!= 判等，SYNTAX §13.2，用户裁定）：Any 承诺
-            // operator equals——open、可被子类同名再定义（§13.2 运算符不可
-            // 标 override，子类静默 hiding + 运行期最派生命中）、自带默认
-            // 实现（体由发射阶段合成，LocalSymbolEmitters：双虚调 hash 比较
-            // ——equals-or-hash 判等链，绝不涉 toString）。挂上后「Any 之间
-            // /无约束 K 之间的 ==」在前端自动翻合法（SymbolLookup 沿
-            // BaseType 链收集 operator，含 Any）。Object 同形（IsOverride
-            // 仅一致性记号；operator 不进 OverrideChecker）。默认体语义：
-            //   equals(other) = this.hash() == other.hash()
-            //（hash 碰撞即判等的 Map 口径；键类型声明了自己的 operator
-            // equals 则运行期最派生覆盖默认体）
-            var anyEquals = new MethodSymbol("equals", MethodKind.Operator,
-                owner: Any, returnType: Bool)
-            {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                HasBody = true,
-            };
-            anyEquals.Parameters.Add(new ParameterSymbol("other", Any));
-            Any.Methods.Add(anyEquals);
-            var objectEquals = new MethodSymbol("equals", MethodKind.Operator,
-                owner: Object, returnType: Bool)
-            {
-                Accessibility = Accessibility.Public,
-                IsOpen = true,
-                IsOverride = true,
-                HasBody = true,
-            };
-            objectEquals.Parameters.Add(new ParameterSymbol("other", Any));
-            Object.Methods.Add(objectEquals);
-
-            // Exception.message / getMessage 随 stdlib 源码声明入图，不在此程序化添加
-
-            // Any.call??? 壳（M88）：参数类型在 EnsureCallWildcard 填（Array/
-            // Pair 构造需 SymbolGraph）；此处先挂成员占位，签名参数列表在
-            // Ensure 时补齐。pub native 形态（getMessage 抽象化后，call??? 是
-            // bootstrap 唯一 native 成员）
-            CallWildcard = new MethodSymbol("call???", MethodKind.Regular,
-                owner: Any, isNative: true, returnType: Any)
-            {
-                NativeLibrary = "rigi_rt",
-                NativeSymbol = "call???",
-                Accessibility = Accessibility.Public,
-            };
-            Any.Methods.Add(CallWildcard);
-
-            // 泛型内建（§3.1.2）：
-            // Box\<T> <: Object 为内建事实（BaseType 链直接表达，不经 baseTypeId 证明）；
-            // Nullable\<T> 属 Object 分支且 shared 按 T 推导（DerivesSharedSafetyFromTypeArgument）；
-            // Type\<T> 在 ValueType 分支；Span\<T>/SharedSpan\<T> 在 Object 分支（RUNTIME §5）
-            var typeParamT = new GenericParameterSymbol("T");
-            TypeDefinition = new TypeSymbol("Type", TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true, bilStandardConstructor: ".typeid");
-            TypeDefinition.GenericParameters.Add(typeParamT);
-
-            // Span\<T extends ValueType\>（RUNTIME §5）：内建 class（Object，引用语义）；
-            // 连续无装箱缓冲区，复制共享同一 buffer；T 由泛型约束强制为 ValueType。
-            SpanDefinition = new TypeSymbol("Span", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true);
-            SpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
-            SpanDefinition.GenericParameters[0].Constraints.Add(
-                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
-            AddIndexOperatorsAndLength(SpanDefinition);
-
-            // SharedSpan\<T extends ValueType\>（RUNTIME §5）：Span 的 shared class 变体，
-            // 同布局；元素另由 GenericConstraints 收紧为「非 rich 或 shared rich ValueType」。
-            SharedSpanDefinition = new TypeSymbol("SharedSpan", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true, isShared: true);
-            SharedSpanDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
-            SharedSpanDefinition.GenericParameters[0].Constraints.Add(
-                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
-            AddIndexOperatorsAndLength(SharedSpanDefinition);
-
-            NullableDefinition = new TypeSymbol("Nullable", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true,
-                derivesSharedSafetyFromTypeArgument: true,
-                bilStandardConstructor: ".nullable");
-            NullableDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
-
-            BoxDefinition = new TypeSymbol("Box", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true);
-            BoxDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
-            BoxDefinition.GenericParameters[0].Constraints.Add(
-                new GenericConstraintInfo(GenericConstraintKind.Extends, ValueType));
-
-            // Array\<T\>（S9d）：BIL 标准构造 .array<T>（§6.3）；元素统一
-            // 胖值槽（RUNTIME §4 Box 表示），shared 按 T 推导（同 Nullable）
-            ArrayDefinition = new TypeSymbol("Array", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true,
-                derivesSharedSafetyFromTypeArgument: true,
-                bilStandardConstructor: ".array");
-            ArrayDefinition.GenericParameters.Add(new GenericParameterSymbol("T"));
-
-            // Array\<T\> 索引运算符（§13.2，S8c 索引绑定的内建目标——P3 读绑
-            // getAtIndex/写绑 setAtIndex，P4b 直发 §13.6 get.array/set.array
-            // 不走 invoke）：vargs/kwargs 体内视角（Array\<...\>）的元素访问
-            // 闭环（`nums[0]`/`options[0].key`）；无体——内建特权指令承载语义。
-            // Q6：getAtIndex 返回类型此处先置 T 占位，SymbolGraph 构造末尾
-            // 回填为驻留的 Nullable\<T\>（索引读取一律返回 T?）
-            var arrayElementT = ArrayDefinition.GenericParameters[0];
-            var arrayGetAtIndex = new MethodSymbol("getAtIndex", MethodKind.Operator,
-                owner: ArrayDefinition, returnType: arrayElementT)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            arrayGetAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
-            ArrayDefinition.Methods.Add(arrayGetAtIndex);
-            var arraySetAtIndex = new MethodSymbol("setAtIndex", MethodKind.Operator,
-                owner: ArrayDefinition)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            arraySetAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
-            arraySetAtIndex.Parameters.Add(new ParameterSymbol("element", arrayElementT));
-            ArrayDefinition.Methods.Add(arraySetAtIndex);
-
-            // Array\<T\>.length（V2.5，RUNTIME §26）：const 字段，VM 直读
-            // VmArray.Length；无 backing 存储——不进对象字段表。
-            var arrayLength = new FieldSymbol("length", owner: ArrayDefinition,
-                fieldType: Int32, isConst: true)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            ArrayDefinition.Fields.Add(arrayLength);
-
-            // Map\<K, V\>（S9d-2）：BIL 标准构造 .map<K, V>（§6.3）——具名
-            // 泛型可变参数的隐藏参数形态（BIL §7.1：.generic.TValues =
-            // .map<.string, .typeid>）；shared 按类型实参推导（同 Array）
-            MapDefinition = new TypeSymbol("Map", TypeKind.Class, Core,
-                baseType: Object, isBuiltin: true,
-                derivesSharedSafetyFromTypeArgument: true,
-                bilStandardConstructor: ".map");
-            MapDefinition.GenericParameters.Add(new GenericParameterSymbol("TKey"));
-            MapDefinition.GenericParameters.Add(new GenericParameterSymbol("TValue"));
-
-            // 内建类型注册进 core 容器表（M40 补登：P2 名字解析经
-            // 「core 命名空间隐式可见」消费——bootstrap 类型此前只有直造属性、
-            // 未入容器表，裸名 i32/String/Object 无法经路径解析找到）
-            foreach (var builtin in new[]
-            {
-                Any, Object, ValueType, Enum, Wrapper,
-                Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64,
-                Float, Double, Bool, Char, String,
-                TypeDefinition, SpanDefinition, SharedSpanDefinition, NullableDefinition, BoxDefinition,
-                ArrayDefinition, MapDefinition,
-            })
-            {
-                // 内建符号不经声明修饰符（SemanticSymbol 默认 Private）——
-                // 统一置 Public（S8e 使用点访问控制以符号级别判定；内建即公开契约）
-                builtin.Accessibility = Accessibility.Public;
-                Core.Types.Add(builtin);
+                // 类型层级根与固定 ABI 的绑定仍由语言定义；声明修饰符来自源码。
+                symbol.BaseType = ReferenceEquals(symbol, Any) ? null
+                    : ReferenceEquals(symbol, Object) || ReferenceEquals(symbol, ValueType) ? Any
+                    : symbol.Kind == TypeKind.Class ? Object
+                    : symbol.Kind is TypeKind.Struct or TypeKind.EnumStruct or TypeKind.Wrapper ? ValueType : null;
             }
         }
 
-        // Array/Span/SharedSpan 同构：索引运算符（P3 读绑 getAtIndex / 写绑 setAtIndex，
-        // P4b 直发 §13.6 get.array/set.array）+ length 特权 const 字段（VM 直读，
-        // 无 backing 存储——不进对象字段表；RUNTIME §5 / §26）
-        private void AddIndexOperatorsAndLength(TypeSymbol definition)
+        private TypeSymbol Require(string name) => SourceTypes.TryGetValue(name, out var type) ? type
+            : throw new CompilerInternalException("内建源码缺少类型声明：" + name);
+
+        internal void BindSourceSignatures(SymbolGraph symbols)
         {
-            var elementT = definition.GenericParameters[0];
-            var getAtIndex = new MethodSymbol("getAtIndex", MethodKind.Operator,
-                owner: definition, returnType: elementT)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            getAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
-            definition.Methods.Add(getAtIndex);
-            var setAtIndex = new MethodSymbol("setAtIndex", MethodKind.Operator,
-                owner: definition)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            setAtIndex.Parameters.Add(new ParameterSymbol("index", Int32));
-            setAtIndex.Parameters.Add(new ParameterSymbol("element", elementT));
-            definition.Methods.Add(setAtIndex);
-            var length = new FieldSymbol("length", owner: definition,
-                fieldType: Int32, isConst: true)
-            {
-                Accessibility = Accessibility.Public,
-            };
-            definition.Fields.Add(length);
+            // 早期仅绑定签名，让无 stdlib 函数体的分析工具也能使用基本类型。
+            // 完整编译再次采用同一批类型/泛型身份，标记与函数体走普通 P2/P3。
+            var unit = new CompilationUnit(symbols, DeclarationSource);
+            var declarations = DeclarationCollector.Collect(unit);
+            var env = EntryCollector.Collect(unit, declarations);
+            TypeReferenceResolver.Visit(env);
+            GenericConstraintChecker.Visit(env);
+            if (unit.Diagnostics.HasErrors)
+                throw new CompilerInternalException("内建源码签名无效：" +
+                    string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
+            RefreshCallWildcard();
         }
 
-        // 内建基元直造（BaseType = ValueType 的 Struct + 固定别名 + intrinsic 集）
-        private TypeSymbol Primitive(string name, string bilAlias,
-            bool signedInteger = false, bool unsignedInteger = false, bool floating = false)
+        internal void RefreshCallWildcard() => CallWildcard = Any.Methods.Single(m => m.Name == "call???");
+
+        private static IReadOnlySet<BilIntrinsicOp> IntrinsicsOf(string name)
         {
             var ops = new HashSet<BilIntrinsicOp>();
-            if (signedInteger || unsignedInteger || floating)
-            {
-                ops.UnionWith(new[]
-                {
-                    BilIntrinsicOp.Add, BilIntrinsicOp.Sub, BilIntrinsicOp.Mul, BilIntrinsicOp.Div,
-                    BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe,
-                    BilIntrinsicOp.CmpLt, BilIntrinsicOp.CmpLe, BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe,
-                });
-            }
-            if (signedInteger || floating)
-            {
-                ops.Add(BilIntrinsicOp.Opposite);
-            }
-            if (signedInteger || unsignedInteger)
-            {
-                ops.UnionWith(new[]
-                {
-                    BilIntrinsicOp.BinAnd, BilIntrinsicOp.BinOr, BilIntrinsicOp.BinXor, BilIntrinsicOp.BinNot,
-                    BilIntrinsicOp.ShiftLeft, BilIntrinsicOp.ShiftRight, BilIntrinsicOp.ShiftRightUnsigned,
-                });
-            }
-            return new TypeSymbol(name, TypeKind.Struct, Core,
-                baseType: ValueType, isBuiltin: true, bilAlias: bilAlias, intrinsicOps: ops);
-        }
-
-        private static IReadOnlySet<BilIntrinsicOp> Ops(params BilIntrinsicOp[] ops)
-        {
-            return new HashSet<BilIntrinsicOp>(ops);
+            var signed = name is "i8" or "i16" or "i32" or "i64";
+            var unsigned = name is "u8" or "u16" or "u32" or "u64";
+            var floating = name is "float" or "double";
+            if (signed || unsigned || floating)
+                ops.UnionWith(new[] { BilIntrinsicOp.Add, BilIntrinsicOp.Sub, BilIntrinsicOp.Mul, BilIntrinsicOp.Div,
+                    BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe, BilIntrinsicOp.CmpLt, BilIntrinsicOp.CmpLe,
+                    BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe });
+            if (signed || floating) ops.Add(BilIntrinsicOp.Opposite);
+            if (signed || unsigned)
+                ops.UnionWith(new[] { BilIntrinsicOp.BinAnd, BilIntrinsicOp.BinOr, BilIntrinsicOp.BinXor,
+                    BilIntrinsicOp.BinNot, BilIntrinsicOp.ShiftLeft, BilIntrinsicOp.ShiftRight, BilIntrinsicOp.ShiftRightUnsigned });
+            if (name == "bool")
+                ops.UnionWith(new[] { BilIntrinsicOp.And, BilIntrinsicOp.Or, BilIntrinsicOp.Not, BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe });
+            if (name == "char")
+                ops.UnionWith(new[] { BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe, BilIntrinsicOp.CmpLt,
+                    BilIntrinsicOp.CmpLe, BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe });
+            if (name == "String") ops.UnionWith(new[] { BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe, BilIntrinsicOp.Add });
+            return ops;
         }
 
         // 具名包 ABI 类型（§14.7：Array\<Pair\<String, Any\>\>；core::Pair

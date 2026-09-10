@@ -66,6 +66,10 @@ namespace RigiCompiler.Bil.Vm
         private readonly ConcurrentDictionary<long, (BilFunction Fn, VmValue[] Args)> _specs = new();
         private readonly ConcurrentDictionary<long, BilFunction> _entries = new();
         private readonly ConcurrentDictionary<long, VmCoroutine> _failed = new();
+        private readonly object _nativeRcGate = new object();
+        private readonly Dictionary<long, ulong> _nativeRcStrong = new();
+
+        private const string TaskCoroutineHiddenKey = "$vm.coroutine.native-rc";
 
         // Rigi 运行时 fn 解析缓存（模块装载后惰性解析；HasDispatcher=false
         // 时退化为纯状态机——供空模块单元测试直驱引擎）
@@ -165,7 +169,7 @@ namespace RigiCompiler.Bil.Vm
                 _workerLoopFn = _context.FindRuntimeFunction(
                     "core.coroutine::Dispatcher$workerLoop(");
                 _publishFn = _context.FindRuntimeFunction(
-                    "core.coroutine::Dispatcher$publish(");
+                    "core.coroutine::Dispatcher$publishNative(");
                 _noteSpawnFn = _context.FindRuntimeFunction(
                     "core.coroutine::Dispatcher$noteSpawn(");
                 _noteTerminalFn = _context.FindRuntimeFunction(
@@ -209,6 +213,30 @@ namespace RigiCompiler.Bil.Vm
             return host.TryReadField(symbol, out var value) && value is VmI64 number
                 ? number.Value
                 : 0;
+        }
+
+        private static long CoroutineTokenOf(VmValue value)
+        {
+            if (value is not VmObject carrige
+                || carrige.TypeRef != "core.coroutine::CoroutineCarrige"
+                || !carrige.TryReadField(
+                    "core.coroutine::CoroutineCarrige#token@.i64", out var token)
+                || token is not VmI64 number)
+            {
+                return 0;
+            }
+            return number.Value;
+        }
+
+        private static long TaskCoroutineToken(VmObject taskObject)
+        {
+            return taskObject.TryReadHidden(TaskCoroutineHiddenKey, out var value)
+                && value is VmI64 number ? number.Value : 0;
+        }
+
+        private static void AttachTaskCoroutineToken(VmObject taskObject, long token)
+        {
+            taskObject.WriteHidden(TaskCoroutineHiddenKey, new VmI64(token));
         }
 
         private static bool ReadBoolField(IVmFieldHost host, string symbol)
@@ -308,8 +336,9 @@ namespace RigiCompiler.Bil.Vm
             var typeRef = VmContext.TaskTypeRef(VmContext.FunctionResultType(function));
             var taskObject = _context.AllocateObject(typeRef);
             coroutine.AttachTaskObject(taskObject);
+            AttachTaskCoroutineToken(taskObject, handle);
             var prefix = TaskPrefixOf(typeRef);
-            Invoke(TaskFn(prefix, "attachRuntime"),
+            Invoke(TaskFn(prefix, "attachRuntimeNative"),
                 new VmValue[] { taskObject, new VmI64(handle) }, caller);
             InheritLocals(coroutine, caller);
             Invoke(_noteSpawnFn!, new VmValue[] { DispatcherInstance() }, caller);
@@ -345,10 +374,11 @@ namespace RigiCompiler.Bil.Vm
             coroutine.PushFrame(function, new VmValue[] { body }, null);
             var handle = RegisterCoroutine(coroutine);
             coroutine.AttachTaskObject(taskObject);
+            AttachTaskCoroutineToken(taskObject, handle);
             // 目标 Executor：预设 ?? 当前 Executor（§18.4）
             coroutine.BoundExecutor = ReadExecutorField(taskObject, prefix)
                 ?? (caller == null ? null : EffectiveExecutorOf(caller));
-            Invoke(TaskFn(prefix, "attachRuntime"),
+            Invoke(TaskFn(prefix, "attachRuntimeNative"),
                 new VmValue[] { taskObject, new VmI64(handle) }, caller);
             InheritLocals(coroutine, caller);
             Invoke(_noteSpawnFn!, new VmValue[] { DispatcherInstance() }, caller);
@@ -620,11 +650,11 @@ namespace RigiCompiler.Bil.Vm
                 // Rigi 侧令牌校验抛 IllegalStateException 时结果槽为空：
                 // 异常在 InvokeOn 的 Step 循环内已按 caller 的 try/catch
                 // 展开（或置 pending 待展开）——直接返回，不覆盖其传播
-                if (value is not VmI64 handle)
+                next = value == null ? 0 : CoroutineTokenOf(value);
+                if (next == 0)
                 {
                     return VmVoid.Instance;
                 }
-                next = handle.Value;
             }
             finally
             {
@@ -676,7 +706,7 @@ namespace RigiCompiler.Bil.Vm
             mutex.Wait();
             try
             {
-                var handle = ReadI64Field(taskObject, prefix + "#handle@.i64");
+                var handle = TaskCoroutineToken(taskObject);
                 if (handle == 0)
                 {
                     // 冷 Task 首次 await（§18.3/§18.4）：同一临界区内做
@@ -688,7 +718,7 @@ namespace RigiCompiler.Bil.Vm
                     if (started == 0)
                     {
                         SpawnInto(taskObject, prefix, coroutine);
-                        handle = ReadI64Field(taskObject, prefix + "#handle@.i64");
+                        handle = TaskCoroutineToken(taskObject);
                         if (handle == 0)
                         {
                             throw new VmException("spawn-into 后 Task 仍无协程句柄");
@@ -699,7 +729,7 @@ namespace RigiCompiler.Bil.Vm
                         // 并发竞争窗口：tryStart 判定已启动但 attachRuntime
                         // 尚未写句柄不可能发生（同一 gate 临界区串行），
                         // 防御性重读
-                        handle = ReadI64Field(taskObject, prefix + "#handle@.i64");
+                        handle = TaskCoroutineToken(taskObject);
                     }
                 }
                 code = (int)((VmI32)(InvokeOn(coroutine,
@@ -728,7 +758,7 @@ namespace RigiCompiler.Bil.Vm
             if (code != 0)
             {
                 ApplyTaskOutcome(coroutine,
-                    RequireCoroutine(ReadI64Field(taskObject, prefix + "#handle@.i64")),
+                    RequireCoroutine(TaskCoroutineToken(taskObject)),
                     code, resultSlot);
             }
         }
@@ -835,8 +865,9 @@ namespace RigiCompiler.Bil.Vm
                 {
                     for (var i = 0; i < waiters.Length; i++)
                     {
-                        if (waiters.GetAt(i) is VmI64 waiterHandle
-                            && _coroutines.TryGetValue(waiterHandle.Value, out var waiter))
+                        var waiterToken = CoroutineTokenOf(waiters.GetAt(i));
+                        if (waiterToken != 0
+                            && _coroutines.TryGetValue(waiterToken, out var waiter))
                         {
                             Publish(waiter, "Task.ResumeWaiters");
                         }
@@ -955,6 +986,10 @@ namespace RigiCompiler.Bil.Vm
         {
             var handle = NewHandle();
             _coroutines[handle] = coroutine;
+            lock (_nativeRcGate)
+            {
+                _nativeRcStrong.Add(handle, 1);
+            }
             coroutine.AttachHandle(handle);
             return handle;
         }
@@ -1083,6 +1118,7 @@ namespace RigiCompiler.Bil.Vm
             // RunMainLoop → BilVm.Run 顶层 → 非零退出）
             while (!worker.Semaphore.Wait(100))
             {
+                _context.CheckStepLimit();
                 if (handle == 0 && IsDeadlocked())
                 {
                     if (Environment.GetEnvironmentVariable("RIGI_VM_DEADLOCK_TRACE") == "1")
@@ -1141,9 +1177,9 @@ namespace RigiCompiler.Bil.Vm
             foreach (var lane in new[] { "mainQueue", "computeQueue", "ioQueue" })
             {
                 if (host.TryReadField("core.coroutine::Dispatcher#" + lane
-                        + "@core.coroutine::I64Queue", out var queueValue)
+                        + "@core.coroutine::CoroutineCarrigeQueue", out var queueValue)
                     && queueValue is IVmFieldHost queueHost
-                    && queueHost.TryReadField("core.coroutine::I64Queue#count@.i32",
+                    && queueHost.TryReadField("core.coroutine::CoroutineCarrigeQueue#count@.i32",
                         out var countValue)
                     && countValue is VmI32 count && count.Value > 0)
                 {
@@ -1267,11 +1303,45 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("rigi_coroutine_destroy：协程未终态（状态 "
                     + coroutine.State + "）");
             }
-            // 棒5a：VM 对象生命周期由 GC 托管——destroy 仅作 native
-            // 台账配对的跨宿主对齐校验（终态检查），不从注册表摘除
-            //（waiter 恢复后 SettleAwait 仍需读 Result/Failure；未观察
-            // 失败清单 _failed 同理保留）
+            NativeRcReleaseCore(handle);
             return VmVoid.Instance;
+        }
+
+        internal VmValue NativeRcRetain(IReadOnlyList<VmValue> args)
+        {
+            var token = RequireI64("rigi_native_rc_retain", args, 0);
+            lock (_nativeRcGate)
+            {
+                if (!_nativeRcStrong.TryGetValue(token, out var strong))
+                {
+                    return new VmI32(0);
+                }
+                if (strong == ulong.MaxValue)
+                {
+                    throw new VmException("NativeRc 强引用计数溢出");
+                }
+                _nativeRcStrong[token] = strong + 1;
+                return new VmI32(1);
+            }
+        }
+
+        internal VmValue NativeRcRelease(IReadOnlyList<VmValue> args)
+        {
+            NativeRcReleaseCore(RequireI64("rigi_native_rc_release", args, 0));
+            return VmVoid.Instance;
+        }
+
+        private void NativeRcReleaseCore(long token)
+        {
+            lock (_nativeRcGate)
+            {
+                if (!_nativeRcStrong.TryGetValue(token, out var strong) || strong == 0)
+                {
+                    throw new VmException("NativeRc release 收到无效或已释放 token");
+                }
+                if (strong == 1) _nativeRcStrong.Remove(token);
+                else _nativeRcStrong[token] = strong - 1;
+            }
         }
 
         internal long SyncMutexCreate()
@@ -1298,8 +1368,20 @@ namespace RigiCompiler.Bil.Vm
         internal VmValue SyncMutexAcquire(IReadOnlyList<VmValue> args)
         {
             var handle = RequireI64("rigi_sync_mutex_acquire", args, 0);
-            _mutexes[handle].Wait();
+            while (!_mutexes[handle].Wait(100)) _context.CheckStepLimit();
             return VmVoid.Instance;
+        }
+
+        // 预算耗尽是解释器终止，不再执行 Rigi 终态回调（它们也需要步数）。
+        // 阻塞 Worker 通过 CheckStepLimit 自行退出，再解除计时器对上下文的根。
+        internal void StopAfterStepLimit()
+        {
+            foreach (var worker in _workers.Values)
+                if (worker.Thread != null && worker.Thread != Thread.CurrentThread)
+                    worker.Thread.Join();
+            foreach (var coroutine in _coroutines.Values) coroutine.DisposePollTimer();
+            foreach (var record in _timers.Values)
+                lock (record.Gate) record.DotNetTimer?.Dispose();
         }
 
         internal VmValue SyncMutexRelease(IReadOnlyList<VmValue> args)
@@ -1337,7 +1419,10 @@ namespace RigiCompiler.Bil.Vm
         internal VmValue CoroutineSetLane(IReadOnlyList<VmValue> args)
         {
             _ = RequireI64("rigi_coroutine_set_lane", args, 0);
-            _ = RequireI64("rigi_coroutine_set_lane", args, 1);
+            if (args.Count <= 1 || args[1] is not VmI32)
+            {
+                throw new VmException("rigi_coroutine_set_lane：参数 1 需要 i32");
+            }
             return VmVoid.Instance;
         }
 

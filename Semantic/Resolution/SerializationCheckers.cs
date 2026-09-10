@@ -1,93 +1,5 @@
 namespace RigiCompiler
 {
-    // ===== MW11d A4：内建类型登记 SerializationBase =====
-    //
-    // 内建类型无 stdlib 源可写 @SerializationBase，由编译器在符号层合成
-    // 「已应用」事实，供 with SerializationBase 与 A5 可序列性检查消费。
-    // VM/native with 运算若走 TypeInfo.wrappers，属 Phase B 遗留。
-    internal sealed class SerializationBaseRegistrar : ResolverVisitor<SerializationBaseRegistrar>
-    {
-        protected override void VisitCore(ResolveEnvironment env)
-        {
-            var serializationBase = SerializationFacts.FindWrapper(env.Unit.Symbols, "SerializationBase");
-            if (serializationBase == null) return;
-            var b = env.Unit.Symbols.Bootstrap;
-            foreach (var type in new[]
-            {
-                b.Int8, b.Int16, b.Int32, b.Int64,
-                b.UInt8, b.UInt16, b.UInt32, b.UInt64,
-                b.Float, b.Double, b.Char, b.Bool, b.String,
-                b.ArrayDefinition,
-            })
-            {
-                Register(type, serializationBase);
-            }
-            // List/Map 声明在 core.collections，源码直接 @SerializationBase
-            // 会触发 @Internal 拒绝；与 Array 同通道走编译器内部登记。
-            var collections = b.Core.ChildNamespaces.FirstOrDefault(n => n.Name == "collections");
-            if (collections != null)
-            {
-                foreach (var type in collections.Types)
-                {
-                    if (type.Kind != TypeKind.Class) continue;
-                    if (type.Name is not ("List" or "Map")) continue;
-                    Register(type, serializationBase);
-                }
-            }
-        }
-
-        private static void Register(TypeSymbol type, TypeSymbol serializationBase)
-        {
-            if (type.AppliedWrappers.Any(w =>
-                ReferenceEquals(w.WrapperDefinition, serializationBase)))
-            {
-                return;
-            }
-            type.AppliedWrappers.Add(WrapperApplication.FromConstraint(serializationBase));
-        }
-    }
-
-    // ===== @SerializationBase 隐含 @Serializable =====
-    //
-    // SerializationBase 与 Serializable 无继承关系，但源码级 @SerializationBase
-    // 的宿主视同同时应用 @Serializable（合成 toParcel/fromParcel、字段可序列化
-    // 检查、with Serializable 约束满足、:Serializable 暴露面、BIL
-    // wrapped(Serializable) 发射与运行期 with 判定——下游判定点统一读
-    // AppliedWrappers，在此追加一次合成应用即全链生效）。
-    // 判据 Syntax != null：区分 SerializationBaseRegistrar 对内建基元
-    // （i32/String/Array/List/Map）的 FromConstraint 登记——内建基元绝不能
-    // 获得 Serializable（§20.2.3 回归防线）。
-    // 豁免 core.serialization::Parcel：Parcel 是动态类型容器本体，其
-    // data: Map<String, Any> 字段设计上不满足静态可序列性（§20.3 Map 递归
-    // 检查 value=Any 不收）；若隐含 Serializable，字段检查与合成编码
-    // （EncodeMap 以 T=Any 调 setElement<T with SerializationBase>）会炸掉
-    // stdlib 编译。
-    internal sealed class SerializableImplicationRegistrar : ResolverVisitor<SerializableImplicationRegistrar>
-    {
-        protected override void VisitCore(ResolveEnvironment env)
-        {
-            var symbols = env.Unit.Symbols;
-            var serializable = SerializationFacts.FindWrapper(symbols, "Serializable");
-            var serializationBase = SerializationFacts.FindWrapper(symbols, "SerializationBase");
-            if (serializable == null || serializationBase == null) return;
-            var parcel = SerializationFacts.FindParcel(symbols);
-
-            foreach (var entry in env.TypeEntries)
-            {
-                if (!entry.InGraph || entry.Symbol is not TypeSymbol
-                    { Kind: TypeKind.Class or TypeKind.Struct } host) continue;
-                if (parcel != null && ReferenceEquals(host, parcel)) continue;
-                if (!host.AppliedWrappers.Any(w =>
-                    ReferenceEquals(w.WrapperDefinition, serializationBase) && w.Syntax != null))
-                {
-                    continue;
-                }
-                if (SerializationFacts.HasWrapper(host, serializable)) continue;
-                host.AppliedWrappers.Add(WrapperApplication.FromConstraint(serializable));
-            }
-        }
-    }
-
     // ===== MW11d A5/B2-3：@Serializable 宿主字段可序列性检查 =====
     internal sealed class SerializableFieldChecker : ResolverVisitor<SerializableFieldChecker>
     {
@@ -103,6 +15,14 @@ namespace RigiCompiler
             {
                 if (!entry.InGraph || entry.Symbol is not TypeSymbol host) continue;
                 if (!SerializationFacts.HasWrapper(host, serializable)) continue;
+                // SB 实现编码公开的值/元素，不遍历容器的内部表示。
+                if (serializationBase != null && SerializationFacts.HasWrapper(host, serializationBase))
+                {
+                    if (!SerializationFacts.HasBaseCodec(host, symbols))
+                        env.Error(entry.Node.Span,
+                            $"SB 类型 '{host.Name}' 未实现对应的 Serializable 编解码，不能按普通值复制");
+                    continue;
+                }
                 foreach (var field in host.Fields)
                 {
                     if (field.IsStatic) continue;
@@ -126,9 +46,20 @@ namespace RigiCompiler
 
     internal static class SerializationFacts
     {
+        // 固定基元与标准容器的编码器集合；同名或任意 SB 应用不能取得值复制特权。
+        public static bool HasBaseCodec(TypeSymbol type, SymbolGraph symbols)
+        {
+            var definition = type.ConstructedFrom ?? type;
+            return (definition.IsBuiltin && definition.Kind == TypeKind.Struct
+                    && definition.Name is "bool" or "char" or "i8" or "u8" or "i16" or "u16"
+                        or "i32" or "u32" or "i64" or "u64" or "float" or "double" or "String")
+                || IsArray(type, symbols, out _) || IsList(type, symbols, out _)
+                || IsMap(type, symbols, out _, out _) || IsParcel(type, symbols);
+        }
+
         public static TypeSymbol? FindWrapper(SymbolGraph symbols, string name)
         {
-            return FindSerializationNamespace(symbols)?.Types
+            return (name == "SerializationBase" ? symbols.Bootstrap.Core : FindSerializationNamespace(symbols))?.Types
                 .FirstOrDefault(t => t.Name == name && t.Kind == TypeKind.Wrapper);
         }
 
@@ -178,10 +109,11 @@ namespace RigiCompiler
             return false;
         }
 
-        public static bool IsSerializableWrapper(TypeSymbol wrapper)
+        public static bool IsSerializableWrapper(TypeSymbol wrapper, SymbolGraph symbols)
         {
             var definition = wrapper.ConstructedFrom ?? wrapper;
-            return definition.Kind == TypeKind.Wrapper && definition.Name == "Serializable";
+            // 能力属于标准库符号身份；同名用户 wrapper 不能获得序列化特化。
+            return ReferenceEquals(definition, FindWrapper(symbols, "Serializable"));
         }
 
         public static bool IsArray(SemanticSymbol? type, SymbolGraph symbols,
@@ -257,8 +189,7 @@ namespace RigiCompiler
                     if (constraint.Kind != GenericConstraintKind.With) continue;
                     var bound = constraint.Bound as TypeSymbol;
                     var boundDef = bound?.ConstructedFrom ?? bound;
-                    if (ReferenceEquals(boundDef, serializable)
-                        || ReferenceEquals(boundDef, serializationBase))
+                    if (ReferenceEquals(boundDef, serializable))
                     {
                         return true;
                     }
@@ -302,10 +233,12 @@ namespace RigiCompiler
                 return false;
             }
             if (IsParcel(fieldType, symbols)) return true;
+            // 只有不含托管载荷的非 rich enum 可以直接按值保存。
+            // rich enum 必须显式声明 Serializable，递归编码其对象字段。
+            if (fieldType is TypeSymbol { Kind: TypeKind.EnumStruct, IsRich: false }) return true;
             if (HasWrapper(fieldType, serializable)) return true;
-            if (serializationBase != null && HasWrapper(fieldType, serializationBase)) return true;
             var name = fieldType.Name;
-            reason = $"类型 '{name}' 既非 SerializationBase/Serializable，也未被 @Temporary 切断";
+            reason = $"类型 '{name}' 未声明 Serializable，也未被 @Temporary 切断";
             return false;
         }
 

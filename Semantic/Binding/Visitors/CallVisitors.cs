@@ -780,7 +780,7 @@ namespace RigiCompiler
             // MW11d-B2：obj:Serializable.toParcel() → 宿主 ..toParcel()
             // （wrapper 源码无法写 `..` 成员名；此处最窄改写）
             if (receiver is BoundWrapperAccessExpression place
-                && SerializationFacts.IsSerializableWrapper(place.Wrapper)
+                && SerializationFacts.IsSerializableWrapper(place.Wrapper, env.Unit.Symbols)
                 && name is "toParcel" or "deepCopy")
             {
                 return BindSerializableToParcel(node, place.Receiver, arguments, scope, ctx, env, name);

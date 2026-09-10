@@ -48,6 +48,8 @@ namespace RigiCompiler.Middleware.Layout
         // 是 16B 内联值 { i8* data, i64 len }（StringAbi），无布局计划——
         // 发射层直读（与 Array length 特判同构）
         public const string StringLengthField = "core::String#length@.i64";
+        // Unicode 标量值数量；与 UTF-8 字节数语义的 length 明确区分。
+        public const string StringCharacterCountField = "core::String#characterCount@.i64";
 
         // refMap 编码（与 arc.h RIGI_REFMAP_* 对齐）：高 2 位 kind | 低 14 位跳数
         public const int RefMapKindShift = 14;
@@ -55,8 +57,19 @@ namespace RigiCompiler.Middleware.Layout
         public const int RefMapKindFatRef = 0;
         public const int RefMapKindString = 1;
 
-        public static ushort EncodeRefMap(int kind, int hop) =>
-            checked((ushort)((kind << RefMapKindShift) | hop));
+        public static ushort EncodeRefMap(int kind, int hop)
+        {
+            if (kind < 0 || kind > 3)
+            {
+                throw new CompilerInternalException($"refMap kind 越界: {kind}");
+            }
+            if (hop < 0 || hop > RefMapHopMask)
+            {
+                throw new CompilerInternalException(
+                    $"refMap hop 越界: {hop}（最大 {RefMapHopMask}）");
+            }
+            return checked((ushort)((kind << RefMapKindShift) | hop));
+        }
 
         public static int RefMapKindOf(ushort entry) => entry >> RefMapKindShift;
 
@@ -176,6 +189,9 @@ namespace RigiCompiler.Middleware.Layout
 
         public static bool IsStringLengthField(string fieldSymbol) =>
             fieldSymbol == StringLengthField;
+
+        public static bool IsStringCharacterCountField(string fieldSymbol) =>
+            fieldSymbol == StringCharacterCountField;
 
         private static bool IsConstructedLengthField(string fieldSymbol, string head) =>
             fieldSymbol.StartsWith(head + "<", System.StringComparison.Ordinal)

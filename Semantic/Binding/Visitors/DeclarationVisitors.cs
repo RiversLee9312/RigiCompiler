@@ -216,6 +216,7 @@ namespace RigiCompiler
                 var appliedType = WrapperApplicationChecker.SubstituteWrapperApplication(
                     wrapperType, local, env.Unit.Symbols);
                 var app = new WrapperApplication(appliedType, annotation);
+                GenericConstraints.CheckConstructedType(appliedType, annotation.Span ?? decl.Span, env);
                 // M109b-1：cell 场景实参在声明点词法作用域绑定（外层局部/参数）
                 WrapperInitSynthesis.BindInitArgsInScope(app, scope, ctx, env, decl);
                 local.AppliedWrappers.Add(app);

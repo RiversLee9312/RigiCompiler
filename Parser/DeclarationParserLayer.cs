@@ -336,8 +336,18 @@ namespace RigiCompiler
             if (t is LineBreakToken) return ParserLayerResult.Continue.Instance;
             if (t is NotationToken n)
             {
+                // 内建降级入口的声明名保留为 call???；普通标识符不开放任意 ? 后缀。
+                // 是否属于内建 Any 的声明由语义阶段按可信源码身份检查。
+                if (n.Content == "?" && callable!.Kind == CallableKind.Func
+                    && callable.Name is "call" or "call?" or "call??")
+                {
+                    callable.Name += "?";
+                    return ParserLayerResult.Continue.Instance;
+                }
                 if (n.Content == "(")
                 {
+                    if (callable!.Name is "call?" or "call??")
+                        throw context.RaiseError("Reserved callable name must be exactly 'call???'");
                     state = State.AfterParams;
                     // 复用 ParameterListParserLayer（它自己吃掉 '(' 到 ')'）；
                     // 仅 init 允许 _ -> field 参数映射（§9.3）

@@ -21,7 +21,7 @@ cast.indirect SOURCE RESULT TYPEID_VAR
 
 - 值类型到 `Object`/`Any` 分支的装箱视图（`RUNTIME.md` §4）；
 - 派生类到基类/接口的视图改写（无数据移动）；
-- 同定义构造类型之间的视图改写：对应类型实参可赋值（含 `T`↔`Any`、数组元素同规则）时放行，无数据移动（如 `.array<core::Pair<.string,.string>>` ↔ `.array<core::Pair<.string,.any>>`）；
+- 泛型类型保留精确身份，不允许仅凭同定义、同布局或实参可赋值就重解释对象；不变参数必须完全一致，声明的合法型变与代入后的继承关系按类型规则处理。`Task<T>` 与 `Task`、`Pair<String,T>` 与 `Pair<String,Any>` 不因此可转换；具名参数包适配应重建 Pair 并检查转换其 value；
 - `T` 到 `.nullable<T>` 的装箱视图，以及 `.nullable<T>` 到 `T` 的展开——后者在源为 `null` 时抛 `core.CastException`（Rigi 层 `nullableVar as T` 即此语义）。
 
 优先级与失败行为必须与 `SYNTAX.md` 一致。失败抛出 `core.CastException`。
@@ -121,7 +121,7 @@ HOST_FIELD 的 Value wrapper 应用取得 wrapper 值拷贝（随后可对 RESUL
 get.self RESULT
 ```
 
-仅 proxy 模板 fn（带 `wrapper-proxy`，§8.4）体内合法。语义对应源码层 `self`：取被修饰宿主实例。
+仅 proxy 模板 fn（带 `wrapper-proxy`，§8.4）体内合法。语义对应源码层 `self`：读取独立宿主调用参数，不读取 wrapper 字段。接收者绑定携带该参数；VM 传给调用帧，Middleware 特化时使用精确宿主类型追加参数并消除占位指令。同步值宿主按 receiver 借用，`inner` 不得复制宿主再调用；跨挂起点不得保留悬空借用。
 
 规则：
 

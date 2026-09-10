@@ -128,6 +128,8 @@ namespace RigiCompiler.Bil.Vm
         // length 是 .bootstrap.rg 的 ext const 内建字段（core::String#length@.i64），
         // VM 直读（同 VmArray.LengthFieldSymbol 先例）
         internal const string LengthFieldSymbol = "core::String#length@.i64";
+        internal const string CharacterCountFieldSymbol =
+            "core::String#characterCount@.i64";
 
         public string Value { get; }
         public VmString(string value) { Value = value; }

@@ -37,7 +37,7 @@ pub interface IDisposable {
 
 若 `dispose()` 正在挂起，对象及清理记录仍由对应 Coroutine frame 保持，尚未进入对象销毁检查；运行时不能把“正在执行可挂起 disposal”误当成未负责的遗失资源。真正到达 microGC、microSGC 或 macroGC 销毁点而 disposal 状态仍表明从未调用 `dispose()` 的对象必须爆炸上报。
 
-这一后门是错误检测机制，不是隐式清理机制：
+这一检查是错误检测机制，不是隐式清理机制：
 
 - GC **绝不**替对象调用 `dispose()`；
 - 不建立 finalization queue；
@@ -86,3 +86,27 @@ pub interface IDisposable {
 - **GC 类设施（如 GCAlarm）不属于本表面，也不进 stdlib 与 VM**：BIL 明确规定不得对 GC 机制与实现作任何假设（`BIL_STANDARD.md` §1.1/§22.1），此类设施是 Middleware 的内部实现细节，没有任何跨层可见形态。
 - **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `rigi_rt` 实现的环境下也能完整执行程序。
 - 标准库在 Rigi 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `rigi_rt`；格式化、插值等逻辑全部在 Rigi 层演进，不进入原生方法面。
+
+### 26.1 NativeRcHandle 与跨协程搬运
+
+`core.native.NativeRcHandle\<TCarrige extends ICarrige>` 是 local 抽象类，
+实现 IDisposable，规定 `carry(): TCarrige` 与 `dispose()`。具体类将
+原生 token 保存在私有字段，资源操作通过该 local 封装执行。调用方
+用 using/dispose 管理持有期，不手动调用 native retain/release。
+
+`core.native.ICarrige` 是 shared 接口，仅提供 `retain(): Any?`，**不实现
+IDisposable**。具体 Carrige 是弱搬运票据，不拥有资源强引用，也不提供
+操作资源的能力。跨协程先 carry 并传递 Carrige，目标协程 retain 后
+必须判空，再做具体 Handle 的运行期检查转换，最后用 using 管理返回
+的 local Handle。retain 成功延长资源寿命；资源已经销毁时返回 null。
+
+原生注册表将 token 映射到 payload、强引用计数与析构函数。token 单调
+分配且不复用，避免旧票据指向新资源。retain 与最终 release 在同一锁内
+线性化，计数归零先移除条目，再在锁外析构，防止复活并允许嵌套释放。
+查询 payload 的调用者必须在整个操作期间持有强引用；查询本身不延长
+生命周期。注册表不改变 Rigi 泛型身份或对象内存布局规则。
+
+CoroutineHandle / CoroutineCarrige 是内部示例：Task 与 Task<T> 保持独立
+的语言类型和布局，只共同持有 CoroutineCarrige。调度器保留运行所需
+原生强引用，协程清理完成后释放；Carrige 不保活已结束且没有其它
+持有者的资源。MQ 不使用 NativeRcHandle 或原生队列句柄。

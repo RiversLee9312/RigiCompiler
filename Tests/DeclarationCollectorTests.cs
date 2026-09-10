@@ -114,7 +114,7 @@ namespace RigiCompiler.Tests
 
             TestHarness.CheckTrue("struct 在 ValueType 分支", point.IsValueTypeBranch);
             TestHarness.CheckTrue("class 不在 ValueType 分支", !animal.IsValueTypeBranch);
-            TestHarness.CheckTrue("wrapper 恒 rich（§14.9）", logged.IsRich);
+            TestHarness.CheckTrue("wrapper 默认非 rich（§14.9）", !logged.IsRich);
             TestHarness.CheckTrue("class 非 rich", !animal.IsRich);
             TestHarness.CheckTrue("rich 标记位读出（不查合法性，归 P2）", GlobalType(unit, "RichEntry").IsRich);
             TestHarness.CheckTrue("shared 标记位读出", GlobalType(unit, "SharedBox").IsShared);
@@ -432,6 +432,24 @@ namespace RigiCompiler.Tests
         private static void TestNamespaceDiagnostics()
         {
             TestHarness.Section("P1 Namespace Diagnostics");
+
+            foreach (var name in new[] { "core", "core.serialization", "core.collections.deep" })
+            foreach (var fileName in new[] { "user.rg", "<stdlib>/.bootstrap.rg", "stdlib/core/fake.rg" })
+            {
+                var root = TestHarness.ParseRoot($"namespace {name}\nclass Forged {{}}\n", fileName);
+                var forged = new CompilationUnit(root);
+                DeclarationCollector.Collect(forged);
+                TestHarness.CheckSemanticError("保留命名空间拒绝伪装文件 " + name + " / " + fileName,
+                    forged.Diagnostics, "reserved for the compiler standard library");
+            }
+            foreach (var name in new[] { "corex", "my.core", "Core", "core_extra.child" })
+            {
+                var (ordinary, _) = CollectUnit($"namespace {name}\nclass Allowed {{}}\n");
+                TestHarness.CheckTrue("非保留命名空间合法 " + name, !ordinary.Diagnostics.HasErrors);
+            }
+            var builtin = new CompilationUnit(StdlibSources.ParseAll().ToArray());
+            DeclarationCollector.Collect(builtin);
+            TestHarness.CheckTrue("内嵌标准库来源允许声明 core 子树", !builtin.Diagnostics.HasErrors);
 
             var (unit1, decls1) = CollectUnit("namespace a\nnamespace b\nclass A { }\n");
             TestHarness.CheckSemanticError("每文件至多一个 namespace", unit1.Diagnostics,

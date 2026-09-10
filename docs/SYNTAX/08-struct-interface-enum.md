@@ -51,7 +51,7 @@ pub shared rich struct SharedEntry {
 - 继承遵守 §3.1.1 的单向传染：rich 基类的子类必须 rich，shared 基类的子类必须 shared；反向可以收紧（非 shared 基类可以有 shared 子类），前提是包括继承字段在内的完整闭包合法。
 - `enum struct` 是 struct 的封闭特例：不能标记为 `open`，不能继承用户声明的 struct，也不能被其他类型继承；其固定继承链为 `具体 enum → Enum → ValueType`。
 - class 不能继承 struct，struct 不能继承 class。
-- 非 rich struct 不能被任何 wrapper 修饰，其字段与实例方法也不能挂载 wrapper（见 §14.9）。
+- 非 rich struct 及其字段与实例方法只能挂载非 rich wrapper（见 §14.9）。
 - **值类型布局环拒绝（P18/S2 配套）**：struct/enum struct 的实例字段按值内嵌，布局必须有限。自包含（`struct Box { var next: Box }`）、互包含（A↔B 三方及以上同论），含**经泛型实参代入**形成的环（`struct A { var b: B\<A> }` 且 `struct B\<T> { var x: T }`），一律在声明点报编译错误（诊断给出环路径，如 `A -> B -> A`）。DA 单独堵不死布局无限大（`init(other: Box) { next = other }` 每条路径都赋值但布局仍无限），故布局环是独立于 DA 的结构检查。经引用类型或 `Nullable\<T>`（Object 分支）字段打断的环合法——`rich struct Node { var next: Node? }` 是合法的链表节点（非 rich struct 持 `Node?` 仍被 §3.1.1 闭包表拒绝，两规则正交）。泛型参数类型的字段不展开（`var x: T` 不贡献边）。**泛型发散链深度上限 64**：每次代入都生成新构造、理论上无限加深但不构成环的链，展开深度超过 64 即截断——停止继续下钻，**不报环**（纯防御；合法有限布局不会触达该上限）。
 
 ---

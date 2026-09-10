@@ -221,7 +221,7 @@ namespace RigiCompiler.Tests
                     $"{wrapperAccess.Wrapper.Name})",
                 // S11：enum case 构造（类型恒为宿主 enum，不重复打印）
                 BoundEnumCaseExpression enumCase =>
-                    $"EnumCase({TypeShort.Of(enumCase.Case.Owner)}.{enumCase.Case.Name}, " +
+                    $"EnumCase{(enumCase.ArgumentsAreInitArguments ? "Init" : "")}({TypeShort.Of(enumCase.Type)}.{enumCase.Case.Name}, " +
                     $"[{string.Join(", ", enumCase.Arguments.Select(Expr))}])",
                 BoundSwitchExpression switchExpr =>
                     $"SwitchExpr({Expr(switchExpr.Selector)}, [{string.Join("; ", switchExpr.Cases.Select(c => $"{(c.IsPattern ? "CaseP" : "Case")}({Expr(c.Match)}, {ValueBlock(c.Body)})"))}], {ValueBlock(switchExpr.DefaultBody)}, {TypeShort.Of(switchExpr.Type)})",
