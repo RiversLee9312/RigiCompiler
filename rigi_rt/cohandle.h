@@ -1,7 +1,7 @@
 /*
  * 协程句柄原语（MW11c 棒3，RUNTIME §17.4）：薄封装 resume fn + frame，
  * 供 Rigi 世界的 Dispatcher 以「create/resume/destroy」驱动编译器状态机
- * fn。归属 Task 在 Rigi 世界；跨协程只传 NativeRc token/Carrige，
+ * fn。归属 Task 在 Rigi 世界；跨协程只传 NativeRc token/Carriage，
  * 不传裸 RigiCoHandle 指针。MW11a 的
  * RigiCoroutine 七态实体已随棒5a 拆除：
  * 本面只管「跑一个执行段」，状态机与调度语义全在 Rigi 世界。

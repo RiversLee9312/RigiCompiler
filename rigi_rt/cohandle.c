@@ -39,7 +39,7 @@ typedef struct RigiCoHandle
     _Atomic uint32_t poll_backoff_ms;
     int64_t poll_timer;      /* rigi_timer_* 句柄；0 = 无 */
     RigiLocalBind *locals;   /* 绑定栈顶；NULL = 空 */
-    int64_t token;           /* NativeRc 注册表身份；Carrige 仅携带此值 */
+    int64_t token;           /* NativeRc 注册表身份；Carriage 仅携带此值 */
 } RigiCoHandle;
 
 static void rigi_ch_locals_clear(RigiCoHandle *h);

@@ -332,7 +332,7 @@ rigi_rt 导出（命名待定，形态固定）：
 | `string_concat` 等内建面 | String 内建 `+` 等特权操作的实现（String 字符数据是特权裸缓冲区，非托管引用，RUNTIME §4） |
 | `i64_to_string` / `u64_to_string` / `f64_to_string` / `f32_to_string` / `bool_to_string` / `char_to_string` | 标量标准文本（StringOut 首参；any_to_string 的格式化底座；窄整数在 any_to_string 内按符号性 widen 到 i64/u64；f64/f32 为 Ryu 最短往返 + .NET 默认呈现） |
 | `any_to_string` | 任意胖值标准文本（StringOut 首参 + Any 槽指针）：内建标量走对应 to_string 面；`core::String`（tag1）拷贝裸块；其余（tag2 对象 / 大 struct 等）取 TypeInfo.name。不虚调 toString（防默认体递归；override 经方法虚派发，不经本面） |
-| `any_hash` | 任意胖值 i64 哈希（Any 槽指针入参；§3.8.1 Map 键判等）：tag1 String 对 data 字节取 FNV-1a 64（内容）；tag0 标量对 payload 8 字节取 FNV-1a 64（按值）；tag2 对象与 tag1 非 String 堆值对 payload（堆指针）取 FNV-1a 64（身份，不直接返回裸指针）；null 固定 0。只承诺同一进程内同值必同哈希，与 VM hook 数值不要求一致。不虚调 hash（防默认体递归；override 经 `$mw.any.hash` 合成分派链走方法虚派发，不经本面） |
+| `any_hash` | 任意胖值 i64 哈希（Any 槽指针入参；§3.8.1 Map 键判等）：tag1 String 对 data 字节取 FNV-1a 64（内容）；tag0 标量对 payload 8 字节取 FNV-1a 64（按值）；tag2 对象与 tag1 非 String 堆值对 payload（堆指针）取 FNV-1a 64（身份，不直接返回裸指针）；null 固定 0。同一进程内同值必同哈希；VM hook 已统一为同一 FNV-1a 64（review-20260910），标量/字符串数值两宿主一致。不虚调 hash（防默认体递归；override 经 `$mw.any.hash` 合成分派链走方法虚派发，不经本面） |
 | `box_*` | Box 运行时面 |
 | `rigi_span_alloc` | Span/SharedSpan 分配（与数组同构：32B 前缀 + 原生 stride 内联元素；TypeSheet 区分 Span vs SharedSpan）。元素访问内联无独立面；析构复用数组走查（`RIGI_TYPE_ARRAY`） |
 | `rigi_try_cast` | 动态 cast（占位目标）：胖引用 typeid+payload + 目标 TypeSheet* + 两枚 out i64；is 命中改写视图 typeid；数值互转对齐 VM；失败返 0 |

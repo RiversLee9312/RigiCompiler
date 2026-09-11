@@ -209,7 +209,7 @@ namespace RigiCompiler.Middleware.Mir
         private static readonly string[] CoroutineRuntimeTypes =
         {
             "core.coroutine::Dispatcher",
-            "core.coroutine::CoroutineCarrigeQueue",
+            "core.coroutine::CoroutineCarriageQueue",
             "core.coroutine::Task",
             "core.coroutine::Task<TReturn>",
             "core.coroutine::SleepAlarm",
@@ -771,6 +771,20 @@ namespace RigiCompiler.Middleware.Mir
                             AddUserOperatorEdges(context, unary.Op,
                                 localTypes[unary.Operand.Name], edges);
                             break;
+                        // #03 用户转换边（cast/cast.safe）：静态可知的
+                        // 源/目标对命中 castTo/castFrom 时 CastLowering
+                        // 把指令改写为 operator fn 的 MirCall——边与改写
+                        // 共用 UserConversionRewrite.FindConversion 同一
+                        // 查询（防漂移）；cast.indirect 目标运行期才知，
+                        // 不重写亦无边（内建通道）
+                        case CastInstruction cast:
+                            if (UserConversionRewrite.FindConversion(context.Symbols,
+                                    localTypes[cast.Source.Name],
+                                    cast.TargetType.TypeRef, out _) is { } conversion)
+                            {
+                                AddOperatorMemberEdges(context, conversion, edges);
+                            }
+                            break;
                         // MW11a：await/裸 yield 不产生调用边——操作数是
                         // 已有局部（Task 句柄/结果槽），无 invoke/new/
                         // 访问器目标；async fn 体经自身符号（split 后 =
@@ -929,7 +943,11 @@ namespace RigiCompiler.Middleware.Mir
         {
             edges.Add(target.Canonical);
             var query = context.DispatchQuery;
-            var ownerSlots = query?.GetVTableSlots(target.Owner!.Canonical);
+            // 宿主槽表与派生判定按 PlanKey 消歧（模板 Canonical 裸名会撞
+            // 同名元数 0 类型的计划键：AsyncAction<T0> vs AsyncAction）——
+            // CoroutineSplitPass R2-b / VirtualSlotOf 同口径
+            var ownerKey = Layout.GenericAbi.PlanKey(target.Owner!);
+            var ownerSlots = query?.GetVTableSlots(ownerKey);
             if (ownerSlots == null)
             {
                 return;
@@ -941,7 +959,7 @@ namespace RigiCompiler.Middleware.Mir
             }
             foreach (var typeCanonical in query!.AllClassCanonicals())
             {
-                if (!query.DerivesFrom(typeCanonical, target.Owner!.Canonical))
+                if (!query.DerivesFrom(typeCanonical, ownerKey))
                 {
                     continue;
                 }
@@ -965,7 +983,8 @@ namespace RigiCompiler.Middleware.Mir
                 edges.Add(target.Canonical);
             }
             var query = context.DispatchQuery;
-            var ifaceSlots = query?.GetVTableSlots(target.Owner!.Canonical);
+            // 模板 Canonical 裸名撞同名元数 0 类型的计划键（同 AddVirtualEdges）
+            var ifaceSlots = query?.GetVTableSlots(Layout.GenericAbi.PlanKey(target.Owner!));
             if (ifaceSlots == null)
             {
                 return;

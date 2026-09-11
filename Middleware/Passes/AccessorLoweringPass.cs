@@ -134,7 +134,9 @@ namespace RigiCompiler.Middleware.Passes
             }
         }
 
-        // 原 FlowBuilder.EmitGetStatic 同口径（无 #..value@ / IsCurrentOf）。
+        // 原 FlowBuilder.EmitGetStatic 同口径（无 IsCurrentOf——excludingFn
+        // 已自身排除）。#..value@ 伪字段（setter 体内 backing 直访）归一到
+        // 真实字段：VM TryResolveBackingValue 同口径，实例路径同形。
         // 刀5 解除 wrapped 静态受控拒绝：wrapped 静态字段经 companion
         // cell 间接、自身符号不进符号段（RequireField 的存在性守卫仍在）；
         // Entity wrapped 宿主上的普通静态字段按 VM 静态槽直读写放行
@@ -142,6 +144,11 @@ namespace RigiCompiler.Middleware.Passes
         {
             internal static MirInst Rewrite(MwContext context, MirFunction fn, MirGetStatic inst)
             {
+                if (AccessorRules.IsBackingPseudoField(inst.FieldSymbol))
+                {
+                    return new MirGetStatic(
+                        AccessorRules.CurrentField(fn.Symbol, inst.FieldSymbol), inst.Target);
+                }
                 AccessorRules.RequireField(context.Symbols, inst.FieldSymbol);
                 if (ImplBinder.FindAccessor(context.Symbols, inst.FieldSymbol,
                     BilAccessorKind.Getter, fn.Symbol.Canonical) is { } getter)
@@ -152,11 +159,16 @@ namespace RigiCompiler.Middleware.Passes
             }
         }
 
-        // 原 FlowBuilder.EmitSetStatic 同口径
+        // 原 FlowBuilder.EmitSetStatic 同口径（#..value@ 处置同 GetStatic）
         private static class SetStaticLowering
         {
             internal static MirInst Rewrite(MwContext context, MirFunction fn, MirSetStatic inst)
             {
+                if (AccessorRules.IsBackingPseudoField(inst.FieldSymbol))
+                {
+                    return new MirSetStatic(inst.Source,
+                        AccessorRules.CurrentField(fn.Symbol, inst.FieldSymbol));
+                }
                 AccessorRules.RequireField(context.Symbols, inst.FieldSymbol);
                 if (ImplBinder.FindAccessor(context.Symbols, inst.FieldSymbol,
                         BilAccessorKind.Setter, fn.Symbol.Canonical) is { } setter)
@@ -175,6 +187,25 @@ namespace RigiCompiler.Middleware.Passes
             // getter，故需此判定（原 FlowBuilder.IsCurrentAccessorOf 同口径）
             internal static bool IsCurrentOf(MwMemberSymbol current, string fieldSymbol) =>
                 CurrentFieldOrNull(current) == fieldSymbol;
+
+            // backing 直访伪字段判定（VM TryResolveBackingValue 的
+            // FieldSimpleName == ..value 同口径）：实例形态 Host#..value@T，
+            // 静态形态 Host#.static...value@T（全局字段宿主段为空）
+            internal static bool IsBackingPseudoField(string fieldSymbol)
+            {
+                var hash = fieldSymbol.IndexOf('#');
+                var at = fieldSymbol.LastIndexOf('@');
+                if (hash < 0 || at <= hash)
+                {
+                    return false;
+                }
+                var name = fieldSymbol.Substring(hash + 1, at - hash - 1);
+                if (name.StartsWith(".static.", System.StringComparison.Ordinal))
+                {
+                    name = name.Substring(".static.".Length);
+                }
+                return name == BilSpellings.BackingValueFieldName;
+            }
 
             internal static string CurrentField(MwMemberSymbol current, string pseudoFieldSymbol) =>
                 CurrentFieldOrNull(current)
@@ -259,10 +290,15 @@ namespace RigiCompiler.Middleware.Passes
                 return field;
             }
 
-            // 宿主类型 wrapped 判定（Entity 面，刀3b）
+            // 宿主类型 wrapped 判定（Entity 面，刀3b）。外部宿主除外：
+            // WrapperApplicationIndex.Build 跳过 IsExternal，Entity 环链永不
+            // 为外部宿主烘焙，按 wrapped 放行即成死路（#10：String 等固定
+            // ABI 宿主带序列化 wrapped 标记却无本地环链）——访问器改写就地
+            // 完成，与 RewriteEntityGet 的无环兜底同口径（VM 全局访问器表
+            // 本就扁平登记，无环时直调 getter）
             internal static bool IsHostWrapped(MwMemberSymbol field)
             {
-                if (field.Owner == null)
+                if (field.Owner == null || field.Owner.IsExternal)
                 {
                     return false;
                 }

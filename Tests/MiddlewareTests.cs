@@ -1399,6 +1399,39 @@ namespace RigiCompiler.Tests
                 structCaught = ex.Message.Contains("值类型 init");
             }
             TestHarness.CheckTrue("R2-c 值类型 init tainted 受控拒绝", structCaught);
+
+            // #08：PollingAlarm.isReady override 含挂起点（§19.2 同步
+            // 探测方法）——native 轮询由合成 fn $mw.poll_probe 同步虚
+            // 派发触发，恢复闸无泵可等；tainted 实现 split 后 vtable
+            // 槽指陷阱 fn（ReplaceWithTrap），轮询正中陷阱即恢复闸
+            // 时段错误（静默 UB）。split 前升级为受控拒绝；用户侧改写
+            // 路径 EventAlarm + signal()
+            var pollCaught = false;
+            try
+            {
+                PipelineFromSource(
+                    "import core.coroutine.*\n" +
+                    "pub shared class BadPoll : PollingAlarm {\n" +
+                    "    pub const cell: core.AtomicStruct\\<i64>\n" +
+                    "    pub init() { cell = new core.AtomicStruct\\<i64>(0L) }\n" +
+                    "    pub override func isReady(): bool {\n" +
+                    "        return cell.load() >= 0L\n" +
+                    "    }\n" +
+                    "}\n" +
+                    "async func run() {\n" +
+                    "    var p = new BadPoll()\n" +
+                    "    yield p\n" +
+                    "}\n" +
+                    "pub func main(): i32 {\n" +
+                    "    run()\n" +
+                    "    return 0\n" +
+                    "}\n", "coro.reject.pollalarm.bil");
+            }
+            catch (MwNotSupportedException ex)
+            {
+                pollCaught = ex.Message.Contains("PollingAlarm.isReady");
+            }
+            TestHarness.CheckTrue("#08 PollingAlarm.isReady tainted 受控拒绝", pollCaught);
         }
 
         // ===== MW11b 棒3：yield Alarm 切分形态 + probe 合成 fn =====

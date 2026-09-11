@@ -70,29 +70,41 @@ namespace RigiCompiler.Bil
 
         private static BilVmResult RunProgram(VmContext context, string? entryPoint)
         {
+            // 入口解析失败仍抛（此刻 stdout 尚无任何内容；调用方/test 依赖该
+            // 异常语义，见 BilVmTests 多入口用例）
             var entry = context.FindEntrypoint(entryPoint);
-            // 无 Dispatcher 的直建模块（单元测试）走降级通道同步直跑
-            if (!context.Dispatch.HasDispatcher)
+            try
             {
-                var standalone = context.Dispatch.RunStandalone(entry, Array.Empty<VmValue>());
+                // 无 Dispatcher 的直建模块（单元测试）走降级通道同步直跑
+                if (!context.Dispatch.HasDispatcher)
+                {
+                    var standalone = context.Dispatch.RunStandalone(entry, Array.Empty<VmValue>());
+                    context.CheckStepLimit();
+                    // MW12b §25.2：main 之后、失败汇总之前派发 undisposed 事件
+                    var standaloneDrain = context.CollectAndDispatchUndisposed();
+                    return new BilVmResult(context.Stdout, context.Stderr,
+                        standalone.Result, standalone.Failure ?? standaloneDrain);
+                }
+                var main = context.Dispatch.Spawn(entry, Array.Empty<VmValue>(), caller: null);
+                context.Dispatch.MainHandle = main.Handle;
+                context.Dispatch.RunMainLoop();
                 context.CheckStepLimit();
-                // MW12b §25.2：main 之后、失败汇总之前派发 undisposed 事件
-                var standaloneDrain = context.CollectAndDispatchUndisposed();
-                return new BilVmResult(context.Stdout, context.Stderr,
-                    standalone.Result, standalone.Failure ?? standaloneDrain);
+                // MW12b §25.2（VM 半场）：main/drain 之后、失败汇总之前——逼 GC
+                // 收出未 dispose 对象的终结器事件，逐条真构造异常调
+                // GlobalExceptionHandler.dispatch；派发失败走未捕获异常归宿。
+                // main 帧在终态已全弹（ReturnFromFrame），局部对象不再被根住；
+                // 静态槽/单例保持根住（不模拟静态退出清理的销毁检查）
+                var drainFailure = context.CollectAndDispatchUndisposed();
+                var exception = main.Failure ?? context.Dispatch.UnobservedFailure ?? drainFailure;
+                return new BilVmResult(context.Stdout, context.Stderr, main.Result, exception);
             }
-            var main = context.Dispatch.Spawn(entry, Array.Empty<VmValue>(), caller: null);
-            context.Dispatch.MainHandle = main.Handle;
-            context.Dispatch.RunMainLoop();
-            context.CheckStepLimit();
-            // MW12b §25.2（VM 半场）：main/drain 之后、失败汇总之前——逼 GC
-            // 收出未 dispose 对象的终结器事件，逐条真构造异常调
-            // GlobalExceptionHandler.dispatch；派发失败走未捕获异常归宿。
-            // main 帧在终态已全弹（ReturnFromFrame），局部对象不再被根住；
-            // 静态槽/单例保持根住（不模拟静态退出清理的销毁检查）
-            var drainFailure = context.CollectAndDispatchUndisposed();
-            var exception = main.Failure ?? context.Dispatch.UnobservedFailure ?? drainFailure;
-            return new BilVmResult(context.Stdout, context.Stderr, main.Result, exception);
+            // review-20260910 附录 A.2：调度死锁等中止路径不得吞掉已缓冲的
+            // stdout——异常随结果返回，由 CLI 先写 stdout 再写 stderr 报文
+            //（步数上限保留 Run 外层的 StopAfterStepLimit 专用通道）
+            catch (VmException ex) when (ex is not VmStepLimitException)
+            {
+                return new BilVmResult(context.Stdout, context.Stderr, null, ex);
+            }
         }
 
         public static BilVmResult Run(BilModule module, long maxSteps = 0,

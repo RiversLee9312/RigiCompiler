@@ -122,8 +122,14 @@ namespace RigiCompiler.Middleware.Layout
                 //（VmTypeSheet.cs 自有槽段），运算符同签名恒覆盖基槽——
                 // intrinsic 运算符的实际类型派发（VM FindOperator 口径）
                 // 依赖槽实现随派生链更新
+                // §9.7 字段初始化器合成族（$..init.field.<名>）：字段覆写
+                //（open var + 子类 override var）共享基类存储槽，初值经
+                // 该合成方法虚派发选最高派生实现；合成方法无 override 修饰
+                // 符，不走上面的 override 条件——不替换会让子类初值方法滞留
+                // 为新槽、继承槽仍指基类实现，经基类引用读回基类初始值（#11）
                 if (inherited >= 0 && (member.HasKeyword(BilKeyword.Override)
-                    || member.IsOperatorMember))
+                    || member.IsOperatorMember
+                    || IsInitFieldMember(member)))
                 {
                     // 连同 canonical 相同的别名槽一并替换：接口实现段会
                     // 对同一基类成员追加别名槽（iMap 段基址 + 段内槽序
@@ -171,5 +177,15 @@ namespace RigiCompiler.Middleware.Layout
 
         internal static bool IsTask(string declaration) =>
             declaration == "core.coroutine::Task" || declaration == "core.coroutine::Task<TReturn>";
+
+        // ..init.field.<名> 合成方法族判定（BilSpellings.InitFieldMethodPrefix，
+        // 与 MirReachability.IsInitFamilyName 同口径：名段紧跟宿主 $ 之后）
+        private static bool IsInitFieldMember(MwMemberSymbol member)
+        {
+            var dollar = member.Canonical.IndexOf('$');
+            return dollar >= 0
+                && member.Canonical.Substring(dollar + 1).StartsWith(
+                    BilSpellings.InitFieldMethodPrefix, System.StringComparison.Ordinal);
+        }
     }
 }

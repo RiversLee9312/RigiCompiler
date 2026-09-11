@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Symbols;
 
@@ -46,6 +47,67 @@ namespace RigiCompiler.Middleware.Layout
                 }
             }
             return false;
+        }
+
+        // 类级 typeid 判定（含外层宿主链；review-20260910 #02）：嵌套类
+        // 方法帧形参 = 外层宿主链 GP + 自身 GP + 方法 GP（Lowering
+        // CollectFrameGenericParameters，外层在前），仅查直接宿主会把
+        // 外层宿主 GP 误判为方法级 typeid 留在调用签名里（接口槽 ABI
+        // 多一个 .typeid 前缀）。直接宿主快路命中即返，否则沿外层声明
+        // 链查符号表。
+        public static bool IsClassLevelTypeId(MwSymbolTable symbols,
+            MwMemberSymbol? owner, string paramName)
+        {
+            if (IsClassLevelTypeId(owner, paramName))
+            {
+                return true;
+            }
+            if (owner?.Owner == null
+                || !paramName.StartsWith(".generic.", StringComparison.Ordinal))
+            {
+                return false;
+            }
+            var name = paramName.Substring(".generic.".Length);
+            foreach (var parameter in OuterGenericParametersOf(symbols, owner.Owner.Canonical))
+            {
+                if (parameter == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 嵌套类外层宿主链 GP 名表（最外层在前；VM VmContext
+        // .OuterGenericParametersOf 同口径）：canonical "ns::A.B.C" 去
+        // :: 前缀后按 . 逐级取宿主前缀，FindType 收各级
+        // GenericParameters，按名去重（同名遮蔽只留最外层槽位）
+        public static List<string> OuterGenericParametersOf(MwSymbolTable symbols,
+            string typeCanonical)
+        {
+            var names = new List<string>();
+            var nsEnd = typeCanonical.IndexOf("::", StringComparison.Ordinal);
+            var nsPrefix = nsEnd >= 0 ? typeCanonical.Substring(0, nsEnd + 2) : "";
+            var path = nsEnd >= 0 ? typeCanonical.Substring(nsEnd + 2) : typeCanonical;
+            var parts = path.Split('.');
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var depth = 1; depth < parts.Length; depth++)
+            {
+                var ownerSymbol = nsPrefix + string.Join(".", parts, 0, depth);
+                var ownerType = symbols.FindType(ownerSymbol);
+                if (ownerType == null)
+                {
+                    continue;
+                }
+                foreach (var parameter in ownerType.Declaration.GenericParameters)
+                {
+                    if (seen.Add(parameter))
+                    {
+                        names.Add(parameter);
+                    }
+                }
+            }
+            return names;
         }
 
         public static bool TryPlaceholderName(string typeRef, out string name)

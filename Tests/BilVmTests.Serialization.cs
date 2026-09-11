@@ -283,6 +283,40 @@ namespace RigiCompiler.Tests
             CheckI32("平铺标量 main 返回 42", result, 42);
         }
 
+        // review-20260910 #04：@Serializable + 带 .proxy.* 的有状态 Entity
+        // wrapper 共存时，重建协议方法（..init.serializable / ..decode.graph）
+        // 不得绕 Entity wrapper 方法链——否则链在 wrapper 安装完成前读实例
+        private static void TestSerializableWithStatefulEntityWrapperDeepCopy()
+        {
+            var result = Run(
+                "import core.serialization.*\n" +
+                "@WrapperTarget(.Entity)\n" +
+                "pub shared wrapper Audited\\<TTarget> {\n" +
+                "    pub var events: i64\n" +
+                "    pub init(level: i32 = 0) { events = 0L }\n" +
+                "    operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(\n" +
+                "        symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...\n" +
+                "    ): TReturn { return inner(symbol=symbol, namedArgs=namedArgs, unnamedArgs=unnamedArgs) }\n" +
+                "}\n" +
+                "@Serializable\n" +
+                "@Audited(1)\n" +
+                "pub class Station {\n" +
+                "    pub var name: String\n" +
+                "    pub init(_ -> name)\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const copy = deepCopy\\<Station>(new Station(\"A\"))\n" +
+                "    if (copy.name != \"A\") { return 1 }\n" +
+                "    if (copy:Audited.events != 0L) { return 2 }\n" +
+                "    const p2 = copy:Serializable.toParcel()\n" +
+                "    const copy2 = fromParcel\\<Station>(p2)\n" +
+                "    if (copy2:Audited.events != 0L) { return 3 }\n" +
+                "    return 42\n" +
+                "}\n");
+            CheckOk("#04 序列化+有状态 Entity wrapper 深复制", result);
+            CheckI32("#04 main 返回 42", result, 42);
+        }
+
         private static void TestSerializableNestedIndependent()
         {
             var result = Run(

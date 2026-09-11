@@ -10,31 +10,44 @@ pub shared class QueueItem\<shared T> {
     pub init(_ -> isEos, _ -> item)
 }
 
-// reader 记录不反向引用队列。空读时使用固定 wake gate，避免为每条消息
-// 创建运行时事件；waitToken 只能在队列锁内设置、摘取和释放。
+// reader 记录不反向引用队列。空读时使用一次性粘滞事件等待（#15）：
+// 每轮等待新建一个 EventAlarm 底座，post/close 在队列闸内 fire 唤醒。
+// 相比 Mutex 占位-重取协议，yield EventAlarm 在宿主侧一次登记直达，
+// 不经 acquire 子协程接力，调度段数大幅下降（VM 宿主丢消息的直接
+// 成因是泵消费链超时，见 #15 报告）。
 priv shared class QueueReaderState\<shared TMessage with core.serialization.Serializable> {
     pub var cursor: i64
     pub var segment: QueueLogSegment\<TMessage>?
     pub var inNext: bool
     pub var active: bool
-    pub const wake: core.coroutine.Mutex
-    pub var waitToken: core.coroutine.Mutex.Lock?
+    // 等待握手：waiting=true 表示「下一轮等待已武装」；wake 事件在队列
+    // 闸内成对重置。fire（粘滞）与武装在同一闸内原子，先 fire 后 yield
+    // 由粘滞语义兜底（已触发事件的 yield 立即返回，无丢失窗口）。
+    pub var waiting: bool
+    pub var wake: QueueWakeup
     pub var following: QueueReaderState\<TMessage>?
     pub init(position: i64) {
         cursor = position
         segment = null
         inNext = false
         active = true
-        wake = new core.coroutine.Mutex()
-        waitToken = null
+        waiting = false
+        wake = new QueueWakeup()
         following = null
     }
     pub func signal() {
-        if (waitToken != null) {
-            const token = (waitToken as core.coroutine.Mutex.Lock)
-            waitToken = null
-            wake.release(token)
+        if (waiting) {
+            waiting = false
+            wake.fire()
         }
+    }
+}
+
+// 手动粘滞事件底座：EventAlarm.signal 为 protected，经本类 fire 暴露
+// 给队列内部唤醒路径（每轮等待换新实例，粘滞不跨轮残留）。
+priv shared class QueueWakeup : core.coroutine.EventAlarm {
+    pub func fire() {
+        signal()
     }
 }
 
@@ -121,13 +134,13 @@ priv shared class MessageQueue\<shared TMessage with core.serialization.Serializ
                         return new QueueItem\<TMessage>(false, value)
                     }
                     if (not accepting) { return new QueueItem\<TMessage>(true, null) }
-                    // 先占有固定 wake gate 再解队列锁，避免丢失唤醒窗口。
-                    reader.waitToken = await reader.wake.acquire()
+                    // 武装一次性粘滞事件后在闸外 yield 直挂（#15）：fire 与
+                    // 武装同闸原子；先 fire 后 yield 由粘滞语义兜底（已触发
+                    // 的 yield 立即返回重新检查，无丢失窗口）。
+                    reader.wake = new QueueWakeup()
+                    reader.waiting = true
                 } finally(e) { gate.release(lock) }
-                const wakeLock = await reader.wake.acquire()
-                try {
-                    // post、close 或 Reader.dispose 唤醒后重新检查队列状态。
-                } finally(e) { reader.wake.release(wakeLock) }
+                yield (reader.wake as core.coroutine.EventAlarm)
             }
         } finally(e) {
             const lock = await gate.acquire()
@@ -350,12 +363,14 @@ priv shared class InvokeAction : core.AsyncAction {
     }
 }
 
-// 非泛型冷 Task 壳：start 在当前 lane 起泵；dispatch 在指定 Executor
-// 起单次调用（§15.1 派发通道 = 冷 Task + run(executor)）
+// 非泛型冷 Task 壳：start 以 IOExecutor lane 起泵（泵协程脱离主 lane，
+// 不与 main 协程串行争用——主 lane 上泵被 main 的调度段卡死时消息
+// 吞吐骤降；IOExecutor 保持单 Worker，泵自身仍串行消费）；dispatch 在
+// 指定 Executor 起单次调用（§15.1 派发通道 = 冷 Task + run(executor)）
 priv shared class AsyncShell {
     pub static func start(invoker: AsyncInvoker) {
         const t = new core.coroutine.Task(new InvokeAction(invoker))
-        t.run()
+        t.run(new core.coroutine.IOExecutor())
     }
 
     pub static func dispatch(invoker: AsyncInvoker, executor: core.coroutine.Executor) {
@@ -388,7 +403,16 @@ priv shared class ListenerCall\<shared TMessage with core.serialization.Serializ
     }
 }
 
-// Reader 的 push View：独立 cursor、listener 对象身份与默认 IOExecutor。
+// Reader 的 push View：独立 cursor、listener 对象身份；未 setExecutor 的
+// listener 默认 ComputeExecutor（多 Worker 池，回调并行且不反压泵；泵独占
+// IO lane 单 Worker——review-20260910：早期默认 IOExecutor 会让长回调与
+// 泵串行抢同一 Worker，吞吐崩塌）。
+// 并行回调纪律（review-20260910 #回调定时器 插桩实证）：多 listener（或
+// 同 listener 被并行派发的多消息）在真并行宿主下会交错执行。回调内对共享
+// 状态做「load 后 store」的读改写组合会丢更新——两次调用之间隔着该共享对
+// 象内部异步 Mutex 的挂起点，别的回调可趁隙写回。全量到达判定请用「每条
+// 消息唯一 cell 一次性写入」或读改写一步完成的原子更新；单计数器 RMW 的
+// 计数停滞会被误读成「回调未恢复」。
 pub shared class Receiver\<shared TMessage with core.serialization.Serializable> implements core.IDisposable {
     priv const internalReader: Reader\<TMessage>
     priv var entries: Array\<ListenerEntry\<TMessage>>
@@ -418,7 +442,7 @@ pub shared class Receiver\<shared TMessage with core.serialization.Serializable>
             if (findIndex(callback) >= 0) { return }
             if (entryCount == entries.length) { growEntries() }
             entries[entryCount] = new ListenerEntry\<TMessage>(
-                callback, new core.coroutine.IOExecutor())
+                callback, new core.coroutine.ComputeExecutor())
             entryCount = entryCount + 1
         } finally(e) {
             gate.release(lock)
@@ -473,7 +497,7 @@ pub shared class Receiver\<shared TMessage with core.serialization.Serializable>
             if (index >= 0) {
                 return (entries[index] as ListenerEntry\<TMessage>).executor
             }
-            return new core.coroutine.IOExecutor()
+            return new core.coroutine.ComputeExecutor()
         } finally(e) {
             gate.release(lock)
         }

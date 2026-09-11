@@ -107,8 +107,8 @@ async 函数体不作为调用方当前执行段的一部分运行。实参求�
 - 有结果异步调用返回 `core.coroutine.Task\<TResult>`。
 
 两者是独立类型，`Task<T>` 不继承 Task，也不允许凭相同名称或 ABI
-布局互相转换。各自保存私有 CoroutineCarrige，运行时操作先取得 local
-CoroutineHandle，并用 using 释放。Carrige 是弱搬运票据，不实现
+布局互相转换。各自保存私有 CoroutineCarriage，运行时操作先取得 local
+CoroutineHandle，并用 using 释放。Carriage 是弱搬运票据，不实现
 IDisposable；NativeRc 注册表与调度器强引用的关系见 §26.1。
 
 Task 是 `core.coroutine` 的具体 shared class（非 abstract，Rigi 世界实现，§17.4），因为句柄、终态和 waiter 列表都可能同时被多个 Coroutine 访问。async receiver、实参、capture 与 `TResult` 必须满足 shared 闭包：shared Object 可共享，非 rich/shared rich ValueType 按值复制，local Object 与非 shared rich ValueType 不得跨边界。

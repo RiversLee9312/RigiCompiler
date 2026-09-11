@@ -6,6 +6,8 @@ using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Middleware.Gate;
 using RigiCompiler.Middleware.Pipeline;
 using RigiCompiler.Middleware.Runtime;
+using RigiCompiler.Middleware.Mir;
+using RigiCompiler.Middleware.Symbols;
 using RigiCompiler.Middleware.Toolchain;
 
 namespace RigiCompiler.Middleware.Cli
@@ -280,11 +282,23 @@ namespace RigiCompiler.Middleware.Cli
 
             // libuv 静态库解析（--libuv-dir → RIGI_LIBUV → tools/.libuv → exe 旁）；
             // 命中则 rigi_rt 带 RIGI_HAS_LIBUV 编译且链接行追加静态库 + 系统库；
-            // 未命中按现状降级（Alarm 面届时 abort，MW11b 棒2 收口）
+            // 未命中：编译期明确拒绝（review-20260910——旧行为是 rigi_rt 编
+            // abort 桩、程序运行期才炸，已改为链接前失败）
             var libuv = LibuvResolver.Resolve(libuvDir);
             Logger.Verbose("Middleware", libuv != null
                 ? $"libuv: {libuv.StaticLibPath}"
                 : "libuv 未命中，降级链接。解析顺序：" + LibuvResolver.DescribeSearchOrder());
+            // review-20260910（用户裁定）：libuv 缺失从此是编译期失败而非
+            // 运行期 abort——workerLoop/alarm/定时器等运行面属 stdlib 公共
+            // 形态（任何程序都经 Dispatcher workerLoop 承载 main），无 libuv
+            // 的 stub 桩路径没有可信降级语义
+            if (libuv == null)
+            {
+                Console.Error.WriteLine("native 编译失败：未找到 libuv（协程/定时器/"
+                    + "执行器运行面必需；缺失时旧行为是运行期 abort，现已改为编译期"
+                    + "明确拒绝）。解析顺序：" + LibuvResolver.DescribeSearchOrder());
+                return 2;
+            }
 
             // rigi_rt 现场编译为 bitcode（内容哈希缓存）→ 进程内合并 → 统一优化
             string bitcode;

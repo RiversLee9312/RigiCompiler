@@ -99,7 +99,59 @@ namespace RigiCompiler.Middleware.Symbols
             // 先本地段（定义优先），后外部段（缺失才补）
             table.CollectSection(module.LocalSymbols, isExternal: false);
             table.CollectSection(module.ExternalSymbols, isExternal: true);
+            table.AttachExtensionMembers();
             return table;
+        }
+
+        // ext 成员归户（review-20260910 #10）：ext 字段/方法在 BIL 是顶层
+        // 符号（宿主类型可能在外部段，声明序不定），登记为 Owner=null 的
+        // 全局成员。VM 以全局访问器/运算符表扁平登记（_getters/_setters），
+        // native 侧的 ImplBinder.FindAccessor/FindUserOperator 沿宿主
+        // Members + 基类链查找——收尾把顶层 ext 成员升级挂到可解析宿主的
+        // Members（与类型段成员的占位升级同形态：同 canonical 换 owner
+        // 重登记）。宿主解析不到（未声明的外部类型）保持顶层，
+        // FindAccessor 的全局成员回退兜底
+        private void AttachExtensionMembers()
+        {
+            foreach (var member in _memberOrder.ToArray())
+            {
+                if (member.Owner != null || !member.HasKeyword(BilKeyword.Ext))
+                {
+                    continue;
+                }
+                // 宿主段：字段 Host#name@T / 方法 Host$name(...)@T，取首个
+                // '#'/'$' 之前（'$' 在泛型实参段 .generic<$.generic.T> 内
+                // 出现晚于宿主边界；全局 fn 如 $main 切于 0，不为 ext 成员）
+                var hash = member.Canonical.IndexOf('#');
+                var dollar = member.Canonical.IndexOf('$');
+                var cut = hash < 0 ? dollar : dollar < 0 ? hash : Math.Min(hash, dollar);
+                if (cut <= 0
+                    || FindTypeByRef(member.Canonical.Substring(0, cut)) is not { } host)
+                {
+                    continue;
+                }
+                var hostDeclKey = host.Declaration.GenericParameters.Count == 0
+                    ? host.Declaration.Symbol
+                    : host.Declaration.Symbol + "<" + host.Declaration.GenericParameters.Count + ">";
+                var compositeKey = MemberKey(hostDeclKey, member.Canonical);
+                if (_membersByOwnerDeclKey.ContainsKey(compositeKey))
+                {
+                    continue;   // 同 canonical 已在宿主段（重复声明属 Gate 漏检），保持顶层
+                }
+                var upgraded = new MwMemberSymbol(member.Declaration, host, member.IsExternal);
+                _membersByOwnerDeclKey.Remove(MemberKey("", member.Canonical));
+                _membersByOwnerDeclKey.Add(compositeKey, upgraded);
+                if (_members.TryGetValue(member.Canonical, out var first)
+                    && ReferenceEquals(first, member))
+                {
+                    _members[member.Canonical] = upgraded;
+                }
+                _memberOrder.Remove(member);
+                _memberOrder.Add(upgraded);
+                // Members 的底层列表由本表构造（CollectSection/
+                // RegisterSyntheticType 均传 List），归户直接追加
+                ((List<MwMemberSymbol>)host.Members).Add(upgraded);
+            }
         }
 
         private IReadOnlyDictionary<string, BilResource> _resources =

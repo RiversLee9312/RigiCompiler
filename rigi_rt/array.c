@@ -31,7 +31,9 @@ _Noreturn void rigi_abort_array_negative_length(void)
     static const char message[] = "数组长度不能为负\n";
     fwrite(message, 1, sizeof(message) - 1, stderr);
     fflush(stderr);
-    exit(1);
+    /* 可在 worker 线程命中：exit 经 atexit 链会与主线程互锁挂死
+     *（arc.c rigi_alloc 同口径），_Exit 跳过 atexit 直接终止 */
+    _Exit(1);
 }
 
 void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *elemSheet,
@@ -45,7 +47,9 @@ void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *ele
     if (sheet == NULL || elemSheet == NULL)
     {
         fprintf(stderr, "rigi_rt: contiguous type identity unavailable\n");
-        exit(1);
+        /* 与 arc.c rigi_alloc 同口径：worker 命中时 exit 经 atexit 挂死 */
+        fflush(NULL);
+        _Exit(1);
     }
     if (len < 0)
     {

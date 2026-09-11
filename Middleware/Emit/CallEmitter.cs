@@ -283,7 +283,7 @@ namespace RigiCompiler.Middleware.Emit
             var hasOut = session.IsInlineValueType(calleeMir.ReturnType, out var outPlan);
             var thisAliases = calleeMir.Parameters.Count > 0
                 && calleeMir.Parameters[0].Name == ".this";
-            var expected = ExpectedCallParams(calleeMir);
+            var expected = ExpectedCallParams(session.Symbols, calleeMir);
             // G1：值类型泛型宿主的类级 typeid 保留在 LLVM 调用约定内——
             // MIR 实参表（BIL 调用点同形）不含它们，按 fn 参数位序合并插入
             var classIds = SynthesizeClassTypeIds(session, builder, slots, calleeMir,
@@ -319,7 +319,7 @@ namespace RigiCompiler.Middleware.Emit
             var idIndex = 0;
             foreach (var parameter in calleeMir.Parameters)
             {
-                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                if (GenericAbi.IsClassLevelTypeId(session.Symbols, calleeMir.Symbol, parameter.Name))
                 {
                     values.Add(classIds[idIndex++]);
                     continue;
@@ -385,13 +385,15 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // 类级 typeid 已从 LLVM 调用约定剔除（class 宿主；值类型宿主除外——
-        // 见 SynthesizeClassTypeIds）；实参列表与 BIL 调用点同形
-        internal static List<MirLocal> ExpectedCallParams(MirFunction callee)
+        // 见 SynthesizeClassTypeIds）；实参列表与 BIL 调用点同形。symbols
+        // 供嵌套类外层宿主链 GP 判定（review-20260910 #02）
+        internal static List<MirLocal> ExpectedCallParams(
+            MwSymbolTable symbols, MirFunction callee)
         {
             var list = new List<MirLocal>();
             foreach (var parameter in callee.Parameters)
             {
-                if (!GenericAbi.IsClassLevelTypeId(callee.Symbol, parameter.Name))
+                if (!GenericAbi.IsClassLevelTypeId(symbols, callee.Symbol, parameter.Name))
                 {
                     list.Add(parameter);
                 }
@@ -426,7 +428,7 @@ namespace RigiCompiler.Middleware.Emit
             var names = new List<string>();
             foreach (var parameter in calleeMir.Parameters)
             {
-                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                if (GenericAbi.IsClassLevelTypeId(session.Symbols, calleeMir.Symbol, parameter.Name))
                 {
                     names.Add(parameter.Name.Substring(".generic.".Length));
                 }
@@ -516,7 +518,7 @@ namespace RigiCompiler.Middleware.Emit
             var outIndex = 0;
             foreach (var parameter in calleeMir.Parameters)
             {
-                if (GenericAbi.IsClassLevelTypeId(calleeMir.Symbol, parameter.Name))
+                if (GenericAbi.IsClassLevelTypeId(session.Symbols, calleeMir.Symbol, parameter.Name))
                 {
                     merged[outIndex++] = ids[idIndex++];
                 }

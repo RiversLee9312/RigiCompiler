@@ -169,7 +169,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（资源去重）", module);
             // stdlib 基线 R_0..R_33（"\n"/false/1/true/0 + 棒5a
             // 「Task 只允许启动一次」+ bindColdBody 文案 + 调度骨架 i32 2/3/4/5 + null
-            // CoroutineCarrigeQueue + Mutex.release finally 空 catch-table + Mutex 校验消息
+            // CoroutineCarriageQueue + Mutex.release finally 空 catch-table + Mutex 校验消息
             // + 两 catch-table + Repeat 校验消息 + CoroutineLocal TValue? 初值
             // null + withValue 两 catch-table + i32 8 + Task.executor null
             // + i32 -1 + MW9b 异常消息模板 7 条 + core.time 3 条

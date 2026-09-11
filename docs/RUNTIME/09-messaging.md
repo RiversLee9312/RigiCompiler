@@ -81,9 +81,11 @@ IDisposable，构造接收 Reader 并取得其所有权。pump 循环 next，在
 addListener/removeListener 以 callback 对象身份登记，重复添加幂等，
 删除未登记对象无操作。身份比较使用安全 Place，并用 using 释放。
 setExecutor 为每个 listener 指定 Executor，未登记时抛异常；
-getExecutor 对未登记对象返回默认 IOExecutor。默认使用 IOExecutor，
-可显式切到 ComputeExecutor；均经冷 Task + run 派发，native 不执行
-MQ callback。listener 表在锁内取快照、锁外派发。
+getExecutor 对未登记对象返回默认 ComputeExecutor。默认使用
+ComputeExecutor（多 Worker 池：长回调并行且不会反压泵；泵独占 IO lane
+单 Worker——review-20260910：早期默认 IOExecutor 会让回调与泵串行抢同
+一 Worker，吞吐崩塌），可显式 setExecutor 切到其它 Executor；均经冷
+Task + run 派发，native 不执行 MQ callback。listener 表在锁内取快照、锁外派发。
 createReader() 从内部 Reader branch，dispose 不影响这些独立 Reader。
 
 ## 27.5 Messenger（发送侧封装，§16）
@@ -117,7 +119,7 @@ closure wire 编码、新 Sendable/Transportable 标记、native Receiver
 shared T 是源码显式约束，不是按 stdlib 类名授予的许可。闭合泛型保持
 精确身份；泛型函数中的隐藏 lambda/cell 与冷 Task body 沿实际调用、
 构造、字段数据流收集布局，不能用泛型擦除转换补救遗漏。
-Task 与 Task<T> 共享原生协程资源时使用 CoroutineHandle/CoroutineCarrige，
+Task 与 Task<T> 共享原生协程资源时使用 CoroutineHandle/CoroutineCarriage，
 遵循 §26.1 的 NativeRcHandle 生命周期契约。
 
 ## 27.10 可选压力入口与观测口径

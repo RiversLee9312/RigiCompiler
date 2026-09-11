@@ -19,6 +19,14 @@ namespace RigiCompiler.Bil.Vm
 
     internal sealed class VmInstanceSlots : IVmFieldHost
     {
+        // 字段/隐藏存储的并发闸（#15）：多 Worker 宿主下，同一 shared
+        // 对象的字段槽会被不同 Worker 线程并发读写（哪怕字段不相交——
+        // Dictionary 并发写会互相覆盖甚至丢槽）。语言级 Mutex/Atomic 只
+        // 串行化用户临界区，VM 必须自己保证「单次字段读写」不丢不坏；
+        // 复合 RMW（读-改-写跨多条指令）的原子性仍归语言层锁语义，
+        // 与 native 一致。单把对象级锁：Monitor 无竞争路径开销远低于
+        // 解释器其余每指令成本。
+        private readonly object _gate = new object();
         private readonly Dictionary<string, VmValue> _fields = new Dictionary<string, VmValue>();
         private readonly Dictionary<string, VmValue> _hidden = new Dictionary<string, VmValue>();
         private readonly List<string> _hiddenOrder = new List<string>();
@@ -32,43 +40,68 @@ namespace RigiCompiler.Bil.Vm
 
         public bool TryReadField(string fieldSymbol, out VmValue value)
         {
-            return _fields.TryGetValue(fieldSymbol, out value!);
+            lock (_gate)
+            {
+                return _fields.TryGetValue(fieldSymbol, out value!);
+            }
         }
 
         public void WriteField(string fieldSymbol, VmValue value)
         {
-            _fields[fieldSymbol] = value;
+            lock (_gate)
+            {
+                _fields[fieldSymbol] = value;
+            }
         }
 
         public bool TryReadHidden(string key, out VmValue value)
         {
-            return _hidden.TryGetValue(key, out value!);
+            lock (_gate)
+            {
+                return _hidden.TryGetValue(key, out value!);
+            }
         }
 
         public void WriteHidden(string key, VmValue value)
         {
-            if (!_hidden.ContainsKey(key))
+            lock (_gate)
             {
-                _hiddenOrder.Add(key);
+                if (!_hidden.ContainsKey(key))
+                {
+                    _hiddenOrder.Add(key);
+                }
+                _hidden[key] = value;
             }
-            _hidden[key] = value;
         }
 
-        public IReadOnlyList<string> HiddenKeysInOrder => _hiddenOrder;
+        // 返回快照：消费方（wrapper 链遍历）可能在其他线程写字段槽
+        public IReadOnlyList<string> HiddenKeysInOrder
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _hiddenOrder.ToArray();
+                }
+            }
+        }
 
         public IVmFieldHost DeepCopySlots()
         {
-            var copy = new VmInstanceSlots(TypeRef);
-            foreach (var pair in _fields)
+            lock (_gate)
             {
-                copy._fields[pair.Key] = pair.Value.Copy();
+                var copy = new VmInstanceSlots(TypeRef);
+                foreach (var pair in _fields)
+                {
+                    copy._fields[pair.Key] = pair.Value.Copy();
+                }
+                foreach (var pair in _hidden)
+                {
+                    copy._hidden[pair.Key] = pair.Value.Copy();
+                }
+                copy._hiddenOrder.AddRange(_hiddenOrder);
+                return copy;
             }
-            foreach (var pair in _hidden)
-            {
-                copy._hidden[pair.Key] = pair.Value.Copy();
-            }
-            copy._hiddenOrder.AddRange(_hiddenOrder);
-            return copy;
         }
     }
 
@@ -171,6 +204,18 @@ namespace RigiCompiler.Bil.Vm
         public void WriteHidden(string key, VmValue value)
         {
             _slots.WriteHidden(key, value);
+            // 协程句柄 hidden token 快照（review-20260910 #AOT句柄）：Task
+            // 的协程 token 不走字段（#handle@.i64）而经隐藏槽承载（与
+            // VmDispatch.TaskCoroutineHiddenKey 同值 "$vm.coroutine.native-rc"），
+            // 与 WriteField 的 gate/handle 快照同口径——终结器据此把引擎侧
+            // 终态强登记册条目（VmDispatch._completedStrong）随 Task 回收
+            // 一并摘除，否则 fire-and-forget 协程的终态条目永滞强册
+            if (NativeResourceRelease != null
+                && key == "$vm.coroutine.native-rc"
+                && value is VmI64 handle)
+            {
+                System.Threading.Interlocked.Exchange(ref _nativeCoroutine, handle.Value);
+            }
         }
 
         public IReadOnlyList<string> HiddenKeysInOrder => _slots.HiddenKeysInOrder;

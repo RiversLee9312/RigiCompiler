@@ -1142,7 +1142,7 @@ namespace RigiCompiler.Bil.Vm
         {
             var coroutine = new VmCoroutine(Dispatch);
             coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
-            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null);
+            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null, this);
             BilDataExecution.New(this, coroutine, typeRef, SingletonBootstrapTarget,
                 Array.Empty<BilVariableOperand>(), null);
             while (coroutine.CallStack.Count > 1 && coroutine.State == VmCoroutineState.Running)
@@ -1170,7 +1170,7 @@ namespace RigiCompiler.Bil.Vm
                 }
                 var coroutine = new VmCoroutine(Dispatch);
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
-                coroutine.PushFrame(function, Array.Empty<VmValue>(), null);
+                coroutine.PushFrame(function, Array.Empty<VmValue>(), null, this);
                 while (coroutine.CallStack.Count > 0
                     && coroutine.State == VmCoroutineState.Running)
                 {
@@ -1237,6 +1237,73 @@ namespace RigiCompiler.Bil.Vm
 
         public static string HiddenMethodKey(string methodSymbol, string wrapperType) =>
             ".wrapper.method:" + methodSymbol + ":" + wrapperType;
+
+        // 嵌套类外层泛型捕获（review-20260910 #02）：嵌套类构造类型的实参
+        // 只覆盖自身 GP（.type Ring.RingEnum = class generic(TItem)），外层
+        // 宿主 GP 绑定在构造点从当前帧解析，以 .string 数组形态挂实例隐藏槽；
+        // 方法帧对齐隐藏 typeid（AlignGenericHiddenArgs）时按外层链序取用
+        public const string HiddenOuterGenericsKey = ".outer-generics";
+
+        // 嵌套类外层 GP 名链（最外层在前）：类型符号 "ns::A.B.C" 的宿主前缀
+        // 逐级 FindType 收 GenericParameters，按 CollectFrameGenericParameters
+        // 同口径按名去重（同名遮蔽只留最外层槽位）
+        internal static List<string> OuterGenericParametersOf(VmContext context,
+            string typeSymbol)
+        {
+            var names = new List<string>();
+            var nsEnd = typeSymbol.IndexOf("::", StringComparison.Ordinal);
+            var nsPrefix = nsEnd >= 0 ? typeSymbol.Substring(0, nsEnd + 2) : "";
+            var path = nsEnd >= 0 ? typeSymbol.Substring(nsEnd + 2) : typeSymbol;
+            var parts = path.Split('.');
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var depth = 1; depth < parts.Length; depth++)
+            {
+                var ownerSymbol = nsPrefix + string.Join(".", parts, 0, depth);
+                var ownerDecl = context.FindType(ownerSymbol);
+                if (ownerDecl == null)
+                {
+                    continue;
+                }
+                foreach (var parameter in ownerDecl.GenericParameters)
+                {
+                    if (seen.Add(parameter))
+                    {
+                        names.Add(parameter);
+                    }
+                }
+            }
+            return names;
+        }
+
+        // 构造点捕获外层宿主 GP 的当前帧绑定（找不到外层链或无 GP 时不写）；
+        // 构造发生在宿主帧外（外层 GP 未绑定）留空串占位，对齐端回落 .any
+        // ——与既有「推不出即 .any」降级口径一致
+        internal static void CaptureOuterGenericBindings(VmContext context,
+            VmCoroutine coroutine, string typeRef, VmObject instance)
+        {
+            var declaration = context.FindType(typeRef);
+            if (declaration == null)
+            {
+                return;
+            }
+            var outerNames = OuterGenericParametersOf(context, declaration.Symbol);
+            if (outerNames.Count == 0)
+            {
+                return;
+            }
+            var resolved = new List<string>(outerNames.Count);
+            foreach (var name in outerNames)
+            {
+                resolved.Add(VmTypeOps.TryResolveFrameGeneric(coroutine, name, out var bound)
+                    ? bound : "");
+            }
+            var array = new VmArray(".string", resolved.Count, new VmString(""));
+            for (var i = 0; i < resolved.Count; i++)
+            {
+                array.SetAt(i, new VmString(resolved[i]));
+            }
+            instance.WriteHidden(HiddenOuterGenericsKey, array);
+        }
 
         // MW9b：cast 失败消息模板源码化（stdlib init(fromType,toType)）
         public VmException CastFailed(VmCoroutine coroutine, string fromType, string toType)
@@ -1479,7 +1546,7 @@ namespace RigiCompiler.Bil.Vm
             }
             var coroutine = new VmCoroutine(Dispatch);
             coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
-            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null);
+            coroutine.PushFrame(SingletonBootstrapFunction, Array.Empty<VmValue>(), null, this);
             foreach (var typeName in pending)
             {
                 try
@@ -1795,7 +1862,7 @@ namespace RigiCompiler.Bil.Vm
         // 类级 .generic.* 未出现在 invoke 实参时，按 .this 构造形态的实参
         // 位序补齐（与 EmitFunction 外层类型参数在前、方法自有在后一致）。
         public static IReadOnlyList<VmValue> AlignGenericHiddenArgs(BilFunction function,
-            IReadOnlyList<VmValue> arguments)
+            IReadOnlyList<VmValue> arguments, VmContext? context = null)
         {
             var slots = new List<BilArgDeclaration>();
             foreach (var arg in function.Args)
@@ -1837,10 +1904,56 @@ namespace RigiCompiler.Bil.Vm
                 if (typeArgs != null) inferred.AddRange(typeArgs);
             }
 
+            // 嵌套类修正（review-20260910 #02）：.this 构造实参只覆盖类型
+            // 自身的 GP（.type Ring.RingEnum = class generic(TItem)），帧槽
+            // 却按「外层宿主链 → 自身 → 方法级」排列——位置直灌会把自身
+            // 实参错绑到外层槽。有类型声明可查时改按名绑定：自身槽 ← 实例
+            // 实参，外层槽 ← 构造点捕获（New 写入实例隐藏槽），其余（方法
+            // 级/未捕获）走既有降级
+            Dictionary<string, string>? ownBindings = null;
+            HashSet<string>? ownNames = null;
+            HashSet<string>? outerNames = null;
+            List<string>? outerCaptured = null;
+            if (context != null && hasThis && arguments.Count > 0 && inferred.Count > 0)
+            {
+                var declaration = context.FindType(arguments[0].TypeRef);
+                if (declaration != null
+                    && declaration.GenericParameters.Count == inferred.Count
+                    && declaration.GenericParameters.Count < genericSlots.Count
+                    && BilVerificationContext.TryParseMethodSymbol(function.Symbol,
+                        out var ownerSymbol, out _, out _, out _))
+                {
+                    ownBindings = new Dictionary<string, string>(StringComparer.Ordinal);
+                    ownNames = new HashSet<string>(StringComparer.Ordinal);
+                    for (var i = 0; i < inferred.Count; i++)
+                    {
+                        ownBindings[declaration.GenericParameters[i]] = inferred[i];
+                        ownNames.Add(declaration.GenericParameters[i]);
+                    }
+                    outerNames = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var name in OuterGenericParametersOf(context, ownerSymbol))
+                    {
+                        outerNames.Add(name);
+                    }
+                    if (arguments[0] is IVmFieldHost fieldHost
+                        && fieldHost.TryReadHidden(HiddenOuterGenericsKey, out var captured)
+                        && captured is VmArray capturedArray)
+                    {
+                        outerCaptured = new List<string>(capturedArray.Length);
+                        for (var i = 0; i < capturedArray.Length; i++)
+                        {
+                            outerCaptured.Add(
+                                capturedArray.GetAt(i) is VmString text ? text.Value : "");
+                        }
+                    }
+                }
+            }
+
             var result = new List<VmValue>(slots.Count);
             var restIndex = thisOffset;
             var inferredIndex = 0;
             var hiddenConsumed = 0;
+            var outerIndex = 0;
             foreach (var slot in slots)
             {
                 if (slot.Name == ".this")
@@ -1850,9 +1963,41 @@ namespace RigiCompiler.Bil.Vm
                 }
                 if (slot.Name.StartsWith(".generic.", StringComparison.Ordinal))
                 {
+                    var genericName = slot.Name.Substring(".generic.".Length);
                     if (passedHidden == genericSlots.Count)
                     {
+                        // 调用点显式传足隐藏 typeid：恒按位置直灌
                         result.Add(arguments[restIndex++]);
+                    }
+                    else if (ownBindings != null && ownNames!.Contains(genericName))
+                    {
+                        // 类型自身 GP：按名绑定实例构造实参
+                        result.Add(new VmTypeId(ownBindings[genericName]));
+                    }
+                    else if (ownBindings != null && outerNames!.Contains(genericName))
+                    {
+                        // 外层宿主 GP：读构造点捕获；未捕获/未绑定回落 .any
+                        var capturedText = "";
+                        if (outerCaptured != null && outerIndex < outerCaptured.Count)
+                        {
+                            capturedText = outerCaptured[outerIndex];
+                        }
+                        outerIndex++;
+                        result.Add(new VmTypeId(capturedText.Length > 0 ? capturedText : ".any"));
+                    }
+                    else if (ownBindings != null)
+                    {
+                        // 方法级 GP：调用点显式传的隐藏 typeid 按序消费
+                        // （Repo<T>.mix<U> 只显式传 U 的份额），无传才降级 .any
+                        if (restIndex < arguments.Count
+                            && arguments[restIndex] is VmTypeId)
+                        {
+                            result.Add(arguments[restIndex++]);
+                        }
+                        else
+                        {
+                            result.Add(new VmTypeId(".any"));
+                        }
                     }
                     else if (inferredIndex < inferred.Count
                         && hiddenConsumed < genericSlots.Count - passedHidden)
@@ -2200,31 +2345,12 @@ namespace RigiCompiler.Bil.Vm
             {
                 return true;
             }
-            return NormalizeType(left) == NormalizeType(right);
-        }
-
-        private static string NormalizeType(string typeRef)
-        {
-            return typeRef switch
-            {
-                "core::i8" => ".i8",
-                "core::i16" => ".i16",
-                "core::i32" => ".i32",
-                "core::i64" => ".i64",
-                "core::u8" => ".u8",
-                "core::u16" => ".u16",
-                "core::u32" => ".u32",
-                "core::u64" => ".u64",
-                "core::float" => ".f32",
-                "core::double" => ".f64",
-                "core::bool" => ".bool",
-                "core::char" => ".char",
-                "core::String" => ".string",
-                "core::Any" => ".any",
-                "core::Object" => ".object",
-                "core::ValueType" => ".valuetype",
-                _ => typeRef,
-            };
+            // 同一类型的两种合法 BIL 拼写（§6.1 非 compact 形 ".string, .i64"
+            // 与 §5.2 符号内嵌 compact 形 ".string,.i64"）必须判等——双泛型
+            // 实参的构造类型在此踩过空白差异（review-20260910 #06），归一化
+            // 走验证器同一轮子（别名 + 构造头 + 空白全归一）
+            return BilVerificationContext.NormalizeTypeRef(left)
+                == BilVerificationContext.NormalizeTypeRef(right);
         }
 
         private static bool IsBuiltinScalar(string typeRef)

@@ -36,7 +36,7 @@ pub class Place\<T> implements IDisposable {
 }
 
 // 只有内部存储使用固定 ABI；公开 Handle 的类型身份与泛型实参完整保留。
-// 这是 Rigi 对象的共享持有，不是 NativeRcHandle，也不使用弱 Carrige。
+// 这是 Rigi 对象的共享持有，不是 NativeRcHandle，也不使用弱 Carriage。
 priv unsafe shared class ObjectHandleStorage {
     priv init() {}
 }

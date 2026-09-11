@@ -29,6 +29,10 @@ namespace RigiCompiler.Bil
         public const string GraphPayloadKey = "..data";
         public const string FromParcelMethodName = "..fromParcel";
         public const string InitSerializableMethodName = "..init.serializable";
+        // 含 const 字段 class 的反序列化构造器（SerializationSynthesis.Parcel
+        // FillClassConstructorDecoder 合成）：与 init.serializable 同属重建
+        // 协议，wrapper 方法链一律豁免（review-20260910 #04）
+        public const string InitDeserializeMethodName = "..init.deserialize";
         public const string SerializableIfaceName = "..ISerializable";
         public const string SerializableTokenName = "..serializable.token";
         // Map 字段物化的嵌套 Parcel.typeName

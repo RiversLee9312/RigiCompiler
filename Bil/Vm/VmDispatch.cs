@@ -60,6 +60,13 @@ namespace RigiCompiler.Bil.Vm
         private int _activeSegments;
         private long _activityEpoch;
         private readonly ConcurrentDictionary<long, WeakReference<VmCoroutine>> _completedCoroutines = new();
+        // 终态协程强登记册：终态后从 _coroutines 摘除的协程统一在此强持有
+        // 到摘除点——裸协程（rigi_coroutine_* 原语直驱面）由 destroy 摘除
+        // 配对；Task-backed 协程由 Task 对象回收时的 NativeResourceRelease
+        // 终结器摘除（fire-and-forget 下 Task 与协程同簇不可达，弱引用在
+        // GC 后失效会让 retire/迟到 await 误报「协程句柄失效」——AOT 宿主
+        // 实测触发，CoreCLR GC 时点晚不暴露；review-20260910 回归）
+        private readonly ConcurrentDictionary<long, VmCoroutine> _completedStrong = new();
         private readonly ConcurrentDictionary<long, VmWorker> _workers = new();
         private readonly ConcurrentDictionary<long, SemaphoreSlim> _mutexes = new();
         private readonly ConcurrentDictionary<long, VmTimerRecord> _timers = new();
@@ -217,10 +224,10 @@ namespace RigiCompiler.Bil.Vm
 
         private static long CoroutineTokenOf(VmValue value)
         {
-            if (value is not VmObject carrige
-                || carrige.TypeRef != "core.coroutine::CoroutineCarrige"
-                || !carrige.TryReadField(
-                    "core.coroutine::CoroutineCarrige#token@.i64", out var token)
+            if (value is not VmObject carriage
+                || carriage.TypeRef != "core.coroutine::CoroutineCarriage"
+                || !carriage.TryReadField(
+                    "core.coroutine::CoroutineCarriage#token@.i64", out var token)
                 || token is not VmI64 number)
             {
                 return 0;
@@ -253,7 +260,7 @@ namespace RigiCompiler.Bil.Vm
         {
             var coroutine = new VmCoroutine(this);
             coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
-            coroutine.PushFrame(function, args, null);
+            coroutine.PushFrame(function, args, null, _context);
             var previous = s_currentCoroutine;
             s_currentCoroutine = coroutine;
             try
@@ -290,7 +297,7 @@ namespace RigiCompiler.Bil.Vm
             VmValue[] args, string resultSlot)
         {
             var depth = coroutine.CallStack.Count;
-            coroutine.PushFrame(function, args, resultSlot);
+            coroutine.PushFrame(function, args, resultSlot, _context);
             while (coroutine.CallStack.Count > depth
                 && coroutine.State == VmCoroutineState.Running)
             {
@@ -329,7 +336,7 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("stdlib 缺少 core.coroutine::Dispatcher 运行时通道");
             }
             var coroutine = new VmCoroutine(this);
-            coroutine.PushFrame(function, args, null);
+            coroutine.PushFrame(function, args, null, _context);
             // §18.1 第 3 步：未显式指定时继承调用方 Coroutine 的 Executor
             coroutine.BoundExecutor = caller == null ? null : EffectiveExecutorOf(caller);
             var handle = RegisterCoroutine(coroutine);
@@ -371,7 +378,7 @@ namespace RigiCompiler.Bil.Vm
             var function = _context.FindFunction(callSymbol)
                 ?? throw new VmException("冷 Task body 实现缺少 fn 定义：" + callSymbol);
             var coroutine = new VmCoroutine(this);
-            coroutine.PushFrame(function, new VmValue[] { body }, null);
+            coroutine.PushFrame(function, new VmValue[] { body }, null, _context);
             var handle = RegisterCoroutine(coroutine);
             coroutine.AttachTaskObject(taskObject);
             AttachTaskCoroutineToken(taskObject, handle);
@@ -780,6 +787,7 @@ namespace RigiCompiler.Bil.Vm
         private VmCoroutine RequireCoroutine(long handle)
         {
             return (_coroutines.TryGetValue(handle, out var coroutine)
+                || _completedStrong.TryGetValue(handle, out coroutine)
                 || (_completedCoroutines.TryGetValue(handle, out var weak)
                     && weak.TryGetTarget(out coroutine)))
                 ? coroutine
@@ -884,6 +892,16 @@ namespace RigiCompiler.Bil.Vm
             }
             // 活动/排队/挂起协程仍在强登记册；终态结果由 Task 保活。
             // 先发布弱项再摘强项，迟到 await 不存在查找空窗。
+            // 终态协程一律进强登记册（review-20260910 #AOT句柄）：不单是
+            // 裸协程——Task-backed 协程在 fire-and-forget（async 直调不
+            // await 不存 Task）下「Task 保活」前提不成立：Task 对象与协程
+            // 同簇即刻不可达，AOT GC 在 OnTerminal→retire 窗口内回收簇后，
+            // workerLoop 的 retire/迟到 await 走 RequireCoroutine 只剩死弱
+            // 项，误报「协程句柄失效」（AOT 实测触发；CoreCLR GC 时点晚
+            // 不暴露）。摘除配对：destroy（CoroutineDestroy）释放引擎初始
+            // 强引用时闭合 [终态, destroy] 窗口；Task 对象回收时的
+            // NativeResourceRelease 终结器兜底摘残留条目，与 GC 时点解耦
+            _completedStrong[coroutine.Handle] = coroutine;
             _completedCoroutines[coroutine.Handle] = new WeakReference<VmCoroutine>(coroutine);
             _coroutines.TryRemove(coroutine.Handle, out _);
             if (taskObject != null && ReadBoolField(taskObject,
@@ -932,7 +950,7 @@ namespace RigiCompiler.Bil.Vm
         {
             var coroutine = new VmCoroutine(this);
             coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
-            coroutine.PushFrame(entry, args, null);
+            coroutine.PushFrame(entry, args, null, _context);
             try
             {
                 while (true)
@@ -1053,7 +1071,7 @@ namespace RigiCompiler.Bil.Vm
                 var coroutine = new VmCoroutine(this);
                 coroutine.TryTransition(
                     VmCoroutineState.Created, VmCoroutineState.Running);
-                coroutine.PushFrame(function, functionArgs, null);
+                coroutine.PushFrame(function, functionArgs, null, _context);
                 s_currentCoroutine = coroutine;
                 try
                 {
@@ -1177,9 +1195,9 @@ namespace RigiCompiler.Bil.Vm
             foreach (var lane in new[] { "mainQueue", "computeQueue", "ioQueue" })
             {
                 if (host.TryReadField("core.coroutine::Dispatcher#" + lane
-                        + "@core.coroutine::CoroutineCarrigeQueue", out var queueValue)
+                        + "@core.coroutine::CoroutineCarriageQueue", out var queueValue)
                     && queueValue is IVmFieldHost queueHost
-                    && queueHost.TryReadField("core.coroutine::CoroutineCarrigeQueue#count@.i32",
+                    && queueHost.TryReadField("core.coroutine::CoroutineCarriageQueue#count@.i32",
                         out var countValue)
                     && countValue is VmI32 count && count.Value > 0)
                 {
@@ -1220,7 +1238,7 @@ namespace RigiCompiler.Bil.Vm
                 throw new VmException("rigi_coroutine_create：未知 frame token " + frame);
             }
             var coroutine = new VmCoroutine(this);
-            coroutine.PushFrame(spec.Fn, spec.Args, null);
+            coroutine.PushFrame(spec.Fn, spec.Args, null, _context);
             // 对齐 native cohandle 语义（句柄无内部状态机，create 后即可
             // resume）：VM 侧直接置 Runnable；后续若经 Dispatcher.publish
             // 发布，其三连 CAS 对 Runnable 幂等 benign
@@ -1304,6 +1322,14 @@ namespace RigiCompiler.Bil.Vm
                     + coroutine.State + "）");
             }
             NativeRcReleaseCore(handle);
+            // 摘终态强登记册条目（review-20260910 #AOT句柄）：destroy 释放
+            // 引擎初始强引用（_nativeRcStrong 归零）即 native cohandle 销毁
+            // 点，登记册条目生命周期 = [终态, destroy]，强持有窗口在此闭合。
+            // 摘除后的迟到查询安全：resume/lane/二次 destroy 走 Rigi 侧
+            // retainCoroutine 先行（token 已摘 → benign null）；await 结算
+            // 的 target 由 Task.TaskRuntimeState 双向链或 waiter 的
+            // _awaitTarget 根住，弱引用不失效
+            _completedStrong.TryRemove(handle, out _);
             return VmVoid.Instance;
         }
 
@@ -1358,6 +1384,7 @@ namespace RigiCompiler.Bil.Vm
         {
             if (gate != 0 && _mutexes.TryRemove(gate, out var mutex)) mutex.Dispose();
             if (coroutine != 0) _completedCoroutines.TryRemove(coroutine, out _);
+            if (coroutine != 0) _completedStrong.TryRemove(coroutine, out _);
         }
 
         internal VmValue SyncMutexCreate(IReadOnlyList<VmValue> args)

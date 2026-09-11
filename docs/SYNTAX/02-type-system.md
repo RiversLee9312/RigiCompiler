@@ -147,7 +147,7 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 `MutableHandle<i32>` 的身份互不等价，经 Any 的 `is`/`as` 也必须严格区分。
 它们只在私有字段中持有同一种固定布局的对象存储；底层存储不携带公开
 Handle 的类型身份，不得把 facade 擦除成该存储。此机制操作 Rigi 对象，
-与 native interop 的 NativeRcHandle/ICarrige 生命周期无关。
+与 native interop 的 NativeRcHandle/ICarriage 生命周期无关。
 
 `core.Atomic\<T>` 是 unsafe shared object，仅私有持有 Handle 与 Mutex，允许 local T。unsafe `init(T)`、`load(): T`、`mutate(Func\<T,T>)` 通过稳定参数/局部 Place 建立能力。load/mutate 是普通同步方法，内部取得异步 Mutex 后在 finally 释放；mutate 仅在回调成功返回后替换 Handle，回调抛错保留旧值（不回滚用户另行 unsafe 修改的对象）。普通回调可挂起，锁仍保持。
 

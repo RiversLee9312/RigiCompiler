@@ -275,12 +275,31 @@ namespace RigiCompiler.Bil.Vm
             return new VmString(arguments[0].ToStandardText());
         }
 
-        // any_hash（Map 键判等，用户裁定）：任意胖值取 i64 哈希——String 按
-        // 内容（.NET string 哈希）、标量按值（数值取载荷、f64 按位型、bool/
-        // char 按值）、enum case 按 case 符号；对象/其余引用值按身份
-        //（RuntimeHelpers.GetHashCode）；null/装箱 null 固定 0。同一宿主内
-        // 同值必同哈希（同内容 VmString 两实例相等、同一对象两次调用相等）；
-        // VM 与 native 两宿主数值不要求一致
+        // FNV-1a 64（与 rigi_rt stringfmt.c rigi_fnv1a64 逐位同式）：
+        // offset basis 14695981039346656037、prime 1099511628211
+        private static long Fnv1a64(byte[] data)
+        {
+            var hash = 14695981039346656037UL;
+            foreach (var b in data)
+            {
+                hash ^= b;
+                hash *= 1099511628211UL;
+            }
+            return unchecked((long)hash);
+        }
+
+        // 标量按值的 8 字节载荷（与 native tag0 打包同口径：小位宽零扩展、
+        // f32 位型零扩展、f64 位型）后取 FNV-1a
+        private static long HashPayload(ulong payload) =>
+            Fnv1a64(BitConverter.GetBytes(payload));
+
+        // any_hash（Map 键判等，用户裁定）：任意胖值取 i64 哈希——双宿主统一
+        // FNV-1a 64（review-20260910 会话用户裁定，对齐 RUNTIME §3.8.1/
+        // 08-resources-native 的 native 口径）：String 按内容（UTF-8 字节）、
+        // 标量按值（8 字节载荷）、enum case 按 case 符号 UTF-8 字节；对象/
+        // 其余引用值按身份（RuntimeHelpers.GetHashCode 的 8 字节再 FNV——身份
+        // 值两宿主本就不可比）；null/装箱 null 固定 0。同一宿主内同值必同
+        // 哈希（同内容 VmString 两实例相等、同一对象两次调用相等）
         private static VmValue HashHook(VmContext context, IReadOnlyList<VmValue> arguments)
         {
             if (arguments.Count != 1)
@@ -293,22 +312,22 @@ namespace RigiCompiler.Bil.Vm
             {
                 null => 0L,
                 VmNull => 0L,
-                VmString text => text.Value.GetHashCode(),
-                VmEnum single => single.CaseSymbol.GetHashCode(),
-                VmI8 payload => payload.Value,
-                VmI16 payload => payload.Value,
-                VmI32 payload => payload.Value,
-                VmI64 payload => payload.Value,
-                VmU8 payload => payload.Value,
-                VmU16 payload => payload.Value,
-                VmU32 payload => payload.Value,
-                VmU64 payload => unchecked((long)payload.Value),
-                VmF32 payload => BitConverter.SingleToInt32Bits(payload.Value),
-                VmF64 payload => BitConverter.DoubleToInt64Bits(payload.Value),
-                VmBool payload => payload.Value ? 1L : 0L,
-                VmChar payload => payload.Value,
+                VmString text => Fnv1a64(System.Text.Encoding.UTF8.GetBytes(text.Value)),
+                VmEnum single => Fnv1a64(System.Text.Encoding.UTF8.GetBytes(single.CaseSymbol)),
+                VmI8 payload => HashPayload((byte)payload.Value),
+                VmI16 payload => HashPayload((ushort)payload.Value),
+                VmI32 payload => HashPayload((uint)payload.Value),
+                VmI64 payload => HashPayload(unchecked((ulong)payload.Value)),
+                VmU8 payload => HashPayload(payload.Value),
+                VmU16 payload => HashPayload(payload.Value),
+                VmU32 payload => HashPayload(payload.Value),
+                VmU64 payload => HashPayload(payload.Value),
+                VmF32 payload => HashPayload((uint)BitConverter.SingleToInt32Bits(payload.Value)),
+                VmF64 payload => HashPayload(unchecked((ulong)BitConverter.DoubleToInt64Bits(payload.Value))),
+                VmBool payload => HashPayload(payload.Value ? 1UL : 0UL),
+                VmChar payload => HashPayload(payload.Value),
                 // 对象/数组/span 等引用值：宿主身份哈希（进程内稳定）
-                _ => RuntimeHelpers.GetHashCode(value),
+                _ => HashPayload(unchecked((ulong)RuntimeHelpers.GetHashCode(value))),
             };
             return new VmI64(hash);
         }

@@ -34,6 +34,12 @@
     <TrimmerRootDescriptor Include="ILLink.Roots.xml" />
   </ItemGroup>
 
+  <!-- playground/ 是评测/临时试验区（已入 .gitignore），其中可能含独立 dotnet 项目；
+       其 obj 生成物（AssemblyInfo 等）会被默认通配符捞进本项目造成特性重复（CS0579），统一排除 -->
+  <ItemGroup>
+    <Compile Remove="playground/**/*.cs" />
+  </ItemGroup>
+
   <!-- stdlib 内嵌源（M43）：LogicalName 保持路径形态（stdlib/core/Console.rg），
        StdlibSources 据此反推 sourceName -->
   <ItemGroup>

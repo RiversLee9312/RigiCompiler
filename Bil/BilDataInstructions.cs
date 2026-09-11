@@ -1115,6 +1115,10 @@ namespace RigiCompiler.Bil
                 }
             }
             var instance = context.AllocateObject(typeRef);
+            // 嵌套类外层宿主 GP 绑定捕获（review-20260910 #02）：构造点所在
+            // 帧通常持外层 typeid（宿主方法体内 new），挂上实例供后续方法帧
+            // 对齐隐藏泛型实参时按名取用
+            VmContext.CaptureOuterGenericBindings(context, coroutine, typeRef, instance);
             coroutine.WriteVar(target.Name, instance);
             var initArgs = ReadArgs(coroutine, initArguments);
             var initStaticTypes = VmContext.ArgumentStaticTypes(
@@ -1499,7 +1503,7 @@ namespace RigiCompiler.Bil
                 EagerSpawn(coroutine, function, args, resultSlot);
                 return;
             }
-            coroutine.PushFrame(function, args, resultSlot);
+            coroutine.PushFrame(function, args, resultSlot, context);
         }
 
         // §15.5 fn(..super)：解析为直接基类的原始实现并压帧——super 非虚、
@@ -1569,7 +1573,7 @@ namespace RigiCompiler.Bil
                 EagerSpawn(coroutine, target, args, resultSlot);
                 return;
             }
-            coroutine.PushFrame(target, args, resultSlot);
+            coroutine.PushFrame(target, args, resultSlot, context);
         }
 
         // super init（§9.2.2）：候选仅为直接基类 init 重载；实参 ABI 已含
@@ -1609,7 +1613,7 @@ namespace RigiCompiler.Bil
                 {
                     continue;
                 }
-                coroutine.PushFrame(function, args, resultSlot: null);
+                coroutine.PushFrame(function, args, resultSlot: null, context);
                 return;
             }
             throw new VmException("super(...) 实参不匹配直接基类任何 init：" + baseRef);

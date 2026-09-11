@@ -80,7 +80,7 @@ pub interface IDisposable {
   - `print(text: String)`：把字符串写入标准输出；
   - `printErr(text: String)`：把字符串写入标准错误；
   - `any_to_string(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。它只经标准库 `.bootstrap.rg` 的文件级私有 native 全局声明暴露：`Any` 上声明 open `toString(): String`（全类型承诺，自带实现），`Object` 提供 open `override` 默认实现；二者的实现体由编译器合成为「装箱接收者后调用 `any_to_string`」的小函数，用户代码不直接调用 `any_to_string`。用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
-  - `any_hash(value: Any): i64`：`SYNTAX.md` §3.8.1 的 `hash` 内建承载（Map 键判等）——`String` 按内容哈希（FNV-1a 64 over data 字节）、标量按值（payload 8 字节 FNV-1a）、对象与堆值按 payload（堆指针）FNV-1a（身份，不直接返回裸指针）、`null` 固定 `0`。只承诺同一进程内同值必同哈希，与 BIL VM hook 的哈希数值不要求一致；哈希不保证分布均匀，允许碰撞。与 `any_to_string` 同构：只经标准库 `.bootstrap.rg` 的文件级私有 native 全局声明暴露（`Any` open `hash(): i64` 全类型承诺 + `Object` open `override` 默认实现，实现体由编译器合成为「装箱接收者后调用 `any_hash`」的小函数），用户代码不直接调用 `any_hash`；用户类型 `override hash` 后经普通虚派发执行自身实现，不再命中原生面。
+  - `any_hash(value: Any): i64`：`SYNTAX.md` §3.8.1 的 `hash` 内建承载（Map 键判等）——`String` 按内容哈希（FNV-1a 64 over data 字节）、标量按值（payload 8 字节 FNV-1a）、对象与堆值按 payload（堆指针）FNV-1a（身份，不直接返回裸指针）、`null` 固定 `0`。同一进程内同值必同哈希；VM hook 已统一为同一 FNV-1a 64（review-20260910），标量/字符串数值两宿主一致，对象身份值两宿主不可比（地址 vs 宿主对象序号）；哈希不保证分布均匀，允许碰撞。与 `any_to_string` 同构：只经标准库 `.bootstrap.rg` 的文件级私有 native 全局声明暴露（`Any` open `hash(): i64` 全类型承诺 + `Object` open `override` 默认实现，实现体由编译器合成为「装箱接收者后调用 `any_hash`」的小函数），用户代码不直接调用 `any_hash`；用户类型 `override hash` 后经普通虚派发执行自身实现，不再命中原生面。
   - `alloc_array(typeid, size)`：分配元素零值初始化的 `Array\<T>`（T 由泛型 hidden typeid 物化，传参形态见 §10）。它只经标准库的私有 native 声明暴露：`Array\<T>` 的合法构造入口是 stdlib 的 `arrayOf\<T>(size)` 与 `arrayOfElements\<T>(elements...)`（后者在 Rigi 层把元素逐项放入），用户代码不直接调用 `alloc_array`。两个入口签名分离（长度 vs 元素包），不存在 `i32` 长度与 `i32` 元素的重载混淆。T 为 enum struct 时 `arrayOf` 由 frontend 在泛型实例化点拒绝（`BIL_STANDARD.md` §14.3「enum 无零值」）。**元素读写语义（Q6，`SYNTAX.md` §13.2）**：`a[i]` 读取语义上走 `getAtIndex`（返回 `T?`），实现上由编译器直发 `BIL_STANDARD.md` §13.6 `get.array`——界内得 `Nullable\<T\>` 包装的元素、**越界读取得 `null` 而非 trap**；`a[i] = v` 写入仍收非空 `T`，越界写入抛可捕获 `core.OutOfBoundException`（MW9b 起；此前为运行时 trap/abort）。
   - `timer_create` / `alarm_wait`：`sleep` 与 `Timer` 的时钟底座（§19.3/§19.4/§19.5）。`sleep` 构造内部 `SleepAlarm`，不另暴露 `make_sleep_alarm`。用户代码不直接调用。
 - **GC 类设施（如 GCAlarm）不属于本表面，也不进 stdlib 与 VM**：BIL 明确规定不得对 GC 机制与实现作任何假设（`BIL_STANDARD.md` §1.1/§22.1），此类设施是 Middleware 的内部实现细节，没有任何跨层可见形态。
@@ -89,14 +89,14 @@ pub interface IDisposable {
 
 ### 26.1 NativeRcHandle 与跨协程搬运
 
-`core.native.NativeRcHandle\<TCarrige extends ICarrige>` 是 local 抽象类，
-实现 IDisposable，规定 `carry(): TCarrige` 与 `dispose()`。具体类将
+`core.native.NativeRcHandle\<TCarriage extends ICarriage>` 是 local 抽象类，
+实现 IDisposable，规定 `carry(): TCarriage` 与 `dispose()`。具体类将
 原生 token 保存在私有字段，资源操作通过该 local 封装执行。调用方
 用 using/dispose 管理持有期，不手动调用 native retain/release。
 
-`core.native.ICarrige` 是 shared 接口，仅提供 `retain(): Any?`，**不实现
-IDisposable**。具体 Carrige 是弱搬运票据，不拥有资源强引用，也不提供
-操作资源的能力。跨协程先 carry 并传递 Carrige，目标协程 retain 后
+`core.native.ICarriage` 是 shared 接口，仅提供 `retain(): Any?`，**不实现
+IDisposable**。具体 Carriage 是弱搬运票据，不拥有资源强引用，也不提供
+操作资源的能力。跨协程先 carry 并传递 Carriage，目标协程 retain 后
 必须判空，再做具体 Handle 的运行期检查转换，最后用 using 管理返回
 的 local Handle。retain 成功延长资源寿命；资源已经销毁时返回 null。
 
@@ -106,7 +106,7 @@ IDisposable**。具体 Carrige 是弱搬运票据，不拥有资源强引用，�
 查询 payload 的调用者必须在整个操作期间持有强引用；查询本身不延长
 生命周期。注册表不改变 Rigi 泛型身份或对象内存布局规则。
 
-CoroutineHandle / CoroutineCarrige 是内部示例：Task 与 Task<T> 保持独立
-的语言类型和布局，只共同持有 CoroutineCarrige。调度器保留运行所需
-原生强引用，协程清理完成后释放；Carrige 不保活已结束且没有其它
+CoroutineHandle / CoroutineCarriage 是内部示例：Task 与 Task<T> 保持独立
+的语言类型和布局，只共同持有 CoroutineCarriage。调度器保留运行所需
+原生强引用，协程清理完成后释放；Carriage 不保活已结束且没有其它
 持有者的资源。MQ 不使用 NativeRcHandle 或原生队列句柄。

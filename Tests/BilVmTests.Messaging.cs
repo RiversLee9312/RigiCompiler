@@ -285,18 +285,18 @@ namespace RigiCompiler.Tests
                 "    const l2 = func{async (m: Msg) -> { sink.b = m.n } }\n" +
                 "    recv.addListener(l1)\n" +
                 "    recv.addListener(l2)\n" +
-                // 默认 = IOExecutor（§15.2）
-                "    if (recv.getExecutor(l1) is IOExecutor) {\n" +
-                "        Console.println(\"default io\")\n" +
+                // 默认 = ComputeExecutor（review-20260910 起：长回调不反压泵）
+                "    if (recv.getExecutor(l1) is ComputeExecutor) {\n" +
+                "        Console.println(\"default compute\")\n" +
                 "    }\n" +
                 "    recv.setExecutor(l2, new ComputeExecutor())\n" +
                 "    if (recv.getExecutor(l2) is ComputeExecutor) {\n" +
                 "        Console.println(\"set compute\")\n" +
                 "    }\n" +
-                // 未注册 callback 的 getExecutor → 默认 IOExecutor
+                // 未注册 callback 的 getExecutor → 默认 ComputeExecutor
                 "    const l3 = func{async (m: Msg) -> { sink.a = 0 } }\n" +
-                "    if (recv.getExecutor(l3) is IOExecutor) {\n" +
-                "        Console.println(\"unregistered io\")\n" +
+                "    if (recv.getExecutor(l3) is ComputeExecutor) {\n" +
+                "        Console.println(\"unregistered compute\")\n" +
                 "    }\n" +
                 // setExecutor 未注册 → 拒绝（无歧义，§14）
                 "    try {\n" +
@@ -331,9 +331,9 @@ namespace RigiCompiler.Tests
             CheckOk("Receiver Executor 路由", result);
             TestHarness.Check("Receiver Executor stdout 精确",
                 result.Stdout,
-                "default io\n" +
+                "default compute\n" +
                 "set compute\n" +
-                "unregistered io\n" +
+                "unregistered compute\n" +
                 "Receiver.setExecutor：listener 未注册\n" +
                 "routed snapshot\n" +
                 "ok\n");
@@ -571,6 +571,86 @@ namespace RigiCompiler.Tests
             CheckOk("Messenger dispose → EOS 停泵", result);
             TestHarness.Check("EOS 停泵 stdout 精确",
                 result.Stdout, "drained 3\nok\n");
+        }
+
+        // 泵 lane 回归（#泵IO）：Receiver 泵经 AsyncShell.start 固定起在
+        // IOExecutor lane（不占主 lane）。多生产者并发 send 时消息全量
+        // 投递、main 协程与泵并行不互卡；dispose 后 main 正常退出
+        //（quiescence 干净落幕，§17.4）——泵 lane 迁移不得改变投递与
+        // 退出语义，只消除与主 lane 的串行争用。
+        private static void TestReceiverPumpIoLaneFullDelivery()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "import core.serialization.Serializable\n" +
+                "import core.messaging.*\n" +
+                "import core.coroutine.*\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var n: i32\n" +
+                "    pub init(_ -> n)\n" +
+                "}\n" +
+                "pub shared class Sink {\n" +
+                "    pub var count: i32\n" +
+                "    pub init() { count = 0 }\n" +
+                "}\n" +
+                "async func produce(msgr: Messenger\\<Msg>, rounds: i32) {\n" +
+                "    var i = 0\n" +
+                "    while (i < rounds) {\n" +
+                "        await msgr.send(new Msg(i))\n" +
+                "        yield\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    const msgr = new Messenger\\<Msg>()\n" +
+                "    const recv = msgr.receiver\n" +
+                "    const sink = new Sink()\n" +
+                "    recv.addListener(func{async (m: Msg) -> { sink.count = sink.count + 1 } })\n" +
+                "    const producers = arrayOf\\<Task>(3)\n" +
+                "    var i = 0\n" +
+                "    while (i < 3) {\n" +
+                "        const t = new Task(func{async () -> { await produce(msgr, 5) }})\n" +
+                "        t.run(new ComputeExecutor())\n" +
+                "        producers[i] = t\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    i = 0\n" +
+                "    while (i < 3) {\n" +
+                "        await (producers[i] as Task)\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    var spins: i32 = 0\n" +
+                "    while ((sink.count != 15) and (spins < 400)) {\n" +
+                "        yield sleep(5)\n" +
+                "        spins = spins + 1\n" +
+                "    }\n" +
+                "    Console.println((\"delivered \" + sink.count.toString()))\n" +
+                "    recv.dispose()\n" +
+                "    msgr.dispose()\n" +
+                "    Console.println(\"ok\")\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("泵上 IO lane 全量投递", result);
+            TestHarness.Check("泵上 IO lane stdout 精确",
+                result.Stdout, "delivered 15\nok\n");
+        }
+        // #回调定时器 回归（VM 字面量钉死）：listener 回调体内含定时器挂起
+        //（yield sleep 80ms）经 Receiver 冷 Task 派发后必须全部恢复。到达
+        // 检测按消息唯一 cell 一次性写入——共享计数器 RMW（load 与 store
+        // 隔着 AtomicStruct 异步 Mutex 挂起点）在并行回调下丢更新，曾被
+        // 误诊为「协程不恢复」；与 NativeE2ETests.
+        // ReceiverListenerTimerResumeSource 同源对拍。
+        private static void TestReceiverListenerTimerSuspendResume()
+        {
+            var result = Run(NativeE2ETests.ReceiverListenerTimerResumeSource);
+            CheckOk("listener 定时器挂起恢复全量投递", result);
+            TestHarness.Check("listener 定时器挂起恢复 stdout 精确",
+                result.Stdout, "listener-sleep-ok\n");
         }
     }
 }

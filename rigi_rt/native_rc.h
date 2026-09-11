@@ -1,9 +1,9 @@
 /*
  * NativeRcHandle 的原生生命周期基建。
  *
- * Carrige 只携带不可复用的数值 token，不保存裸指针，也不拥有强引用。
+ * Carriage 只携带不可复用的数值 token，不保存裸指针，也不拥有强引用。
  * 资源由一个或多个 local NativeRcHandle/运行时所有者持有强引用；最后一个
- * 强引用释放时从注册表摘除，再调用资源专属析构。过期 Carrige 的 retain
+ * 强引用释放时从注册表摘除，再调用资源专属析构。过期 Carriage 的 retain
  * 只会查找失败，绝不会解引用已经释放的地址。
  */
 #ifndef RIGI_NATIVE_RC_H

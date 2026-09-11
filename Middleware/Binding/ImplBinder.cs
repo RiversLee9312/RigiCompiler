@@ -456,6 +456,16 @@ namespace RigiCompiler.Middleware.Binding
                 System.Array.Empty<string>());
         }
 
+        // §12.1 用户转换运算符查询（review-20260910 #03 native 侧编译期
+        // 重写用）：castTo/castFrom 与内建运算符共用同一沿 extends 链的
+        // 成员查找（VM VmContext.FindOperator 同口径；ext operator 经
+        // MwSymbolTable 归户后同样在宿主 Members 内）
+        public static MwMemberSymbol? FindUserConversionOperator(MwSymbolTable symbols,
+            string operatorName, string ownerType, IReadOnlyList<string> argTypes)
+        {
+            return FindUserOperator(symbols, operatorName, ownerType, argTypes);
+        }
+
         private static MwMemberSymbol? FindUserOperator(MwSymbolTable symbols,
             string operatorName, string ownerType, IReadOnlyList<string> argTypes)
         {
@@ -668,10 +678,33 @@ namespace RigiCompiler.Middleware.Binding
         // ===== 成员查询（访问器 / 索引运算符；不依赖 MIR 类型对象） =====
 
         // 字段访问器查找（沿宿主基类链；excludingFn = 当前 fn，访问器
-        // 体内不递归自调——VM TryFindAccessor 同口径）
+        // 体内不递归自调——VM TryFindAccessor 同口径）。全局字段
+        //（§8.4.1）宿主段是命名空间而非类型，FindType 落空：访问器是
+        // owner==null 的顶层方法，改扫全局成员表（VM _getters/_setters
+        // 扁平字典同效；excludingFn 自身排除同口径）
         public static MwMemberSymbol? FindAccessor(MwSymbolTable symbols, string fieldSymbol,
             BilAccessorKind kind, string excludingFn)
         {
+            if (symbols.FindType(FieldOwnerOf(fieldSymbol)) == null)
+            {
+                foreach (var global in symbols.GlobalMembers)
+                {
+                    if (global.Canonical == excludingFn)
+                    {
+                        continue;
+                    }
+                    foreach (var modifier in global.Declaration.Modifiers)
+                    {
+                        if (modifier is BilAccessorModifier globalAccessor
+                            && globalAccessor.Kind == kind
+                            && globalAccessor.FieldSymbol == fieldSymbol)
+                        {
+                            return global;
+                        }
+                    }
+                }
+                return null;
+            }
             var visited = new HashSet<string>(System.StringComparer.Ordinal);
             for (var type = symbols.FindType(FieldOwnerOf(fieldSymbol));
                 type != null && visited.Add(BilVerificationContext.DeclarationKeyOf(type.Canonical));

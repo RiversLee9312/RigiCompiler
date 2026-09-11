@@ -143,6 +143,10 @@ namespace RigiCompiler.Tests
             ("TestWrapperAccessorLocalOrder", TestWrapperAccessorLocalOrder),
             ("TestGenericIndexOperator", TestGenericIndexOperator),
             ("TestClassGenericParamInMethodFrame", TestClassGenericParamInMethodFrame),
+            ("TestTwoGenericArgMapInitMatch", TestTwoGenericArgMapInitMatch),
+            ("TestColdTaskCapturedAtomicMapAwait", TestColdTaskCapturedAtomicMapAwait),
+            ("TestNestedGenericHostEnumerator", TestNestedGenericHostEnumerator),
+            ("TestNestedClassOuterGenericCapture", TestNestedClassOuterGenericCapture),
             ("TestReifiedConstructZeroValue", TestReifiedConstructZeroValue),
             ("TestDynamicNewMustThrowNoMatchingInit", TestDynamicNewMustThrowNoMatchingInit),
             ("TestNestedClassNullableInit", TestNestedClassNullableInit),
@@ -166,6 +170,7 @@ namespace RigiCompiler.Tests
             ("TestMapCustomEqualsKeySemantics", TestMapCustomEqualsKeySemantics),
             ("TestParcelSetGetNestedAbsentNull", TestParcelSetGetNestedAbsentNull),
             ("TestSerializableScalarDeepCopy", TestSerializableScalarDeepCopy),
+            ("TestSerializableWithStatefulEntityWrapperDeepCopy", TestSerializableWithStatefulEntityWrapperDeepCopy),
             ("TestSerializableNestedIndependent", TestSerializableNestedIndependent),
             ("TestSerializableCollectionsSnapshot", TestSerializableCollectionsSnapshot),
             ("TestSerializableTemporaryResume", TestSerializableTemporaryResume),
@@ -183,6 +188,8 @@ namespace RigiCompiler.Tests
             ("TestReceiverDisposeIsolation", TestReceiverDisposeIsolation),
             ("TestReceiverListenerIdentity", TestReceiverListenerIdentity),
             ("TestMessengerDisposeEosStopsPump", TestMessengerDisposeEosStopsPump),
+            ("TestReceiverPumpIoLaneFullDelivery", TestReceiverPumpIoLaneFullDelivery),
+            ("TestReceiverListenerTimerSuspendResume", TestReceiverListenerTimerSuspendResume),
         };
 
         private static void TestHelloWorld()

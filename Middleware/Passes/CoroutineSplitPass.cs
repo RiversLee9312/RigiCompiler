@@ -529,7 +529,44 @@ namespace RigiCompiler.Middleware.Passes
                 }
             }
             RejectSyntheticSpineTainted(context, mir, tainted);
+            RejectTaintedPollingIsReady(context, mir, tainted);
             return tainted;
+        }
+
+        // #08：PollingAlarm.isReady 是 §19.2 同步探测方法——native 轮询由
+        // 合成 fn $mw.poll_probe 发普通 MirCall 虚派发（EnsurePollProbe），
+        // 恢复闸无泵可等。tainted 实现会被 split 成状态机、原符号体变
+        // MirUnreachable 陷阱（ReplaceWithTrap），而陷阱 fn 建于本分析
+        // 之后、vtable 填槽仍指向它——轮询虚派发正中陷阱即恢复闸时段
+        // 错误（静默 UB）。split 前把该形态升级为响亮编译错误；用户侧
+        // 改写路径是 EventAlarm + signal()
+        private static void RejectTaintedPollingIsReady(MwContext context, MirModule mir,
+            HashSet<string> tainted)
+        {
+            foreach (var fn in mir.Functions)
+            {
+                if (!tainted.Contains(fn.Symbol.Canonical)
+                    || fn.Symbol.SignatureKey != "isReady()")
+                {
+                    continue;
+                }
+                for (var owner = fn.Symbol.Owner; owner != null;)
+                {
+                    if (owner.Canonical == PollingAlarmCanonical)
+                    {
+                        throw new MwNotSupportedException(
+                            "暂不支持含挂起点的 PollingAlarm.isReady override："
+                            + "PollingAlarm.isReady 不允许含挂起点（§19.2 同步探测方法），"
+                            + "native 轮询探测为同步虚派发、无恢复泵；"
+                            + "请改用 EventAlarm + signal(): " + fn.Symbol.Canonical);
+                    }
+                    owner = owner.Declaration.ExtendsType is { } extendsRef
+                        ? context.Symbols.FindTypeByRef(
+                            BilVerificationContext.StripTypeArguments(
+                                MwTypeKey.Normalize(extendsRef)))
+                        : null;
+                }
+            }
         }
 
         // R3：合成入口脊柱直调站点（非 MIR、不可协议化）的 taint 补闸。
@@ -2162,7 +2199,7 @@ namespace RigiCompiler.Middleware.Passes
             var hiddenTypeIds = new List<MirLocal>();
             foreach (var parameter in callee.Parameters)
             {
-                if (GenericAbi.IsClassLevelTypeId(callee.Symbol, parameter.Name))
+                if (GenericAbi.IsClassLevelTypeId(context.Symbols, callee.Symbol, parameter.Name))
                 {
                     hiddenTypeIds.Add(parameter);
                 }
@@ -2236,21 +2273,48 @@ namespace RigiCompiler.Middleware.Passes
                 }
                 foreach (var parameter in hiddenTypeIds)
                 {
-                    site.Drops.Add(new ArgDrop
+                    var drop = new ArgDrop
                     {
                         FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
                             site.CalleeFrameCanonical, parameter.Name,
                             parameter.Type.Canonical),
-                        ReceiverTypeIdOwner = GenericAbi.PlanKey(owner),
-                        ReceiverTypeIdParameter = parameter.Name.Substring(".generic.".Length),
-                        ReceiverTypeIdOperand = runtimeTypeIdReceiver,
-                    });
+                    };
+                    // 嵌套类外层宿主链 GP（review-20260910 #02）：class
+                    // 实例只物化自身隐藏 typeid 槽，外层 GP 无接收者来源
+                    // ——落 Any 常量（被调方 prologue 同口径兜底）
+                    if (owner.Declaration.GenericParameters.Contains(
+                        parameter.Name.Substring(".generic.".Length)))
+                    {
+                        drop.ReceiverTypeIdOwner = GenericAbi.PlanKey(owner);
+                        drop.ReceiverTypeIdParameter =
+                            parameter.Name.Substring(".generic.".Length);
+                        drop.ReceiverTypeIdOperand = runtimeTypeIdReceiver;
+                    }
+                    else
+                    {
+                        drop.TypeIdTypeRef = "core::Any";
+                    }
+                    site.Drops.Add(drop);
                 }
                 return;
             }
             foreach (var parameter in hiddenTypeIds)
             {
-                var typeArg = substitution[parameter.Name.Substring(".generic.".Length)];
+                // 嵌套类外层宿主链 GP（review-20260910 #02）：自身构造
+                // 形态实参只覆盖自身 GP，外层 GP 无替换来源——落 Any
+                // 常量（被调方 prologue 同口径兜底）
+                if (!substitution.TryGetValue(parameter.Name.Substring(".generic.".Length),
+                        out var typeArg))
+                {
+                    site.Drops.Add(new ArgDrop
+                    {
+                        FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                            site.CalleeFrameCanonical, parameter.Name,
+                            parameter.Type.Canonical),
+                        TypeIdTypeRef = "core::Any",
+                    });
+                    continue;
+                }
                 var drop = new ArgDrop
                 {
                     FrameFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
@@ -4080,7 +4144,7 @@ namespace RigiCompiler.Middleware.Passes
             insts.Add(new MirCall(syms.MutexAcquire,
                 new List<MirOperand> { new MirLocalOperand(gate) }, null));
             var drained = freshManaged("$mw.drained.",
-                MirType.Of(".array<core.coroutine::CoroutineCarrige>"));
+                MirType.Of(".array<core.coroutine::CoroutineCarriage>"));
             insts.Add(new MirCall(TaskFn(context, taskTypeRef, failed ? "fail" : "complete"),
                 new List<MirOperand> { new MirLocalOperand(task) }, drained));
             insts.Add(new MirCall(syms.MutexRelease,

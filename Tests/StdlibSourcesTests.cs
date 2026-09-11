@@ -436,23 +436,23 @@ namespace RigiCompiler.Tests
             // NativeRc 相关声明单独按名称断言，协程既有 API 保持顺序检查。
             var declarations = root.Declarations.Where(node => node switch
             {
-                ClassDeclarationASTNode c => c.ClassName is not ("CoroutineHandle" or "CoroutineCarrige"),
+                ClassDeclarationASTNode c => c.ClassName is not ("CoroutineHandle" or "CoroutineCarriage"),
                 InterfaceDeclarationASTNode i => i.InterfaceName != "ICoroutineHandle",
                 CallableDeclarationASTNode f => f.Name is not ("retainCoroutine" or "rigi_native_rc_retain" or "rigi_native_rc_release"),
                 _ => true
             }).ToList();
             var handle = root.Declarations.OfType<ClassDeclarationASTNode>().Single(c => c.ClassName == "CoroutineHandle");
-            var carrier = root.Declarations.OfType<ClassDeclarationASTNode>().Single(c => c.ClassName == "CoroutineCarrige");
+            var carrier = root.Declarations.OfType<ClassDeclarationASTNode>().Single(c => c.ClassName == "CoroutineCarriage");
             TestHarness.CheckTrue("CoroutineHandle 是 local，且实现 NativeRcHandle", !handle.Modifiers.Contains(Keywords.SHARED)
                 && handle.BaseClass != null && AstDescribe.Type(handle.BaseClass).Contains("NativeRcHandle"));
-            TestHarness.CheckTrue("CoroutineCarrige 是 shared 且只暴露 retain", carrier.Modifiers.Contains(Keywords.SHARED)
+            TestHarness.CheckTrue("CoroutineCarriage 是 shared 且只暴露 retain", carrier.Modifiers.Contains(Keywords.SHARED)
                 && carrier.Members.OfType<CallableDeclarationASTNode>().Where(m => m.Kind != CallableKind.Init)
                     .All(m => m.Name == "retain"));
 
 
             // MW11c 顶层：namespace + 15 类型（Task/Task\<TReturn\> +
             // TaskState + Executor 族 4 + PollingAlarm/EventAlarm/
-            // SleepAlarm + Mutex + Timer + CoroutineLocal + CoroutineCarrigeQueue/
+            // SleepAlarm + Mutex + Timer + CoroutineLocal + CoroutineCarriageQueue/
             // Dispatcher）+ laneOfExecutor 助手 + 32 个 rigi_ native
             // 原语 + sleep Rigi 包装（共 50 个声明）。棒5a：删
             // make_sleep_alarm；增 SleepAlarm/laneOfExecutor 与句柄
@@ -566,9 +566,9 @@ namespace RigiCompiler.Tests
                 && coroutineLocal.Members.OfType<CallableDeclarationASTNode>()
                     .Count(m => m.Name == "withValue") == 2);
             // 棒4a：§17.4 Rigi 世界调度逻辑（内部 API，均 priv）
-            TestHarness.CheckTrue("声明[14] 是 CoroutineCarrigeQueue（priv 内部环形队列）",
+            TestHarness.CheckTrue("声明[14] 是 CoroutineCarriageQueue（priv 内部环形队列）",
                 declarations[14] is ClassDeclarationASTNode i64Queue
-                && i64Queue.ClassName == "CoroutineCarrigeQueue"
+                && i64Queue.ClassName == "CoroutineCarriageQueue"
                 && i64Queue.Modifiers.Contains(Keywords.PRIV));
             TestHarness.CheckTrue("声明[15] 是 Dispatcher（priv shared singleton）",
                 declarations[15] is ClassDeclarationASTNode dispatcher

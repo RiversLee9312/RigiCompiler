@@ -47,7 +47,7 @@ namespace RigiCompiler.Tests
             }
 
             const string handles = """
-                pub shared class Ticket implements core.native.ICarrige {
+                pub shared class Ticket implements core.native.ICarriage {
                     pub override func retain(): Any? { return null }
                 }
                 pub class LocalHandle : core.native.NativeRcHandle\<Ticket> {
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
                     }
                 }
                 """);
-            CheckNoErrors("Handle using 与非 IDisposable Carrige 协议", validHandle);
+            CheckNoErrors("Handle using 与非 IDisposable Carriage 协议", validHandle);
         }
     }
 }

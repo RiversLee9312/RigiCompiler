@@ -370,13 +370,24 @@ namespace RigiCompiler.Bil.Vm
                 concrete.Add(args[i]);
             }
             var memberName = VmContext.MethodNameOf(methodSymbol);
-            // 构造期方法（init / ..init.wrapper）不绕 wrapper 链：对它们的调用
-            // 是构造协议自身的环节（PushConstructorTail 在新 init 原则下先执行
-            // 实际类型的 ..init.wrapper——含闭包 wrapper 安装与字段初值——再
-            // 进入 init 链，§9.7/§14.2）；wrapper 链只拦普通成员调用
+            // 构造期方法（init / ..init.wrapper / 序列化协议族）不绕 wrapper 链：
+            // 对它们的调用是构造/重建协议自身的环节（PushConstructorTail 在新
+            // init 原则下先执行实际类型的 ..init.wrapper——含闭包 wrapper 安装
+            // 与字段初值——再进入 init 链，§9.7/§14.2）；wrapper 链只拦普通
+            // 成员调用。
+            // review-20260910 #04：..init.serializable（fromParcel 重建的 token
+            // init）此前未豁免——链在 PushConstructorTail 压帧阶段就尝试读取
+            // 尚未安装的 wrapper 实例，重建被直接中断（实体没有 wrapper 实例）。
+            // 注意 ..init.field.* 不在豁免之列：它们在 ..init.wrapper 体内、
+            // wrapper 安装之后执行，照常走链（Audit 型 wrapper 的字段初值
+            // 追踪依赖此行为，见 BilVmDispatchTests.WrapperFixes）
             if (memberName == "init" || memberName == BilSpellings.InitWrapperMethodName
                 || memberName == BilSpellings.ToParcelMethodName
-                || memberName == BilSpellings.FromParcelMethodName)
+                || memberName == BilSpellings.FromParcelMethodName
+                || memberName == BilSpellings.InitSerializableMethodName
+                || memberName == BilSpellings.InitDeserializeMethodName
+                || memberName == BilSpellings.DecodeGraphMethodName
+                || memberName == BilSpellings.EncodeGraphMethodName)
             {
                 return false;
             }
@@ -1291,7 +1302,7 @@ namespace RigiCompiler.Bil.Vm
         {
             result = VmNull.Instance;
             var depth = coroutine.CallStack.Count;
-            coroutine.PushFrame(function, args, ResultSlot);
+            coroutine.PushFrame(function, args, ResultSlot, context);
             while (coroutine.CallStack.Count > depth && coroutine.State == VmCoroutineState.Running)
             {
                 coroutine.Step(context);

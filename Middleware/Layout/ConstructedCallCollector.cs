@@ -348,7 +348,11 @@ namespace RigiCompiler.Middleware.Layout
                 && ImplBinder.BindCall(target) is VirtualCallBinding or InterfaceCallBinding)
             {
                 var plan = Plan(actual[0]);
-                var ownerSlots = dispatch.GetVTableSlots(dispatchOwner.Canonical);
+                // 模板符号 Canonical 是裸名（元数只在声明上）：直接拿它查计划键会
+                // 撞同名元数 0 类型的槽表（如 AsyncAction vs AsyncAction<T0>），
+                // slot 必为 -1 致重写被跳过、抽象模板无 fn 体时收集静默终止。
+                // 计划键口径与 VirtualSlotOf/CoroutineSplit 一致：PlanKey。
+                var ownerSlots = dispatch.GetVTableSlots(GenericAbi.PlanKey(dispatchOwner));
                 var slot = ownerSlots?.ToList().IndexOf(target.Canonical) ?? -1;
                 if (plan != null && slot >= 0)
                 {
@@ -396,7 +400,7 @@ namespace RigiCompiler.Middleware.Layout
             var index = 0;
             foreach (var arg in function.Args)
             {
-                if (arg.Name == ".return" || GenericAbi.IsClassLevelTypeId(member, arg.Name)) continue;
+                if (arg.Name == ".return" || GenericAbi.IsClassLevelTypeId(context.Symbols, member, arg.Name)) continue;
                 if (index >= actual.Length) break;
                 if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
                 {

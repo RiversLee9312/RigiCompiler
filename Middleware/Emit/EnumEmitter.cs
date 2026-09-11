@@ -47,7 +47,7 @@ namespace RigiCompiler.Middleware.Emit
                 // G1：泛型 enum 的 wrapper 形参可为占位（胖值槽）——实参
                 // 加工与 init 同口径（ExpectedCallParams 已剔类级 typeid，
                 // 下标 +1 跳过 .this）
-                var wrapperExpected = CallEmitter.ExpectedCallParams(wrapperFn.Mir);
+                var wrapperExpected = CallEmitter.ExpectedCallParams(session.Symbols, wrapperFn.Mir);
                 var wrapperArgs = new LLVMValueRef[inst.WrapperArgs.Count + 1];
                 wrapperArgs[0] = slot;
                 for (var i = 0; i < inst.WrapperArgs.Count; i++)
@@ -69,7 +69,7 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             var init = session.FunctionOf(inst.Init.Canonical);
-            var initExpected = CallEmitter.ExpectedCallParams(init.Mir);
+            var initExpected = CallEmitter.ExpectedCallParams(session.Symbols, init.Mir);
             var initArgs = new LLVMValueRef[inst.Args.Count + 1];
             initArgs[0] = slot;
             for (var i = 0; i < inst.Args.Count; i++)

@@ -50,6 +50,7 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         // 用户类型下标读 → $$getAtIndex；连续缓冲区原样保留
+        // （读越界不抛异常——§8.1 返回 null——MirGetArray 无异常边）
         private static class GetArrayLowering
         {
             internal static MirInst Rewrite(MwContext context, MirGetArray inst)
@@ -68,7 +69,8 @@ namespace RigiCompiler.Middleware.Passes
             }
         }
 
-        // 用户类型下标写 → $$setAtIndex；连续缓冲区原样保留
+        // 用户类型下标写 → $$setAtIndex；连续缓冲区原样保留。
+        // ExcTarget 透传同 GetArrayLowering（#13）
         private static class SetArrayLowering
         {
             internal static MirInst Rewrite(MwContext context, MirSetArray inst)
@@ -85,7 +87,7 @@ namespace RigiCompiler.Middleware.Passes
                     new List<MirOperand>
                     {
                         inst.Collection, inst.Index, inst.Element,
-                    }, null);
+                    }, null, inst.ExcTarget);
             }
         }
     }

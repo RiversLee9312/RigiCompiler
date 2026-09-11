@@ -100,10 +100,18 @@ namespace RigiCompiler.Bil
         internal override IReadOnlyList<BilOperand> Operands =>
             new BilOperand[] { Source, Target, TargetType };
 
-        // §12.1/§12.2 完整语义：数值转换、引用上下转、.any 装拆箱、.nullable。
+        // §12.1/§12.2 完整语义：用户 castTo/castFrom 分派（#03，命中即压帧、
+        // 结果异步入 Target 槽）→ 内建兜底（数值转换、引用上下转、.any
+        // 装拆箱、.nullable）
         internal override void Execute(VmContext context, VmCoroutine coroutine)
         {
             var source = coroutine.ReadVar(Source.Name);
+            var resolved = VmTypeOps.ResolveTypeRef(context, coroutine, TargetType.TypeRef);
+            if (VmTypeOps.TryStartUserConversion(context, coroutine, source, resolved,
+                    Target.Name))
+            {
+                return;
+            }
             var converted = IsSafe
                 ? VmTypeOps.CastSafe(context, coroutine, source, TargetType.TypeRef)
                 : VmTypeOps.CastOrThrow(context, coroutine, source, TargetType.TypeRef);
@@ -136,6 +144,12 @@ namespace RigiCompiler.Bil
         {
             var source = coroutine.ReadVar(Source.Name);
             var targetType = VmTypeOps.RequireTypeId(coroutine.ReadVar(TypeId.Name));
+            var resolved = VmTypeOps.ResolveTypeRef(context, coroutine, targetType);
+            if (VmTypeOps.TryStartUserConversion(context, coroutine, source, resolved,
+                    Target.Name))
+            {
+                return;
+            }
             var converted = IsSafe
                 ? VmTypeOps.CastSafe(context, coroutine, source, targetType)
                 : VmTypeOps.CastOrThrow(context, coroutine, source, targetType);

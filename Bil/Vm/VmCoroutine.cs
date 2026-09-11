@@ -289,7 +289,8 @@
             CurrentFrame.Slots[name] = value;
         }
 
-        public void PushFrame(BilFunction function, IReadOnlyList<VmValue> arguments, string? resultSlot)
+        public void PushFrame(BilFunction function, IReadOnlyList<VmValue> arguments,
+            string? resultSlot, VmContext? context = null)
         {
             var frame = new VmCallFrame(function, resultSlot);
             var parameters = new List<BilArgDeclaration>();
@@ -301,9 +302,10 @@
                 }
             }
             // 类级 .generic.* 未出现在 invoke 实参时，从 .this 构造形态注入
+            // （嵌套类外层 GP 还需类型声明/构造点捕获，故 context 透传）
             if (arguments.Count != parameters.Count)
             {
-                arguments = VmContext.AlignGenericHiddenArgs(function, arguments);
+                arguments = VmContext.AlignGenericHiddenArgs(function, arguments, context);
             }
             if (parameters.Count != arguments.Count)
             {

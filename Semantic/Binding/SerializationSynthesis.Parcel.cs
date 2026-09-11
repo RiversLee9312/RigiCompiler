@@ -98,7 +98,7 @@ namespace RigiCompiler
 
         private static void FillClassConstructorDecoder(SynthContext ctx, MethodSymbol method, TypeSymbol self)
         {
-            var init = new MethodSymbol("..init.deserialize", MethodKind.Init, owner: ctx.Host)
+            var init = new MethodSymbol(Bil.BilSpellings.InitDeserializeMethodName, MethodKind.Init, owner: ctx.Host)
                 { Accessibility = Accessibility.Private, HasBody = true, IsSynthetic = true };
             init.Parameters.Add(new ParameterSymbol("parcel", ctx.Parcel));
             init.Parameters.Add(new ParameterSymbol("context", ctx.RuntimeType));

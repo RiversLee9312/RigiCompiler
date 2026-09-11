@@ -552,6 +552,34 @@ namespace RigiCompiler.Tests
                 "    describe(a)\n" +
                 "    return 0\n" +
                 "}\n"),
+            // review-20260910 #11：字段覆写（open var + override var 不同
+            // 初值）共享基类槽，初值经合成 ..init.field.<名> 虚派发选最高
+            // 派生实现——合成方法无 override 修饰符，native vtable 曾按
+            // 新槽追加导致经基类引用读回基类初值
+            Case("字段覆写初值三层链经基类引用虚派发",
+                "import core.io.Console\n" +
+                "pub open class BaseF {\n" +
+                "    pub open var hp: i32 = 10\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub open class HeroF : BaseF {\n" +
+                "    pub override var hp: i32 = 99\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub class VillainF : HeroF {\n" +
+                "    pub override var hp: i32 = 7\n" +
+                "    pub init()\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = new BaseF()\n" +
+                "    const h = new HeroF()\n" +
+                "    const v = new VillainF()\n" +
+                "    const viaBase: BaseF = v\n" +
+                "    if (b.hp == 10) { Console.println(\"base ok\") }\n" +
+                "    if (h.hp == 99) { Console.println(\"hero ok\") }\n" +
+                "    if (viaBase.hp == 7) { Console.println(\"viaBase ok\") }\n" +
+                "    return viaBase.hp\n" +
+                "}\n"),
             Case("interface 派发",
                 "import core.io.Console\n" +
                 "pub interface Named {\n" +
@@ -814,6 +842,29 @@ namespace RigiCompiler.Tests
                 "    if (Config.level == 3) { Console.println(\"static init ok\") }\n" +
                 "    Console.println(gName)\n" +
                 "    return gCounter\n" +
+                "}\n"),
+            // review-20260910 #12：全局字段自定义 setter（钳制）——访问器
+            // 是 owner==null 的顶层方法，native 的 FindAccessor 曾只按字段
+            // 宿主类型沿基类链扫（命名空间宿主查不到类型），写入直写
+            // backing 绕过 setter；setter 体内 backing 直访（#..value@
+            // 伪字段）不得递归自调
+            Case("全局字段自定义 setter 钳制写入",
+                "import core.io.Console\n" +
+                "pub var missionPhase: i64 {\n" +
+                "    pub get(value: _) { return value }\n" +
+                "    pub set(value: _) {\n" +
+                "        if (value < 0L) { value = 0L }\n" +
+                "        if (value > 9L) { value = 9L }\n" +
+                "    }\n" +
+                "} = 0L\n" +
+                "pub func main(): i32 {\n" +
+                "    missionPhase = 42L\n" +
+                "    const high = missionPhase\n" +
+                "    missionPhase = -3L\n" +
+                "    const low = missionPhase\n" +
+                "    if (high == 9L) { Console.println(\"clamp high ok\") }\n" +
+                "    if (low == 0L) { Console.println(\"clamp low ok\") }\n" +
+                "    return if ((high == 9L) and (low == 0L)) { 9 } else { 1 }\n" +
                 "}\n"),
             Case("多 static 初值声明序",
                 "import core.io.Console\n" +
@@ -4426,6 +4477,22 @@ namespace RigiCompiler.Tests
                 "    if ((m.count == 1L) and ((m.tryGet(\"k\") if? 0) == 2)) { Console.println(\"merge ok\") }\n" +
                 "    return 0\n" +
                 "}\n"),
+            // review-20260910 #14：Map<String, Any> for-in——MapEnumerator
+            // .current 的 `as V`（.nullable<.generic<V>> → V）在 V=Any 时
+            // 要求 rigi_sheet_is 的 Any/Object 根规则（Any 不在基类链上）
+            Case("Map<String, Any> for-in 迭代",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = new Map\\<String, Any>()\n" +
+                "    m.set(\"a\", 1L)\n" +
+                "    m.set(\"b\", \"two\")\n" +
+                "    var seen = 0L\n" +
+                "    for (kv in m) { seen = (seen + 1L) }\n" +
+                "    if (seen != 2L) { return 1 }\n" +
+                "    Console.println(\"map-any-iter ok\")\n" +
+                "    return 0\n" +
+                "}\n"),
             Case("Map 自定义 hash 按用户哈希合并",
                 "import core.io.Console\n" +
                 "import core.collections.*\n" +
@@ -5076,6 +5143,30 @@ namespace RigiCompiler.Tests
                 "        return 8\n" +
                 "    }\n" +
                 "}\n"),
+            // review-20260910 #13：越界写发生在被调方（用户 setAtIndex 算子
+            // 帧）时，异常边须跨帧传播到调用方 try——IndexOperatorLowering
+            // 改写 MirSetArray→MirCall 必须透传 ExcTarget
+            Case("try/catch 捕获被调方算子帧的数组写越界",
+                "import core.collections.*\n" +
+                "import core.io.Console\n" +
+                "pub class Ring2 {\n" +
+                "    priv var slots: Array\\<i64>\n" +
+                "    pub init(cap: i32) { slots = arrayOf\\<i64>(cap) }\n" +
+                "    pub operator setAtIndex(index: i32, value: i64) { slots[index] = value }\n" +
+                "}\n" +
+                "pub func writeThrough(r: Ring2, i: i32) {\n" +
+                "    r[i] = 9L\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const r = new Ring2(3)\n" +
+                "    try {\n" +
+                "        writeThrough(r, 9)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.OutOfBoundException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 9\n" +
+                "    }\n" +
+                "}\n"),
             // 未捕获：两侧同为「{类型全名}: {message}」+ exit 1；
             // nativeNeedle 断 reporter 新格式全名前缀
             FailCase("用户 throw 未捕获顶层格式",
@@ -5095,6 +5186,42 @@ namespace RigiCompiler.Tests
                 "    a[9] = 2\n" +
                 "    return 0\n" +
                 "}\n", "数组下标越界", "core::OutOfBoundException: 数组下标越界：9（长度 3）"),
+            // review-20260910 #03：§12.1 用户自定义转换 castFrom/castTo
+            //（VM 运行时分派 + native 编译期重写双通道同语义）
+            Case("自定义转换 castFrom（目标类型 operator）",
+                "import core.io.Console\n" +
+                "pub struct Dur {\n" +
+                "    pub var ms: i64\n" +
+                "    pub init(_ -> ms)\n" +
+                "    pub operator castFrom\\<TSource>(raw: TSource): Dur {\n" +
+                "        return new Dur((raw as i64))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const d = (750L as Dur)\n" +
+                "    if (d.ms != 750L) { return 1 }\n" +
+                "    Console.println(\"castFrom ok\")\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("自定义转换 castTo（源类型 operator）",
+                "import core.io.Console\n" +
+                "pub struct Dur {\n" +
+                "    pub var ms: i64\n" +
+                "    pub init(_ -> ms)\n" +
+                "}\n" +
+                "pub struct Ticks {\n" +
+                "    pub var v: i64\n" +
+                "    pub init(_ -> v)\n" +
+                "    pub operator castTo\\<TTarget>(): TTarget {\n" +
+                "        return (new Dur((v * 2L)) as TTarget)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const d = (new Ticks(21L) as Dur)\n" +
+                "    if (d.ms != 42L) { return 1 }\n" +
+                "    Console.println(\"castTo ok\")\n" +
+                "    return 0\n" +
+                "}\n"),
             // DateTime.now()（core.time 的 rigi_time_now → rigi_rt time_now）：
             // 窗口断言用固定历史常数（2001-09-09 起毫秒），不对拍墙钟字面量
             Case("DateTime.now 时钟原语窗口",
@@ -7991,6 +8118,90 @@ namespace RigiCompiler.Tests
             Case("闭环动态字符串回收不重入fence", SerializationGraphCorpus("serialization_graph_gc_strings")),
             Case("序列化非法引用与异常后上下文隔离", SerializationGraphCorpus("serialization_graph_errors")),
             Case("MQ OOP 复杂生命周期与分段回收", MessagingLifecycleSource),
+            // review-20260910 #07 回归：手写 AsyncAction<TMessage> 子类覆写
+            // async operator call（含挂起点 → CoroutineSplit 拆 stub+resume），
+            // 经 Receiver 冷 Task 派发走 invoke.indirect——具化收集必须沿间接
+            // 调用闭包深入 resume 体内的泛型 await（AtomicMap set 的 lambda/cell
+            // 具化），缺失时 native 侧 dynamic new 拿到空 sheet 触发
+            // rigi_alloc 协议错误。聚合按消息唯一键写入，双端确定性对拍。
+            Case("MQ 手写AsyncAction覆写含await经Receiver冷Task派发聚合",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "import core.coroutine.*\n" +
+                "import core.messaging.*\n" +
+                "import core.serialization.Serializable\n" +
+                "@Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "priv shared class CountAction : core.AsyncAction\\<Msg> {\n" +
+                "    pub const agg: core.AtomicMap\\<String, i64>\n" +
+                "    pub init() {\n" +
+                "        agg = core.AtomicMap.fromMap\\<String, i64>(new Map\\<String, i64>())\n" +
+                "    }\n" +
+                "    pub override async operator call(m: Msg) {\n" +
+                "        const key = \"k${m.v}\"\n" +
+                "        const current = await agg.tryGet(key)\n" +
+                "        await agg.set(key, ((current if? 0L) + 1L))\n" +
+                "    }\n" +
+                "}\n" +
+                "pub async func produce(sender: Messenger\\<Msg>, id: i32, rounds: i32) {\n" +
+                "    var i = 0\n" +
+                "    while (i < rounds) {\n" +
+                "        await sender.send(new Msg(((id * 100) + i)))\n" +
+                "        yield\n" +
+                "        i += 1\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const sender = new Messenger\\<Msg>()\n" +
+                "    const receiver = new Receiver\\<Msg>(sender.createReader())\n" +
+                "    const listener = new CountAction()\n" +
+                "    receiver.addListener(listener)\n" +
+                "    receiver.setExecutor(listener, new ComputeExecutor())\n" +
+                "    const producers = arrayOf\\<Task>(2)\n" +
+                "    var i = 0\n" +
+                "    while (i < 2) {\n" +
+                "        const id = i\n" +
+                "        const t = new Task(func{async () -> { await produce(sender, id, 2) }})\n" +
+                "        t.run(new ComputeExecutor())\n" +
+                "        producers[i] = t\n" +
+                "        i += 1\n" +
+                "    }\n" +
+                "    i = 0\n" +
+                "    while (i < 2) {\n" +
+                "        await (producers[i] as Task)\n" +
+                "        i += 1\n" +
+                "    }\n" +
+                "    sender.dispose()\n" +
+                "    var spins = 0\n" +
+                "    while (((await listener.agg.count()) < 4L) and (spins < 2000)) {\n" +
+                "        yield\n" +
+                "        spins += 1\n" +
+                "    }\n" +
+                "    var total = 0L\n" +
+                "    var id = 0\n" +
+                "    while (id < 2) {\n" +
+                "        var s = 0\n" +
+                "        while (s < 2) {\n" +
+                "            total += ((await listener.agg.tryGet(\"k${((id * 100) + s)}\")) if? 0L)\n" +
+                "            s += 1\n" +
+                "        }\n" +
+                "        id += 1\n" +
+                "    }\n" +
+                "    Console.println(\"agg=${total}\")\n" +
+                "    receiver.dispose()\n" +
+                "    yield sleep(200)\n" +
+                "    return 0\n" +
+                "}\n"),
+            // review-20260910 #回调定时器 回归：listener 回调体内含定时器
+            // 挂起（yield sleep）经 Receiver 冷 Task 派发后必须全部恢复并
+            // 全量投递。到达检测按消息唯一 cell 一次性写入——共享计数器
+            // RMW（load 与 store 隔着 AtomicStruct 异步 Mutex 挂起点）在
+            // 并行回调下丢更新，曾被误诊为「协程不恢复」。
+            Case("MQ listener回调定时器挂起恢复全量投递",
+                ReceiverListenerTimerResumeSource),
             Case("MQ 四生产者跨执行器广播与封存排空", SerializationGraphCorpus("mq_oop_concurrent")),
             Case("纯RigiMQ水位部分compact与全部drain", SerializationGraphCorpus("mq_pure_watermark")),
             Case("纯RigiMQ重复唤醒release与异常解锁", SerializationGraphCorpus("mq_pure_wakeup_release")),

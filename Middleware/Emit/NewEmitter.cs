@@ -23,7 +23,8 @@ namespace RigiCompiler.Middleware.Emit
                 // L7：Init = null（全链无 init 声明的零参 new）——无实参
                 // 可编组，构造 = alloc + 可选 ..init.wrapper
                 var expected = inst.Init != null
-                    ? CallEmitter.ExpectedCallParams(session.FunctionOf(inst.Init.Canonical).Mir)
+                    ? CallEmitter.ExpectedCallParams(session.Symbols,
+                        session.FunctionOf(inst.Init.Canonical).Mir)
                     : null;
                 var temps = new List<ArcEmitter.RichTemp>();
                 var boxed = new List<ArcEmitter.FatTemp>();
@@ -43,7 +44,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     var wrapperExpected = inst.InitWrapper != null
                         && session.TryGetFunction(inst.InitWrapper.Canonical, out var wrapperFn)
-                            ? CallEmitter.ExpectedCallParams(wrapperFn.Mir)
+                            ? CallEmitter.ExpectedCallParams(session.Symbols, wrapperFn.Mir)
                             : null;
                     wrapperArgs = new LLVMValueRef[inst.WrapperArgs.Count];
                     for (var i = 0; i < inst.WrapperArgs.Count; i++)
@@ -81,7 +82,7 @@ namespace RigiCompiler.Middleware.Emit
                 // class 路径同口径（ExpectedCallParams 已剔类级 typeid，
                 // 下标 +1 跳过 .this）；L7：Init = null 时无实参可编组
                 var initExpected = inst.Init != null
-                    ? CallEmitter.ExpectedCallParams(
+                    ? CallEmitter.ExpectedCallParams(session.Symbols,
                         session.FunctionOf(inst.Init.Canonical).Mir)
                     : null;
                 var userArgs = new LLVMValueRef[inst.Args.Count];
@@ -99,7 +100,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     var wrapperExpected = inst.InitWrapper != null
                         && session.TryGetFunction(inst.InitWrapper.Canonical, out var wrapperFn)
-                            ? CallEmitter.ExpectedCallParams(wrapperFn.Mir)
+                            ? CallEmitter.ExpectedCallParams(session.Symbols, wrapperFn.Mir)
                             : null;
                     wrapperArgs = new LLVMValueRef[inst.WrapperArgs.Count];
                     for (var i = 0; i < inst.WrapperArgs.Count; i++)

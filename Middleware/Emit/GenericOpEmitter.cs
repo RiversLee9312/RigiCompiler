@@ -554,7 +554,7 @@ namespace RigiCompiler.Middleware.Emit
                     args.Add(CoerceFatToParam(session, builder, receiverFat, parameter.Type));
                     continue;
                 }
-                if (GenericAbi.IsClassLevelTypeId(callee.Mir.Symbol, parameter.Name))
+                if (GenericAbi.IsClassLevelTypeId(session.Symbols, callee.Mir.Symbol, parameter.Name))
                 {
                     continue;   // class 宿主已从 LLVM 约定剔除（被调方自取）
                 }

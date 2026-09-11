@@ -65,6 +65,8 @@ namespace RigiCompiler.Tests
             ("TestSingletonInitOrderIndependence", TestSingletonInitOrderIndependence),
             ("TestSingletonCycleDetection", TestSingletonCycleDetection),
             ("TestCoroutineHandoffRaceRegression", TestCoroutineHandoffRaceRegression),
+            ("TestSharedCounterConcurrentTasks", TestSharedCounterConcurrentTasks),
+            ("TestMessagePumpDeliversAllMessages", TestMessagePumpDeliversAllMessages),
         };
 
         // ===== 辅助 =====
@@ -1306,6 +1308,154 @@ namespace RigiCompiler.Tests
             }
             TestHarness.CheckTrue("bare yield fork/join 200 轮全绿", yieldFailedRound < 0,
                 "第 " + yieldFailedRound + " 轮失败：" + yieldDetail);
+        }
+
+        // ===== #15 回归：共享对象字段并发一致性 + 消息泵全量投递 =====
+
+        // 18 个并发冷 Task（ComputeExecutor）对同一 shared 对象的字段做
+        // 自增。共享对象字段存储（VmInstanceSlots）必须对多 Worker 线程
+        // 并发读写安全：修复前并发 get/set 会丢失更新甚至损坏槽表，
+        // 表现为 hits < 18 或未捕获异常；修复后每轮必须稳定 18。
+        private static void TestSharedCounterConcurrentTasks()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "import core.collections.*\n" +
+                "import core.coroutine.*\n" +
+                "priv shared class Counter : core.AsyncAction {\n" +
+                "    pub var hits: i64 = 0L\n" +
+                "    pub var started: i64 = 0L\n" +
+                "    pub override async operator call() {\n" +
+                "        started += 1L\n" +
+                "        hits += 1L\n" +
+                "    }\n" +
+                "}\n" +
+                "priv shared class CounterJob : core.AsyncAction {\n" +
+                "    priv const target: Counter\n" +
+                "    pub init(_ -> target) {}\n" +
+                "    pub override async operator call() {\n" +
+                "        await target()\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const counter = new Counter()\n" +
+                "    const tasks = arrayOf\\<Task>(18)\n" +
+                "    var i = 0\n" +
+                "    while (i < 18) {\n" +
+                "        const t = new Task(new CounterJob(counter))\n" +
+                "        t.run(new ComputeExecutor())\n" +
+                "        tasks[i] = t\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    i = 0\n" +
+                "    while (i < 18) {\n" +
+                "        await (tasks[i] as Task)\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    core.io.Console.println(\"started=${counter.started} hits=${counter.hits}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("并发计数编译无诊断", !unit.Diagnostics.HasErrors,
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            var failedRound = -1;
+            var detail = "";
+            for (var round = 0; round < 6 && failedRound < 0; round++)
+            {
+                var result = BilVm.Run(module);
+                if (result.Exception != null || result.Stdout != "started=18 hits=18\n")
+                {
+                    failedRound = round;
+                    detail = (result.Exception?.ToString() ?? "<noex>") + " | stdout="
+                        + result.Stdout.Replace("\n", "\\n");
+                }
+            }
+            TestHarness.CheckTrue("18 并发 Task 字段计数 6 轮全绿", failedRound < 0,
+                "第 " + failedRound + " 轮失败：" + detail);
+        }
+
+        // 3 生产者 ×6 send，手工泵循环 reader.next 计数，main await 泵终态
+        //（EOS）后校验——不依赖睡眠窗口的确定性投递断言：唤醒协议在任意
+        // 调度交错下都必须把 18 条消息全部交给泵，一条不丢。
+        private static void TestMessagePumpDeliversAllMessages()
+        {
+            var (unit, module, _) = BilTestHarness.EmitBilUnit(
+                "import core.collections.*\n" +
+                "import core.coroutine.*\n" +
+                "import core.messaging.*\n" +
+                "@core.serialization.Serializable\n" +
+                "pub shared class Msg {\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v)\n" +
+                "}\n" +
+                "priv shared class Stats {\n" +
+                "    pub var got: i64 = 0L\n" +
+                "}\n" +
+                "priv shared class Producer : core.AsyncAction {\n" +
+                "    priv const sender: core.messaging.Messenger\\<Msg>\n" +
+                "    priv const rounds: i32\n" +
+                "    pub init(_ -> sender, _ -> rounds) {}\n" +
+                "    pub override async operator call() {\n" +
+                "        var i = 0\n" +
+                "        while (i < rounds) {\n" +
+                "            await sender.send(new Msg(i))\n" +
+                "            yield\n" +
+                "            i = i + 1\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "priv shared class Pump : core.AsyncAction {\n" +
+                "    priv const reader: core.messaging.Reader\\<Msg>\n" +
+                "    priv const stats: Stats\n" +
+                "    pub init(_ -> reader, _ -> stats) {}\n" +
+                "    pub override async operator call() {\n" +
+                "        while (true) {\n" +
+                "            const item = await reader.next()\n" +
+                "            if (item.isEos) { return }\n" +
+                "            stats.got += 1L\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const stats = new Stats()\n" +
+                "    const sender = new core.messaging.Messenger\\<Msg>()\n" +
+                "    const reader = sender.createReader()\n" +
+                "    const pump = new Task(new Pump(reader, stats))\n" +
+                "    pump.run()\n" +
+                "    const producers = arrayOf\\<Task>(3)\n" +
+                "    var i = 0\n" +
+                "    while (i < 3) {\n" +
+                "        const t = new Task(new Producer(sender, 6))\n" +
+                "        t.run(new ComputeExecutor())\n" +
+                "        producers[i] = t\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    i = 0\n" +
+                "    while (i < 3) {\n" +
+                "        await (producers[i] as Task)\n" +
+                "        i = i + 1\n" +
+                "    }\n" +
+                "    sender.dispose()\n" +
+                "    await (pump as Task)\n" +
+                "    core.io.Console.println(\"got=${stats.got}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            TestHarness.CheckTrue("消息泵编译无诊断", !unit.Diagnostics.HasErrors,
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(
+                    d => $"{d.Phase}: {d.Message}")));
+            var failedRound = -1;
+            var detail = "";
+            for (var round = 0; round < 8 && failedRound < 0; round++)
+            {
+                var result = BilVm.Run(module);
+                if (result.Exception != null || result.Stdout != "got=18\n")
+                {
+                    failedRound = round;
+                    detail = (result.Exception?.ToString() ?? "<noex>") + " | stdout="
+                        + result.Stdout.Replace("\n", "\\n");
+                }
+            }
+            TestHarness.CheckTrue("消息泵 18 条全量投递 8 轮全绿", failedRound < 0,
+                "第 " + failedRound + " 轮失败：" + detail);
         }
     }
 }

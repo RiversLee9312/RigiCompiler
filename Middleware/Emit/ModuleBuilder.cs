@@ -394,8 +394,9 @@ namespace RigiCompiler.Middleware.Emit
                     for (var i = 0; i < fn.Parameters.Count; i++)
                     {
                         // G1：值类型泛型宿主的实例成员保留类级 typeid 参数
-                        //（无对象头隐藏槽可自取，调用点按 §7.2 序直传）
-                        if (GenericAbi.IsClassLevelTypeId(fn.Symbol, fn.Parameters[i].Name)
+                        //（无对象头隐藏槽可自取，调用点按 §7.2 序直传）；
+                        // 嵌套类外层宿主链 GP 同属类级（Symbols 判定，#02）
+                        if (GenericAbi.IsClassLevelTypeId(Symbols, fn.Symbol, fn.Parameters[i].Name)
                             && !GenericAbi.KeepsClassTypeIdInAbi(fn.Symbol,
                                 fn.Parameters.Count > 0 && fn.Parameters[0].Name == ".this"))
                         {
@@ -809,7 +810,7 @@ namespace RigiCompiler.Middleware.Emit
                     // G1：值类型泛型宿主实例成员的类级 typeid 是真实 LLVM
                     // 参数（调用点直传）；class 宿主与值类型静态成员剔除
                     //（前者 prologue 自取；后者 §9.2.3 不用，落 Any 兜底）
-                    if (GenericAbi.IsClassLevelTypeId(fn.Symbol, parameter.Name)
+                    if (GenericAbi.IsClassLevelTypeId(Symbols, fn.Symbol, parameter.Name)
                         && !GenericAbi.KeepsClassTypeIdInAbi(fn.Symbol,
                             fn.Parameters.Count > 0 && fn.Parameters[0].Name == ".this"))
                     {
@@ -1012,8 +1013,36 @@ namespace RigiCompiler.Middleware.Emit
                 Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots)
             {
                 var owner = emitted.Mir.Symbol.Owner;
-                if (owner == null || owner.Declaration.GenericParameters.Count == 0
-                    || !slots.ContainsKey(".this")
+                if (owner == null || !slots.ContainsKey(".this"))
+                {
+                    return;
+                }
+                // 嵌套类外层宿主链 GP 兜底（review-20260910 #02）：帧形参含
+                // 外层宿主 GP，但 class 实例只物化自身隐藏 typeid 槽——外层
+                // 槽无实例来源，落 core::Any sheet 常量（对齐 VM
+                // AlignGenericHiddenArgs 未捕获回落 .any 口径；值类型静态
+                // 成员分支同先例）。仅 class 宿主：值类型实例成员的类级
+                // typeid 是真实 LLVM 参数（参数落槽循环已存），值类型静态
+                // 成员已在该循环落 Any
+                if (!GenericAbi.IsValueTypeOwner(owner))
+                {
+                    foreach (var parameter in emitted.Mir.Parameters)
+                    {
+                        if (!parameter.Name.StartsWith(".generic.",
+                                System.StringComparison.Ordinal)
+                            || owner.Declaration.GenericParameters.Contains(
+                                parameter.Name.Substring(".generic.".Length))
+                            || !GenericAbi.IsClassLevelTypeId(Symbols, emitted.Mir.Symbol,
+                                parameter.Name)
+                            || !slots.ContainsKey(parameter.Name))
+                        {
+                            continue;
+                        }
+                        builder.BuildStore(TypeSheetFor("core::Any"),
+                            slots[parameter.Name].Slot);
+                    }
+                }
+                if (owner.Declaration.GenericParameters.Count == 0
                     || Layout?.Find(GenericAbi.PlanKey(owner)) is not { } plan)
                 {
                     return;

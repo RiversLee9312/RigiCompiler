@@ -625,7 +625,7 @@ namespace RigiCompiler.Middleware.Emit
                 System.StringComparer.Ordinal);
             var userArgs = new LLVMValueRef[init.Argc];
             var emitted = session.FunctionOf(init.Member.Canonical);
-            var expected = CallEmitter.ExpectedCallParams(emitted.Mir);
+            var expected = CallEmitter.ExpectedCallParams(session.Symbols, emitted.Mir);
             var isStruct = plan.Kind == TypeLayoutKind.Struct;
             for (var i = 0; i < init.Argc; i++)
             {

@@ -216,9 +216,15 @@ namespace RigiCompiler.Middleware.Layout
 
         public bool DerivesFrom(string derivedCanonical, string baseCanonical)
         {
+            // 派生判定按声明对象比对：具化计划的 Symbol canonical 带构造实参，
+            // 与调用方传入的模板键/裸名做字符串直等会永不命中泛型基类
+            //（如 AsyncAction<Msg> 沿链对 "core::AsyncAction<1>"）。
+            // CoroutineSplitPass.DerivesFromTemplate 同口径。
+            var baseDeclaration = Find(baseCanonical)?.Symbol.Declaration;
             for (var current = Find(derivedCanonical); current != null; current = current.BasePlan)
             {
-                if (current.Symbol.Canonical == baseCanonical)
+                if (current.Symbol.Canonical == baseCanonical
+                    || (baseDeclaration != null && current.Symbol.Declaration == baseDeclaration))
                 {
                     return true;
                 }

@@ -41,7 +41,11 @@ void *rigi_alloc(const RigiTypeSheet *desc)
     if (desc == NULL || desc->typeSize < sizeof(RigiObjectHeader))
     {
         fprintf(stderr, "rigi_rt: object type identity unavailable or invalid\n");
-        exit(1);
+        /* 本检查可在 worker 线程命中：exit(3) 会经 atexit 链
+         *（globals_cleanup → gc_shutdown → gexc_flush → mem_report）
+         * 与主线程/worker 等待互锁挂死；_Exit 跳过 atexit 直接终止。 */
+        fflush(NULL);
+        _Exit(1);
     }
     RigiObjectHeader *object = (RigiObjectHeader *)rigi_track_malloc(desc->typeSize);
     memset(object, 0, desc->typeSize);

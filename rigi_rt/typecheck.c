@@ -57,6 +57,17 @@ static int32_t rigi_sheet_is(const RigiTypeSheet *actual, const RigiTypeSheet *t
         && target->typeInfoId->name.len == 15
         && memcmp(target->typeInfoId->name.data, "core::ValueType", 15) == 0)
         return (actual->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0;
+    /* Any/Object 根规则（review-20260910 #14）：一切非 null 值的实际类型
+     * 都是 Any/Object 的子孙——Any 不在 sheet 的 baseTypeId/ifaceClosure
+     * 链上，不缺这条根规则时「开放泛型 Nullable 拆包且具化为 Any」
+     * （如 MapEnumerator<String, Any>.current 的 `as V`）会误判失败。
+     * VM 侧 TypesAssignable 同口径根规则（review-20260910 #01）。 */
+    if (target->typeInfoId != NULL && target->typeInfoId->name.data != NULL
+        && ((target->typeInfoId->name.len == 9
+            && memcmp(target->typeInfoId->name.data, "core::Any", 9) == 0)
+            || (target->typeInfoId->name.len == 12
+                && memcmp(target->typeInfoId->name.data, "core::Object", 12) == 0)))
+        return 1;
     for (type = actual; type != NULL; type = type->baseTypeId)
     {
         if (type == target || rigi_info_has_iface(type->typeInfoId, target))

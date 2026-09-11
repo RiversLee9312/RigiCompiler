@@ -509,6 +509,21 @@ namespace RigiCompiler.Bil
                 return true;
             }
 
+            // 类型层级根规则（review-20260910 #01）：Any/Object 是一切类型的
+            // 公共上界，ValueType 是一切值类型的公共上界——前端符号图的
+            // BaseType 链本就覆盖这些根（SymbolLookup 沿 BaseType 走），缺了
+            // 它们，下方 out/in 型变递归在实参位（Box<i32>→Box<Any> 的
+            // i32→Any）假阴性。声明点极性规则由前端 VarianceChecker 独立
+            // 强制，此处放行只是把执行判定对齐到「声明已被静态证明合法」
+            if (normalizedExpected == "core::Any" || normalizedExpected == "core::Object")
+            {
+                return true;
+            }
+            if (normalizedExpected == "core::ValueType" && IsValueTypeRef(normalizedActual))
+            {
+                return true;
+            }
+
             var actualArguments = TypeArgumentsOf(normalizedActual);
             var expectedArguments = TypeArgumentsOf(normalizedExpected);
             if (actualArguments != null && expectedArguments != null
@@ -538,6 +553,22 @@ namespace RigiCompiler.Bil
             }
 
             return IsNominalAssignable(normalizedActual, normalizedExpected, visited);
+        }
+
+        // 值类型判定（根规则用）：内建标量/String 或声明为 struct/
+        // enum-struct/wrapper（与 VmContext.IsValueType 同口径）
+        private bool IsValueTypeRef(string normalized)
+        {
+            if (normalized is "core::i8" or "core::i16" or "core::i32" or "core::i64"
+                or "core::u8" or "core::u16" or "core::u32" or "core::u64"
+                or "core::float" or "core::double" or "core::bool" or "core::char"
+                or "core::String")
+            {
+                return true;
+            }
+            return TryGetTypeDeclaration(normalized, out var declaration)
+                && declaration.Kind is BilTypeKind.Struct or BilTypeKind.EnumStruct
+                    or BilTypeKind.Wrapper;
         }
 
         private bool IsNominalAssignable(string actual, string expected, HashSet<string> visited)

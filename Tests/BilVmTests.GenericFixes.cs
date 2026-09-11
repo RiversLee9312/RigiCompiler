@@ -560,6 +560,150 @@ namespace RigiCompiler.Tests
                 result.Stdout, "7\n8\n9\n10\n11\n");
         }
 
+        // review-20260910 #06：双泛型实参集合类型（AtomicMap<K,V>）作 init
+        // 实参——compact/非 compact 两种 BIL 拼写必须判等（TypesEqual 归一化）
+        private static void TestTwoGenericArgMapInitMatch()
+        {
+            var result = Run(
+                "import core.collections.*\n" +
+                "pub class PlainBox {\n" +
+                "    pub var agg: core.AtomicMap\\<String, i64>?\n" +
+                "    pub init(map: core.AtomicMap\\<String, i64>) { agg = map }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const map = core.AtomicMap.fromMap\\<String, i64>(new Map\\<String, i64>())\n" +
+                "    const box = new PlainBox(map)\n" +
+                "    if (box.agg == null) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("#06 AtomicMap 实参 init 匹配", result);
+            CheckI32("#06 返回 0", result, 0);
+        }
+
+        // review-20260910 #05：冷 Task async lambda 捕获双泛型实参 shared
+        // 容器（cell 化），cell new 的 init 匹配同受拼写归一化保障
+        private static void TestColdTaskCapturedAtomicMapAwait()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "import core.coroutine.*\n" +
+                "pub func main(): i32 {\n" +
+                "    const agg = core.AtomicMap.fromMap\\<String, i64>(new Map\\<String, i64>())\n" +
+                "    await agg.set(\"n\", 1L)\n" +
+                "    const t = new Task(func{async () -> {\n" +
+                "        const got = await agg.tryGet(\"n\")\n" +
+                "        Console.println(\"in-task=${got if? (-1L)}\")\n" +
+                "    }})\n" +
+                "    t.run(new ComputeExecutor())\n" +
+                "    await t\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("#05 冷 Task 捕获 AtomicMap await", result);
+            TestHarness.Check("#05 in-task=1", result.Stdout, "in-task=1\n");
+            CheckI32("#05 返回 0", result, 0);
+        }
+
+        // review-20260910 #02：泛型宿主内的嵌套枚举器 for-in——方法帧隐藏
+        // typeid 按名绑定（自身 GP ← 实例实参，外层 GP ← 构造点捕获）
+        private static void TestNestedGenericHostEnumerator()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "pub class Ring\\<TElement> implements IEnumerable\\<TElement> {\n" +
+                "    priv var slots: Array\\<TElement?>\n" +
+                "    priv var count: i32\n" +
+                "    pub init(capacity: i32) {\n" +
+                "        slots = arrayOf\\<TElement?>(capacity)\n" +
+                "        count = 0\n" +
+                "    }\n" +
+                "    pub func push(item: TElement) { slots[0] = item\n" +
+                "        count += 1 }\n" +
+                "    pub var size: i32 {\n" +
+                "        pub get(_: _) { return count }\n" +
+                "    }\n" +
+                "    pub operator getAtIndex(index: i32): TElement? {\n" +
+                "        if ((index < 0) or (index >= count)) { return null }\n" +
+                "        return slots[index]\n" +
+                "    }\n" +
+                "    pub override func iterate(): IEnumerator\\<TElement> {\n" +
+                "        return new RingEnum\\<TElement>(this)\n" +
+                "    }\n" +
+                "    priv class RingEnum\\<TItem> implements IEnumerator\\<TItem> {\n" +
+                "        priv const buffer: Ring\\<TItem>\n" +
+                "        priv var index: i32\n" +
+                "        pub init(_ -> buffer) { index = -1 }\n" +
+                "        pub override func moveNext(): bool {\n" +
+                "            index += 1\n" +
+                "            return index < buffer.size\n" +
+                "        }\n" +
+                "        pub override func current(): TItem {\n" +
+                "            return (buffer[index] as TItem)\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const rb: Ring\\<i64> = new Ring\\<i64>(4)\n" +
+                "    rb.push(7L)\n" +
+                "    var sum = 0L\n" +
+                "    for (v in rb) {\n" +
+                "        sum += v\n" +
+                "    }\n" +
+                "    Console.println(\"sum=${sum}\")\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("#02 嵌套枚举器 for-in", result);
+            TestHarness.Check("#02 sum=7", result.Stdout, "sum=7\n");
+            CheckI32("#02 返回 0", result, 0);
+        }
+
+        // review-20260910 #02 变体：外层/自身 GP 不同类型 + 方法体引用外层
+        // GP（构造点捕获）+ 三层嵌套
+        private static void TestNestedClassOuterGenericCapture()
+        {
+            var result = Run(
+                "import core.io.Console\n" +
+                "pub class Outer\\<TOuter> {\n" +
+                "    priv var tag: i64\n" +
+                "    pub init(_ -> tag)\n" +
+                "    pub func make(): Inner\\<i32> { return new Inner\\<i32>(tag) }\n" +
+                "    pub class Inner\\<TOwn> {\n" +
+                "        priv const n: i64\n" +
+                "        pub init(_ -> n)\n" +
+                "        pub func useOwn(x: TOwn): i64 { return n + (x as i64) }\n" +
+                "        pub func useOuter(x: Any): i64 {\n" +
+                "            const s = (x as TOuter)\n" +
+                "            return n + 100L\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub class A\\<TA> {\n" +
+                "    pub init()\n" +
+                "    pub func mk(): B\\<i64>.C\\<String> { return new B\\<i64>.C\\<String>(41L) }\n" +
+                "    pub class B\\<TB> {\n" +
+                "        pub init()\n" +
+                "        pub class C\\<TC> {\n" +
+                "            priv const v: i64\n" +
+                "            pub init(_ -> v)\n" +
+                "            pub func get(): i64 { return v + 1L }\n" +
+                "        }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const o = new Outer\\<String>(5L)\n" +
+                "    const i = o.make()\n" +
+                "    if (i.useOwn(2) != 7L) { return 1 }\n" +
+                "    if (i.useOuter(\"s\") != 105L) { return 2 }\n" +
+                "    const a = new A\\<double>()\n" +
+                "    const c = a.mk()\n" +
+                "    if (c.get() != 42L) { return 3 }\n" +
+                "    return 0\n" +
+                "}\n");
+            CheckOk("#02 外层 GP 捕获 + 三层嵌套", result);
+            CheckI32("#02 变体返回 0", result, 0);
+        }
+
         // W6：wrapped 静态字段根（cell getValue 拷贝 → 链写 → setValue）
         private static void TestWrappedStaticFieldRootChainWrite()
         {

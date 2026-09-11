@@ -103,6 +103,15 @@ namespace RigiCompiler.Bil.Vm
             return false;
         }
 
+        // 按泛型参数名解析当前帧 hidden typeid 绑定（嵌套类外层 GP 捕获用，
+        // review-20260910 #02）；未绑定返回 false（降级由调用方决定）
+        internal static bool TryResolveFrameGeneric(VmCoroutine coroutine,
+            string genericParameterName, out string bound)
+        {
+            return TryResolveGenericPlaceholder(coroutine,
+                "$.generic." + genericParameterName, out bound);
+        }
+
         internal static bool Is(VmContext context, VmCoroutine coroutine, VmValue value,
             string targetType)
         {
@@ -299,6 +308,73 @@ namespace RigiCompiler.Bil.Vm
             return TryCast(context, source, resolved, out var result)
                 ? result
                 : VmNull.Instance;
+        }
+
+        // ===== §12.1 用户自定义转换分派（review-20260910 #03）=====
+        // 语义层早已把 castTo/castFrom 解析进 BoundCastExpression，但
+        // Lowering 只发普通 cast（设计意图：运行时按 §12.1 自行分派）——
+        // 本入口补上欠缺的半环。castTo 优先（源类型零参泛型 operator，
+        // TTarget 无从推断、显式装目标 typeid），castFrom 兜底（目标类型
+        // 实例 operator；转换完成前无目标实例，receiver 用目标零值——
+        // 惯常体不读 this，TSource 由 source 实参统一推断）。均不命中
+        // 返回 false，调用方继续内建 TryCast 兜底（§12.1 第 3 条）。
+        // 只能在带结果槽的指令执行入口调用（命中即压帧、结果异步入槽）；
+        // CastOrThrow/CastSafe 的同步调用方维持内建通道。
+        internal static bool TryStartUserConversion(VmContext context, VmCoroutine coroutine,
+            VmValue source, string targetType, string resultSlot)
+        {
+            // 名义可赋值（含恒等/视图改写）不走转换 operator——否则
+            // Dur→Dur 这类恒等 cast 会递归调进 castFrom（#03 实证）
+            if (context.Types.TypesAssignable(ActualType(source), targetType))
+            {
+                return false;
+            }
+            // 胖壳解包后的实际类型是 castTo 的宿主（与 operator 分派同口径）
+            var castTo = context.FindOperator(ActualType(source), "castTo",
+                Array.Empty<VmValue>());
+            if (castTo != null
+                && context.FindFunction(castTo) is { } castToFn)
+            {
+                var castToArgs = new List<VmValue>();
+                var shaped = true;
+                foreach (var arg in castToFn.Args)
+                {
+                    if (arg.Name == ".return")
+                    {
+                        continue;
+                    }
+                    if (arg.Name == ".this")
+                    {
+                        castToArgs.Add(source);
+                        continue;
+                    }
+                    if (arg.Name.StartsWith(".generic.", StringComparison.Ordinal))
+                    {
+                        castToArgs.Add(new VmTypeId(targetType));
+                        continue;
+                    }
+                    // §12.1 castTo 形态是零值参泛型 operator；其它形态
+                    // 不作转换候选（防误命中同名 operator）
+                    shaped = false;
+                    break;
+                }
+                if (shaped)
+                {
+                    BilInvokeExecution.InvokeValues(context, coroutine, castTo,
+                        castToArgs, resultSlot);
+                    return true;
+                }
+            }
+            var castFrom = context.FindOperator(targetType, "castFrom", new[] { source });
+            if (castFrom != null && context.FindFunction(castFrom) != null)
+            {
+                BilInvokeExecution.InvokeValues(context, coroutine, castFrom,
+                    context.InjectOperatorTypeIds(castFrom,
+                        new[] { context.ZeroOf(targetType), source }),
+                    resultSlot);
+                return true;
+            }
+            return false;
         }
 
         // T → Nullable\<T\> 包装（BIL §13.6 get.array 内建数组读取与

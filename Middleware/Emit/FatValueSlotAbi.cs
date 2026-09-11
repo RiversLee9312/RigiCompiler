@@ -47,8 +47,9 @@ namespace RigiCompiler.Middleware.Emit
         private static string InterfaceName(MwMemberSymbol method, string implementation) =>
             Name("interface." + method.Canonical + "." + implementation);
 
-        private static CanonicalSignature InterfaceSignature(MirFunction function) =>
-            CanonicalSignature.Create(CallEmitter.ExpectedCallParams(function).Skip(1)
+        private static CanonicalSignature InterfaceSignature(ModuleBuilder.Session session,
+            MirFunction function) =>
+            CanonicalSignature.Create(CallEmitter.ExpectedCallParams(session.Symbols, function).Skip(1)
                 .Select(p => (p.Name, p.Name.StartsWith(".generic.", StringComparison.Ordinal)
                     ? p.Type.Canonical : ValueType)).ToArray(), function.ReturnType.IsVoid ? ".void" : ValueType);
 
@@ -60,7 +61,7 @@ namespace RigiCompiler.Middleware.Emit
                     if (InterfaceMethodAt(session, plan, slot)?.Canonical == method.Canonical
                         && session.TryGetFunction(plan.VTableSlots[slot], out var function))
                     {
-                        var current = InterfaceSignature(function.Mir);
+                        var current = InterfaceSignature(session, function.Mir);
                         // 普通参数由接口声明约束；方法级 typeid 仅登记在 BIL fn 参数表。
                         // 全部实现必须提供相同隐藏前缀，不能让布局遍历顺序决定公共 ABI。
                         if (agreed != null && (agreed.ReturnTypeRef != current.ReturnTypeRef
