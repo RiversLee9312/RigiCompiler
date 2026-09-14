@@ -183,6 +183,65 @@ namespace RigiCompiler.Middleware.Layout
                         case InvokeIndirectNoResultInstruction call:
                             Indirect(call.CallTarget, call.Arguments, null);
                             break;
+                        // polling 探测回调（MIR 期合成的 $mw.poll_probe 虚派发
+                        // PollingAlarm.isReady）在 BIL 级不可见：沿 alarm 实参的
+                        // 精确类型收集 isReady 覆盖实现的调用边（与
+                        // MirReachability 的 AddVirtualEdges 同族）。漏收集时
+                        // 「仅在 isReady 内构造/实例化」的类型进不了构造收集，
+                        // 发射期 sheet select miss 烧 null，运行期
+                        // rigi_alloc(NULL) 硬错（probe-diag 实踩）。
+                        case YieldInstruction yieldInst:
+                            if (yieldInst.Alarm != null)
+                            {
+                                var probe = context.Symbols.FindMember(
+                                    Passes.CoroutineSplitPass.PollProbeIsReadyCanonical);
+                                if (probe != null
+                                    && ImplBinder.BindCall(probe) is VirtualCallBinding)
+                                {
+                                    var needAll = false;
+                                    foreach (var alarm in Values(yieldInst.Alarm.Name))
+                                    {
+                                        // 泛型占位（yield 在泛型宿主内）静态不可解，
+                                        // 走兜底；非 PollingAlarm（EventAlarm 等）
+                                        // 无 isReady 派发，跳过
+                                        if (alarm.Type.Contains(".generic<",
+                                                StringComparison.Ordinal))
+                                        {
+                                            needAll = true;
+                                            continue;
+                                        }
+                                        if (!dispatch.DerivesFrom(alarm.Type,
+                                                Passes.CoroutineSplitPass.PollingAlarmCanonical))
+                                            continue;
+                                        if (Call(probe.Canonical, new[] { alarm.Type },
+                                                new string?[] { null }) == null)
+                                            needAll = true;
+                                    }
+                                    if (needAll)
+                                    {
+                                        // 实参仅静态基类/泛型占位时精确派发不可解
+                                        // ——兜底收编全部 override 后代（宁滥勿缺，
+                                        // 多发射 sheet 无害）
+                                        var ownerKey = GenericAbi.PlanKey(probe.Owner!);
+                                        var probeSlots = dispatch.GetVTableSlots(ownerKey);
+                                        var slot = probeSlots?.ToList()
+                                            .IndexOf(probe.Canonical) ?? -1;
+                                        if (slot >= 0)
+                                            foreach (var typeCanonical in
+                                                dispatch.AllClassCanonicals())
+                                            {
+                                                if (!dispatch.DerivesFrom(typeCanonical,
+                                                        ownerKey)) continue;
+                                                if (dispatch.GetVTableSlots(typeCanonical)
+                                                    is { } derivedSlots)
+                                                    Call(derivedSlots[slot],
+                                                        new[] { typeCanonical },
+                                                        new string?[] { null });
+                                            }
+                                    }
+                                }
+                            }
+                            break;
                     }
                 }
             }

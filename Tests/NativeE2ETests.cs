@@ -7558,8 +7558,10 @@ namespace RigiCompiler.Tests
                 "    run()\n" +
                 "    return 0\n" +
                 "}\n"),
-            // 一条消息多 listener：默认均 IOExecutor（同 lane FIFO →
-            // 注册序确定）；removeListener 后只剩后者
+            // 一条消息多 listener：listener 默认 ComputeExecutor（多 Worker 池，
+            // 回调真并发——打印顺序在两个宿主上都不可假设），故 listener 只写
+            // sink 状态，打印集中在 run() 单协程内按固定序产出；
+            // removeListener 后只剩后者
             Case("Receiver 对拍：多 listener 注册序派发 + removeListener",
                 "import core.io.Console\n" +
                 "import core.serialization.Serializable\n" +
@@ -7584,11 +7586,9 @@ namespace RigiCompiler.Tests
                 "    const sink = new Sink()\n" +
                 "    const l1 = func{async (m: Msg) -> {\n" +
                 "        sink.a = m.n\n" +
-                "        Console.println((\"L1:\" + m.n.toString()))\n" +
                 "    } }\n" +
                 "    const l2 = func{async (m: Msg) -> {\n" +
                 "        sink.b = m.n\n" +
-                "        Console.println((\"L2:\" + m.n.toString()))\n" +
                 "    } }\n" +
                 "    recv.addListener(l1)\n" +
                 "    recv.addListener(l2)\n" +
@@ -7598,6 +7598,8 @@ namespace RigiCompiler.Tests
                 "        yield sleep(5)\n" +
                 "        spins = spins + 1\n" +
                 "    }\n" +
+                "    Console.println((\"L1:\" + sink.a.toString()))\n" +
+                "    Console.println((\"L2:\" + sink.b.toString()))\n" +
                 "    recv.removeListener(l1)\n" +
                 "    await msgr.send(new Msg(2))\n" +
                 "    spins = 0\n" +
@@ -7605,6 +7607,7 @@ namespace RigiCompiler.Tests
                 "        yield sleep(5)\n" +
                 "        spins = spins + 1\n" +
                 "    }\n" +
+                "    Console.println((\"L2:\" + sink.b.toString()))\n" +
                 "    if (sink.a == 1) {\n" +
                 "        Console.println(\"l1 removed\")\n" +
                 "    } else {\n" +
@@ -8467,6 +8470,11 @@ namespace RigiCompiler.Tests
             //（3/1/2）同时锁定 untainted（YieldOnce）与 tainted（SlowPoll/
             // BoomPoll，经 AtomicStruct.load 的 Mutex 链）两路径
             Case("PollingAlarm恢复式探测挂起与就绪判定", SerializationGraphCorpus("pollalarm_isready_semantics")),
+            // 遗留1回归：isReady 内泛型闭合 new——ConstructedCallCollector 补
+            // YieldInstruction 边（poll_probe 虚派发 isReady 的构造收集），
+            // 修复前 native 发射期 sheet select miss 烧 null、运行期
+            // rigi_alloc(NULL) 硬错；双路径（untainted 廉价 + tainted 恢复）对拍
+            Case("PollingAlarm探测内泛型闭合new双路径", SerializationGraphCorpus("pollalarm_generic_new")),
             Case("Compute池终态与await登记竞争及重复观察", SerializationGraphCorpus("task_terminal_waiter_race")),
             Case("MQ跨段缓存与积压branch及清空后复用", SerializationGraphCorpus("mq_segment_cursor")),
             Case("值块lambda混合return与throw执行finally", SerializationGraphCorpus("lambda_return_throw_finally")),

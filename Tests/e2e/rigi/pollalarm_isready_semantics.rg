@@ -7,9 +7,10 @@
 //      滞留帧完成探测（isReady 只执行一次；修复前重复压帧执行两次）；
 //   ③ BoomPoll：第 1 次探测 false 退回；第 2 次探测挂起恢复后抛出——异常
 //      落在 yield 点，词法 try/catch 捕获后轮询状态清理、catch 续行。
-// 形态约束（既有缺陷规避，见 Phase 2.6 报告）：isReady 内不含泛型闭合 new
-// 与 AtomicStruct.store（mutate 链）——untainted isReady 内泛型 new 在
-// native 崩为 76e304c 既有缺陷（与探测无关），探测计数一律用普通字段。
+// 形态约束（历史说明）：isReady 内泛型闭合 new 与 AtomicStruct.store
+//（mutate 链）曾是 76e304c 既有 native 缺陷（构造收集漏 poll_probe 边，
+// 与探测语义无关）——已修复，回归覆盖见 pollalarm_generic_new.rg；本文件
+// 的探测计数仍一律用普通字段，保持对「探测语义本身」的聚焦。
 // 验证：双宿主 stdout 逐行一致 + 退出码 0；探测计数确定性（3/1/2）。
 // expect-output: slow-probes=3
 // expect-output: yield-probes=1
