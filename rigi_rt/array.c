@@ -6,6 +6,7 @@
  * try/catch 捕获的 core.OutOfBoundException（守卫由 Middleware 发射）。
  */
 #include "arc.h"
+#include "macrogc.h" /* Phase 3a：rigi_pf_accounting_init（packedFlags 位段） */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,10 @@ void *rigi_alloc_contiguous(const RigiTypeSheet *sheet, const RigiTypeSheet *ele
     memset(object, 0, bytes);
     object->typeId = sheet;
     object->rc = 1;
+    /* Phase 3a：数组/Span sheet 恒含 RIGI_TYPE_ARRAY（数组与 Span/SharedSpan
+     * 三条 Layout 合成路径一致），会计位按类型静态判定为 shared 会计——
+     * 与 ref 面 SHARED|ARRAY 的保守原子口径一致。分配期单线程写，无并发。 */
+    object->packedFlags = rigi_pf_accounting_init(sheet->typeFlags);
     *(const RigiTypeSheet **)((char *)object + 16) = elemSheet;
     *(int32_t *)((char *)object + 24) = len;
     return object;

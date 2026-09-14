@@ -12,6 +12,10 @@
 
 #include "worker.h"
 
+/* 3b-δ2：per-属主壳释放挂起栈头（节点本体 shell.c 私有；句柄只持
+ * 原子栈顶指针。MPSC：多发布者压栈 / 属主互斥单消费者弹栈） */
+typedef struct RigiShellPendingNode RigiShellPendingNode;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -65,6 +69,22 @@ void rigi_coro_local_push(const RigiFatRef *key, const RigiFatRef *value);
 void rigi_coro_local_pop(const RigiFatRef *key);
 void rigi_coro_local_get(RigiFatRef *out, const RigiFatRef *key);
 void rigi_coro_local_inherit(int64_t child);
+
+/* ---- 3b-δ2：per-属主壳释放挂起栈槽位（shell.c 协作面） ----
+ * 返回句柄上原子栈顶指针的地址（shell.c 据此做 CAS 压/弹栈）；槽位
+ * 生命周期 = 句柄本体（压栈方经 native_rc_retain 验活 pin 住句柄后
+ * 才触达，弹栈方 = 属主互斥的 resume 门闸与 teardown）。 */
+RigiShellPendingNode *_Atomic *rigi_ch_pending_slot(void *handle);
+
+/* ---- Phase 3d-1：per-协程 local 候选账本槽位（macrogc.c 协作面） ----
+ * 属主协程的 local 候选账本（懒建；NULL = 未建）。物理驻留 native、
+ * 逻辑属主持有，随属主协程迁移；访问语境 = 属主执行段内（release/
+ * alloc 热路径，resume 门闸保证句柄存活）或终态收干（token 已终态）。
+ * 终态收干在 rigi_ch_destroy_payload（macrogc.c rigi_gc_local_ledger_
+ * teardown，先于 rigi_shell_owner_teardown——先收干纯 local 账本再让
+ * promote 过户翻位，两步的 plain/原子前提各自成立）。 */
+void *rigi_ch_local_ledger_load(void *handle);
+void rigi_ch_local_ledger_store(void *handle, void *ledger);
 
 #ifdef __cplusplus
 }

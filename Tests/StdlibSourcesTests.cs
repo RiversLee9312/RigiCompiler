@@ -21,7 +21,7 @@ namespace RigiCompiler.Tests
     ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements +
     ///    span_alloc/spanOf/shared_span_alloc/sharedSpanOf）；
     ///    coroutine（namespace core.coroutine + 15 类型 +
-    ///    laneOfExecutor + 29 native 原语 + sleep 包装）；disposable（namespace core +
+    ///    laneOfExecutor + 34 native 原语 + sleep 包装）；disposable（namespace core +
     ///    IDisposable 接口）；exceptions（namespace core + 5 异常子类）
     /// 3. Console 整棵 Root 的 AstDescribe 描述串精确比对
     /// </summary>
@@ -459,7 +459,9 @@ namespace RigiCompiler.Tests
             // lane/current、alarm_wait、poll_*、failure_record/drop；
             // 其后增 coro_local_push/pop/get/inherit（§20.2）；
             // L8 增 event_create_sticky/event_signal（用户 EventAlarm
-            // 默认底座两面，§19.3）
+            // 默认底座两面，§19.3）；3b-β 曾增 shell_msg_try_take/
+            // shell_handle_release 两面，3b-δ2 壳释放属主化随消息面
+            // 一并删除（挂起栈消化为纯 native 内部面，无 Rigi 声明）
             TestHarness.CheckTrue("顶层恰好 50 个声明（namespace + 15 类型 + 34 func）",
                 declarations.Count == 50, $"实际 {declarations.Count}");
             if (declarations.Count < 50) { TestHarness.Blank(); return; }
@@ -586,7 +588,9 @@ namespace RigiCompiler.Tests
             // 声明[17..48]：§17.4 native 原语面（rigi_ 前缀，priv native；
             // 棒5a 增 coroutine_current/lane、alarm_wait、poll_*、
             // failure_record/drop；make_sleep_alarm 已删；其后增
-            // coro_local_* 四面；L8 增 event_create_sticky/event_signal）
+            // coro_local_* 四面；L8 增 event_create_sticky/event_signal；
+            // 3b-β 曾增 shell_msg_try_take/shell_handle_release 壳消息
+            // 两面，3b-δ2 壳释放属主化已删除）
             string[] expectedNatives = {
                 "rigi_worker_parallelism",
                 "rigi_worker_create", "rigi_worker_destroy", "rigi_worker_enqueue",

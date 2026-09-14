@@ -75,7 +75,7 @@ Bil/
 
 ### 3.2 复合与运行时类型值
 
-- `.handle` 使用 `VmObject` 的专用强引用 target 与 kind/mutable 元数据；这些槽不进入字段或 wrapper 隐藏字段枚举。CLR 对象图保持目标存活；Handle 无 dispose 追踪。Place 的普通字段持有与 Handle 独立，释放 Place 后 Handle 仍有效。
+- `.handle` 使用 `VmObject` 的专用强引用 target 与 kind/mutable 元数据；这些槽不进入字段或 wrapper 隐藏字段枚举。CLR 对象图保持目标存活；Handle 无 dispose 追踪。Place 的普通字段持有与 Handle 独立，释放 Place 后 Handle 仍有效。VM 直接持 target 是壳协议的 hook 模拟：native 宿主以 capability + 计数壳等价实现（`RUNTIME.md` §28），双宿主行为对拍一致。
 
 泛型宿主的 `$$call` 匹配先按实际 receiver 代入参数类型，宿主 hidden typeid 由入帧逻辑注入，不计入显式实参数量；方法级 hidden typeid 仍来自调用点。嵌套 Nullable 等类型的内建别名须递归归一化，null 与非空元素按 Nullable 可赋值规则匹配。
 

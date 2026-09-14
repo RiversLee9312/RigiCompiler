@@ -163,7 +163,7 @@ Running → Runnable
 
 ### 19.2 `PollingAlarm`
 
-`core.coroutine.PollingAlarm` 定义同步探测方法：
+`core.coroutine.PollingAlarm` 定义探测方法：
 
 ```rigi
 pub func isReady(): bool
@@ -173,12 +173,17 @@ pub func isReady(): bool
 
 1. 当前 Coroutine 保存 continuation，进入 `Suspended(PollingAlarm)`；
 2. Executor 将它登记到逻辑 polling 等待集合；
-3. 每当调度器再次给该等待任务一次调度机会时，由某个 Worker 调用一次 `alarm.isReady()`；
-4. 返回 `false`：不恢复用户 continuation，继续处于 PollingAlarm 等待；
-5. 返回 `true`：调度器原子地取得该 Coroutine 的执行权，使其转为 `Running`，并在本次调度机会中直接从 `yield` 后继续执行；
-6. 抛出异常：该异常被视为发生在 yield 点，使 Coroutine 进入失败传播流程。
+3. 每当调度器再次给该等待任务一次调度机会时，在**该等待 Coroutine 自己的恢复块内**执行一次 `alarm.isReady()`——isReady 是普通 Rigi 代码，运行在等待 Coroutine 所绑定的 Executor lane 上（§17.1），**允许 `await`/`yield`**；
+4. isReady 未就绪返回 `false`：不恢复用户 continuation，继续处于 PollingAlarm 等待（退避重排）；
+5. isReady 返回 `true`：调度器原子地取得该 Coroutine 的执行权，使其转为 `Running`，并在本次调度机会中直接从 `yield` 后继续执行；
+6. isReady 内部挂起（`await`/`yield`/Alarm 等待）：**挂起即继续等待**——isReady 的执行帧保留在等待 Coroutine 的调用栈上，由其内部挂起源（被等待 Task 终态、EventAlarm 响铃、裸 yield 重发布）或 polling 退避重排唤醒，唤醒后在恢复块内从挂起点继续执行 isReady 直至完成，再做第 4/5 条的一次性就绪判定；
+7. isReady 抛出异常：该异常被视为发生在 yield 点——沿 yield 点的词法 `try`/`catch` 传播（捕获则轮询状态清理并从 catch 续行，未捕获则 Coroutine 进入失败流程）。
 
-`isReady()` 必须同步、线程安全、可重复调用，不得执行 `await`/`yield`，也不得进行长期阻塞。连续探测可以由不同 Worker 执行。轮询频率不是语言保证；实现可使用退避、批量扫描或专用 polling 队列避免空闲时忙等。
+**语义基准与实现注记**：
+
+- 探测绑定等待 Coroutine 自身的 Executor lane；不存在「连续探测由不同 Worker 执行」的语义——各次探测恢复可能与任何其他执行段一样落在该 Executor 的任意 Worker 上（§17.1 的 Worker 透明性不变），但 isReady 的执行上下文始终是等待 Coroutine 自己的恢复块。
+- isReady 允许挂起是设计语义（「协程无处不在、任何普通函数都能挂起」），不是对实现的豁免：实现可以按 isReady 是否含挂起点分双路径——纯同步（无挂起点）的 isReady 可获得更廉价的探测路径（直接同步虚派发探测，一次栈内调用完成第 4/5 条判定）；含挂起点的 isReady 必须经恢复块下钻执行（每次探测是完整的调度动作，探测中途挂起、唤醒后续跑）。两路径的可观察语义一致。
+- 轮询频率不是语言保证；实现可使用退避、批量扫描或专用 polling 队列避免空闲时忙等。isReady 应当幂等且无长期阻塞副作用——探测可能因重排而多次执行，且中途挂起期间其副作用已对外可见。
 
 ### 19.3 `EventAlarm`
 

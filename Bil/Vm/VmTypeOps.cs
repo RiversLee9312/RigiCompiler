@@ -611,6 +611,7 @@ namespace RigiCompiler.Bil.Vm
                 BilBinaryOp.Sub => "minus",
                 BilBinaryOp.Mul => "times",
                 BilBinaryOp.Div => "div",
+                BilBinaryOp.Mod => "mod",
                 BilBinaryOp.And => "and",
                 BilBinaryOp.Or => "or",
                 BilBinaryOp.BinAnd => "bitwiseAnd",

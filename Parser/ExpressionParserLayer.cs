@@ -958,8 +958,8 @@ namespace RigiCompiler
             }
 
             // 复合赋值（SYNTAX §13.2）：Lexer 一律拆 token（M31），在运算符状态下
-            // 遇 = 与 pending 运算符重组；全集 10 个（+= -= *= /= <<= >>= >>>= &= |= ^=，
-            // 无 %=）。>>= / >>>= 先经上方 > 系列重组把 pendingOperator 收拢为 >> / >>>
+            // 遇 = 与 pending 运算符重组；全集 11 个（+= -= *= /= %= <<= >>= >>>= &= |= ^=）。
+            // >>= / >>>= 先经上方 > 系列重组把 pendingOperator 收拢为 >> / >>>
             // （比较的 >= >> >>> 已被重组逻辑拦截，不会到达这里）；不属于全集的组合
             // （如 == 后再遇 =）不拦截，落入正常二元流程，由右操作数层报意外 token
             if (currentToken is NotationToken assign && assign.Content == "=" &&
@@ -1281,6 +1281,7 @@ namespace RigiCompiler
             {
                 return nt.Content == "+" || nt.Content == "-" ||
                        nt.Content == "*" || nt.Content == "/" ||
+                       nt.Content == "%" ||
                        nt.Content == "==" || nt.Content == "!=" ||
                        nt.Content == "<" || nt.Content == ">" ||
                        nt.Content == "<=" || nt.Content == ">=" ||
@@ -1308,11 +1309,11 @@ namespace RigiCompiler
                    word == Keywords.SUPERS || word == Keywords.WITH;
         }
 
-        // 复合赋值基础运算符全集（SYNTAX §13.2，10 个，无 %=）：
+        // 复合赋值基础运算符全集（SYNTAX §13.2，11 个，含 %=）：
         // pending 运算符与随后的 = 组成复合赋值；>> 与 >>> 由 > 系列重组先行收拢
         private static bool IsCompoundAssignmentOperator(string op)
         {
-            return op is "+" or "-" or "*" or "/" or
+            return op is "+" or "-" or "*" or "/" or "%" or
                    "<<" or ">>" or ">>>" or "&" or "|" or "^";
         }
 

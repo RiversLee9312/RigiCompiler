@@ -58,8 +58,7 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 var fat = EmitAllocAndInit(session, builder, slots, inst.Type.Canonical,
                     inst.InitWrapper, inst.Init, userArgs, wrapperArgs);
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 // 构造异常边（刀5）：wrapper/init 内抛出（pending 非空）→
                 // 释放未落槽的新建 +1 后沿边走；空 → 落槽续行
                 if (inst.ExcTarget != null)
@@ -114,8 +113,7 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 EmitInitValueOnSlot(session, builder, slots, slots[inst.Target].Slot,
                     inst.Type.Canonical, inst.InitWrapper, inst.Init, userArgs, wrapperArgs);
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 // 构造异常边（R3，同 MirNewObject 口径）：wrapper/init
                 // 内抛出（pending 非空）→ 沿边走；值类型原地落槽，
                 // 无新建堆对象需释放。无边（无 try 作用域）保持历史

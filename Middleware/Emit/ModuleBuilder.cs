@@ -30,7 +30,7 @@ namespace RigiCompiler.Middleware.Emit
             {
                 module.Target = LlvmHost.HostTriple;
                 new Session(module, mir, context.Layout, context.Symbols, context.Module,
-                    context.Singletons).EmitAll();
+                    context.Singletons, context.BorrowedReturnSymbols).EmitAll();
                 return module;
             }
             catch
@@ -62,12 +62,16 @@ namespace RigiCompiler.Middleware.Emit
             internal Session(LLVMModuleRef module, MirModule mir,
                 Layout.LayoutPlanTable? layout, Symbols.MwSymbolTable symbols,
                 BilModule? bilModule = null,
-                System.Collections.Generic.IReadOnlyList<Binding.SingletonEntry>? singletons = null)
+                System.Collections.Generic.IReadOnlyList<Binding.SingletonEntry>? singletons = null,
+                System.Collections.Generic.HashSet<string>? borrowedReturnSymbols = null)
             {
                 Env = new LlvmEmitEnvironment(module, mir, layout, symbols, bilModule);
                 Ctx = new LlvmEmitContext();
                 Singletons = singletons
                     ?? System.Array.Empty<Binding.SingletonEntry>();
+                // 3b-δ1：RcInjection 挂载的借用返回集合（null = 无借用标记）；
+                // EmitBody 按当前 fn 重算借用槽缓存
+                BorrowedReturnSymbols = borrowedReturnSymbols;
             }
 
             internal LlvmEmitEnvironment Env { get; }
@@ -77,6 +81,16 @@ namespace RigiCompiler.Middleware.Emit
             //（SingletonLoweringPass 挂载；空 = 模块无 singleton）
             internal System.Collections.Generic.IReadOnlyList<Binding.SingletonEntry> Singletons
             { get; }
+
+            // 3b-δ1：借用返回集合（RcInjection 挂载）+ 当前 fn 的借用槽
+            // 缓存（EmitBody 进入时重算；cast 读侧按此裸取）
+            internal System.Collections.Generic.HashSet<string>? BorrowedReturnSymbols
+            { get; }
+            internal System.Collections.Generic.HashSet<string>? BorrowedSlots
+            { get; private set; }
+
+            internal bool IsBorrowedSlot(string slot) =>
+                BorrowedSlots?.Contains(slot) == true;
 
             internal LLVMModuleRef Module => Env.Module;
             internal LLVMContextRef Context => Env.Context;
@@ -758,6 +772,12 @@ namespace RigiCompiler.Middleware.Emit
             private void EmitBody(LLVMBuilderRef builder, EmittedFunction emitted)
             {
                 var fn = emitted.Mir;
+                // 3b-δ1：当前 fn 的借用槽缓存（义务层真相源在 RcInjection，
+                // 此处只供 CastEmitter 读侧豁免判定）
+                BorrowedSlots = BorrowedReturnSymbols is null
+                    ? null
+                    : Passes.RcInjectionPass.DeriveBorrowedSlots(
+                        fn, BorrowedReturnSymbols);
                 // 先建全部基本块（终结符按 id 引用，可前向引用），再逐块发射
                 var blockRefs = new Dictionary<string, LLVMBasicBlockRef>(System.StringComparer.Ordinal);
                 foreach (var block in fn.Blocks)
@@ -874,6 +894,31 @@ namespace RigiCompiler.Middleware.Emit
                             instIndex += 2;
                             continue;
                         }
+                        // Phase 1.2 region 合并：块首连续参数 acquire 段与块尾
+                        // 连续出口 release 段（ret 出口/传播垫共用形态）各外包
+                        // 一对 region 进出；段内全为单槽 ARC 运行时调用（无挂
+                        // 起点、无可抛调用，§23.3 两条不变量静态成立），级联
+                        // 复用当前 region 是 §23.3 明文形态。段长 < 2 不外包。
+                        if (inst is MirAcquireSlot && instIndex == 0)
+                        {
+                            var run = ArcRunLength(block.Instructions, 0, isAcquire: true);
+                            if (run >= 2)
+                            {
+                                EmitRegionWrappedArcRun(builder, block.Instructions, 0, run);
+                                instIndex = run - 1;
+                                continue;
+                            }
+                        }
+                        if (inst is MirReleaseSlot)
+                        {
+                            var run = ArcRunLength(block.Instructions, instIndex, isAcquire: false);
+                            if (run >= 2)
+                            {
+                                EmitRegionWrappedArcRun(builder, block.Instructions, instIndex, run);
+                                instIndex += run - 1;
+                                continue;
+                            }
+                        }
                         LlvmEmitDispatchers.Visit(inst, this);
                     }
                     if (block.Id == "mw.state.0" && fn.RestoredEntrySource is { } source
@@ -886,6 +931,58 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     Ctx.EndBody();
                 }
+            }
+
+            // ===== Phase 1.2：连续单槽 ARC 段的 region 合并 =====
+
+            // 自 start 起（acquire 段仅限块首）连续同槽类 ARC 指令的段长；
+            // 遇到任意其他指令即止。release 段天然要求延伸到块尾语义之外时
+            // 中断——RcInjection 的出口序列/传播垫正位于块尾，块中前置
+            // release（后随可抛产出指令）永远成不了段，保证不越过可抛点。
+            private int ArcRunLength(IReadOnlyList<MirInst> insts, int start,
+                bool isAcquire)
+            {
+                var length = 0;
+                for (var i = start; i < insts.Count; i++)
+                {
+                    if (isAcquire
+                        ? insts[i] is not MirAcquireSlot
+                        : insts[i] is not MirReleaseSlot)
+                    {
+                        break;
+                    }
+                    length++;
+                }
+                return length;
+            }
+
+            // [start, start+length) 的连续单槽 acquire/release 外包一对
+            // region 进出逐条发射（§23.3「复合引用操作可合并为同一
+            // acquire/release region」）；段内条目用免显式 region 包裹的
+            // 槽操作原语（AcquireSlotBody/ReleaseSlotBody）——单发路径的
+            // 显式进出在段内是冗余的，外层一对即段的完整 region 契约
+            //（槽清零与释放同处一个 region 的不变量由外层满足），内层
+            // 也不再付 arc.c 的 TLS 嵌套计数。
+            private void EmitRegionWrappedArcRun(LLVMBuilderRef builder,
+                IReadOnlyList<MirInst> insts, int start, int length)
+            {
+                ArcEmitter.CallRegionFace(this, builder, RuntimeFaces.RegionEnter);
+                for (var i = start; i < start + length; i++)
+                {
+                    switch (insts[i])
+                    {
+                        case MirAcquireSlot acquire:
+                            ArcEmitter.AcquireSlotBody(this, builder, Slots, acquire.Local);
+                            break;
+                        case MirReleaseSlot release:
+                            ArcEmitter.ReleaseSlotBody(this, builder, Slots, release.Local);
+                            break;
+                        default:
+                            throw new CompilerInternalException(
+                                $"region 合并段混入非单槽 ARC 指令: {insts[i].GetType().Name}");
+                    }
+                }
+                ArcEmitter.CallRegionFace(this, builder, RuntimeFaces.RegionExit);
             }
 
             // ===== MW12b §25.2：dispose 进入置位 =====

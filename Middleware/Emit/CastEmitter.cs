@@ -63,7 +63,9 @@ namespace RigiCompiler.Middleware.Emit
             {
                 var fat = LoadSourceFat(session, builder, slots, source.Name, sourceType);
                 // 引用视图转换产生独立持有；新装箱值已拥有其胖值。
-                if (SourceIsFat(session, sourceType))
+                // 3b-δ1：借用槽读侧裸取（cast 不建立所有权，义务豁免在
+                // RcInjection 配平）——acquire 而不 release 即泄漏
+                if (SourceIsFat(session, sourceType) && !session.IsBorrowedSlot(inst.Target))
                     fat = ArcEmitter.ProduceFatValue(session, builder, fat, "cast.acq");
                 StoreConverted(session, builder, slots, inst, sourceType, resultType, fat);
                 return;
@@ -132,7 +134,10 @@ namespace RigiCompiler.Middleware.Emit
             var hitFat = PackBits(session, builder, hitTid, hitPl, "cast.hf");
             // 只有胖结果才持有转换后的盒子。拆箱会自行复制并持有内部值，
             // 若先 acquire 胖值，会额外复制一个无人释放的堆盒。
-            if (SourceIsFat(session, sourceType) && IsFatResult(session, resultType))
+            // 3b-δ1：借用槽读侧裸取（同上——try_cast 不转移所有权，
+            // RcInjection 已豁免产出槽义务）
+            if (SourceIsFat(session, sourceType) && IsFatResult(session, resultType)
+                && !session.IsBorrowedSlot(inst.Target))
             {
                 hitFat = ArcEmitter.ProduceFatValue(session, builder, hitFat, "cast.acq");
             }

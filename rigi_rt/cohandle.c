@@ -9,6 +9,8 @@
 #include "cohandle.h"
 #include "arc.h"
 #include "native_rc.h"
+#include "shell.h"
+#include "macrogc.h" /* Phase 3d-1：终态收干 rigi_gc_local_ledger_teardown */
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -40,6 +42,20 @@ typedef struct RigiCoHandle
     int64_t poll_timer;      /* rigi_timer_* 句柄；0 = 无 */
     RigiLocalBind *locals;   /* 绑定栈顶；NULL = 空 */
     int64_t token;           /* NativeRc 注册表身份；Carriage 仅携带此值 */
+    void *shell_registry;    /* Phase 3b（GC_OPTIMIZATION_PLAN）：per-协程
+                              * 壳注册表槽位（shell.c 分配并管理，经
+                              * rigi_ch_shell_registry_store 写入；物理驻留
+                              * native、逻辑属主持有，随属主协程迁移）。
+                              * 销毁钩子在 3b-β 接 rigi_ch_destroy_payload */
+    void *local_ledger;      /* Phase 3d-1：per-协程 local 候选账本
+                              *（macrogc.c 分配并管理，经
+                              * rigi_ch_local_ledger_store 写入；懒建、
+                              * 属主单线程无锁，随终态收干释放） */
+    RigiShellPendingNode *_Atomic pending_head;
+    /* 3b-δ2：per-属主壳释放挂起栈顶（MPSC——多发布者 CAS 压栈，
+     * 属主互斥单消费者弹栈：resume 门闸内 drain + teardown drain；
+     * 节点本体与协议全在 shell.c，句柄只承载槽位）。属主归零转移的
+     * 壳在此排队，属主执行槽内消化——发布者线程不再触碰壳清理。 */
 } RigiCoHandle;
 
 static void rigi_ch_locals_clear(RigiCoHandle *h);
@@ -75,6 +91,9 @@ int64_t rigi_coroutine_create(int64_t resume_fn, int64_t frame)
     atomic_init(&h->poll_backoff_ms, 1);
     h->poll_timer = 0;
     h->locals = NULL;
+    h->shell_registry = NULL;
+    h->local_ledger = NULL;
+    atomic_init(&h->pending_head, NULL);
     h->token = rigi_native_rc_create(h, rigi_ch_destroy_payload);
     rigi_stat_note_create();
     return h->token;
@@ -88,6 +107,12 @@ int64_t rigi_coroutine_resume(int64_t handle)
      * 不进入 ARC region，等待不会计作 GC 正在操作引用的参与者。 */
     uv_mutex_lock(&h->execution_gate);
 #endif
+    /* 3b-δ2 属主消化点（段前）：本调用即属主接下来的唯一执行槽
+     *（门闸保证同一句柄恒单运行者），壳归零转移的清理在此消化——
+     * 摘注册表 + anchor release 全部发生在属主上下文，发布者线程
+     * 只压栈不触碰。此处强引用由调用方（Dispatcher 泵的 seq using）
+     * 持握，teardown 不可能并发。空栈成本 = 一次 acquire 读。 */
+    rigi_shell_drain_pending(h);
     void *previous = rigi_tls_get_coroutine();
     RigiResumeCode code;
     /* TLS 当前协程槽 set/clear 包围执行段（嵌套恢复保存/还原外层，
@@ -96,7 +121,22 @@ int64_t rigi_coroutine_resume(int64_t handle)
     rigi_stat_note_resume_begin();
     code = h->resume(h->frame);
     rigi_stat_note_resume_end();
+    /* Phase 3d-2：挂出点顺手小回收（YIELDED/SUSPENDED = 协程仍活、
+     * 即将让出执行权；DONE 走 destroy 路径的终态收干，不在此重复）。
+     * TLS 协程仍为本句柄，账本定位正确；债务超阈值即收一轮完整 pass
+     * ——parked 协程的 local 债务在挂出瞬间清零，滞留不跨挂起期
+     * （macrogc.c rigi_gc_local_suspend_collect：判据与账本未建的
+     * 零开销返回口径见彼处注释）。 */
+    if (code != RIGI_RESUME_DONE)
+    {
+        rigi_gc_local_suspend_collect();
+    }
     rigi_tls_set_coroutine(previous);
+    /* 3b-δ2 属主消化点（段后）：本段执行期内发生的归零转移（含
+     * 属主自己段内的释放与他线程压入且早于本点的项）在段尾即消化，
+     * 不等下一次恢复；仍处门闸内，属主互斥成立。段内消化后新压栈
+     * 的残项由下一段段前 drain 或 teardown 兜底。 */
+    rigi_shell_drain_pending(h);
 #ifdef RIGI_HAS_LIBUV
     /* 解锁后不再访问 h：下一段可能立即完成并销毁句柄。 */
     uv_mutex_unlock(&h->execution_gate);
@@ -113,6 +153,17 @@ void rigi_coroutine_destroy(int64_t handle)
 static void rigi_ch_destroy_payload(void *payload)
 {
     RigiCoHandle *h = (RigiCoHandle *)payload;
+    /* Phase 3d-1：先收干 local 候选账本（强制一轮属主收集 + 释放账本
+     * 结构——悬挂候选不收即泄漏，memtrack 零泄漏口径的协程侧兜底）。
+     * 必须先于 rigi_shell_owner_teardown：收干语境下账本候选全 local
+     * 会计（plain 前提），过户 promote 翻位后局部账本不得再持有条目。 */
+    rigi_gc_local_ledger_teardown(h);
+    /* 3b-β：属主终止过户（裁定 #4）——必须在本 token 失效收尾前完成：
+     * 本回调由 NativeRc 终态触发，句柄本体尚存活；过户后壳的 owner_reg
+     * 已改指全局表，后续归零转移走全局直接路径。3b-δ2：teardown 内部
+     * 先过户再排空挂起栈（残留归零壳按过户后的全局分支就地清理），
+     * 挂起栈随句柄一并终结，不丢项。 */
+    rigi_shell_owner_teardown(h);
     /* 轮询定时器随终态清理（VM DisposePollTimer 同口径：终态 choke
      * point 统一释放）；frame 所有权在生成代码 */
     if (h->poll_timer != 0)
@@ -127,6 +178,49 @@ static void rigi_ch_destroy_payload(void *payload)
 #endif
     rigi_track_free(h);
     rigi_stat_note_destroy();
+}
+
+/* ---- Phase 3b：per-协程壳注册表槽位（shell.h 协作面） ---- */
+
+void *rigi_ch_shell_registry_load(void *handle)
+{
+    return handle == NULL ? NULL : ((RigiCoHandle *)handle)->shell_registry;
+}
+
+void rigi_ch_shell_registry_store(void *handle, void *registry)
+{
+    if (handle != NULL)
+    {
+        ((RigiCoHandle *)handle)->shell_registry = registry;
+    }
+}
+
+/* ---- Phase 3d-1：per-协程 local 候选账本槽位（macrogc.h 协作面） ---- */
+
+void *rigi_ch_local_ledger_load(void *handle)
+{
+    return handle == NULL ? NULL : ((RigiCoHandle *)handle)->local_ledger;
+}
+
+void rigi_ch_local_ledger_store(void *handle, void *ledger)
+{
+    if (handle != NULL)
+    {
+        ((RigiCoHandle *)handle)->local_ledger = ledger;
+    }
+}
+
+/* 3b-δ2：挂起栈槽位地址（shell.c CAS 压/弹栈用）。调用方保证句柄
+ * 存活：压栈方经 native_rc_retain 验活 pin；弹栈方 = resume 门闸内
+ *（seq using 强引用持握）与 teardown（token 已终态，无人可 pin）。 */
+RigiShellPendingNode *_Atomic *rigi_ch_pending_slot(void *handle)
+{
+    if (handle == NULL)
+    {
+        fprintf(stderr, "rigi_rt: rigi_ch_pending_slot 收到空句柄（编译器 bug）\n");
+        abort();
+    }
+    return &((RigiCoHandle *)handle)->pending_head;
 }
 
 /* ---- lane 槽 ---- */

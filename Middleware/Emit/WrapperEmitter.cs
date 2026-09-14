@@ -155,7 +155,7 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 NewEmitter.EmitInitValueOnSlot(session, builder, slots, pointer, inst.WrapperType,
                     inst.InitWrapper, inst.Init, userArgs);
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
+                ArcEmitter.DestroyTemps(session, builder, temps);
             }
         }
 

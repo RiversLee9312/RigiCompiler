@@ -13,6 +13,9 @@ namespace RigiCompiler.Middleware.Passes
     /// MW9a 第 C 棒增补：ExcTarget==null 的可抛指令统一解析到函数级共享
     /// 传播垫 mw.propagate（按 ret 出口同口径 release 全部托管槽后
     /// MirRetThrow 异常返回，pending 已在 TLS）。
+    /// 3b-δ1 增补：语言级借用槽机制——native 声明的 native-borrow 借用
+    /// 返回标记（seed）沿 MIR 数据流传播为「借用槽」，借用槽零
+    /// acquire/release 义务（split-heap 3d local 非原子化的封口前提）。
     /// </summary>
     public sealed class RcInjectionPass : IMwStage
     {
@@ -25,26 +28,266 @@ namespace RigiCompiler.Middleware.Passes
         {
             var mir = context.Mir
                 ?? throw new CompilerInternalException("RcInjection 要求 Mir 已挂载");
+            // 3b-δ1：借用返回集合先于注入推导（注入会改写指令流，推导
+            // 必须读原始 MIR）；挂载供 Emit 侧重算借用槽（CastEmitter
+            // 对借用槽的 cast 读侧裸取，与义务豁免配平）
+            var borrowedReturns = DeriveBorrowedReturns(mir);
+            context.BorrowedReturnSymbols = borrowedReturns;
             foreach (var fn in mir.Functions)
             {
                 if (fn.Blocks.Count == 0)
                 {
                     continue;
                 }
-                InjectFunction(context, fn, out var releaseOrder);
-                CheckFunction(context, fn, releaseOrder);
+                InjectFunction(context, fn, borrowedReturns, out var releaseOrder);
+                CheckFunction(context, fn, borrowedReturns, releaseOrder);
             }
         }
 
+        // ===== 3b-δ1：借用传播规则清单（义务层真相源。MW12 借用字段
+        // 先例的教训：借用形态必须让 RcInjection 知情——裸读 + 出口恒
+        // release = 每调用净 -1 UAF；义务豁免只能做在本层）=====
+        //
+        // A. 函数级借用返回集合（键 = 成员 canonical，规避泛型具化升级
+        //    换对象后 MwMemberSymbol 引用不等的问题）：
+        //    A1 seed：native 声明带 native-borrow 修饰符（ABI 契约 = 返回
+        //       无 +1 的裸胖引用，C 侧不 acquire）；
+        //    A2 Rigi fn：全部 MirRet 出口的值槽都是借用槽 → 借用返回
+        //       （借用性随 A1 经 B1 单调传播，朴素不动点至闭包；出口间
+        //       混合 = 保持 owned 契约，借用出口照旧走 $mw.ret 三段式
+        //       acquire 把借用提升为拥有——语义正确保守）；
+        //    A3 invoke.indirect 虚槽调用不可达借用返回 fn（native 恒
+        //       static、static 不进 vtable），推导不建虚边。
+        // B. 函数内借用槽集合（flow-insensitive，槽粒度保守）：
+        //    B1 借用返回调用的 result 槽（MirCall/MirSuperCall 按 Target
+        //       canonical 查 A 集合；invoke.indirect/inner call 保守
+        //       非借用）；
+        //    B2 copy：源槽借用 → 目标借用；B3 cast：源槽借用 → 目标借用；
+        //    B4 其他一切产出（new/get.field/get.array/box/take pending/
+        //       …）→ 非借用污染；
+        //    B5 槽混合产出（既有借用产出又有非借用产出）→ 非借用（有
+        //       义务侧胜出，安全方向）。
+        // C. 注入豁免：C1 借用槽不进出口 release 序列；C2 借用槽产出的
+        //    前置 release 跳过（槽从未拥有旧值）；C3 借用槽 copy 三段式
+        //    退化为纯 copy；C4 借用返回 fn 的 $mw.ret copy 保留、acquire
+        //    跳过（返回借用契约；调用方按 B1 知情，无义务建立）。
+        //    C5 作实参/copy/cast/return 不算逃逸：callee 参数槽照常
+        //    acquire 自立（借用值经传参获得 callee 侧 +1，调用方无义务）。
+        // D. 逃逸边界（借用值存储逃逸 = 编译拒绝）：
+        //    D1 set.field / set.wrapper.field、D2 set.array、D3 协程
+        //    frame move、D4 盒化（box.any/wrap.nullable）的源槽借用即
+        //    CompilerInternalException；lambda 捕获经隐藏类 set.field
+        //    被 D1 覆盖。Handle 仅 unsafe 域可达，不做运行时检查——
+        //    借用寿命纪律（不得比借出它的 Handle 活得更久）是 unsafe
+        //    契约，见 docs/SYNTAX/02-type-system.md §3.1.2。
+        private static HashSet<string> DeriveBorrowedReturns(MirModule mir)
+        {
+            var borrowed = new HashSet<string>(System.StringComparer.Ordinal);
+            // A1 seed——调用点感知：native fn 无函数体（无 BilFunction，不进
+            // mir.Functions），声明上的 native-borrow 标记只能在实际调用点
+            // 的 Target 符号（MwMemberSymbol.Declaration）读到；未被调用的
+            // 借用 native 无需 seed
+            foreach (var fn in mir.Functions)
+            {
+                foreach (var block in fn.Blocks)
+                {
+                    foreach (var inst in block.Instructions)
+                    {
+                        var targetSymbol = inst switch
+                        {
+                            MirCall call => call.Target,
+                            MirSuperCall superCall => superCall.Target,
+                            _ => null,
+                        };
+                        if (targetSymbol != null
+                            && targetSymbol.HasKeyword(BilKeyword.NativeBorrow))
+                        {
+                            borrowed.Add(targetSymbol.Canonical);
+                        }
+                    }
+                }
+            }
+            // A2：不动点。借用性单调递增（只增不减），朴素迭代必收敛；
+            // 已在集合内的函数跳过（其出口判定不再变化）
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var fn in mir.Functions)
+                {
+                    if (borrowed.Contains(fn.Symbol.Canonical))
+                    {
+                        continue;
+                    }
+                    if (HasOnlyBorrowedReturns(fn, borrowed))
+                    {
+                        borrowed.Add(fn.Symbol.Canonical);
+                        changed = true;
+                    }
+                }
+            }
+            return borrowed;
+        }
+
+        // A2 判定：fn 的全部 MirRet 出口值都是借用槽（无出口或存在无值
+        // 出口 → 非借用返回；void fn 无 ret 值 → 非借用，无借用义务可言）
+        private static bool HasOnlyBorrowedReturns(MirFunction fn,
+            HashSet<string> borrowedReturns)
+        {
+            var hasValueRet = false;
+            var slots = DeriveBorrowedSlots(fn, borrowedReturns);
+            foreach (var block in fn.Blocks)
+            {
+                if (block.Terminator is not MirRet ret)
+                {
+                    continue;
+                }
+                if (ret.Value is not MirLocalOperand local
+                    || !slots.Contains(local.Name))
+                {
+                    return false;
+                }
+                hasValueRet = true;
+            }
+            return hasValueRet;
+        }
+
+        // B：函数内借用槽集合（不动点；copy/cast 链式传播要求迭代至闭包）。
+        // 改写后的 MIR 上重算结果一致（注入只加 release/acquire/copy，
+        // 不新增借用产出面），CheckFunction 与 Emit 侧（CastEmitter 借用
+        // 豁免）可直接复用
+        internal static HashSet<string> DeriveBorrowedSlots(MirFunction fn,
+            HashSet<string> borrowedReturns)
+        {
+            var candidates = new HashSet<string>(System.StringComparer.Ordinal);
+            var polluted = new HashSet<string>(System.StringComparer.Ordinal);
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var block in fn.Blocks)
+                {
+                    foreach (var inst in block.Instructions)
+                    {
+                        if (ClassifyProduction(inst, borrowedReturns, candidates,
+                                polluted, out var borrowed) is not { } target)
+                        {
+                            continue;
+                        }
+                        // 借用产出进 candidates（非借用产出已由
+                        // ClassifyProduction 记入 polluted）；新加入 = 闭包
+                        // 未稳定，继续迭代
+                        if (borrowed && candidates.Add(target))
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            candidates.ExceptWith(polluted);
+            return candidates;
+        }
+
+        // B 单条产出分类：返回产出目标槽（非产出指令返回 null）；借用
+        // 产出置 borrowed 并由调用方记入 candidates，非借用产出在处理
+        // 中即时记入 polluted（B4/B5）
+        private static string? ClassifyProduction(MirInst inst,
+            HashSet<string> borrowedReturns, HashSet<string> candidates,
+            HashSet<string> polluted, out bool borrowed)
+        {
+            borrowed = false;
+            string? target;
+            switch (inst)
+            {
+                case MirCall call when call.Result != null:
+                    target = call.Result;
+                    borrowed = borrowedReturns.Contains(call.Target.Canonical);
+                    break;
+                case MirSuperCall superCall when superCall.Result != null:
+                    target = superCall.Result;
+                    borrowed = borrowedReturns.Contains(superCall.Target.Canonical);
+                    break;
+                // 虚槽/内联调用目标静态不可知，恒按 owned 契约（保守）
+                case MirInvokeIndirect invoke when invoke.Result != null:
+                    target = invoke.Result;
+                    break;
+                case MirCast cast:
+                    target = cast.Target;
+                    borrowed = cast.Source is MirLocalOperand castSource
+                        && IsBorrowedSlot(castSource.Name, candidates, polluted);
+                    break;
+                case MirCopyLocal copy:
+                    target = copy.Target;
+                    borrowed = copy.Source is MirLocalOperand copySource
+                        && IsBorrowedSlot(copySource.Name, candidates, polluted);
+                    break;
+                default:
+                    target = ProductionTarget(inst);
+                    break;
+            }
+            if (target == null)
+            {
+                return null;
+            }
+            if (!borrowed)
+            {
+                polluted.Add(target);
+            }
+            return target;
+        }
+
+        private static bool IsBorrowedSlot(string name,
+            HashSet<string> candidates, HashSet<string> polluted) =>
+            candidates.Contains(name) && !polluted.Contains(name);
+
+        // D：逃逸边界检查（注入前，原始 MIR 上）
+        private static void CheckEscapeBoundary(MirFunction fn,
+            HashSet<string> borrowedSlots)
+        {
+            foreach (var block in fn.Blocks)
+            {
+                foreach (var inst in block.Instructions)
+                {
+                    var source = inst switch
+                    {
+                        MirSetField setField => LocalOperandName(setField.Source),
+                        MirSetWrapperField setWrapper => LocalOperandName(setWrapper.Source),
+                        MirSetArray setArray => LocalOperandName(setArray.Element),
+                        // frame 槽是 move 语义的源槽名（协程续体比栈帧活得久）
+                        MirCoroutineCreate create => create.FrameSlot,
+                        MirBoxAny box => LocalOperandName(box.Source),
+                        MirWrapNullable wrap => LocalOperandName(wrap.Source),
+                        _ => null,
+                    };
+                    if (source != null && borrowedSlots.Contains(source))
+                    {
+                        throw new CompilerInternalException(
+                            $"3b-δ1 借用逃逸：{fn.Symbol.Canonical} 块 {block.Id} "
+                            + $"借用槽 ${source} 存储逃逸（{inst.GetType().Name}）"
+                            + "——借用值不得存入字段/数组/盒/协程续体");
+                    }
+                }
+            }
+        }
+
+        private static string? LocalOperandName(MirOperand operand) =>
+            operand is MirLocalOperand local ? local.Name : null;
+
+
         private static void InjectFunction(MwContext context, MirFunction fn,
-            out List<string> releaseOrder)
+            HashSet<string> borrowedReturns, out List<string> releaseOrder)
         {
             var kinds = ClassifyAll(context, fn);
             var moveSlots = CollectMoveSlots(fn);
-            releaseOrder = BuildReleaseOrder(fn, kinds, moveSlots);
+            // 3b-δ1：借用槽集合（原始 MIR 上推导；B5 保守规则下与
+            // move 槽互斥——借用槽作 frame 源已被逃逸检查拒绝）
+            var borrowedSlots = DeriveBorrowedSlots(fn, borrowedReturns);
+            CheckEscapeBoundary(fn, borrowedSlots);
+            releaseOrder = BuildReleaseOrder(fn, kinds, moveSlots, borrowedSlots);
             foreach (var block in fn.Blocks)
             {
-                RewriteBlock(context, fn, block, kinds, releaseOrder);
+                RewriteBlock(context, fn, block, kinds, releaseOrder,
+                    borrowedSlots, borrowedReturns.Contains(fn.Symbol.Canonical));
             }
             InsertEntryAcquires(fn, kinds);
             ResolveExceptionEdges(context, fn, releaseOrder);
@@ -331,7 +574,8 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         private static List<string> BuildReleaseOrder(MirFunction fn,
-            Dictionary<string, ManagedSlotKind> kinds, HashSet<string> moveSlots)
+            Dictionary<string, ManagedSlotKind> kinds, HashSet<string> moveSlots,
+            HashSet<string> borrowedSlots)
         {
             var addrAliases = CollectAddrAliasTargets(fn);
             var order = new List<string>();
@@ -359,6 +603,11 @@ namespace RigiCompiler.Middleware.Passes
                     continue;
                 }
                 if (IsResumeFrameParam(fn, local.Name) || IsProbeAlarmParam(fn, local.Name))
+                {
+                    continue;
+                }
+                // 3b-δ1 C1：借用槽零义务——无 acquire 就无配平 release
+                if (borrowedSlots.Contains(local.Name))
                 {
                     continue;
                 }
@@ -423,7 +672,8 @@ namespace RigiCompiler.Middleware.Passes
         }
 
         private static void RewriteBlock(MwContext context, MirFunction fn, MirBlock block,
-            Dictionary<string, ManagedSlotKind> kinds, List<string> releaseOrder)
+            Dictionary<string, ManagedSlotKind> kinds, List<string> releaseOrder,
+            HashSet<string> borrowedSlots, bool isBorrowedReturn)
         {
             var rewritten = new List<MirInst>(block.InstructionList.Count + 8);
             foreach (var inst in block.InstructionList)
@@ -434,12 +684,21 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         continue;
                     }
+                    // 3b-δ1 C3：借用槽 copy 无义务（旧值恒零、新值借用）——
+                    // 纯 copy，不插三段式
+                    if (borrowedSlots.Contains(copy.Target))
+                    {
+                        rewritten.Add(copy);
+                        continue;
+                    }
                     rewritten.Add(new MirReleaseSlot(copy.Target));
                     rewritten.Add(copy);
                     rewritten.Add(new MirAcquireSlot(copy.Target));
                     continue;
                 }
-                if (ProductionTarget(inst) is { } target && IsManagedTarget(target, kinds))
+                if (ProductionTarget(inst) is { } target && IsManagedTarget(target, kinds)
+                    // 3b-δ1 C2：借用槽产出无前置 release（槽从未拥有旧值）
+                    && !borrowedSlots.Contains(target))
                 {
                     rewritten.Add(new MirReleaseSlot(target));
                 }
@@ -453,9 +712,22 @@ namespace RigiCompiler.Middleware.Passes
                     EnsureRetLocal(context, fn, kinds);
                     if (retLocal.Name != RetLocalName)
                     {
-                        rewritten.Add(new MirReleaseSlot(RetLocalName));
-                        rewritten.Add(new MirCopyLocal(ret.Value, RetLocalName));
-                        rewritten.Add(new MirAcquireSlot(RetLocalName));
+                        // 3b-δ1 C4：借用返回 fn 的 $mw.ret 零义务——不插
+                        // 三段式（release/acquire 均无意义：$mw.ret 无拥有
+                        // 历史），纯 copy。调用方按 B1 知情，无义务建立。
+                        // 借用出口混 owned 出口的 fn 不进借用返回集合，本
+                        // 分支不被触达，借用值照旧经三段式 acquire 提升为
+                        // 拥有
+                        if (!isBorrowedReturn)
+                        {
+                            rewritten.Add(new MirReleaseSlot(RetLocalName));
+                            rewritten.Add(new MirCopyLocal(ret.Value, RetLocalName));
+                            rewritten.Add(new MirAcquireSlot(RetLocalName));
+                        }
+                        else
+                        {
+                            rewritten.Add(new MirCopyLocal(ret.Value, RetLocalName));
+                        }
                     }
                     block.Terminator = new MirRet(new MirLocalOperand(RetLocalName));
                 }
@@ -539,10 +811,13 @@ namespace RigiCompiler.Middleware.Passes
         };
 
         private static void CheckFunction(MwContext context, MirFunction fn,
-            List<string> releaseOrder)
+            HashSet<string> borrowedReturns, List<string> releaseOrder)
         {
             var kinds = ClassifyAll(context, fn);
             var moveSlots = CollectMoveSlots(fn);
+            // 3b-δ1：改写后 MIR 上重算借用槽（结果与注入前一致——注入只
+            // 加 release/acquire/copy，不新增借用产出面）
+            var borrowedSlots = DeriveBorrowedSlots(fn, borrowedReturns);
             // 期望出口序列必须用注入期冻结的 releaseOrder：棒5a 传播垫
             // EmitFailTerminal 在冻结之后追加托管局部（垫内自释放），
             // 重建 order 会把垫专用槽算进所有 MirRet 出口而误报不完整
@@ -597,6 +872,18 @@ namespace RigiCompiler.Middleware.Passes
                     if (insts[i] is not MirCopyLocal copy
                         || !IsManagedTarget(copy.Target, kinds))
                     {
+                        continue;
+                    }
+                    // 3b-δ1：借用槽 copy 是纯 copy（C3），要求无三段式——
+                    // 出现三段式反而说明对借用槽错误建立了义务
+                    if (borrowedSlots.Contains(copy.Target))
+                    {
+                        if (i > 0 && insts[i - 1] is MirReleaseSlot
+                            || i + 1 < insts.Count && insts[i + 1] is MirAcquireSlot)
+                        {
+                            throw new CompilerInternalException(
+                                $"RcInjection 自检失败：{fn.Symbol.Canonical} 借用槽 ${copy.Target} 的 copy 带了 acquire/release 三段式");
+                        }
                         continue;
                     }
                     if (i == 0 || i + 1 >= insts.Count

@@ -389,6 +389,12 @@ namespace RigiCompiler
                 modifiers.Add(new BilKeywordModifier(BilKeyword.Native));
                 modifiers.Add(new BilNativeSymbolModifier(method.NativeSymbol!));
                 modifiers.Add(new BilNativeLibraryModifier(method.NativeLibrary!));
+                // 3b-δ1：@NativeBorrow → native-borrow 修饰符（借用返回标记；
+                // NativeDeclarationChecker 保证只随 native 声明出现）
+                if (method.NativeBorrow)
+                {
+                    modifiers.Add(new BilKeywordModifier(BilKeyword.NativeBorrow));
+                }
             }
             // entrypoint（SYNTAX §17）：@EntryPoint 内建注解标记的静态方法
             // （任意命名空间），或全局命名空间的裸 main 命名约定

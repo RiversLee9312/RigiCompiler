@@ -30,7 +30,7 @@ pub unsafe shared class Atomic\<T> {
     }
 }
 
-// 安全值类型门面不向调用者暴露 capability 或用户回调。
+// 安全值类型门面不向调用者暴露 capability（Atomic/Handle/Cell 均不可见）。
 pub shared class AtomicStruct\<T extends ValueType> {
     priv const atomic: Atomic\<T>
 
@@ -44,5 +44,13 @@ pub shared class AtomicStruct\<T extends ValueType> {
 
     pub func store(value: T) {
         unsafe seq { atomic.mutate(func{ (old: T): T -> value }) }
+    }
+
+    // 一步式安全 RMW：语义完全复用私有 Atomic.mutate——Mutex 持锁回调，
+    // 回调成功返回后才替换 Handle，回调抛错保留旧值。回调是普通 Func，
+    // 运行在当前协程，内部可 await/yield 挂起，锁仍保持。
+    // 安全写法替代易丢更新的 store(load() + 1) 形态。
+    pub func mutate(body: Func\<T, T>) {
+        unsafe seq { atomic.mutate(body) }
     }
 }

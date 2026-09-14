@@ -64,8 +64,7 @@ namespace RigiCompiler.Middleware.Emit
             if (inst.Init == null)
             {
                 // 无 init 声明 + 零实参的 enum：仅写判别（VM NewCase 同口径）
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 return;
             }
             var init = session.FunctionOf(inst.Init.Canonical);
@@ -81,8 +80,7 @@ namespace RigiCompiler.Middleware.Emit
             initArgs = CallEmitter.MergeClassTypeIds(session, builder, slots,
                 init.Mir, hostRef, initArgs);
             builder.BuildCall2(init.Type, init.Value, initArgs, "");
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
         }
 
         private static void EmitIsCase(ModuleBuilder.Session session, LLVMBuilderRef builder,

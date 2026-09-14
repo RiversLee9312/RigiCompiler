@@ -439,7 +439,9 @@ RigiCompiler/
 │   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
 │                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
 │   └── macrogc.c/.h             # MW12 Bacon-Rajan 收集器（显式 trace 栈）+ 候选账本 +
-│                                #   GC 线程/fence；env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
+│                                #   GC 线程/fence；split-heap：shared 全局账本（pin-before-sub）
+│                                #   + per-协程 local 账本属主协作收集（lgc_pass 族、挂出点小回收、
+│                                #   终止收干）+ 子图 promote walker；env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
 │   └── gexc.c/.h                # MW12b §25.2 全局异常通道（undisposed 事件队列 +
 │                                #   注册表 + atexit flush）
 │   └── eh.c/.h                  # MW9a checked-flag 便携异常传输：TLS pending 槽三面
@@ -447,6 +449,8 @@ RigiCompiler/
 │                                #   （rigi_type_name_of/rigi_exc_halt）
 │   └── coroutine.h              # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI
 │   └── cohandle.c/.h            # 协程句柄原语（create/resume/destroy + lane + 轮询）
+│   └── shell.c/.h               # 3b-β Handle 壳（shellID 注册表 + 归零转移 + 释放消息 +
+│                                #   teardown 过户，RUNTIME §28）
 │   └── worker.c/.h              # Worker 原语（线程/入队/park/同步 Mutex/定时器/TLS）
 │   └── failreg.c                # 未观察失败注册表
 ├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
@@ -527,8 +531,9 @@ Place/Handle 的编译链入口为 `Semantic/Binding/Visitors/PlaceOfVisitor.cs`
 与 `Semantic/Binding/UnsafeGates.cs`；稳定存储复用既有 Cell 工厂。
 `Lowering/Rewriters/PlaceOfRewriter.cs` 构造 Place；Handle/MutableHandle
 保留普通具化类身份，通过标准库私有 ObjectHandleStorage 访问 Rigi 存储；
-`Bil/BilVerifier.Unsafe.cs` 验证权限及保留构造入口。原生侧复用普通引用
-计数与对象图扫描管理 `.handle` 的隐藏目标，不建立独立 MQ 注册表。
+`Bil/BilVerifier.Unsafe.cs` 验证权限及保留构造入口。原生侧以计数壳管理
+`.handle`（capability）的目标存活与释放：归零转移经属主通道、属主终止
+过户、GC 代理边（RUNTIME §28），不建立独立 MQ 注册表。
 该 Rigi 对象能力与 NativeRcHandle 的 native 互操作生命周期设施无关。
 
 ## 4. 核心设计决策（改动代码前必须理解）

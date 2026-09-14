@@ -471,6 +471,92 @@ namespace RigiCompiler.Tests
                 "    if ((a / z) == 1B) { Console.println(\"x\") }\n" +
                 "    return 0\n" +
                 "}\n", "整数除以零"),
+            // ===== mod-3：取模 %（srem/urem/frem + 模零 guard + 用户派发）=====
+            Case("整数取模（i32 含负号/i64/u8）",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = 17\n" +
+                "    var b = 5\n" +
+                "    if ((a % b) == 2) { Console.println(\"i32 mod ok\") }\n" +
+                "    var c = -17\n" +
+                "    if ((c % b) == -2) { Console.println(\"i32 neg mod ok\") }\n" +
+                "    var d = 42\n" +
+                "    var e = -5\n" +
+                "    if ((d % e) == 2) { Console.println(\"i32 neg divisor mod ok\") }\n" +
+                "    var big = 17L\n" +
+                "    if ((big % 5L) == 2L) { Console.println(\"i64 mod ok\") }\n" +
+                "    var u = 200UB\n" +
+                "    if ((u % 7UB) == 4UB) { Console.println(\"u8 mod ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("i32 MIN/-1 取模消毒（x % ±1 == 0，不溢出失败）",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var m = -2147483648\n" +
+                "    var n = -1\n" +
+                "    if ((m % n) == 0) { Console.println(\"i32 min/-1 mod\") }\n" +
+                "    var p = -9223372036854775808L\n" +
+                "    if ((p % 1L) == 0L) { Console.println(\"i64 min mod ±1\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("浮点取模与模零 NaN（IEEE 截断余数）",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 7.5\n" +
+                "    var z = 2.25\n" +
+                "    if ((x % z) == 0.75) { Console.println(\"f64 mod ok\") }\n" +
+                "    var zero = 0.0\n" +
+                "    var nan = (x % zero)\n" +
+                "    if (nan != nan) { Console.println(\"f64 mod nan\") }\n" +
+                "    var pf = 7.5f\n" +
+                "    var qf = 2.0f\n" +
+                "    if ((pf % qf) == 1.5f) { Console.println(\"f32 mod ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("try/catch 捕获整数模零",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var z = 0\n" +
+                "    try {\n" +
+                "        return (x % z)\n" +
+                "    } catch (e: core.DividedByZeroException) {\n" +
+                "        Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n"),
+            FailCase("无符号模零",
+                "pub func main(): i32 {\n" +
+                "    var x = 42UL\n" +
+                "    var z = 0UL\n" +
+                "    if ((x % z) == 0UL) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n", "整数除以零"),
+            Case("用户 operator mod 派发",
+                "import core.io.Console\n" +
+                "pub class Vec {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "    pub operator mod(other: Vec): Vec { return new Vec((x % other.x)) }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var a = new Vec(17)\n" +
+                "    var b = new Vec(5)\n" +
+                "    var r = (a % b)\n" +
+                "    if (r.x == 2) { Console.println(\"user mod ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
+            Case("取模复合赋值 %=",
+                "import core.io.Console\n" +
+                "pub func main(): i32 {\n" +
+                "    var x = 47\n" +
+                "    x %= 5\n" +
+                "    if (x == 2) { Console.println(\"i32 %= ok\") }\n" +
+                "    var d = 7.5\n" +
+                "    d %= 2.0\n" +
+                "    if (d == 1.5) { Console.println(\"f64 %= ok\") }\n" +
+                "    return 0\n" +
+                "}\n"),
             FailCase("i64 MIN/-1 溢出",
                 "pub func main(): i32 {\n" +
                 "    var e = -9223372036854775808L\n" +
@@ -7900,6 +7986,161 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n",
                 new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "512" }),
+            // Phase 1.3 pin-before-sub 并发回归：4 个 Worker Task 对同一
+            // may-cycle shared 8 节点环入口高频 acquire/release（打击在册
+            // 对象 PURPLE 快路径与 pin 登记路径），同时各自 churn 局部双
+            // 节点环（登记/终态免锁析构/pass 账本归还全路径）；64KiB 低
+            // 阈值强制 GC pass 与 mutator 并发交错。断言：校验和（双宿主
+            // 对拍）+ 退出码 + memtrack 零泄漏（MemtrackEnv 恒在）——
+            // 「登记到已 free 指针」或终态误判在此形态下必现崩溃/泄漏
+            EnvCase("mw13_shared_cycle_concurrent_release",
+                "import core.io.Console\n" +
+                "import core.collections.*\n" +
+                "import core.coroutine.*\n" +
+                "pub shared class SNode {\n" +
+                "    pub var next: SNode?\n" +
+                "    pub var v: i64\n" +
+                "    pub init(_ -> v) {\n" +
+                "        next = null\n" +
+                "    }\n" +
+                "}\n" +
+                "const cwTasks: i32 = 4\n" +
+                "const cwRounds: i32 = 50000\n" +
+                "pub async func cycleWorker(n: SNode?, rounds: i32, id: i32): i64 {\n" +
+                "    var acc = 0L\n" +
+                "    var r = 0\n" +
+                "    while (r < rounds) {\n" +
+                "        var t = n\n" +
+                "        acc = (acc + (t?.next?.v if? 0L))\n" +
+                "        t = null\n" +
+                "        var a = new SNode((id as i64))\n" +
+                "        var b = new SNode((id as i64))\n" +
+                "        a.next = b\n" +
+                "        b.next = a\n" +
+                "        r = (r + 1)\n" +
+                "    }\n" +
+                "    return acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var first = new SNode(0L)\n" +
+                "    var prev = first\n" +
+                "    var i = 1\n" +
+                "    while (i < 8) {\n" +
+                "        var cur = new SNode((i as i64))\n" +
+                "        prev.next = cur\n" +
+                "        prev = cur\n" +
+                "        i = (i + 1)\n" +
+                "    }\n" +
+                "    prev.next = first\n" +
+                "    const headRef: SNode? = first\n" +
+                "    var head: SNode? = first\n" +
+                "    const handles = arrayOf\\<Task\\<i64>>(cwTasks)\n" +
+                "    var k = 0\n" +
+                "    while (k < cwTasks) {\n" +
+                "        const id = k\n" +
+                "        const t = new Task\\<i64>(func{async (): i64 -> await cycleWorker(headRef, cwRounds, id)})\n" +
+                "        t.run(new ComputeExecutor())\n" +
+                "        handles[k] = t\n" +
+                "        k = (k + 1)\n" +
+                "    }\n" +
+                "    var chk = 0L\n" +
+                "    k = 0\n" +
+                "    while (k < cwTasks) {\n" +
+                "        chk = (chk + (await (handles[k] as Task\\<i64>)))\n" +
+                "        k = (k + 1)\n" +
+                "    }\n" +
+                "    head = null\n" +
+                "    const expect = ((cwTasks as i64) * (cwRounds as i64))\n" +
+                "    if (chk == expect) {\n" +
+                "        Console.println(\"pin-concurrent ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    Console.println(\"pin-concurrent bad\")\n" +
+                "    return 1\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "65536" }),
+            // ===== Phase 3d-1：local 会计非原子化 + per-协程候选账本 +
+            // 属主协作收集回归 =====
+            // 协程内 local 环在非挂起循环（纯 while churn）下被债务触发
+            // 收掉：release 非终态登记属主账本（非原子 rc）→ 债务超阈值
+            // 就地跑属主收集（三阶段局部变体）→ memtrack 零泄漏（账本
+            // 收干 + 协程终态兜底）+ 校验和双宿主对拍（环被收不影响
+            // 已读出的值）
+            EnvCase("mw13d1_local_cycle_coroutine_churn",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) {\n" +
+                "        next = null\n" +
+                "    }\n" +
+                "}\n" +
+                "async func churn(rounds: i32): i32 {\n" +
+                "    var acc = 0\n" +
+                "    var r = 0\n" +
+                "    while (r < rounds) {\n" +
+                "        var a = new Node(r)\n" +
+                "        var b = new Node(r)\n" +
+                "        a.next = b\n" +
+                "        b.next = a\n" +
+                "        acc = (acc + (a.next?.v if? 0))\n" +
+                "        r = (r + 1)\n" +
+                "    }\n" +
+                "    return acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = new Task\\<i32>(func{async (): i32 -> await churn(5000)})\n" +
+                "    t.run(new ComputeExecutor())\n" +
+                "    var r = await t\n" +
+                "    const expect = 12497500\n" +
+                "    if (r == expect) {\n" +
+                "        Console.println(\"co churn ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    Console.println(\"co churn bad\")\n" +
+                "    return 1\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "1024" }),
+            // 协程内 local 环在 yield 循环下被收：挂起/恢复不改变 release
+            // 热路径的债务触发语义（挂起点顺手小回收为 3d-2）；断言同上
+            EnvCase("mw13d1_local_cycle_yield_loop",
+                "import core.io.Console\n" +
+                "import core.coroutine.*\n" +
+                "pub class Node {\n" +
+                "    pub var next: Node?\n" +
+                "    pub var v: i32\n" +
+                "    pub init(_ -> v) {\n" +
+                "        next = null\n" +
+                "    }\n" +
+                "}\n" +
+                "async func churn(rounds: i32): i32 {\n" +
+                "    var acc = 0\n" +
+                "    var r = 0\n" +
+                "    while (r < rounds) {\n" +
+                "        var a = new Node(r)\n" +
+                "        var b = new Node(r)\n" +
+                "        a.next = b\n" +
+                "        b.next = a\n" +
+                "        acc = (acc + (a.next?.v if? 0))\n" +
+                "        if ((r & 63) == 0) { yield }\n" +
+                "        r = (r + 1)\n" +
+                "    }\n" +
+                "    return acc\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var t = new Task\\<i32>(func{async (): i32 -> await churn(5000)})\n" +
+                "    t.run(new ComputeExecutor())\n" +
+                "    var r = await t\n" +
+                "    const expect = 12497500\n" +
+                "    if (r == expect) {\n" +
+                "        Console.println(\"co yield ok\")\n" +
+                "        return 0\n" +
+                "    }\n" +
+                "    Console.println(\"co yield bad\")\n" +
+                "    return 1\n" +
+                "}\n",
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "1024" }),
             // ===== imap/getAtIndex 回归（Bug1 接口 iMap 恒模板键 /
             // Bug2a 泛型占位数组元素运行时 stride / Bug2b 接口派发
             // 结果拆箱）=====
@@ -8093,6 +8334,9 @@ namespace RigiCompiler.Tests
                 " core.io.Console.println(n.toString())\n" +
                 " core.io.Console.println(h.load().toString())\n }\n return 0\n}"),
             Case("Handle 对象只读与泛型能力边界", HandleBoundarySource),
+            // 3b-δ1：load 借用化（handle_target 返回裸引用）行为对拍
+            Case("Handle load 借用槽传播链", HandleBorrowChainSource),
+            Case("Handle 跨协程借用 load", HandleBorrowCoroutineSource),
             Case("Cell 用户覆写开放封闭接口与重载 ABI", CellSlotSource),
             Case("Handle rich value 与异常所有权", HandleRichSource),
             EnvCase("Handle 隐藏边循环回收", HandleCycleSource,
@@ -8101,6 +8345,10 @@ namespace RigiCompiler.Tests
             Case("Atomic 基础初始化与读取", "pub func main(): i32 { unsafe seq { const a = new Atomic\\<i32>(3)\n return a.load() } }") ,
             Case("Atomic 值更新", "pub func main(): i32 { unsafe seq { const a = new Atomic\\<i32>(3)\n a.mutate(func{ (old:i32):i32 -> old + 4 })\n return a.load() } }") ,
             Case("AtomicStruct 安全更新", "pub func main(): i32 { const a = new AtomicStruct\\<i32>(3)\n a.store(7)\n return a.load() }") ,
+            // review-20260910 Phase 2.5：安全门面一步式 RMW（转发私有 Atomic.mutate）
+            Case("AtomicStruct 并发mutate自增无丢失", AtomicStructMutateConcurrentSource, maxSteps: 50_000_000),
+            Case("AtomicStruct mutate尾随lambda形态", AtomicStructMutateTrailingLambdaSource),
+            Case("AtomicStruct mutate回调抛错保留旧值", AtomicStructMutateThrowKeepsOldValueSource),
             Case("Atomic nullable 值与对象往返", AtomicNullableSource),
             Case("同步 callable 开放封闭多参数与Action", CallableSlotSource),
             Case("Nullable 泛型cast与is元素约束", NullableCastSource),
@@ -8213,6 +8461,12 @@ namespace RigiCompiler.Tests
             NativeErrCase("Reader跨executor重复dispose幂等", SerializationGraphCorpus("mq_reader_dispose_race"),
                 "UndisposedResourceException", needlePresent: false),
             Case("Compute池yield与Polling迁移单执行", SerializationGraphCorpus("compute_pool_resume")),
+            // Phase 2.6（§19.2 语义纠偏）：恢复式探测语义双宿主对拍——探测
+            // 中途挂起（await/裸 yield）→ 唤醒 → 完成探测 → false 退回等待/
+            // true 续行；探测抛出落 yield 点被 catch。探测计数确定性断言
+            //（3/1/2）同时锁定 untainted（YieldOnce）与 tainted（SlowPoll/
+            // BoomPoll，经 AtomicStruct.load 的 Mutex 链）两路径
+            Case("PollingAlarm恢复式探测挂起与就绪判定", SerializationGraphCorpus("pollalarm_isready_semantics")),
             Case("Compute池终态与await登记竞争及重复观察", SerializationGraphCorpus("task_terminal_waiter_race")),
             Case("MQ跨段缓存与积压branch及清空后复用", SerializationGraphCorpus("mq_segment_cursor")),
             Case("值块lambda混合return与throw执行finally", SerializationGraphCorpus("lambda_return_throw_finally")),
@@ -8234,6 +8488,13 @@ namespace RigiCompiler.Tests
             EnvCase("失败Task环的内部资源析构", SerializationGraphCorpus("failure_lifecycle"),
                 new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
             Case("同一失败Task多Compute观察者重抛", SerializationGraphCorpus("failure_shared_waiters")),
+            // GC Phase 3c 异常图 promotion 压力对拍：失败异常图（local 嵌套
+            // + 环 + 数组共享子图）被 16 个 Executor 的观察协程各 await 128
+            // 次深读字段——waiter 侧每次 failure_get 独立 acquire/release；
+            // 低 GC 门槛叠加 macroGC 扫描压力。promotion 是 native 实现细节
+            //（VM 无会计位），双宿主对拍语义必须一致
+            EnvCase("失败异常图多Executor并发读取一致", SerializationGraphCorpus("failure_graph_mt_readers"),
+                new Dictionary<string, string> { ["RIGI_RT_GC_THRESHOLD"] = "128" }),
             NativeOnlyCase("普通容器删除及时释放尾槽", NativeResourceCorpus("collection_remove_resources"),
                 "void collection_remove_resource_test_marker(void) {}", "7\ncollection-remove-resources-ok\n", 0),
             NativeOnlyCase("NativeRc 并发弱票据与恰好一次析构", NativeRcLifecycleSource,
@@ -8249,6 +8510,15 @@ namespace RigiCompiler.Tests
             Case("wrapper 独立宿主参数与原地写入", SerializationGraphCorpus("wrapper_self_parameter")),
             Case("this 捕获拥有宿主并跨挂起保活", SerializationGraphCorpus("lambda_this_owned")),
             Case("Handle 泛型身份与可写能力严格隔离", SerializationGraphCorpus("handle_nominal_identity")),
+            // 3b-β 壳模型语义改线对拍（VM/native 同语料）：跨协程最后释放、
+            // 属主终止过户、asMutable 同壳计数
+            Case("Handle 跨协程传递且最后释放在非属主线程", SerializationGraphCorpus("handle_cross_coroutine_release")),
+            Case("属主协程终止过户后他线程 load", SerializationGraphCorpus("handle_owner_teardown")),
+            Case("asMutable 双 capability 同壳计数与释放序", SerializationGraphCorpus("handle_asmutable_shared_count")),
+            // 3b-δ2 壳释放属主化对拍：属主 park（EventAlarm 停靠）期间
+            // 他线程归零转移入挂起栈，属主恢复槽消化（延迟有界）+ 段内
+            // 高频 expose/归零的段尾消化
+            Case("Handle 属主 park 跨线程归零与唤醒段消化", SerializationGraphCorpus("handle_owner_parked_drain")),
             Case("enum 序列化判别与 rich 载荷快照", SerializationGraphCorpus("serialization_enum_snapshot")),
             Case("源码 SB 与 Serializable 双重应用及值编解码", SerializationGraphCorpus("serialization_sb_explicit")),
             Case("数组闭合泛型身份与嵌套转换拒绝", SerializationGraphCorpus("array_nominal_identity")),

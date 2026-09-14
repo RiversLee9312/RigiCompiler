@@ -21,6 +21,7 @@
 #include "stringfmt.h"
 #include "rigi_string.h"
 #include "ryu.h"
+#include "shell.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -605,9 +606,15 @@ int64_t rigi_any_hash(const void *anySlot)
     return (int64_t)rigi_fnv1a64((const uint8_t *)&payload, sizeof(payload));
 }
 
-/* Handle 固定 ABI：头 16B、隐藏胖 target 16B、可写能力位 16B。
- * target 是唯一 refMap 项；普通析构、循环扫描与 teardown 复用 ARC
- * 的既有扫描器，不能再添加第二条 release 路径。 */
+/* Handle 固定 ABI（3b-β 双持有）：头 16B、壳指针 8B(+16)、shellID
+ * 8B(+24)、可写能力位 1B(+32)、kind 4B(+36)、填充 = 48B。refMap = 0：
+ * 锚引用由壳持有，capability 对象不再持受管引用——GC 图断边由壳锚
+ * 的 rc 计数保活语义补偿（壳活 ⟹ target 活；壳的 anchor release 走
+ * rigi_ref_release 既有按位分流）。析构减量唯一入口 =
+ * rigi_handle_capability_release（arc.c rigi_destruct 普通期 /
+ * macrogc.c gc_teardown_ex 冻结期两入口挂接）——本处旧注释「不能再
+ * 添加第二条 release 路径」随 3b-β 壳模型正式修订：壳路径即被设计
+ * 的唯一第二条路径（裁定 #8）。 */
 static void *rigi_handle_object(const void *value)
 {
     uint64_t type_id, payload;
@@ -621,18 +628,40 @@ static void *rigi_handle_object(const void *value)
     return (void *)(uintptr_t)payload;
 }
 
+/* 3b-β 壳析构识别：sheet 名 = ".handle"（len 快筛 + memcmp）；两销毁
+ * 入口共享（形态仿 rigi_dispose_check 挂点） */
+int32_t rigi_handle_is_capability(const void *object, const RigiTypeSheet *sheet)
+{
+    (void)object;
+    return sheet != NULL && sheet->typeInfoId != NULL
+        && sheet->typeInfoId->name.len == 7
+        && memcmp(sheet->typeInfoId->name.data, ".handle", 7) == 0 ? 1 : 0;
+}
+
+/* 3b-β：capability 双持有槽读取（+16 壳指针）——macrogc 的壳锚代理
+ * 边（gc_trace 特判）用 */
+void *rigi_shell_of_capability(const void *object)
+{
+    void *shell;
+    memcpy(&shell, (const char *)object + 16, 8);
+    return shell;
+}
+
 void rigi_handle_make(void *out, const RigiTypeSheet *sheet, const void *target, int32_t kind, uint8_t mutable)
 {
     uint64_t target_type, target_payload;
     memcpy(&target_type, target, 8);
     memcpy(&target_payload, (const char *)target + 8, 8);
-    if (sheet == NULL || sheet->typeSize != 48 || sheet->refMapSize != 1
-        || sheet->refMap[0] != 0 || (sheet->typeFlags & RIGI_TYPE_SHARED) == 0
+    if (sheet == NULL || sheet->typeSize != 48 || sheet->refMapSize != 0
+        || (sheet->typeFlags & RIGI_TYPE_SHARED) == 0
         || (target_type >> RIGI_TAG_SHIFT) != RIGI_TAG_OBJECT || target_payload == 0) abort();
     void *object = rigi_alloc(sheet);
-    target_payload = rigi_ref_acquire(target_type, target_payload);
-    memcpy((char *)object + 16, &target_type, 8);
-    memcpy((char *)object + 24, &target_payload, 8);
+    /* 3b-β：建壳（锚 acquire 恰好一次——capability 生命周期内唯一
+     * 的 target acquire，裁定 #6）+ 双持有写入 {壳指针, shellID} */
+    uint64_t shell_id = 0;
+    void *shell = rigi_shell_make(target_type, target_payload, &shell_id);
+    memcpy((char *)object + 16, &shell, 8);
+    memcpy((char *)object + 24, &shell_id, 8);
     *((uint8_t *)object + 32) = mutable;
     memcpy((char *)object + 36, &kind, 4);
     uint64_t type_id = (uint64_t)(uintptr_t)sheet | ((uint64_t)RIGI_TAG_OBJECT << RIGI_TAG_SHIFT);
@@ -644,12 +673,54 @@ void rigi_handle_make(void *out, const RigiTypeSheet *sheet, const void *target,
 void rigi_handle_target(void *out, const void *value)
 {
     const char *object = (const char *)rigi_handle_object(value);
+    void *shell;
     uint64_t type_id, payload;
-    memcpy(&type_id, object + 16, 8);
-    memcpy(&payload, object + 24, 8);
-    payload = rigi_ref_acquire(type_id, payload);
+    memcpy(&shell, object + 16, 8);
+    /* 3b-δ1 借用契约：壳指针直达解析（count ≥ 1 ⟹ 壳必活，无注册表
+     * 查找），返回裸胖引用——不 acquire（无 +1）。借用声明由 stdlib
+     * place.rg 的 @NativeBorrow 承载，RcInjection 据此豁免消费链全部
+     * acquire/release 义务。借用寿命纪律（unsafe 契约，无运行时检查）：
+     * 调用方不得比借出它的 Handle 活得更久、不得将借用值存入字段/
+     * 数组/被捕获逃逸（编译器在 RcInjection 逃逸边界拒绝存储形态） */
+    rigi_shell_target_of(shell, &type_id, &payload);
     memcpy(out, &type_id, 8);
     memcpy((char *)out + 8, &payload, 8);
+}
+
+/* 3b-β（裁定 #7）：asMutable 经壳指针共享计数（直接原子加，不新建
+ * 壳、不二次 acquire），新 capability 指同一壳（mutable 置位、kind
+ * 继承源）；sheet 经源对象头读取 */
+void rigi_handle_as_mutable(void *out, const void *value)
+{
+    const char *src = (const char *)rigi_handle_object(value);
+    const RigiTypeSheet *sheet = *(const RigiTypeSheet *const *)src;
+    void *shell;
+    uint64_t shell_id;
+    int32_t kind = rigi_handle_kind(value);
+    memcpy(&shell, src + 16, 8);
+    memcpy(&shell_id, src + 24, 8);
+    rigi_shell_increment_ptr(shell);
+    if (sheet == NULL || sheet->typeSize != 48 || sheet->refMapSize != 0) abort();
+    void *object = rigi_alloc(sheet);
+    memcpy((char *)object + 16, &shell, 8);
+    memcpy((char *)object + 24, &shell_id, 8);
+    *((uint8_t *)object + 32) = 1;
+    memcpy((char *)object + 36, &kind, 4);
+    uint64_t type_id = (uint64_t)(uintptr_t)sheet | ((uint64_t)RIGI_TAG_OBJECT << RIGI_TAG_SHIFT);
+    uint64_t payload = (uint64_t)(uintptr_t)object;
+    memcpy(out, &type_id, 8);
+    memcpy((char *)out + 8, &payload, 8);
+}
+
+/* 3b-β：capability rc 已归零（rigi_destruct 终态）——壳计数减一 +
+ * 归零转移，本体即放（壳指针有效性由 count ≥ 1 ⟹ 壳必活不变量保证：
+ * 本 capability 的消亡正贡献那最后一枚计数） */
+void rigi_handle_capability_release(void *object)
+{
+    void *shell;
+    memcpy(&shell, (const char *)object + 16, 8);
+    rigi_shell_release_via_ptr(shell);
+    rigi_track_free(object);
 }
 
 uint8_t rigi_handle_is_mutable(const void *value)

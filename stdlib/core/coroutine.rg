@@ -1061,7 +1061,10 @@ priv shared singleton class Dispatcher {
     }
 
     // Native/Middleware 回调边界：裸 token 在本同步调用内立即降为
-    // Carriage，后续 shared 存储只看搬运票据。
+    // Carriage，后续 shared 存储只看搬运票据。（3b-β 曾在此拦截壳
+    // 释放消息对象做发布者线程同步清理——模型纯度让步点；3b-δ2 已
+    // 封口：壳归零转移改走属主挂起栈，清理收敛到属主执行槽
+    //（rigi_shell_drain_pending），本函数回归纯发布直通。）
     internal func publishNative(token: i64) {
         publish(new CoroutineCarriage(token))
     }
@@ -1191,6 +1194,11 @@ priv native func rigi_native_rc_retain(token: i64): i32
 @NativeLibrary("rigi_rt")
 @NativeSymbol("native_rc_release")
 priv native func rigi_native_rc_release(token: i64)
+
+// 3b-β 壳释放消息两面（shell_msg_try_take / shell_handle_release）
+// 已随 3b-δ2 壳释放属主化删除：归零转移不再经 Dispatcher 消息对象
+// 投递与发布者线程同步处理，改为 native per-属主挂起栈 + 属主执行槽
+// 内消化（rigi_shell_drain_pending，纯 native 内部面，无 Rigi 声明）。
 
 // 定时器原语：Timer 与 sleep 的时钟底座（§19.4/§19.5）。棒3 契约
 // 调整：棒2 仅 deadline 一参，缺属主 Worker/重复间隔/响铃回调通道，

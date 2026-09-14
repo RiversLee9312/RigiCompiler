@@ -53,17 +53,23 @@ namespace RigiCompiler.Middleware.Layout
             var refEntries = new List<RefMapBuilder.RefSite>();
             if (type.Canonical == ".handle")
             {
-                // 隐藏 target 仅进入 GC refMap，不进入 Fields/反射枚举。
-                // 普通 ARC 析构与 macroGC trace/teardown 共用该唯一扫描槽，
-                // 因而不另设可调用的 target release 面。
+                // 3b-β 双持有 capability（48B 固定 ABI）：壳指针(+16)/
+                // shellID(+24)/可写能力位(+32)/kind(+36)。refMap 不再含
+                // target 槽——锚引用由壳持有（壳活 ⟹ target 活），
+                // capability 不持受管引用；析构减量经壳析构钩子
+                //（rigi_destruct / macroGC teardown 两入口）走壳路径，
+                // 不再进 refMap 扫描。隐藏槽不进入 Fields/反射枚举。
+                offset = LayoutEngine.AlignUp(offset, 8);
+                offset = LayoutEngine.CheckedAdd(offset, 8,
+                    $"类型 {type.Canonical} 的壳指针");
+                offset = LayoutEngine.CheckedAdd(offset, 8,
+                    $"类型 {type.Canonical} 的 shellID");
+                offset = LayoutEngine.CheckedAdd(offset, 1,
+                    $"类型 {type.Canonical} 的可写能力位");
+                offset = LayoutEngine.AlignUp(offset, 4);
+                offset = LayoutEngine.CheckedAdd(offset, 4,
+                    $"类型 {type.Canonical} 的 kind");
                 offset = LayoutEngine.AlignUp(offset, LayoutEngine.ReferenceSlotSize);
-                refEntries.Add(new RefMapBuilder.RefSite(offset,
-                    TypeLayout.RefMapKindFatRef, null));
-                offset = LayoutEngine.CheckedAdd(offset, LayoutEngine.ReferenceSlotSize,
-                    $"类型 {type.Canonical} 的隐藏 target");
-                // 独立可写能力标志，不是用户字段，也不参与引用扫描。
-                offset = LayoutEngine.CheckedAdd(offset, LayoutEngine.ReferenceSlotSize,
-                    $"类型 {type.Canonical} 的隐藏能力标志");
             }
             // MW9b-G：基类托管位点一并回放进本类 refMap——rigi_destruct
             // 只扫对象自身 sheet 的 refMap（不走 baseTypeId 链），继承的

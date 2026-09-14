@@ -43,6 +43,13 @@ jobs:
         shell: pwsh
         run: tools/Fetch-Libuv.ps1 -Rid ${{ matrix.rid }}
 
+      # mimalloc 静态库缓存（GC Phase 2：rigi_rt track 台账的底层分配面；
+      # 官方预编译包钉版预取，秒级完成）。须在 publish 之前：NativeE2E 的
+      # --out 用例链接时经 MimallocResolver 命中 tools/.mimalloc/<rid>/
+      - name: Fetch mimalloc static lib (${{ matrix.rid }})
+        shell: pwsh
+        run: tools/Fetch-Mimalloc.ps1 -Rid ${{ matrix.rid }}
+
       - name: Publish NativeAOT (${{ matrix.rid }})
         run: dotnet publish RigiCompiler.csproj -c Release -r ${{ matrix.rid }} -o publish
 

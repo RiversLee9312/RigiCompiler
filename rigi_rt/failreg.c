@@ -16,6 +16,7 @@
 #include "coroutine.h"
 #include "arc.h"
 #include "failreg.h"
+#include "macrogc.h" /* Phase 3c：失败发布点整图 promotion */
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -125,7 +126,17 @@ void rigi_failure_bind(int64_t id, RigiFatRef *slot)
     abort();
 }
 
-/* 登记（DONE 垫尾）：+1 拷贝持有异常胖引用，返回节点 id（>0） */
+/* 登记（DONE 垫尾）：+1 拷贝持有异常胖引用，返回节点 id（>0）。
+ * Phase 3c（GC_OPTIMIZATION_PLAN §2.3）：失败发布点一次性整图
+ * promotion——失败 Task 的属主协程正在死亡，壳模型无人可委托，异常图
+ * 却可被多 waiter 跨线程持有（arc.h rigi_acquire_local 注释口径），
+ * 在此把异常为根的 refMap 可达图逐实例翻位（local→shared 单调），此后
+ * 按 shared 规则走。本函数是 failreg 唯一登记入口（EmitFailTerminal
+ * DONE 垫尾/探测失败尾共用），翻位发生在节点入链之前——id 尚未发布、
+ * Task 隐藏槽未 bind、fail() 未迁移终态、publishAll 未唤醒任何 waiter，
+ * 「翻位完成先于任何非属主触碰」由本调用序保证（冷路径，按图大小
+ * 付费）。VM 侧失败由 VmDispatch._failed 承载，不经本表（行为基准
+ * 不变）。 */
 int64_t rigi_failure_record(const RigiFatRef *exc)
 {
     RigiFailureNode *node;
@@ -142,6 +153,10 @@ int64_t rigi_failure_record(const RigiFatRef *exc)
     {
         node->failure.payload = rigi_ref_acquire(
             node->failure.type_id, node->failure.payload);
+        /* 此刻异常图 rc 仅被属主线程触碰（本协程 DONE 垫尾），满足
+         * promotion 翻位前置协议（macrogc.h rigi_gc_promote_subgraph） */
+        rigi_gc_promote_subgraph(node->failure.type_id,
+            node->failure.payload);
     }
     rigi_failreg_lock();
     if (!rigi_failreg_cleanup_registered)

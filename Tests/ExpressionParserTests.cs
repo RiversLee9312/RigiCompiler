@@ -55,6 +55,7 @@ namespace RigiCompiler.Tests
             TestHarness.Section("Binary Expressions");
 
             TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))");
+            TestExpr("var rm = a % b", "Binary(Path(a, []) % Path(b, []))");
             TestExpr("var c = a == b", "Binary(Path(a, []) == Path(b, []))");
             TestExpr("var lg = x and y", "Binary(Path(x, []) and Path(y, []))");
             TestExpr("var lo = x or y", "Binary(Path(x, []) or Path(y, []))");
@@ -399,11 +400,12 @@ namespace RigiCompiler.Tests
         {
             TestHarness.Section("Compound Assignments (§13.2)");
 
-            // 全集 10 个运算符（语句位置：ExpressionStatement 包装，无 %=）
+            // 全集 11 个运算符（语句位置：ExpressionStatement 包装）
             TestBlock("{ a += 1 }", "[CompoundAssign(Path(a, []) += Int(1,I32))]");
             TestBlock("{ a -= 1 }", "[CompoundAssign(Path(a, []) -= Int(1,I32))]");
             TestBlock("{ a *= 2 }", "[CompoundAssign(Path(a, []) *= Int(2,I32))]");
             TestBlock("{ a /= 2 }", "[CompoundAssign(Path(a, []) /= Int(2,I32))]");
+            TestBlock("{ a %= 2 }", "[CompoundAssign(Path(a, []) %= Int(2,I32))]");
             TestBlock("{ a <<= 1 }", "[CompoundAssign(Path(a, []) <<= Int(1,I32))]");
             TestBlock("{ a >>= 1 }", "[CompoundAssign(Path(a, []) >>= Int(1,I32))]");
             // >>>= 是复合赋值而非比较：token 流 > > > = 经重组收拢为 >>> 后遇 = 分流

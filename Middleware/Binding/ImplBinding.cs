@@ -14,8 +14,8 @@ namespace RigiCompiler.Middleware.Binding
     // primitive 指令选择键（Emit 映射到 LLVM builder 调用）
     public enum PrimitiveOpKind
     {
-        IntAdd, IntSub, IntMul, IntSDiv, IntUDiv,
-        FloatAdd, FloatSub, FloatMul, FloatDiv,
+        IntAdd, IntSub, IntMul, IntSDiv, IntUDiv, IntSMod, IntUMod,
+        FloatAdd, FloatSub, FloatMul, FloatDiv, FloatMod,
         LogicAnd, LogicOr, LogicNot,
         BitAnd, BitOr, BitXor, BitNot,
         ShiftLeft, ShiftRightSigned, ShiftRightUnsigned,

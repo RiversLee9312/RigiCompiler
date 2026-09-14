@@ -90,6 +90,7 @@ namespace RigiCompiler.Bil
                 BilBinaryOp.Sub => "sub",
                 BilBinaryOp.Mul => "mul",
                 BilBinaryOp.Div => "div",
+                BilBinaryOp.Mod => "mod",
                 BilBinaryOp.And => "and",
                 BilBinaryOp.Or => "or",
                 BilBinaryOp.BinAnd => "bin.and",
@@ -208,6 +209,7 @@ namespace RigiCompiler.Bil
                 BilKeyword.Override => "override",
                 BilKeyword.Async => "async",
                 BilKeyword.Unsafe => "unsafe",
+                BilKeyword.NativeBorrow => "native-borrow",
                 _ => throw new CompilerInternalException("未知 BilKeyword: " + keyword),
             };
         }

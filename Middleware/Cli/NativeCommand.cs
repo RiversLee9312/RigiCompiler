@@ -90,6 +90,19 @@ namespace RigiCompiler.Middleware.Cli
         };
     }
 
+    /// <summary>native --mimalloc-dir：显式指定 mimalloc 静态库目录（解析顺序最优先）。</summary>
+    public class NativeMimallocDirOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--mimalloc-dir",
+            Description = "显式指定 mimalloc 目录（解析顺序：--mimalloc-dir → RIGI_MIMALLOC → tools/.mimalloc → 编译器旁 .mimalloc）",
+            ArgsHint = "<目录>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
     /// <summary>
     /// native --link：非 rigi_rt native 库（RUNTIME §26 库解析留白，L6 定稿）
     /// 的额外链接输入——目标文件 / 静态库 / 导入库 / 共享库全路径，逐条原样
@@ -129,6 +142,7 @@ namespace RigiCompiler.Middleware.Cli
             new NativeEmitLlOption(),
             new NativeToolchainOption(),
             new NativeLibuvDirOption(),
+            new NativeMimallocDirOption(),
             new NativeLinkOption(),
             new VerboseOption(),
             new LogToOption(),
@@ -193,7 +207,7 @@ namespace RigiCompiler.Middleware.Cli
             {
                 return EmitAndLink(gate.Module!, outPath, emitObjPath, emitLlPath,
                     result.Get("--toolchain")?[0], result.Get("--libuv-dir")?[0],
-                    result.Get("--link"));
+                    result.Get("--mimalloc-dir")?[0], result.Get("--link"));
             }
             catch (MwNotSupportedException ex)
             {
@@ -214,7 +228,7 @@ namespace RigiCompiler.Middleware.Cli
 
         private static int EmitAndLink(Bil.BilModule module, string? outPath,
             string? emitObjPath, string? emitLlPath, string? toolchainDir,
-            string? libuvDir, IReadOnlyList<string>? linkInputs)
+            string? libuvDir, string? mimallocDir, IReadOnlyList<string>? linkInputs)
         {
             // --link 输入先验存在（L6：非 rigi_rt 库链接；仅随 --out 消费，
             // 但早失败优于链接期 lld 报错）
@@ -300,6 +314,23 @@ namespace RigiCompiler.Middleware.Cli
                 return 2;
             }
 
+            // mimalloc 静态库解析（GC Phase 2：--mimalloc-dir → RIGI_MIMALLOC →
+            // tools/.mimalloc → exe 旁）；track_malloc/free 是 rigi_rt 对象分配
+            // 唯一收口（GC_OPTIMIZATION_PLAN §2.4），缺 mimalloc 符号必然链接
+            // 失败，故同 libuv 纪律在编译期明确拒绝（响亮早失败优于链接期
+            // lld 深处报 undefined symbol）
+            var mimalloc = MimallocResolver.Resolve(mimallocDir);
+            Logger.Verbose("Middleware", mimalloc != null
+                ? $"mimalloc: {mimalloc.StaticLibPath}"
+                : "mimalloc 未命中。解析顺序：" + MimallocResolver.DescribeSearchOrder());
+            if (mimalloc == null)
+            {
+                Console.Error.WriteLine("native 编译失败：未找到 mimalloc（rigi_rt "
+                    + "track 台账的底层分配面必需；请先运行 tools/Fetch-Mimalloc.ps1）。"
+                    + "解析顺序：" + MimallocResolver.DescribeSearchOrder());
+                return 2;
+            }
+
             // rigi_rt 现场编译为 bitcode（内容哈希缓存）→ 进程内合并 → 统一优化
             string bitcode;
             try
@@ -338,6 +369,12 @@ namespace RigiCompiler.Middleware.Cli
                     linkArgs.Add(libuv.StaticLibPath);
                     linkArgs.AddRange(LibuvResolver.SystemLibraryArgs());
                 }
+                // GC Phase 2：mimalloc 静态库 + 其平台系统库（win advapi32 /
+                // linux pthread+dl，见 MimallocResolver.SystemLibraryArgs）。
+                // 紧随 libuv 之后追加，位于主目标文件之后（lld 按序解析，主
+                // 目标里 rigi_rt 的 mi_malloc_aligned/mi_free 引用由此满足）
+                linkArgs.Add(mimalloc.StaticLibPath);
+                linkArgs.AddRange(MimallocResolver.SystemLibraryArgs());
                 // MW12：macrogc.c 的 GC 协程承载线程用 pthread_create，
                 // 与 libuv 命中与否无关，linux 链接恒需 pthread
                 if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)

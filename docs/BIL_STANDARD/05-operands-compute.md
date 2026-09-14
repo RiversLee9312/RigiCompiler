@@ -60,6 +60,7 @@ add OPR1 OPR2 RESULT
 sub OPR1 OPR2 RESULT
 mul OPR1 OPR2 RESULT
 div OPR1 OPR2 RESULT
+mod OPR1 OPR2 RESULT
 opposite OPR RESULT
 ```
 
@@ -71,6 +72,7 @@ opposite OPR RESULT
 | `sub` | `minus` |
 | `mul` | `times` |
 | `div` | `div` |
+| `mod` | `mod` |
 | `opposite` | `opposite` |
 
 对于内建整数/浮点类型，Middleware 可以直接生成 LLVM 算术指令。对于用户类型，Middleware 按精确类型选择唯一运算实现。
@@ -83,6 +85,11 @@ IEEE 754（产生 inf/NaN，不抛异常）。
 内建整数 `div` 右操作数为零时抛语言级异常 `core::DividedByZeroException`
 （SYNTAX §8.1；可被 `try`/`catch` 捕获，未捕获按未捕获异常终止），有符号与
 无符号各宽度同例；浮点 `div` 除零遵循 IEEE 754（产生 inf/NaN），不抛异常。
+
+内建整数 `mod` 为**截断取余**（truncated remainder，与 `div` 同号约定：
+结果符号随被除数）；右操作数为零时与整数 `div` 抛同一语言级异常
+`core::DividedByZeroException`（同消息，可捕获同例）。浮点 `mod` 为
+IEEE 754 截断余数（fmod 语义），模零产生 NaN，不抛异常。
 
 `add` 作用于两个 `.string` 操作数时是**内建字符串拼接**（Rigi `String` 的 `+`）：按值语义产出一个新字符串，VM 内建执行，不属于 `rigi_rt` 原生方法面（RUNTIME §26）。
 

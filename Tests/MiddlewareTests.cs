@@ -165,6 +165,7 @@ namespace RigiCompiler.Tests
             ("TestLlGoldenAnchors", TestLlGoldenAnchors),
             ("TestNullResourceEmission", TestNullResourceEmission),
             ("TestDivGuardEmission", TestDivGuardEmission),
+            ("TestModGuardEmission", TestModGuardEmission),
             ("TestLayoutPlans", TestLayoutPlans),
             ("TestTypeSheetEmission", TestTypeSheetEmission),
             ("TestTypeCheckEmission", TestTypeCheckEmission),
@@ -1400,38 +1401,52 @@ namespace RigiCompiler.Tests
             }
             TestHarness.CheckTrue("R2-c 值类型 init tainted 受控拒绝", structCaught);
 
-            // #08：PollingAlarm.isReady override 含挂起点（§19.2 同步
-            // 探测方法）——native 轮询由合成 fn $mw.poll_probe 同步虚
-            // 派发触发，恢复闸无泵可等；tainted 实现 split 后 vtable
-            // 槽指陷阱 fn（ReplaceWithTrap），轮询正中陷阱即恢复闸
-            // 时段错误（静默 UB）。split 前升级为受控拒绝；用户侧改写
-            // 路径 EventAlarm + signal()
-            var pollCaught = false;
-            try
-            {
-                PipelineFromSource(
-                    "import core.coroutine.*\n" +
-                    "pub shared class BadPoll : PollingAlarm {\n" +
-                    "    pub const cell: core.AtomicStruct\\<i64>\n" +
-                    "    pub init() { cell = new core.AtomicStruct\\<i64>(0L) }\n" +
-                    "    pub override func isReady(): bool {\n" +
-                    "        return cell.load() >= 0L\n" +
-                    "    }\n" +
-                    "}\n" +
-                    "async func run() {\n" +
-                    "    var p = new BadPoll()\n" +
-                    "    yield p\n" +
-                    "}\n" +
-                    "pub func main(): i32 {\n" +
-                    "    run()\n" +
-                    "    return 0\n" +
-                    "}\n", "coro.reject.pollalarm.bil");
-            }
-            catch (MwNotSupportedException ex)
-            {
-                pollCaught = ex.Message.Contains("PollingAlarm.isReady");
-            }
-            TestHarness.CheckTrue("#08 PollingAlarm.isReady tainted 受控拒绝", pollCaught);
+            // Phase 2.6（§19.2 语义纠偏）：PollingAlarm.isReady 允许含挂
+            // 起点——原受控拒绝（76e304c #08 止血：tainted 实现 split 后
+            // vtable 槽指陷阱、$mw.poll_probe 同步虚派发无恢复泵）随本节
+            // 撤销。tainted 探测改经恢复块站点协议臂下钻：poll gate 分流
+            // 命中 tainted 实现臂 → 建探测 frame + MirResumeCall 调
+            // isReady 状态机（探测中途可挂起）；untainted 闭包仍走
+            // $mw.poll_probe 同步廉价路径
+            var probeCtx = PipelineFromSource(
+                "import core.coroutine.*\n" +
+                "pub shared class BadPoll : PollingAlarm {\n" +
+                "    pub const cell: core.AtomicStruct\\<i64>\n" +
+                "    pub init() { cell = new core.AtomicStruct\\<i64>(0L) }\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        return cell.load() >= 0L\n" +
+                "    }\n" +
+                "}\n" +
+                "async func run() {\n" +
+                "    var p = new BadPoll()\n" +
+                "    yield p\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    run()\n" +
+                "    return 0\n" +
+                "}\n", "coro.pollprobe.tainted.bil");
+            var runStub = StubOf(probeCtx, "$run(");
+            var runResume = ResumeOf(probeCtx, runStub);
+            var runInsts = runResume.Blocks.SelectMany(b => b.Instructions).ToList();
+            TestHarness.CheckTrue(
+                "tainted isReady 编译通过（拒绝已撤销）", runInsts.Count > 0);
+            TestHarness.CheckTrue(
+                "tainted 探测站点协议化：MirResumeCall 直调 isReady 状态机",
+                runInsts.OfType<MirResumeCall>().Any(rc =>
+                    rc.ResumeFn.Canonical.Contains("BadPoll$isReady")),
+                string.Join(",", runResume.Blocks.SelectMany(b => b.Instructions)
+                    .OfType<MirResumeCall>().Select(rc => rc.ResumeFn.Canonical)));
+            TestHarness.CheckTrue(
+                "tainted 探测站点分流链化（probe 链首块走 type.is 臂而非同步三路 switch；"
+                + "闭包含 abstract 声明臂时 untainted 联合尾仍保留廉价路径）",
+                runResume.Blocks
+                    .Where(b => b.Id.Contains(".pollgate") && b.Id.EndsWith(".probe"))
+                    .All(b => b.Terminator is MirCondBranch));
+            // 探测挂起子状态：isReady 中途挂起后重发布恢复的专用入口
+            TestHarness.CheckTrue(
+                "探测挂起子状态恢复分流链块存在",
+                runResume.Blocks.Any(b => b.Id.Contains(".pollgate")
+                    && b.Id.Contains(".pdisp")));
         }
 
         // ===== MW11b 棒3：yield Alarm 切分形态 + probe 合成 fn =====
@@ -2229,6 +2244,70 @@ namespace RigiCompiler.Tests
                 ll.Contains("sdiv.wrap"), ll);
             TestHarness.CheckTrue("异常边指向传播垫",
                 ll.Contains("mw.propagate"), ll);
+        }
+
+        // ===== 模零 guard 与 srem/frem 发射（mod-3：取模 %）=====
+
+        private static void TestModGuardEmission()
+        {
+            // 真实前端全管线路径：i32 取模 → divisor==0 条件分支 →
+            // rigi_alloc + init() + rigi_exc_raise + br 传播垫（与 div
+            // 同一异常面）；MIN/-1 走 smod.select 消毒（无 abort 臂）
+            var (_, textModule, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 42\n" +
+                "    var z = 5\n" +
+                "    return (x % z)\n" +
+                "}\n");
+            text = BilWriter.Write(textModule);
+            var gate = BilGate.Accept(text, "mod.bil");
+            TestHarness.CheckTrue("取模用例门禁放行", gate.IsAccepted,
+                string.Join("; ", gate.Errors));
+            var context = new MwContext(gate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var ll = module.PrintToString();
+
+            TestHarness.CheckTrue("模零 guard 构造 DividedByZeroException",
+                ll.Contains("call ptr @rigi_alloc(")
+                && ll.Contains("DividedByZeroException"), ll);
+            TestHarness.CheckTrue("模零 guard 调零参 init",
+                ll.Contains("DividedByZeroException$init()"), ll);
+            TestHarness.CheckTrue("模零 guard 抛异常走 rigi_exc_raise",
+                ll.Contains("call void @rigi_exc_raise(ptr"), ll);
+            TestHarness.CheckTrue("有符号取模发射 srem",
+                ll.Contains("srem i32"), ll);
+            TestHarness.CheckTrue("MIN/-1 消毒 select（x % ±1 == 0）",
+                ll.Contains("smod.safe") && ll.Contains("smod.wrap"), ll);
+            TestHarness.CheckTrue("取模不引入 MIN/-1 abort 臂",
+                !ll.Contains("rigi_abort_arithmetic_overflow"), ll);
+            TestHarness.CheckTrue("取模异常边指向传播垫",
+                ll.Contains("mw.propagate"), ll);
+
+            // f64 取模：frem 直发（IEEE 754 截断余数），无 guard 无 raise
+            (_, textModule, text) = BilTestHarness.EmitBilUnit(
+                "pub func main(): i32 {\n" +
+                "    var x = 7.5\n" +
+                "    var z = 2.25\n" +
+                "    if ((x % z) == 0.75) { return 1 }\n" +
+                "    return 0\n" +
+                "}\n");
+            text = BilWriter.Write(textModule);
+            var floatGate = BilGate.Accept(text, "fmod.bil");
+            TestHarness.CheckTrue("浮点取模用例门禁放行", floatGate.IsAccepted,
+                string.Join("; ", floatGate.Errors));
+            var floatContext = new MwContext(floatGate.Module!);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(floatContext);
+            using var floatModule = ModuleBuilder.Build(floatContext, floatContext.Mir!);
+            var floatLl = floatModule.PrintToString();
+
+            TestHarness.CheckTrue("浮点取模发射 frem",
+                floatLl.Contains("frem double"), floatLl);
+            // stdlib 夹具自身携带异常面（rigi_exc_raise 全模块可见），故以
+            // EmitModGuard 特有的 mod.zero 比较命名做负断言（f64 取模无
+            // guard；模零得 NaN 由 E2E「浮点取模与模零 NaN」运行期对拍）
+            TestHarness.CheckTrue("浮点取模无模零 guard（模零得 NaN）",
+                !floatLl.Contains("mod.zero"), floatLl);
         }
 
         // ===== 布局引擎与 TypeSheet 发射（MW4 批 1）=====
@@ -6982,6 +7061,52 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue(".ll rich value 复合写入由同一 ownership region 包裹",
                 LlRegionContains(ll, "call void @rigi_value_acquire(",
                     "call void @rigi_value_release(", "@llvm.memcpy"), ll);
+
+            // ===== Phase 1.2 region 合并（§23.3「复合引用操作可合并为同一
+            // region」）：同一复合操作只发一对 region 进出 =====
+            // ① 出口 release 序列（托管局部 n/s/b 三槽）共享一对 region：
+            // 同一 region 体内同时出现三类 release 是出口序列合并的唯一起源
+            //（复合写入 region 只含单一类型的 acquire+release）。
+            // ② 同一 region 内 ≥2 次 ref_acquire = 块首参数 acquire 段合并。
+            // ③ 同一 region 内 ≥2 次 value_release = rich temps 级联析构合并。
+            // ④ 同一 region 内 ≥2 次 ref_release = boxed temps 级联析构合并。
+            ctx = PipelineFromSource(
+                "pub class Node {\n" +
+                "    pub var x: i32\n" +
+                "    pub init(v: i32) { x = v }\n" +
+                "}\n" +
+                "pub rich struct Bag {\n" +
+                "    pub var name: String\n" +
+                "    pub var node: Node\n" +
+                "    pub init(_ -> name, _ -> node)\n" +
+                "}\n" +
+                "pub func take2(a: Node, b: Node): i32 { return a.x + b.x }\n" +
+                "pub func eatBags(p: Bag, q: Bag): i32 { return 0 }\n" +
+                "pub func eatObjects(m: Node, k: Node): i32 { return 0 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var n = new Node(1)\n" +
+                "    var s = \"x\"\n" +
+                "    var b = new Bag(s, n)\n" +
+                "    var r = take2(n, n)\n" +
+                "    var e1 = eatBags(new Bag(s, n), new Bag(s, n))\n" +
+                "    var e2 = eatObjects(new Node(2), new Node(3))\n" +
+                "    return (r + (e1 + (e2 + (n.x + b.node.x))))\n" +
+                "}\n",
+                "rc.region.bil");
+            using (var regionModule = ModuleBuilder.Build(ctx, ctx.Mir!))
+            {
+                var regionLl = regionModule.PrintToString();
+                TestHarness.CheckTrue(".ll 出口 release 序列由同一 region 包裹",
+                    LlRegionContains(regionLl, "call void @rigi_ref_release(",
+                        "call void @rigi_string_release(", "call void @rigi_value_release("),
+                    regionLl);
+                TestHarness.CheckTrue(".ll 参数 acquire 段由同一 region 包裹",
+                    LlRegionMaxCount(regionLl, "call i64 @rigi_ref_acquire(") >= 2, regionLl);
+                TestHarness.CheckTrue(".ll rich temps 级联析构由同一 region 包裹",
+                    LlRegionMaxCount(regionLl, "call void @rigi_value_release(") >= 2, regionLl);
+                TestHarness.CheckTrue(".ll boxed temps 级联析构由同一 region 包裹",
+                    LlRegionMaxCount(regionLl, "call void @rigi_ref_release(") >= 2, regionLl);
+            }
         }
 
         private static bool LlRegionContains(string ll, params string[] needles)
@@ -7025,6 +7150,60 @@ namespace RigiCompiler.Tests
                 start = end + Exit.Length;
             }
             return false;
+        }
+
+        // Phase 1.2：单个 region 体（enter 与配对 exit 之间，按嵌套配对取
+        // 最外层）内 needle 出现次数的最大值；无任何 region 返回 0。
+        // 用于断言「同一复合操作的 N 次 ARC 调用只发一对 region 进出」。
+        private static int LlRegionMaxCount(string ll, string needle)
+        {
+            const string Enter = "call void @rigi_region_enter()";
+            const string Exit = "call void @rigi_region_exit()";
+            var max = 0;
+            var start = 0;
+            while ((start = ll.IndexOf(Enter, start, StringComparison.Ordinal)) >= 0)
+            {
+                var depth = 1;
+                var cursor = start + Enter.Length;
+                var end = -1;
+                // 公共释放原语也有自己的 region；按配对深度查找外层出口，
+                // 不能把首个嵌套 exit 当作复合 ownership mutation 的结束。
+                while (depth > 0)
+                {
+                    var nextEnter = ll.IndexOf(Enter, cursor, StringComparison.Ordinal);
+                    var nextExit = ll.IndexOf(Exit, cursor, StringComparison.Ordinal);
+                    if (nextExit < 0) break;
+                    if (nextEnter >= 0 && nextEnter < nextExit)
+                    {
+                        depth++;
+                        cursor = nextEnter + Enter.Length;
+                    }
+                    else
+                    {
+                        depth--;
+                        end = nextExit;
+                        cursor = nextExit + Exit.Length;
+                    }
+                }
+                if (end < 0 || depth != 0)
+                {
+                    break;
+                }
+                var region = ll.Substring(start, end - start);
+                var count = 0;
+                var hit = 0;
+                while ((hit = region.IndexOf(needle, hit, StringComparison.Ordinal)) >= 0)
+                {
+                    count++;
+                    hit += needle.Length;
+                }
+                if (count > max)
+                {
+                    max = count;
+                }
+                start = end + Exit.Length;
+            }
+            return max;
         }
 
         // ===== RcInjection 传播垫（MW9a 第 C 棒）=====

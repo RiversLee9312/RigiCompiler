@@ -97,7 +97,7 @@ UserOperatorLowering 直调（MirReachability 对两合成 fn 恒收编）、
 
 同步 callable 若可挂起，CoroutineSplit 的动态实现协议臂在写入具体 callee frame 前使用 MIR cast/box 适配参数；DONE 从具体结果字段先读到同类型临时槽，再转换到调用点类型。全部临时槽仍由既有生命周期 pass 管理，禁止把开放胖值直接写入具体标量/struct 字段或反向读取。
 
-Handle 固定 `.handle` 布局为 16B 对象头、16B 隐藏 target 胖引用、16B kind/mutable 元数据；只将 target 放入 refMap，不加入可枚举 Fields。普通 ARC 析构和 macroGC trace/teardown 共用该唯一扫描项，保证正常销毁与环收集恰好释放一次，禁止额外 native release 面。
+Handle 固定 `.handle` 布局（3b-β 双持有 capability，48B）：16B 对象头、+16 壳指针（8B）、+24 shellID（8B）、+32 可写能力位（1B，对齐补齐）、+36 kind（4B）；refMap 恒 0——target 不在 capability 内，由壳锚持有（RUNTIME §28），隐藏槽不进入可枚举 Fields。普通 ARC 析构经壳析构钩子原子减量、归零转移经属主通道释放目标；macroGC trace 经壳读 target 作代理边、fence 冻结期就地原始拆。保证正常销毁与环收集恰好释放一次，禁止额外 native release 面。
 
 Cell/ReadonlyCell 的 `getValue/setValue` 与同步 Func/Action 的 `$$call` 虚槽统一使用胖值 ABI。`FatValueSlotAbi` 按真实继承和签名为槽生成适配器，复用普通参数编组、装拆箱和 ARC 临时销毁；封闭与开放泛型调用均使用同一槽约定，callable 的全部普通参数逐项适配，非 void 返回统一为胖值。同名 Cell 重载、接口独立段与 async callable 保留自身 ABI。适配器把异常 pending 原样传回普通调用点的异常边；异常出口从函数全局值类型读取真实返回类型，不能从 opaque pointer 推断。
 
@@ -416,12 +416,13 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 
 ## 6. 协程降级
 
-- 按 `ASYNC_LOWERING_DESIGN.md` §3.1 模型切 state：每个可达挂起点的下一条可
-  执行语句为唯一恢复 state；
+- 按 `SEMANTIC_ARCHITECTURE.md` §7.2（原 ASYNC_LOWERING_DESIGN §3.1）模型切
+  state：每个可达挂起点的下一条可执行语句为唯一恢复 state；
 - continuation frame 内容：state、跨挂起局部/参数/临时/`.return` 槽、活动异常
   /try/循环/using 清理状态、Executor 与 CoroutineLocal 上下文、精确根映射
   （frame 是堆对象，按 refMap 描述，走 §4 的 ARC，无需栈根设施）；
-- eager spawn、Task waiter 原子登记、与 fence 的交互按 ASYNC §3–§4；
+- eager spawn、Task waiter 原子登记、与 fence 的交互按
+  `SEMANTIC_ARCHITECTURE.md` §7.2 的 Task/yield/GC fence 节；
 - 不用 llvm.coro（理由见 §2）。
 
 **MW11c 架构转向（定稿目标形态）**：协程运行时从「C 侧重实现」转向
@@ -582,6 +583,20 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
   `i32(ptr)` 签名特判机制；prologue 从 RigiFatRef\* 直接装载胖引用
   （保留实际 typeid 半，无需 sheet 重构）；alarm 参数借用约定（C 侧
   登记项持有 +1 至摘链，probe 不 acquire/release）。
+- **Phase 2.6 探测双路径**（§19.2 语义纠偏，2026-09-12 设计决策）：
+  isReady 允许含挂起点——PreparePollProbeSites 对每个 yield-alarm 点
+  判定 isReady 虚调用闭包，含 tainted 实现时该点走**恢复块站点协议
+  臂**（EmitPollGate tainted 分支）：probe 块按 alarm 运行期类型分流
+  （type.is 深→浅 + untainted 联合尾，miss 防御不可达）→ 建探测
+  frame + MirResumeCall 调 isReady 状态机；探测中途挂起（SUSPENDED/
+  YIELDED）写**探测挂起子状态 ProbeState**（entry switch 追加的专用
+  恢复入口，直落探测调用块下钻续跑）+ ret SUSPENDED；DONE 读
+  callee $mw.result 做一次性就绪判定（true → poll_clear + 续行，
+  false → state 写回 N + poll_schedule 退回等待）；FAILED 沿 yield
+  点词法 try/catch 失败尾。全 untainted 闭包保持 $mw.poll_probe 同步
+  廉价路径（probeId 直调 + -1/0/1 三路 switch），两路径可观察语义
+  一致（对齐 VM ProbePolling 恢复式探测）。原 76e304c 对 #08 的
+  RejectTaintedPollingIsReady 受控拒绝随本节撤销。
 - **可达性**：带 Alarm 的 yield 在 BIL 级收编 isReady 虚调用闭包
   （MirReachability：静态目标 + 全部 override 后代——probe 是 MIR 期
   合成，BIL 可达性不可见）；两分类 sheet 由 Layout 全类型计划覆盖，
@@ -848,6 +863,8 @@ rigi_rt/                    # 本仓库顶层目录（C，EmbeddedResource 内�
 │                             #   + atexit flush（drain/dispatch 晚到规则）
 ├── coroutine.h             # MW11c 瘦身：RigiFatRef / RigiResumeCode 共享 ABI 类型（旧 C 调度面已删）
 ├── cohandle.c/.h           # 协程句柄原语：create/resume/destroy + lane + PollingAlarm 轮询状态
+├── shell.c/.h              # 3b-β Handle 壳：shellID 注册表（全局索引 + 属主分组，单自旋锁）、
+│                             #   capability 归零转移、NativeRc 释放消息、teardown 过户（RUNTIME §28）
 ├── worker.c/.h             # Worker 原语：OS 线程/入队/park/同步 Mutex/定时器/TLS/主 Worker 收尾
 │                             #   + L8 rigi_event_create_sticky（用户 EventAlarm 直继子类默认底座：
 │                             #   粘滞形态，signal 恒置已触发并归还 armed，幂等；stdlib

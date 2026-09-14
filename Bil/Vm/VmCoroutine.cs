@@ -168,6 +168,11 @@
         private VmValue? _pollingAlarm;
         private int _pollBackoffMs = 1;
         private Timer? _pollTimer;
+        // §19.2 恢复式探测状态（Phase 2.6 语义纠偏）：探测帧已压入且未
+        // 弹出标记 + 探测帧之下的基深。探测中途挂起（await/yield/Event）
+        // 时帧滞留栈上，唤醒后据此前续探测循环，不再重压新帧
+        private bool _probeFrameOnStack;
+        private int _probeBaseDepth;
 
         // MW11c 棒4a（§17.4）：调度逻辑在 Rigi 世界（Dispatcher/Task），
         // 本对象只是执行引擎侧的协程实体：状态机 + 帧链 + 原语桥引用
@@ -489,7 +494,15 @@
                 _awaitResultSlot = null;
                 try { Dispatch.SettleAwait(this, handle, slot); }
                 finally { _awaitTarget = null; }
-                return State == VmCoroutineState.Running;
+                if (_pollingAlarm == null)
+                {
+                    return State == VmCoroutineState.Running;
+                }
+                // 探测帧内 await 挂起后的唤醒（§19.2 恢复式探测）：结算已
+                // 完成，探测帧仍在栈上——落入下方 ProbePolling 续跑段，从
+                // 挂起点继续执行 isReady 至完成，再做一次性就绪判定。不得
+                // 绕过探测循环直续 yield 点（否则 isReady 返回 false 也
+                // 续行，_pollingAlarm 残留引发幽灵探测）
             }
             if (_pollingAlarm != null)
             {
@@ -542,20 +555,33 @@
 
         private bool ProbePolling(VmContext context)
         {
+            // Phase 2.6 语义纠偏（RUNTIME §19.2）：isReady 是普通 Rigi 代码，
+            // 允许 await/yield——探测挂起即继续等待，唤醒后在等待协程自己的
+            // 恢复块内完成探测；探测返回 false 才退回等待，true 就绪续行。
             var alarm = _pollingAlarm
                 ?? throw new VmException("PollingAlarm 探测缺少对象");
-            var function = context.ResolveDispatch(VmPolling.IsReadySymbol, alarm);
-            if (function == null)
+            if (!_probeFrameOnStack)
             {
-                throw new VmException("PollingAlarm 没有 isReady");
+                // 首次探测：解析 isReady 目标并压探测帧。结果槽是一次性值，
+                // 先清上一轮残留——若保留上轮 false，isReady 本轮抛出并被
+                // yield 点外层 try 捕获后，会被误判成再次未就绪，继续轮询
+                // 并在 catch 已离开后让异常击穿协程。
+                var function = context.ResolveDispatch(VmPolling.IsReadySymbol, alarm);
+                if (function == null)
+                {
+                    throw new VmException("PollingAlarm 没有 isReady");
+                }
+                CurrentFrame.Slots.Remove(VmPolling.ReadySlot);
+                _probeBaseDepth = CallStack.Count;
+                PushFrame(function, new[] { alarm }, VmPolling.ReadySlot);
+                _probeFrameOnStack = true;
             }
-            var depth = CallStack.Count;
-            // 每次探测结果槽都是一次性值。若保留上轮 false，isReady 本轮
-            // 抛出并被 yield 点外层 try 捕获后，会被误判成再次未就绪，
-            // 继续轮询并在 catch 已离开后让异常击穿协程。
-            CurrentFrame.Slots.Remove(VmPolling.ReadySlot);
-            PushFrame(function, new[] { alarm }, VmPolling.ReadySlot);
-            while (CallStack.Count > depth && State == VmCoroutineState.Running)
+            // 步进至探测帧弹出（栈深回到基深）或探测中途再次挂起。挂起
+            // （await/yield/EventAlarm）时探测帧保留在栈上，唤醒后由
+            // SettleAfterResume 重新进入本方法从挂起点续跑，不得重压新帧
+            // （重复执行 isReady 副作用、旧帧永久滞留）。
+            while (State == VmCoroutineState.Running
+                && CallStack.Count > _probeBaseDepth)
             {
                 Step(context);
             }
@@ -563,17 +589,22 @@
             {
                 return false;
             }
-            if (!CurrentFrame.Slots.ContainsKey(VmPolling.ReadySlot))
+            // 探测帧已弹出：一次性就绪判定。结果槽缺失 = 本轮未正常返回
+            //（isReady 抛出后沿 yield 点词法 try/catch 展开捕获的路径）：
+            // 清轮询状态并放行，异常沿展开后的控制流继续（无捕获则已 Failed）
+            _probeFrameOnStack = false;
+            if (!CurrentFrame.Slots.TryGetValue(VmPolling.ReadySlot, out var probeResult))
             {
                 _pollingAlarm = null;
                 return true;
             }
-            var ready = ReadVar(VmPolling.ReadySlot) is VmBool flag && flag.Value;
-            if (ready)
+            CurrentFrame.Slots.Remove(VmPolling.ReadySlot);
+            if (probeResult is VmBool flag && flag.Value)
             {
                 _pollingAlarm = null;
                 return true;
             }
+            // 未就绪：退避重排，继续 PollingAlarm 等待
             if (!TrySuspend())
             {
                 throw new VmException("PollingAlarm 未就绪时无法挂起");

@@ -739,6 +739,7 @@ namespace RigiCompiler.Tests
                 "    pub operator minus(other: Vec): Vec { return this }\n" +
                 "    pub operator times(other: Vec): Vec { return this }\n" +
                 "    pub operator div(other: Vec): Vec { return this }\n" +
+                "    pub operator mod(other: Vec): Vec { return this }\n" +
                 "    pub operator bitwiseAnd(other: Vec): Vec { return this }\n" +
                 "    pub operator bitwiseOr(other: Vec): Vec { return this }\n" +
                 "    pub operator bitwiseXor(other: Vec): Vec { return this }\n" +
@@ -758,6 +759,7 @@ namespace RigiCompiler.Tests
                 "func sub(a: Vec, b: Vec): Vec { return a - b }\n" +
                 "func mul(a: Vec, b: Vec): Vec { return a * b }\n" +
                 "func quot(a: Vec, b: Vec): Vec { return a / b }\n" +
+                "func rem(a: Vec, b: Vec): Vec { return a % b }\n" +
                 "func band(a: Vec, b: Vec): Vec { return a & b }\n" +
                 "func bor(a: Vec, b: Vec): Vec { return a | b }\n" +
                 "func bxor(a: Vec, b: Vec): Vec { return a ^ b }\n" +
@@ -773,7 +775,8 @@ namespace RigiCompiler.Tests
                 "func neg(a: Vec): Vec { return -a }\n" +
                 "func lnot(a: Vec): Vec { return not a }\n" +
                 "func bnot(a: Vec): Vec { return !a }\n" +
-                "func addEq(a: Vec, b: Vec): Vec { a += b\nreturn a }\n");
+                "func addEq(a: Vec, b: Vec): Vec { a += b\nreturn a }\n" +
+                "func modEq(a: Vec, b: Vec): Vec { a %= b\nreturn a }\n");
             CheckNoErrors("无诊断（用户运算符位置全家）", unit);
             TestHarness.Check("plus", BoundDescribe.Body(BodyOf(bodies, "add")),
                 "Body(add, [], [Return(Binary(Add, Param(a,Vec), Param(b,Vec), Vec))])");
@@ -783,6 +786,8 @@ namespace RigiCompiler.Tests
                 "Body(mul, [], [Return(Binary(Mul, Param(a,Vec), Param(b,Vec), Vec))])");
             TestHarness.Check("div", BoundDescribe.Body(BodyOf(bodies, "quot")),
                 "Body(quot, [], [Return(Binary(Div, Param(a,Vec), Param(b,Vec), Vec))])");
+            TestHarness.Check("mod", BoundDescribe.Body(BodyOf(bodies, "rem")),
+                "Body(rem, [], [Return(Binary(Mod, Param(a,Vec), Param(b,Vec), Vec))])");
             TestHarness.Check("bitwiseAnd", BoundDescribe.Body(BodyOf(bodies, "band")),
                 "Body(band, [], [Return(Binary(BinAnd, Param(a,Vec), Param(b,Vec), Vec))])");
             TestHarness.Check("bitwiseOr", BoundDescribe.Body(BodyOf(bodies, "bor")),
@@ -815,6 +820,9 @@ namespace RigiCompiler.Tests
                 "Body(bnot, [], [Return(Unary(BinNot, Param(a,Vec), Vec))])");
             TestHarness.Check("复合赋值 +=", BoundDescribe.Body(BodyOf(bodies, "addEq")),
                 "Body(addEq, [], [ExprStmt(CompoundAssign(Add, Param(a,Vec), Param(b,Vec), Vec)); " +
+                "Return(Param(a,Vec))])");
+            TestHarness.Check("复合赋值 %=", BoundDescribe.Body(BodyOf(bodies, "modEq")),
+                "Body(modEq, [], [ExprStmt(CompoundAssign(Mod, Param(a,Vec), Param(b,Vec), Vec)); " +
                 "Return(Param(a,Vec))])");
 
             // 负例：未定义 operator

@@ -2,10 +2,17 @@
  * rigi_rt ARC 面族实现（MW4 批 1 + MW7a）：alloc/acquire/release +
  * 值语义四面族 + region 协议 + 析构（数组 / kind 感知 refMap）。
  * 生成代码只见四面族与 string 面；析构级联复用嵌套 region 计数。
+ * Phase 3a（split-heap §2.1）：分配点按 typeFlags 置会计模式位，
+ * acquire/release 按实例位分流。Phase 3d-1（split-heap 收益兑现）：
+ * local 会计路替换为非原子 rc（属主独占触碰论证见
+ * rigi_account_acquire_local）+ per-协程候选账本登记与属主协作收集
+ * 触发（macrogc.c 3d-1 段）；shared 会计路保持 pin-before-sub 原子
+ * 协议不变。
  */
 #include "arc.h"
 #include "gexc.h"
 #include "macrogc.h"
+#include "stringfmt.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -51,32 +58,89 @@ void *rigi_alloc(const RigiTypeSheet *desc)
     memset(object, 0, desc->typeSize);
     object->typeId = desc;
     object->rc = 1;
+    /* Phase 3a：会计模式位按类型静态判定（split-heap §2.1）。shared 类型
+     * 实例恒置位（shared 会计）；local 类型实例不置位（local 会计，3a
+     * 仍按原子路径执行）。分配期单线程写、与 memset 的 0 值同序，无并发。 */
+    object->packedFlags = rigi_pf_accounting_init(desc->typeFlags);
+    /* Phase 3d-1：分配热路径债务检查——兜底「只有分配没有释放」的
+     * 长循环（局部债务只在 release 登记时增长，alloc 检查让已积压
+     * 的账本在无 release 的分配流中也能被收）。检查本身一次 TLS 读
+     * + 债务比较，超阈值才进收集（macrogc.c 3d-1 段）；新对象此刻
+     * 无人引用、不在账本，不参与扫描图。 */
+    rigi_gc_local_maybe_collect();
     return object;
+}
+
+/* Phase 3a 分流内核（split-heap §2.1）：会计路径由「实例位」决定——
+ * 一次 packedFlags relaxed load + 分支（位在分配时定格，冷路径 promote
+ * 单调置位 ⟹ 分支方向对预测器近乎恒定）。Phase 3d-1 起两条会计路分
+ * 道：local 路非原子 rc + per-协程候选账本 + 属主协作收集（「任何时刻
+ * 内存安全」由 3b Handle 封口 + 3c 异常图 promotion 前置保证——非属主
+ * 触碰前位必已翻 shared）；shared 路保持原子协议。入口
+ * rigi_acquire/release_local|shared 的 local/shared 命名自 3a 起只是
+ * 历史遗留：任一入口对同一实例最终走同一条会计路。 */
+
+/* 会计模式位读取（relaxed 一次 load；位只被冷路径单调置位） */
+static uint32_t rigi_pf_accounting(const RigiObjectHeader *h)
+{
+    return atomic_load_explicit(
+        (const _Atomic uint32_t *)&h->packedFlags, memory_order_relaxed)
+        & RIGI_PF_SHARED_ACCOUNTING;
+}
+
+/* local 会计 acquire（Phase 3d-1 非原子化）：普通 ++rc。内存安全论证
+ * （macrogc.h 3d-1 段同款）：local 实例只被属主协程触碰——类型系统
+ * 静态划分（SYNTAX §3.1.1 闭包表 + 逃逸闸门：local 引用不跨 Coroutine
+ * 边界）+ 3b Handle 壳封住 capability 借用面 + 3c 异常图 promotion 在
+ * 发布前翻位（翻位后经 shared 分流原子路径）；macroGC pass 期间
+ * mutator 全冻结（fence），GC 线程的 plain rc 访问不与任何写并发。
+ * 本线程读改写与他线程之间不存在并发触碰窗口。 */
+static void rigi_account_acquire_local(RigiObjectHeader *h)
+{
+    h->rc = h->rc + 1u;
+}
+
+/* shared 会计 acquire（原子计数，跨线程共享） */
+static void rigi_account_acquire_shared(RigiObjectHeader *h)
+{
+    atomic_fetch_add_explicit((_Atomic uint32_t *)&h->rc, 1,
+        memory_order_relaxed);
+}
+
+/* 按实例位分流的 acquire 体（两入口共用；region 语义与调用方约定
+ * 保持 MW7a 原状——每入口自带一对进出） */
+static void rigi_acquire_by_accounting(void *object)
+{
+    RigiObjectHeader *h = (RigiObjectHeader *)object;
+    if (h != NULL)
+    {
+        if (rigi_pf_accounting(h) != 0)
+        {
+            rigi_account_acquire_shared(h);
+        }
+        else
+        {
+            rigi_account_acquire_local(h);
+        }
+    }
 }
 
 void rigi_acquire_local(void *object)
 {
-    /* local 限制是语言可达性规则，不保证运行时引用只在一个线程计数。
-     * 同一失败 Task 的异常及任意深 local 字段可被多 waiter 持有；
-     * 保持对象身份与静态 shared 规则，计数统一使用原子操作。 */
+    /* local 限制是语言可达性规则；实际计数口径由实例会计位决定（见
+     * rigi_acquire_by_accounting）：local 会计实例的引用恒在属主协程
+     * 闭包内（静态划分 + 3b 壳 + 3c promotion 封口，Phase 3d-1 非原子
+     * 计数），shared 会计实例跨线程原子计数（同一失败 Task 的异常图
+     * 已在发布点翻位，可被多 waiter 持有）。 */
     rigi_region_enter();
-    if (object != NULL)
-    {
-        atomic_fetch_add_explicit((_Atomic uint32_t *)&((RigiObjectHeader *)object)->rc,
-            1, memory_order_relaxed);
-    }
+    rigi_acquire_by_accounting(object);
     rigi_region_exit();
 }
 
 void rigi_acquire_shared(void *object)
 {
     rigi_region_enter();
-    if (object != NULL)
-    {
-        atomic_fetch_add_explicit(
-            &(((_Atomic uint32_t *)&((RigiObjectHeader *)object)->rc)[0]),
-            1, memory_order_relaxed);
-    }
+    rigi_acquire_by_accounting(object);
     rigi_region_exit();
 }
 
@@ -276,14 +340,16 @@ void rigi_ref_release(uint64_t type_id, uint64_t payload)
 
 /* release 归零的库内自动析构：数组走元素表；否则 §25 挂点 → kind 感知
  * refMap → track_free。嵌套走查经 region 计数天然安全。
- * MW12：头部先摘除在册候选（swap-remove；非候选零开销）。 */
+ * Phase 1.3：头部的无条件候选摘除移除——账本持 +1（PURPLE 在册 ⟹
+ * rc = U + 1）下，非在册析构占绝对多数，forget 对它们是 provably
+ * no-op，白取一遍账本锁；在册对象的最后一次用户 release 由
+ * rigi_gc_release_shared 的 PURPLE 快路径 old==2 分支进锁摘除候选并
+ * 归还账本引用后才返回 1，确定性释放语义（§22.2）保持不变。 */
 static void rigi_destruct(void *object, const RigiTypeSheet *desc)
 {
     const char *base = (const char *)object;
     size_t cursor;
     uint32_t i;
-
-    rigi_gc_forget_candidate(object);
 
     if (desc != NULL && (desc->typeFlags & RIGI_TYPE_ARRAY) != 0)
     {
@@ -352,6 +418,14 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
     cursor = sizeof(RigiObjectHeader);
     rigi_dispose_check(object, desc);
     rigi_native_resources_destroy(object, desc);
+    if (rigi_handle_is_capability(object, desc))
+    {
+        /* 3b-β：capability 壳析构（唯一被设计的第二 release 路径，
+         * 裁定 #8）——壳计数减一 + 归零转移（普通期：全局归属直接
+         * 清理；属主归属投递释放消息），本体即放 */
+        rigi_handle_capability_release(object);
+        return;
+    }
     if (desc == NULL || desc->refMap == NULL)
     {
         rigi_track_free(object);
@@ -378,6 +452,18 @@ static void rigi_destruct(void *object, const RigiTypeSheet *desc)
     rigi_track_free(object);
 }
 
+/* 析构中间态 guard 包围（Phase 3d-1）：rigi_destruct 拆边到一半的图
+ * 不满足局部收集扫描的快照一致性（macrogc.c 3d-1 段），guard 期间
+ * 登记照做、触发延迟到析构外的下一次 release/alloc 检查。唯一调用点
+ * 为 release 终态路径（rigi_release_by_accounting 的 old==1 分支）；
+ * 析构级联（子 release → 子终态 → 递归）经计数天然嵌套。 */
+static void rigi_destruct_guarded(void *object, const RigiTypeSheet *desc)
+{
+    rigi_gc_local_guard_enter();
+    rigi_destruct(object, desc);
+    rigi_gc_local_guard_exit();
+}
+
 /* 基类字段偏移保持不变；派生对象也承担继承来的原生资源所有权。 */
 void rigi_native_resources_destroy(void *object, const RigiTypeSheet *desc)
 {
@@ -390,32 +476,75 @@ void rigi_native_resources_destroy(void *object, const RigiTypeSheet *desc)
     }
 }
 
-void rigi_release_local(void *object)
+/* local 会计 release（Phase 3d-1 非原子化 + 属主协作收集协议）：
+ * plain fetch_sub + PURPLE 终态快路径 + 非终态登记（per-协程候选账本，
+ * 全部收口在 rigi_gc_local_after_release）。与 rigi_gc_release_shared
+ * （pin-before-sub 原子协议）的对应关系：
+ *   - plain 减量：属主独占触碰（论证见 rigi_account_acquire_local）。
+ *   - 在册（PURPLE）：账本持 +1 ⟹ rc = U + 1（plain 减后 old = U）。
+ *     old==1 ⟺ 最后一次用户引用：摘除候选 + 归还账本 +1（rc 归 0）后
+ *     返回 1 由调用方终态析构——确定性释放语义（§22.2）同 macroGC 协
+ *     议。属主单线程无在飞 pin/并发终态，无需 macroGC 的进锁快路径。
+ *   - 非终态（old ≥ 2）：非 PURPLE 且 may-cycle → 登记进属主账本
+ *     （plain rc+1 账本引用；无并发窗口故无需 macroGC 的 pin 驻留），
+ *     随后债务阈值检查可能就地跑一轮属主收集。
+ *   - old==0：非在册终态（在册对象不可达：账本 +1 ⟹ 调 release 时
+ *     rc = U+1 ≥ 2），与账本零交互。 */
+static uint32_t rigi_account_release_local(void *object)
+{
+    RigiObjectHeader *h = (RigiObjectHeader *)object;
+    uint32_t before;
+    uint32_t after;
+    before = h->rc;
+    after = before - 1u;
+    h->rc = after;
+    /* 返回值约定与 rigi_gc_release_shared 完全一致：1 = 终态析构信号；
+     * 否则返回减前值（≥2 = 非终态）。绝不能把减后值当返回值透传——
+     * 减后值 ==1 的非终态对象（U=1）会被调用方误判终态析构（UAF）。 */
+    if (after == 0u)
+    {
+        /* 在册对象 after==0 不可达：在册 ⟹ rc = U + 1 ≥ 2（账本 +1）。
+         * 命中即不变量已被破坏（账本引用丢失），带病继续必是账本悬垂
+         * UAF——响亮失败（macroGC 的协议破坏同口径）。 */
+        if ((h->packedFlags & RIGI_GC_COLOR_MASK) == RIGI_GC_PURPLE)
+        {
+            fprintf(stderr,
+                "rigi_rt: local 会计在册候选计数归零（账本不变量破坏）\n");
+            abort();
+        }
+        return 1u; /* 非在册终态：账本零交互 */
+    }
+    return rigi_gc_local_after_release(object, after);
+}
+
+/* 按实例位分流的 release 体（两入口共用）：返回 1 = 终态，析构在
+ * region 内照旧执行 */
+static void rigi_release_by_accounting(void *object)
 {
     RigiObjectHeader *header = (RigiObjectHeader *)object;
-    rigi_region_enter();
+    uint32_t old;
     if (header != NULL)
     {
-        if (rigi_gc_release_shared(object) == 1)
+        old = rigi_pf_accounting(header) != 0
+            ? rigi_gc_release_shared(object)       /* shared 会计 */
+            : rigi_account_release_local(object);  /* local 会计 */
+        if (old == 1)
         {
-            rigi_destruct(object, header->typeId);
+            rigi_destruct_guarded(object, header->typeId);
         }
     }
+}
+
+void rigi_release_local(void *object)
+{
+    rigi_region_enter();
+    rigi_release_by_accounting(object);
     rigi_region_exit();
 }
 
 void rigi_release_shared(void *object)
 {
-    RigiObjectHeader *header = (RigiObjectHeader *)object;
-    uint32_t old;
     rigi_region_enter();
-    if (header != NULL)
-    {
-        old = rigi_gc_release_shared(object);
-        if (old == 1)
-        {
-            rigi_destruct(object, header->typeId);
-        }
-    }
+    rigi_release_by_accounting(object);
     rigi_region_exit();
 }

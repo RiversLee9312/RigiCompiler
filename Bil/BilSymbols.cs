@@ -41,6 +41,7 @@ namespace RigiCompiler.Bil
         Ext, Init, Native, Entrypoint,                    // §8.3/§8.4 成员
         Const, Var, Backing, Computed, Readable, Writable,
         CompilerGenerated, Override, Async, Unsafe,
+        NativeBorrow,                                     // 3b-δ1 借用返回（仅 native）
     }
 
     // §8.4 访问器类别（getter(FIELD)/setter(FIELD) 修饰符的二态）

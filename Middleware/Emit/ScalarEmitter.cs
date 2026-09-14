@@ -33,6 +33,13 @@ namespace RigiCompiler.Middleware.Emit
                                 isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv,
                                 inst.ExcTarget);
                         }
+                        // 整数取模（mod-3）：同一除零异常面；无 MIN/-1 abort
+                        // 臂（BuildSignedMod select 消毒后 srem 无 UB 面）
+                        else if (primitive.Kind is PrimitiveOpKind.IntSMod or PrimitiveOpKind.IntUMod)
+                        {
+                            session.Checks.EmitModGuard(session, builder, right,
+                                inst.ExcTarget);
+                        }
                         value = SelectPrimitive(builder, primitive.Kind, left, right);
                         break;
                     case RuntimeFaceBinding face:
@@ -102,10 +109,15 @@ namespace RigiCompiler.Middleware.Emit
                 PrimitiveOpKind.IntMul => builder.BuildMul(left, right, "mul"),
                 PrimitiveOpKind.IntSDiv => BuildSignedDiv(builder, left, right),
                 PrimitiveOpKind.IntUDiv => builder.BuildUDiv(left, right, "udiv"),
+                PrimitiveOpKind.IntSMod => BuildSignedMod(builder, left, right),
+                PrimitiveOpKind.IntUMod => builder.BuildURem(left, right, "urem"),
                 PrimitiveOpKind.FloatAdd => builder.BuildFAdd(left, right, "fadd"),
                 PrimitiveOpKind.FloatSub => builder.BuildFSub(left, right, "fsub"),
                 PrimitiveOpKind.FloatMul => builder.BuildFMul(left, right, "fmul"),
                 PrimitiveOpKind.FloatDiv => builder.BuildFDiv(left, right, "fdiv"),
+                // frem = IEEE 754 截断余数：模零得 NaN（无 guard，与
+                // FloatDiv 无除零检查同款）
+                PrimitiveOpKind.FloatMod => builder.BuildFRem(left, right, "frem"),
                 PrimitiveOpKind.LogicAnd => builder.BuildAnd(left, right, "and"),
                 PrimitiveOpKind.LogicOr => builder.BuildOr(left, right, "or"),
                 PrimitiveOpKind.BitAnd => builder.BuildAnd(left, right, "bitand"),
@@ -156,6 +168,23 @@ namespace RigiCompiler.Middleware.Emit
             var raw = builder.BuildSDiv(left, safeDivisor, "sdiv");
             var negated = builder.BuildSub(LLVMValueRef.CreateConstNull(left.TypeOf), left, "sdiv.neg");
             return builder.BuildSelect(isNegOne, negated, raw, "sdiv.wrap");
+        }
+
+        // 有符号取模（mod-3，VM 基准 x % ±1 == 0）：全位宽统一处理——
+        // divisor == -1 时消毒为 1，srem 永不命中 MIN/-1 UB，命中臂结果
+        // 恒 0 以 select 直接给出（与 VM 的「模 ±1 得 0」同值）。取模的
+        // 消毒形态与除法不同：div 是改取负（结果非零），mod 恒 0，且
+        // i64 同样走此路径——不引入 MIN/-1 abort 臂
+        private static LLVMValueRef BuildSignedMod(LLVMBuilderRef builder,
+            LLVMValueRef left, LLVMValueRef right)
+        {
+            var isNegOne = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, right,
+                LLVMValueRef.CreateConstAllOnes(right.TypeOf), "smod.negone");
+            var one = LLVMValueRef.CreateConstInt(right.TypeOf, 1, false);
+            var safeDivisor = builder.BuildSelect(isNegOne, one, right, "smod.safe");
+            var raw = builder.BuildSRem(left, safeDivisor, "srem");
+            return builder.BuildSelect(isNegOne,
+                LLVMValueRef.CreateConstNull(left.TypeOf), raw, "smod.wrap");
         }
 
         // 胖引用恒等：{typeid, payload} 双段各自相等取与（null 双段零天然

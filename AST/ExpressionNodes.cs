@@ -71,7 +71,7 @@ namespace RigiCompiler
     {
         [ChildAstNode] public ExpressionRootASTNode Left { get; }
         [ChildAstNode] public ExpressionRootASTNode Right { get; }
-        public string Operator;  // +, -, *, /, and, or, ==, !=, etc.
+        public string Operator;  // +, -, *, /, %, and, or, ==, !=, etc.
 
         public BinaryExpressionASTNode()
         {
@@ -82,13 +82,13 @@ namespace RigiCompiler
     }
 
     // 复合赋值表达式（SYNTAX.md §13.2）：a += b 从对应运算符自动推导
-    // （a = a + b 的语义糖）；全集 10 个：+= -= *= /= <<= >>= >>>= &= |= ^=（无 %=）。
+    // （a = a + b 的语义糖）；全集 11 个：+= -= *= /= %= <<= >>= >>>= &= |= ^=。
     // 节点本身是表达式（可出现在表达式位置；语句位置由 ExpressionStatement 包装）。
     // Operator 存推导出的基础运算符（+、<<、>>> 等，不含 =）。
     public class CompoundAssignmentExpressionASTNode : ExpressionASTNode
     {
         [ChildAstNode] public ExpressionRootASTNode Target { get; }  // 被赋值的左操作数
-        public string Operator;   // 基础运算符：+ - * / << >> >>> & | ^
+        public string Operator;   // 基础运算符：+ - * / % << >> >>> & | ^
         [ChildAstNode] public ExpressionRootASTNode Value { get; }   // 右操作数
 
         public CompoundAssignmentExpressionASTNode()

@@ -19,6 +19,13 @@ namespace RigiCompiler.Middleware.Emit
         void EmitDivGuard(ModuleBuilder.Session session, LLVMBuilderRef builder,
             LLVMValueRef dividend, LLVMValueRef divisor, bool isSigned,
             MirBlock? excTarget);
+
+        // 整数取模前检查（mod-3）：仅 divisor==0 抛 DividedByZeroException
+        //（与除法同一异常面）；刻意无 i64 MIN/-1 abort 臂——取模无溢出
+        // UB 面（x % ±1 == 0，ScalarEmitter.BuildSignedMod 以 select 消毒
+        // 消 srem 的 MIN/-1 UB），与 VM 的「模 ±1 得 0」行为一致
+        void EmitModGuard(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            LLVMValueRef divisor, MirBlock? excTarget);
     }
 
     /// <summary>
@@ -53,6 +60,18 @@ namespace RigiCompiler.Middleware.Emit
                     LLVMValueRef.CreateConstAllOnes(divisor.TypeOf), "div.negone"),
                 "div.ovf");
             EmitAbortGuard(session, builder, isOverflow, RuntimeFaces.AbortArithmeticOverflow);
+        }
+
+        // mod 与 div 同一异常面：divisor == 0 → 抛 DividedByZeroException；
+        // 不带 i64 MIN/-1 abort 臂（取模无溢出 UB 面，BuildSignedMod 已
+        // select 消毒）；EmitThrowGuard 落续行块后自然衔接 srem/urem
+        public void EmitModGuard(ModuleBuilder.Session session, LLVMBuilderRef builder,
+            LLVMValueRef divisor, MirBlock? excTarget)
+        {
+            EmitThrowGuard(session, builder,
+                builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, divisor,
+                    LLVMValueRef.CreateConstNull(divisor.TypeOf), "mod.zero"),
+                excTarget);
         }
 
         // 条件命中 → 抛 DividedByZeroException（无参 init）→ 沿异常边

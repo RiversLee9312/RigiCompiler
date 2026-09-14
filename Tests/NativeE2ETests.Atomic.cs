@@ -107,5 +107,79 @@ namespace RigiCompiler.Tests
                 return 0
             }
             """;
+
+        // review-20260910 Phase 2.5：AtomicStruct.mutate（一步式安全 RMW）。
+        // aurora 踩坑场景回归：store(load()+1) 的读-改-写跨 AtomicStruct
+        // 异步 Mutex 挂起点会丢更新；mutate 持锁完成整个 RMW，多协程并发
+        // 自增的终值必须精确等于 任务数×次数（确定性断言，不是概率对拍）。
+        private const string AtomicStructMutateConcurrentSource = """
+            import core.collections.*
+            import core.coroutine.*
+
+            pub func main(): i32 {
+                const counter = new AtomicStruct\<i64>(0L)
+                const rounds = 50
+                const tasks = arrayOf\<Task>(4)
+                var i = 0
+                while (i < 4) {
+                    const t = new Task(func{async () -> {
+                        var r = 0
+                        while (r < rounds) {
+                            counter.mutate{(v: i64): i64 -> (v + 1L)}
+                            r += 1
+                        }
+                    }})
+                    t.run(new ComputeExecutor())
+                    tasks[i] = t
+                    i += 1
+                }
+                i = 0
+                while (i < 4) {
+                    await (tasks[i] as Task)
+                    i += 1
+                }
+                core.io.Console.println(counter.load().toString())
+                // 退出码绑定精确值：对拍一致不能排除两宿主同样丢更新
+                if (counter.load() == 200L) {
+                    return 0
+                }
+                return 1
+            }
+            """;
+
+        // trailing lambda 形态（§5.3）：mutate{...} 紧贴调用；与显式
+        // func{...} 实参混用，确认两种书写走同一私有 Atomic.mutate 转发。
+        private const string AtomicStructMutateTrailingLambdaSource = """
+            pub func main(): i32 {
+                const c = new AtomicStruct\<i64>(10L)
+                c.mutate{(v: i64): i64 -> (v + 1L)}
+                core.io.Console.println(c.load().toString())
+                c.mutate{(v: i64): i64 -> (v * 2L)}
+                core.io.Console.println(c.load().toString())
+                c.mutate(func{ (old: i64): i64 -> old + 5L })
+                core.io.Console.println(c.load().toString())
+                return 0
+            }
+            """;
+
+        // 回调抛错：私有 Atomic.mutate 仅在回调成功返回后替换 Handle，
+        // 异常经 finally 释放锁并保留旧值——门面只放行，不新造规则；
+        // 抛错后再 mutate 确认锁可重取、计数继续有效。
+        private const string AtomicStructMutateThrowKeepsOldValueSource = """
+            pub func main(): i32 {
+                const s = new AtomicStruct\<i64>(7L)
+                try {
+                    s.mutate(func{ (old: i64): i64 -> {
+                        throw new core.RuntimeException("callback failed")
+                    }})
+                } catch(e: core.RuntimeException) {
+                    core.io.Console.println("caught")
+                }
+                core.io.Console.println(s.load().toString())
+                s.mutate{(v: i64): i64 -> (v + 1L)}
+                core.io.Console.println(s.load().toString())
+                return 0
+            }
+            """;
     }
 }

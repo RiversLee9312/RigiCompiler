@@ -169,8 +169,7 @@ namespace RigiCompiler.Middleware.Emit
                     BoxEmitter.BoxFromSlot(session, builder, writeback.TempSlot,
                         writeback.ValueType));
             }
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType, callResult, result,
                 excTarget);
         }
@@ -219,8 +218,7 @@ namespace RigiCompiler.Middleware.Emit
                     LLVMValueRef.CreateConstNull(PointerType()), "call.has.pending"),
                 fail, cont);
             builder.PositionAtEnd(fail);
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             builder.BuildBr(blocks[excTarget.Id]);
             builder.PositionAtEnd(cont);
         }

@@ -104,6 +104,7 @@ namespace RigiCompiler.Tests
             ("TestMethodWrapperNotEqualsViaOprEqualsDirectModule", TestMethodWrapperNotEqualsViaOprEqualsDirectModule),
             ("TestExceptionGetMessage", TestExceptionGetMessage),
             ("TestIntegerDivisionByZero", TestIntegerDivisionByZero),
+            ("TestIntegerModulo", TestIntegerModulo),
             ("TestLambdaMethodWrapperEndToEnd", TestLambdaMethodWrapperEndToEnd),
             ("TestIfElse", TestIfElse),
             ("TestWhileAndDoWhile", TestWhileAndDoWhile),
@@ -125,6 +126,7 @@ namespace RigiCompiler.Tests
             ("TestAwaitExceptionAndCompleted", TestAwaitExceptionAndCompleted),
             ("TestForkJoinAndFireAndForget", TestForkJoinAndFireAndForget),
             ("TestYieldForms", TestYieldForms),
+            ("TestPollingProbeResumeSemantics", TestPollingProbeResumeSemantics),
             ("TestConcurrentPrintLines", TestConcurrentPrintLines),
             ("TestAwaitThroughTryFinally", TestAwaitThroughTryFinally),
             ("TestCoroutineStressForkJoin", TestCoroutineStressForkJoin),
@@ -2462,6 +2464,231 @@ namespace RigiCompiler.Tests
                 nan.ReturnValue?.ToStandardText() ?? "<null>");
         }
 
+        // 整数/浮点取模（§11.2 mod）：①-⑧ 按本文件头「frontend 不可达
+        // 形态用直接构造的 BilModule」惯例驱动 VM（保留作 VM 层直测）；
+        // ⑨-⑪ frontend % 运算符已通，走源码全管线端到端。覆盖：
+        // ① i32 模零被 try/catch 捕获（core::DividedByZeroException，与
+        // 除零同异常同消息）；② 未捕获传播的异常对象与顶层格式；③ u64
+        // 正常取模；④ i64 负数操作数（结果符号随被除数）；⑤ i64 MIN % -1
+        // = 0；⑥ f64 模零得 NaN 不抛；⑦ f64 正常取模；⑧ mod 拼写经
+        // BilWriter/BilReader 往返可回读执行；⑨ 源码 a % b（i32）；
+        // ⑩ 源码 a %= b 复合赋值；⑪ 源码 try/catch 捕获模零。
+        private static void TestIntegerModulo()
+        {
+            // ① i32 模零：try/catch 捕获（catch-table 唯一条目即
+            // core::DividedByZeroException，命中 handler 即证明类型匹配）
+            var caughtModule = ModModuleSkeleton(".i32", out var caughtMain, out var caughtEntry);
+            caughtModule.Resources.Add(new BilScalarResource("R_A", BilScalarType.I32, "10"));
+            caughtModule.Resources.Add(new BilScalarResource("R_Z", BilScalarType.I32, "0"));
+            caughtModule.Resources.Add(new BilScalarResource("R_7", BilScalarType.I32, "7"));
+            var caughtBody = new BilBlock("try0-body");
+            var caughtHandler = new BilBlock("try0-catch0");
+            caughtMain.Blocks.Add(caughtBody);
+            caughtMain.Blocks.Add(caughtHandler);
+            var caughtTable = new BilCatchTableResource("R_CT",
+                new[] { new BilCatchEntry(
+                    new BilTypeOperand("core::DividedByZeroException"), caughtHandler) });
+            caughtModule.Resources.Add(caughtTable);
+            caughtEntry.Instructions.Add(new LoadInstruction(
+                caughtModule.Resources[0], BilOp.Var("a")));
+            caughtEntry.Instructions.Add(new LoadInstruction(
+                caughtModule.Resources[1], BilOp.Var("b")));
+            caughtEntry.Instructions.Add(new TryInstruction(caughtBody, BilOp.Var("slot"),
+                caughtTable, null, BilOp.Var("b0")));
+            caughtEntry.Instructions.Add(new RetInstruction(BilOp.Var("a")));
+            caughtBody.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            caughtHandler.Instructions.Add(new LoadInstruction(
+                caughtModule.Resources[2], BilOp.Var("r")));
+            caughtHandler.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var caught = BilVm.Run(caughtModule);
+            CheckOk("i32 模零被 try/catch 捕获", caught);
+            CheckI32("DividedByZeroException catch 返回 7", caught, 7);
+
+            // ② i32 模零未捕获：异常对象沿帧链传播（与除零同型同消息）
+            var uncaughtModule = ModModuleSkeleton(".i32", out var uncaughtMain, out var uncaughtEntry);
+            uncaughtModule.Resources.Add(new BilScalarResource("R_A", BilScalarType.I32, "10"));
+            uncaughtModule.Resources.Add(new BilScalarResource("R_Z", BilScalarType.I32, "0"));
+            uncaughtEntry.Instructions.Add(new LoadInstruction(
+                uncaughtModule.Resources[0], BilOp.Var("a")));
+            uncaughtEntry.Instructions.Add(new LoadInstruction(
+                uncaughtModule.Resources[1], BilOp.Var("b")));
+            uncaughtEntry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            uncaughtEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var uncaught = BilVm.Run(uncaughtModule);
+            TestHarness.CheckTrue("未捕获模零抛 DividedByZeroException",
+                uncaught.Exception?.ExceptionObject is VmObject divObj
+                && divObj.TypeRef.Contains("DividedByZeroException")
+                && uncaught.Exception.Message.Contains("整数除以零"),
+                uncaught.Exception?.ToString() ?? "<null>");
+            TestHarness.Check("未捕获模零顶层格式",
+                uncaught.Exception?.Message ?? "",
+                "core::DividedByZeroException: 整数除以零");
+
+            // ③ u64 正常取模：10 % 3 = 1
+            var u64Module = ModModuleSkeleton(".u64", out var u64Main, out var u64Entry);
+            u64Module.Resources.Add(new BilScalarResource("R_UA", BilScalarType.U64, "10"));
+            u64Module.Resources.Add(new BilScalarResource("R_UB", BilScalarType.U64, "3"));
+            u64Entry.Instructions.Add(new LoadInstruction(
+                u64Module.Resources[0], BilOp.Var("a")));
+            u64Entry.Instructions.Add(new LoadInstruction(
+                u64Module.Resources[1], BilOp.Var("b")));
+            u64Entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            u64Entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var u64 = BilVm.Run(u64Module);
+            CheckOk("u64 取模无异常", u64);
+            TestHarness.CheckTrue("u64 10 % 3 = 1",
+                u64.ReturnValue is VmU64 u && u.Value == 1UL,
+                u64.ReturnValue?.ToStandardText() ?? "<null>");
+
+            // ④ i64 负数操作数：截断取余符号随被除数（-7 % 3 = -1、
+            // 7 % -3 = 1，同 C# %）
+            CheckOk("i64 -7 % 3 无异常", RunI64Modulo("-7", "3", out var negLeft));
+            TestHarness.CheckTrue("i64 -7 % 3 = -1（符号随被除数）",
+                negLeft is VmI64 negL && negL.Value == -1,
+                negLeft?.ToStandardText() ?? "<null>");
+            CheckOk("i64 7 % -3 无异常", RunI64Modulo("7", "-3", out var negRight));
+            TestHarness.CheckTrue("i64 7 % -3 = 1（符号随被除数）",
+                negRight is VmI64 negR && negR.Value == 1,
+                negRight?.ToStandardText() ?? "<null>");
+
+            // ⑤ i64 MIN % -1 = 0（C# long % 天然得 0，无回绕陷阱）
+            CheckOk("i64 MIN % -1 无异常", RunI64Modulo("-9223372036854775808", "-1", out var minMod));
+            TestHarness.CheckTrue("i64 MIN % -1 = 0",
+                minMod is VmI64 zero && zero.Value == 0,
+                minMod?.ToStandardText() ?? "<null>");
+
+            // ⑥ f64 模零：IEEE 754 截断余数得 NaN，不抛
+            var nanModule = ModModuleSkeleton(".f64", out var nanMain, out var nanEntry);
+            nanModule.Resources.Add(new BilScalarResource("R_FA", BilScalarType.F64, "7.5"));
+            nanModule.Resources.Add(new BilScalarResource("R_FZ", BilScalarType.F64, "0.0"));
+            nanEntry.Instructions.Add(new LoadInstruction(
+                nanModule.Resources[0], BilOp.Var("a")));
+            nanEntry.Instructions.Add(new LoadInstruction(
+                nanModule.Resources[1], BilOp.Var("b")));
+            nanEntry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            nanEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var f64Nan = BilVm.Run(nanModule);
+            CheckOk("f64 模零不抛", f64Nan);
+            TestHarness.CheckTrue("f64 模零得 NaN",
+                f64Nan.ReturnValue is VmF64 nanValue && double.IsNaN(nanValue.Value),
+                f64Nan.ReturnValue?.ToStandardText() ?? "<null>");
+
+            // ⑦ f64 正常取模：7.5 % 2.0 = 1.5
+            var f64Module = ModModuleSkeleton(".f64", out var f64Main, out var f64Entry);
+            f64Module.Resources.Add(new BilScalarResource("R_FA", BilScalarType.F64, "7.5"));
+            f64Module.Resources.Add(new BilScalarResource("R_FB", BilScalarType.F64, "2.0"));
+            f64Entry.Instructions.Add(new LoadInstruction(
+                f64Module.Resources[0], BilOp.Var("a")));
+            f64Entry.Instructions.Add(new LoadInstruction(
+                f64Module.Resources[1], BilOp.Var("b")));
+            f64Entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            f64Entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var f64 = BilVm.Run(f64Module);
+            CheckOk("f64 取模无异常", f64);
+            TestHarness.CheckTrue("f64 7.5 % 2.0 = 1.5",
+                f64.ReturnValue is VmF64 remainder && remainder.Value == 1.5,
+                f64.ReturnValue?.ToStandardText() ?? "<null>");
+
+            // ⑧ mod 拼写往返：BilWriter 文本经 BilReader 回读后 VM 同值
+            var u64Written = BilWriter.Write(u64Module);
+            var reparsed = BilReader.Read(u64Written);
+            TestHarness.CheckTrue("mod 指令出现在 BIL 文本",
+                u64Written.Contains("mod "), u64Written);
+            var roundtrip = BilVm.Run(reparsed);
+            CheckOk("mod 模块回读 VM 运行", roundtrip);
+            TestHarness.CheckTrue("回读后 u64 10 % 3 = 1",
+                roundtrip.ReturnValue is VmU64 rtValue && rtValue.Value == 1UL,
+                roundtrip.ReturnValue?.ToStandardText() ?? "<null>");
+
+            // ⑨ 源码级端到端：a % b（i32 正常值）经 Parser → Binder →
+            // Lowering → BIL mod 全管线
+            var srcMod = Run(
+                "pub func main(): i32 {\n" +
+                "    var a: i32 = 10\n" +
+                "    var b: i32 = 3\n" +
+                "    return (a % b)\n" +
+                "}\n");
+            CheckOk("源码 i32 取模", srcMod);
+            CheckI32("源码 i32 10 % 3 = 1", srcMod, 1);
+
+            // ⑩ 源码级 %= 复合赋值（脱糖 a = a % b）
+            var srcCompound = Run(
+                "pub func main(): i32 {\n" +
+                "    var a: i32 = 10\n" +
+                "    var b: i32 = 3\n" +
+                "    a %= b\n" +
+                "    return a\n" +
+                "}\n");
+            CheckOk("源码 %= 复合赋值", srcCompound);
+            CheckI32("源码 %= 后 a = 1", srcCompound, 1);
+
+            // ⑪ 源码级模零捕获：与除零同异常同消息，try/catch 可捕获
+            var srcZero = Run(
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        var a: i32 = 10\n" +
+                "        var b: i32 = 0\n" +
+                "        var c = (a % b)\n" +
+                "        return 0\n" +
+                "    } catch (e: core.DividedByZeroException) {\n" +
+                "        core.io.Console.println(e.getMessage())\n" +
+                "        return 7\n" +
+                "    }\n" +
+                "}\n");
+            CheckOk("源码 i32 模零被 catch", srcZero);
+            CheckI32("源码模零 catch 返回 7", srcZero, 7);
+            TestHarness.Check("源码模零 getMessage stdout", srcZero.Stdout, "整数除以零\n");
+        }
+
+        // mod i64 用例辅助：left % right 的独立手工模块，返回值经 result
+        // 传出（VmValue 可空——异常时为 null）
+        private static BilVmResult RunI64Modulo(string left, string right, out VmValue? result)
+        {
+            var module = ModModuleSkeleton(".i64", out var main, out var entry);
+            module.Resources.Add(new BilScalarResource("R_LA", BilScalarType.I64, left));
+            module.Resources.Add(new BilScalarResource("R_LB", BilScalarType.I64, right));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[0], BilOp.Var("a")));
+            entry.Instructions.Add(new LoadInstruction(module.Resources[1], BilOp.Var("b")));
+            entry.Instructions.Add(new BinaryIntrinsicInstruction(BilBinaryOp.Mod,
+                BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
+            entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
+            var run = BilVm.Run(module);
+            result = run.ReturnValue;
+            return run;
+        }
+
+        // mod 用例手工模块骨架：main()@.t（entrypoint）+ 变量 a/b/r（类型
+        // t，.return 同型）+ slot(.any)/b0(.breakid)（try 用例的异常槽与
+        // break capability）；资源由各用例自行追加
+        private static BilModule ModModuleSkeleton(string typeRef,
+            out BilFunction main, out BilBlock entry)
+        {
+            var module = new BilModule();
+            module.LocalSymbols.Add(new BilSimpleMemberDeclaration(BilMemberKind.Method,
+                "$main()@" + typeRef,
+                new BilModifier[]
+                {
+                    new BilAccessibilityModifier(BilAccessibility.Public),
+                    new BilKeywordModifier(BilKeyword.Entrypoint),
+                }));
+            main = new BilFunction("$main()@" + typeRef);
+            main.Args.Add(new BilArgDeclaration(".return", typeRef));
+            main.Vars.Add(new BilVarDeclaration(typeRef, "a"));
+            main.Vars.Add(new BilVarDeclaration(typeRef, "b"));
+            main.Vars.Add(new BilVarDeclaration(typeRef, "r"));
+            main.Vars.Add(new BilVarDeclaration(".any", "slot"));
+            main.Vars.Add(new BilVarDeclaration(".breakid", "b0"));
+            entry = new BilBlock("entry", BilBlockModifier.Entrypoint);
+            main.Blocks.Add(entry);
+            module.Functions.Add(main);
+            return module;
+        }
+
         // lambda Method wrapper VM 端到端：specific 环绕 + 改返回值；状态
         // 持久；捕获 lambda 共存；双 Method wrapper 顺序；init 实参形态
         //（实参为外层局部，验证透传）。
@@ -4163,6 +4390,120 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("yield PollingAlarm", poll);
             CheckI32("翻牌后恢复", poll, 1);
+        }
+
+        // Phase 2.6（RUNTIME §19.2 语义纠偏）：isReady 是普通 Rigi 代码，
+        // 允许 await/yield——探测挂起即继续等待，唤醒后在等待协程自己的
+        // 恢复块内完成探测；返回 false 才退回等待，true 就绪续行；探测
+        // 抛出视为发生在 yield 点（词法 try/catch 可捕获）。修复前毛边：
+        // await 唤醒绕过就绪判定（false 也续行、_pollingAlarm 残留）、
+        // 裸 yield 唤醒重复压帧（isReady 副作用翻倍、旧帧滞留）。
+        private static void TestPollingProbeResumeSemantics()
+        {
+            // ① tainted isReady（经 AtomicStruct.load → Atomic.load 的
+            // await mutex.acquire，探测中途真实挂起）：返回 false 必须退回
+            // 等待，第 3 次探测才就绪续行——修复前 1 次探测即错误续行
+            var slow = Run(
+                "import core.coroutine.*\n" +
+                "pub shared class SlowPoll : PollingAlarm {\n" +
+                "    pub var probes: i64 = 0L\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        probes = probes + 1L\n" +
+                "        const t = new core.AtomicStruct\\<i64>(0L)\n" +
+                "        const z = t.load()\n" +
+                "        return probes >= 3L\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const s = new SlowPoll()\n" +
+                "    yield s\n" +
+                "    if (s.probes == 3L) { return 7 }\n" +
+                "    return 1\n" +
+                "}\n");
+            CheckOk("tainted isReady 探测挂起恢复链", slow);
+            CheckI32("探测 false 退回等待、第 3 次就绪（probes==3）", slow, 7);
+
+            // ② 裸 yield in isReady：挂起即继续等待，唤醒后续跑滞留探测帧
+            // 至完成——修复前重复压帧，isReady 被执行两次
+            var yieldOnce = Run(
+                "import core.coroutine.*\n" +
+                "pub shared class YieldOnce : PollingAlarm {\n" +
+                "    pub var probes: i64 = 0L\n" +
+                "    pub var first: bool = true\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        probes = probes + 1L\n" +
+                "        if (first) {\n" +
+                "            first = false\n" +
+                "            yield\n" +
+                "        }\n" +
+                "        return true\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const y = new YieldOnce()\n" +
+                "    yield y\n" +
+                "    if (y.probes == 1L) { return 5 }\n" +
+                "    return 2\n" +
+                "}\n");
+            CheckOk("裸 yield in isReady 恢复链", yieldOnce);
+            CheckI32("滞留帧续跑、isReady 只执行一次（probes==1）", yieldOnce, 5);
+
+            // ③ 探测挂起后中途抛出：失败点在 yield 点——词法 try/catch
+            // 可捕获；捕获后轮询状态清理，协程沿 catch 续行
+            var boom = Run(
+                "import core.coroutine.*\n" +
+                "pub shared class BoomPoll : PollingAlarm {\n" +
+                "    pub var probes: i64 = 0L\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        probes = probes + 1L\n" +
+                "        const t = new core.AtomicStruct\\<i64>(0L)\n" +
+                "        const z = t.load()\n" +
+                "        if (probes >= 2L) {\n" +
+                "            throw new core.RuntimeException(\"boom-probe\")\n" +
+                "        }\n" +
+                "        return false\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const b = new BoomPoll()\n" +
+                "    var r: i32 = 0\n" +
+                "    try {\n" +
+                "        yield b\n" +
+                "        r = 1\n" +
+                "    } catch (e: core.RuntimeException) {\n" +
+                "        r = 2\n" +
+                "    }\n" +
+                "    if (b.probes == 2L) { r = r + 10 }\n" +
+                "    return r\n" +
+                "}\n");
+            CheckOk("探测中途异常经挂起恢复后抛出", boom);
+            CheckI32("异常落 yield 点被 catch（第 2 次探测，返回 12）", boom, 12);
+
+            // ④ untainted isReady（纯同步）：廉价路径语义不变——首次
+            // false 同样退回等待，翻牌后下次探测就绪（探测 ≥ 2 次）
+            var tally = Run(
+                "import core.coroutine.*\n" +
+                "pub shared class TallyPoll : PollingAlarm {\n" +
+                "    pub var probes: i64 = 0L\n" +
+                "    pub var ready: bool = false\n" +
+                "    pub override func isReady(): bool {\n" +
+                "        probes = probes + 1L\n" +
+                "        return ready\n" +
+                "    }\n" +
+                "}\n" +
+                "async func armTally(t: TallyPoll) {\n" +
+                "    yield\n" +
+                "    t.ready = true\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    const t = new TallyPoll()\n" +
+                "    armTally(t)\n" +
+                "    yield t\n" +
+                "    if (t.probes >= 2L) { return 9 }\n" +
+                "    return 3\n" +
+                "}\n");
+            CheckOk("untainted isReady 同步探测", tally);
+            CheckI32("同步探测 false 退回等待、翻牌后就绪（probes>=2）", tally, 9);
         }
 
         private static void TestConcurrentPrintLines()

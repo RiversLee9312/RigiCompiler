@@ -11,8 +11,8 @@ namespace RigiCompiler.Middleware.Passes
 {
     /// <summary>
     /// 协程状态机改造（MW11a 棒2 起，MIDDLEWARE_ARCHITECTURE §6 /
-    /// ASYNC_LOWERING_DESIGN §3.1）：对每个 IsAsync fn（含无挂起点的
-    /// async fn，统一处理）：
+    /// SEMANTIC_ARCHITECTURE §7.2，原 ASYNC_LOWERING_DESIGN §3.1）：对每个
+    /// IsAsync fn（含无挂起点的 async fn，统一处理）：
     /// ① 活性分析——以 MirAwait/MirYieldBare/MirYieldAlarm/Mutex.enter
     ///    为挂起点，反向数据流求各挂起点恢复后仍活跃的具名局部；类级
     ///    .generic.* 局部恒视为活跃；参数全量进 frame；yield-alarm 的
@@ -529,44 +529,12 @@ namespace RigiCompiler.Middleware.Passes
                 }
             }
             RejectSyntheticSpineTainted(context, mir, tainted);
-            RejectTaintedPollingIsReady(context, mir, tainted);
+            // Phase 2.6（§19.2 语义纠偏）：PollingAlarm.isReady 允许含挂起
+            // 点——撤销原 #08 止血拒绝（RejectTaintedPollingIsReady，76e304c）。
+            // tainted 探测不再走 $mw.poll_probe 同步虚派发（vtable 槽指向
+            // ReplaceWithTrap 陷阱的旧风险），改经恢复块站点协议臂下钻
+            //（PreparePollProbeSites / EmitPollGate 双路径）
             return tainted;
-        }
-
-        // #08：PollingAlarm.isReady 是 §19.2 同步探测方法——native 轮询由
-        // 合成 fn $mw.poll_probe 发普通 MirCall 虚派发（EnsurePollProbe），
-        // 恢复闸无泵可等。tainted 实现会被 split 成状态机、原符号体变
-        // MirUnreachable 陷阱（ReplaceWithTrap），而陷阱 fn 建于本分析
-        // 之后、vtable 填槽仍指向它——轮询虚派发正中陷阱即恢复闸时段
-        // 错误（静默 UB）。split 前把该形态升级为响亮编译错误；用户侧
-        // 改写路径是 EventAlarm + signal()
-        private static void RejectTaintedPollingIsReady(MwContext context, MirModule mir,
-            HashSet<string> tainted)
-        {
-            foreach (var fn in mir.Functions)
-            {
-                if (!tainted.Contains(fn.Symbol.Canonical)
-                    || fn.Symbol.SignatureKey != "isReady()")
-                {
-                    continue;
-                }
-                for (var owner = fn.Symbol.Owner; owner != null;)
-                {
-                    if (owner.Canonical == PollingAlarmCanonical)
-                    {
-                        throw new MwNotSupportedException(
-                            "暂不支持含挂起点的 PollingAlarm.isReady override："
-                            + "PollingAlarm.isReady 不允许含挂起点（§19.2 同步探测方法），"
-                            + "native 轮询探测为同步虚派发、无恢复泵；"
-                            + "请改用 EventAlarm + signal(): " + fn.Symbol.Canonical);
-                    }
-                    owner = owner.Declaration.ExtendsType is { } extendsRef
-                        ? context.Symbols.FindTypeByRef(
-                            BilVerificationContext.StripTypeArguments(
-                                MwTypeKey.Normalize(extendsRef)))
-                        : null;
-                }
-            }
         }
 
         // R3：合成入口脊柱直调站点（非 MIR、不可协议化）的 taint 补闸。
@@ -1127,6 +1095,31 @@ namespace RigiCompiler.Middleware.Passes
             internal InitSiteInfo? InitSite;
             // R2-c：new.indirect × tainted class init 的构造挂起点
             internal IndirectInitSiteInfo? IndirectInit;
+            // Phase 2.6：PollingAlarm 探测站点（闭包内存在 tainted isReady
+            // 实现时非空）——探测经恢复块站点协议臂下钻，支持 isReady
+            // 中途挂起；全 untainted 闭包为 null（$mw.poll_probe 廉价路径）
+            internal PollProbeSiteInfo? ProbeSite;
+        }
+
+        // Phase 2.6：yield-alarm 探测站点协议信息（PreparePollProbeSites
+        // 回填；镜像 VirtualSiteInfo 的臂结构，站点固定为 isReady(alarm)
+        // 单参虚派发）。ProbeState 是探测挂起子状态：探测 fn（isReady
+        // 状态机）中途挂起时本层 frame 写入该 state，重发布恢复走专用
+        // 恢复块直落探测调用块下钻——区别于「未就绪退回等待后重排」
+        // 的再次首探（state 保持 N 重入 poll gate）
+        private sealed class PollProbeSiteInfo
+        {
+            internal int ProbeState;
+            internal string AlarmSlot = "";   // 探测帧接收者（alarm 槽，恒活跃）
+            // tainted isReady 实现臂（InheritanceDepth 深→浅；每实现
+            // 一套 CallSiteInfo，TypeRefs 为臂 type.is 目标集，Depth 为
+            // 排序键——排完序后仅作占位）
+            internal List<(CallSiteInfo Impl, List<string> TypeRefs, int Depth)>
+                Arms = new();
+            // untainted 联合臂 type.is 目标集（全 tainted 闭包为空——
+            // 命中走 $mw.poll_probe 同步廉价路径；分流 miss = 闭包外
+            // 类型，运行期不可达）
+            internal List<string> UntaintedTypeRefs = new();
         }
 
         // R2-c：new.indirect × tainted class init 的构造点协议信息。
@@ -1551,6 +1544,20 @@ namespace RigiCompiler.Middleware.Passes
                         }
                     }
                 }
+                // Phase 2.6：探测站点各 tainted isReady 实现的 callee
+                // frame 槽恒活跃——探测挂起后恢复块重回探测调用块再下钻
+                //（frame 从本层 frame 的探测槽恢复）；alarm 槽已由上方
+                // yield-alarm 段保证
+                if (point.ProbeSite != null)
+                {
+                    foreach (var arm in point.ProbeSite.Arms)
+                    {
+                        if (!point.LiveAfter.Contains(arm.Impl.CalleeLocal))
+                        {
+                            point.LiveAfter.Add(arm.Impl.CalleeLocal);
+                        }
+                    }
+                }
             }
         }
 
@@ -1827,6 +1834,9 @@ namespace RigiCompiler.Middleware.Passes
             PrepareVirtualCallSites(context, mir, fn, points, tainted);
             // R2-c：new.indirect 挂起点建精确 sheet 臂协议信息（同理）
             PrepareIndirectInitSites(context, mir, fn, points, tainted);
+            // Phase 2.6：yield-alarm 探测站点建臂（闭包内存在 tainted
+            // isReady 实现时）——探测 callee frame 槽同理先入 fn.Locals
+            PreparePollProbeSites(context, mir, fn, points, tainted);
             AnalyzeLiveness(fn, points);
 
             // 保存槽集 = 全部参数 ∪ 类级 .generic.* 局部（恒活跃）∪ 各
@@ -2146,6 +2156,90 @@ namespace RigiCompiler.Middleware.Passes
                     throw new CompilerInternalException(
                         "虚派发挂起点闭包内无 tainted 实现: " + target.Canonical);
                 }
+            }
+        }
+
+        // Phase 2.6：yield-alarm 探测站点建臂（PrepareSplit 内、活性分析
+        // 之前——探测 callee frame 槽须进 fn.Locals 才被保存槽集收编）。
+        // §19.2 语义纠偏：isReady 是普通 Rigi 代码、允许 await/yield——
+        // 闭包内存在 tainted 实现时探测改经恢复块站点协议下钻（探测中途
+        // 允许挂起、未就绪退回等待）；全 untainted 闭包保持 $mw.poll_probe
+        // 同步虚派发廉价路径（ProbeSite 置空）。tainted 实现的 isReady 由
+        // 主流程阶段 1 预注册 frame/resume 符号——本方法先于一切 resume
+        // 体合成执行，递归安全（PrepareVirtualCallSites 同口径）
+        private void PreparePollProbeSites(MwContext context, MirModule mir,
+            MirFunction fn, List<SuspensionPoint> points, HashSet<string> tainted)
+        {
+            var isReady = context.Symbols.FindMember(PollProbeIsReadyCanonical)
+                ?? throw new CompilerInternalException(
+                    "stdlib PollingAlarm.isReady 符号缺失: " + PollProbeIsReadyCanonical);
+            var probeStateBase = points.Count > 0 ? points.Max(p => p.State) : 0;
+            foreach (var point in points)
+            {
+                if (point.Inst is not MirYieldAlarm yieldAlarm)
+                {
+                    continue;
+                }
+                var pairs = ClosurePairsOf(context, isReady, operatorDispatch: false);
+                var site = new PollProbeSiteInfo
+                {
+                    AlarmSlot = yieldAlarm.AlarmSlot,
+                };
+                var implEntries = new Dictionary<string, CallSiteInfo>(
+                    System.StringComparer.Ordinal);
+                foreach (var (classPlan, implCanonical) in pairs)
+                {
+                    if (!tainted.Contains(implCanonical))
+                    {
+                        // untainted 联合臂 type.is 目标集（R2-a 单臂多
+                        // 目标口径：模板键 + 闭合构造 sheet 全收）
+                        site.UntaintedTypeRefs.AddRange(ArmTypeRefsOf(context, classPlan));
+                        continue;
+                    }
+                    if (implEntries.ContainsKey(implCanonical))
+                    {
+                        continue;
+                    }
+                    var callee = mir.Functions.FirstOrDefault(f =>
+                        f.Symbol.Canonical == implCanonical)
+                        ?? throw new CompilerInternalException(
+                            "tainted isReady 实现不在模块函数表: " + implCanonical);
+                    var frameCanonical = SyntheticTypePlanner.FrameCanonicalOf(
+                        implCanonical);
+                    var calleeLocal = "$mw.probe.callee." + point.State + "."
+                        + implEntries.Count;
+                    fn.AddLocal(new MirLocal(calleeLocal, MirType.Of(frameCanonical)));
+                    var entry = new CallSiteInfo
+                    {
+                        Callee = callee,
+                        CalleeLocal = calleeLocal,
+                        CalleeFrameCanonical = frameCanonical,
+                        ResumeSymbol = ProxyBakeSupport.SyntheticMember(
+                            "$mw.resume." + implCanonical, owner: null),
+                        // isReady 恒返回 bool（非 void）——$mw.result 字段
+                        // 由 PrepareSplit plain 分支追加
+                        ResultFieldSymbol = SyntheticTypePlanner.FrameFieldSymbol(
+                            frameCanonical, ResultSlotName,
+                            callee.ReturnType.Canonical),
+                    };
+                    // 落参：isReady 实例方法单参 .this = alarm 槽
+                    PlanArgDrops(context, fn, entry, callee,
+                        new MirOperand[] { new MirLocalOperand(site.AlarmSlot) },
+                        hostConstructedRef: null, runtimeTypeIdReceiver: null);
+                    implEntries.Add(implCanonical, entry);
+                    site.Arms.Add((entry, ArmTypeRefsOf(context, classPlan),
+                        DepthOf(classPlan)));
+                }
+                if (site.Arms.Count == 0)
+                {
+                    // 闭包内无 tainted 实现：保持廉价路径
+                    continue;
+                }
+                // 臂按基类链深→浅排序（type.is 是子类判定，浅类臂不得
+                // 遮蔽深类——PrepareVirtualCallSites 同口径）
+                site.Arms.Sort((a, b) => b.Item3.CompareTo(a.Item3));
+                site.ProbeState = ++probeStateBase;
+                point.ProbeSite = site;
             }
         }
 
@@ -2678,6 +2772,15 @@ namespace RigiCompiler.Middleware.Passes
             {
                 itemTargets.Add("mw.state." + point.State);
                 tableElements.Add(point.State.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (point.ProbeSite != null)
+                {
+                    // Phase 2.6：探测挂起子状态——isReady 状态机中途挂起
+                    // 后重发布恢复的专用入口（区别于未就绪退回等待后的
+                    // 再次首探：那条路 state 保持 N 重入 poll gate）
+                    itemTargets.Add("mw.state." + point.ProbeSite.ProbeState);
+                    tableElements.Add(point.ProbeSite.ProbeState.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture));
+                }
             }
             var stateTable = new BilSwitchTableResource(
                 "$mw.coroutine.state." + _resourceCounter++, ".i32", tableElements);
@@ -2747,8 +2850,26 @@ namespace RigiCompiler.Middleware.Passes
                     }
                     resumeFn.AddBlock(new MirBlock("mw.state." + point.State, restoreInsts,
                         new MirBranch(resumeTarget)));
+                    if (point.ProbeSite != null)
+                    {
+                        // Phase 2.6：探测挂起子状态 N' 恢复块——活跃槽
+                        //（含探测 callee frame）从本层 frame 恢复后重回
+                        // 探测恢复分流链，isReady 从挂起点续跑至完成再做
+                        // 一次性就绪判定（对齐 VM 恢复式探测语义）
+                        var probeRestore = new List<MirInst>();
+                        EmitRestore(probeRestore, point.LiveAfter);
+                        if (taskFieldSymbol != null)
+                        {
+                            EmitRestoreMark(context, probeRestore, frameOp,
+                                taskFieldSymbol, taskTypeRef!, Fresh);
+                        }
+                        resumeFn.AddBlock(new MirBlock(
+                            "mw.state." + point.ProbeSite.ProbeState, probeRestore,
+                            new MirBranch(PollProbeResumeDispatchId(point))));
+                    }
                     EmitPollGate(context, mir, resumeFn, fn, point, frameOp,
-                        taskFieldSymbol, taskTypeRef, syms);
+                        stateFieldSymbol, taskFieldSymbol, taskTypeRef, syms,
+                        EmitSave);
                     continue;
                 }
                 else
@@ -2865,6 +2986,21 @@ namespace RigiCompiler.Middleware.Passes
 
         private static string PollGateBlockId(SuspensionPoint point) =>
             point.Block.Id + ".pollgate" + point.State;
+
+        // Phase 2.6：探测挂起子状态的恢复分流链块（type.is 重判直落对应
+        // 实现的探测调用块）
+        private static string PollProbeResumeDispatchId(SuspensionPoint point) =>
+            PollGateBlockId(point) + ".pdisp";
+
+        // Phase 2.6：探测站点臂块 id（首入建帧 / 双入口调用块 / 就绪判定）
+        private static string ProbeNewBlockId(string gateId, int arm) =>
+            gateId + ".pnew" + arm;
+
+        private static string ProbeCallBlockId(string gateId, int arm) =>
+            gateId + ".pcall" + arm;
+
+        private static string ProbeDoneBlockId(string gateId, int arm) =>
+            gateId + ".pdone" + arm;
 
         // B-1 tainted→tainted 直调改写（调用点是调用方的挂起点；对齐
         // VM 栈式模型——挂起的是整条帧链，恢复沿链逐层下钻）：
@@ -3946,17 +4082,29 @@ namespace RigiCompiler.Middleware.Passes
 
         // PollingAlarm 恢复闸（yield-alarm 的 state N 恢复块落点）：
         // poll_pending 判位——EventAlarm 响铃恢复（pending=0）直续原
-        // 后继；PollingAlarm 重发布恢复（pending=1）先经 $mw.poll_probe
-        // 探测：ready → poll_clear + 续行；not → poll_schedule（退避
-        // 重排程）+ ret SUSPENDED（frame 未变，state 保持 N）；异常
-        //（-1，pending 已置位）→ 失败尾分叉：Tasked = 失败终态序列
-        //（Task FAILED，await 点重抛——对齐 VM ProbePolling 的 yield
-        // 点失败口径）；B-2 Plain = ret FAILED（pending 保持置位沿链
-        // 上传，调用方调用点 FAILED 臂取走重抛——对齐 VM 帧栈逐层
-        // 展开口径；release 序列由 RcInjection 标准 ret 出口配平）
+        // 后继；PollingAlarm 重发布恢复（pending=1）先探测。
+        // Phase 2.6 双路径（§19.2 语义纠偏——isReady 允许 await/yield）：
+        // - 探测闭包含 tainted 实现（point.ProbeSite 非空）：经恢复块
+        //   站点协议臂下钻——首入按 alarm 运行期类型分流建探测 frame、
+        //   MirResumeCall 调 isReady 状态机；探测中途挂起（SUSPENDED/
+        //   YIELDED）写探测子状态 ProbeState 退回等待，唤醒后经专用
+        //   恢复块下钻续跑至完成再做一次性就绪判定（ready → poll_clear
+        //   + 续行；not → poll_schedule + ret SUSPENDED，state 保持 N）；
+        //   FAILED 沿 yield 点词法 try/catch 失败尾。untainted 联合臂
+        //   保持 $mw.poll_probe 同步廉价路径（目标必非 tainted，虚派发
+        //   安全）；分流 miss = 闭包外类型，防御不可达。
+        // - 全 untainted 闭包：现状 $mw.poll_probe 同步虚派发（ready/
+        //   not/异常三路 switch）。异常（-1，pending 已置位）→ 失败尾
+        //   分叉：Tasked = 失败终态序列（Task FAILED，await 点重抛——
+        //   对齐 VM ProbePolling 的 yield 点失败口径）；B-2 Plain =
+        //   ret FAILED（pending 保持置位沿链上传，调用方调用点 FAILED
+        //   臂取走重抛——对齐 VM 帧栈逐层展开口径；release 序列由
+        //   RcInjection 标准 ret 出口配平）
         private void EmitPollGate(MwContext context, MirModule mir, MirFunction resumeFn,
             MirFunction fn, SuspensionPoint point, MirLocalOperand frameOp,
-            string? taskFieldSymbol, string? taskTypeRef, RuntimeSyms syms)
+            string stateFieldSymbol, string? taskFieldSymbol, string? taskTypeRef,
+            RuntimeSyms syms,
+            System.Action<List<MirInst>, IReadOnlyList<string>> emitSave)
         {
             var gateId = PollGateBlockId(point);
             var probeId = gateId + ".probe";
@@ -3983,23 +4131,253 @@ namespace RigiCompiler.Middleware.Passes
             }, new MirCondBranch(new MirLocalOperand(isPending), probeId,
                 ContBlockId(point))));
 
-            var pr = Fresh("$mw.poll.pr.", I32);
-            // probe 内用户 isReady 抛出时，普通 MirCall 的 pending 检查须
-            // 直接落探测失败臂；否则会绕到 resume 函数级传播垫，跳过
-            // yield 点保存的词法 try/catch。
-            var probeFailTarget = new MirBlock(failId, new List<MirInst>(),
-                new MirUnreachable());
-            var probeTable = new BilSwitchTableResource(
-                "$mw.coroutine.probe." + _resourceCounter++, ".i32",
-                new[] { "-1", "0", "1" });
-            context.Module.Resources.Add(probeTable);
-            resumeFn.AddBlock(new MirBlock(probeId, new List<MirInst>
+            if (point.ProbeSite is { } probe)
             {
-                new MirCall(EnsurePollProbe(context, mir),
-                    new List<MirOperand> { new MirLocalOperand(alarmSlot) }, pr,
-                    probeFailTarget),
-            }, new MirSwitch(new MirLocalOperand(pr), probeTable,
-                new[] { failId, waitId, readyId }, "mw.state.bad")));
+                var parkId = gateId + ".park";
+                var cheapId = probeId + ".cheap";
+                var pdispId = PollProbeResumeDispatchId(point);
+
+                // 首入探测分流链（深→浅）与恢复分流链共用生成器：链上
+                // 逐臂逐 type.is 目标 OR（任一命中即进臂）。首入命中
+                // tainted 臂 → new 块建探测 frame；命中 untainted 联合
+                // 臂 → $mw.poll_probe 廉价路径；miss = 闭包外类型——
+                // vtable 派发目标必在闭包内，防御不可达。恢复链命中
+                // tainted 臂 → 直落调用块（探测 frame 从本层 frame 槽
+                // 恢复）；untainted 臂不可达（同步探测无挂起点，探测
+                // 挂起前提即首入命中 tainted 臂）——防御 mw.state.bad
+                void EmitProbeDispatchChain(string chainId, string checkPrefix,
+                    bool resume)
+                {
+                    // untainted 联合尾链首（仅首入链存在；全 tainted 闭包
+                    // 无尾——末臂 miss 直落防御不可达）
+                    var hasTail = !resume && probe.UntaintedTypeRefs.Count > 0;
+                    var tailId = probe.Arms.Count == 0
+                        ? chainId
+                        : checkPrefix + (probe.Arms.Count - 1) + ".next";
+                    for (var k = 0; k < probe.Arms.Count; k++)
+                    {
+                        var (entry, typeRefs, _) = probe.Arms[k];
+                        var checkId = k == 0 ? chainId : checkPrefix + (k - 1) + ".next";
+                        var hitId = resume
+                            ? ProbeCallBlockId(gateId, k)
+                            : ProbeNewBlockId(gateId, k);
+                        var missId = k + 1 < probe.Arms.Count
+                            ? checkPrefix + k + ".next"
+                            : hasTail ? tailId : "mw.state.bad";
+                        for (var t = 0; t < typeRefs.Count; t++)
+                        {
+                            var cond = Fresh("$mw.pchk.", Bool);
+                            var isLast = t + 1 >= typeRefs.Count;
+                            var thisCheckId = t == 0 ? checkId : checkId + ".t" + t;
+                            resumeFn.AddBlock(new MirBlock(thisCheckId,
+                                new List<MirInst>
+                                {
+                                    new MirTypeCheck(MirTypeCheckKind.Is,
+                                        new MirLocalOperand(alarmSlot), typeRefs[t],
+                                        null, cond),
+                                }, new MirCondBranch(new MirLocalOperand(cond), hitId,
+                                    isLast ? missId : checkId + ".t" + (t + 1))));
+                        }
+                    }
+                    if (!hasTail)
+                    {
+                        return;
+                    }
+                    // 首入链 untainted 联合尾：单臂多 type.is 目标 OR
+                    var tailRefs = probe.UntaintedTypeRefs;
+                    for (var t = 0; t < tailRefs.Count; t++)
+                    {
+                        var cond = Fresh("$mw.pchk.", Bool);
+                        var isLast = t + 1 >= tailRefs.Count;
+                        var thisCheckId = t == 0 ? tailId : tailId + ".t" + t;
+                        resumeFn.AddBlock(new MirBlock(thisCheckId,
+                            new List<MirInst>
+                            {
+                                new MirTypeCheck(MirTypeCheckKind.Is,
+                                    new MirLocalOperand(alarmSlot), tailRefs[t],
+                                    null, cond),
+                            }, new MirCondBranch(new MirLocalOperand(cond), cheapId,
+                                isLast ? "mw.state.bad" : tailId + ".t" + (t + 1))));
+                    }
+                }
+
+                // 首入链（probeId = 链首）
+                EmitProbeDispatchChain(probeId, gateId + ".pc", resume: false);
+
+                // 每 tainted 实现：建探测 frame + 落参（首入）→ 调用块
+                for (var k = 0; k < probe.Arms.Count; k++)
+                {
+                    var entry = probe.Arms[k].Impl;
+                    var callId = ProbeCallBlockId(gateId, k);
+                    var newId = ProbeNewBlockId(gateId, k);
+                    var doneId = ProbeDoneBlockId(gateId, k);
+                    var calleeOp = new MirLocalOperand(entry.CalleeLocal);
+                    var frameType = context.Symbols.FindType(entry.CalleeFrameCanonical)
+                        ?? throw new CompilerInternalException(
+                            "tainted isReady frame 未预注册: " + entry.CalleeFrameCanonical);
+                    var frameInit = context.Symbols.FindMember(
+                        SyntheticTypePlanner.FrameInitCanonicalOf(entry.CalleeFrameCanonical))
+                        ?? throw new CompilerInternalException(
+                            "tainted isReady frame init 缺失: " + entry.CalleeFrameCanonical);
+                    var newInsts = new List<MirInst>
+                    {
+                        new MirNewObject(frameType, null, frameInit,
+                            new List<MirOperand>(), entry.CalleeLocal),
+                    };
+                    foreach (var drop in entry.Drops)
+                    {
+                        if (drop.Operand != null)
+                        {
+                            var operand = drop.Operand;
+                            if (operand is MirLocalOperand local
+                                && drop.OperandTargetType is { } targetType)
+                            {
+                                var sourceType = resumeFn.FindLocal(local.Name).Type;
+                                if (sourceType.Canonical != targetType.Canonical
+                                    && (TypeLayout.IsGenericPlaceholder(sourceType)
+                                        || TypeLayout.IsGenericPlaceholder(targetType)))
+                                {
+                                    var converted = Fresh("$mw.probe.arg.", targetType);
+                                    newInsts.Add(TypeLayout.ClassifySlot(context.Layout,
+                                        sourceType) == ManagedSlotKind.FatReference
+                                        ? new MirCopyLocal(operand, converted)
+                                        : new MirBoxAny(operand, converted));
+                                    operand = new MirLocalOperand(converted);
+                                }
+                            }
+                            newInsts.Add(new MirSetField(operand, calleeOp,
+                                drop.FrameFieldSymbol));
+                        }
+                        else if (drop.TypeIdTypeRef != null)
+                        {
+                            var tid = Fresh("$mw.probe.tid.", MirType.Of(".typeid"));
+                            newInsts.Add(new MirGetTypeId(drop.TypeIdTypeRef, tid));
+                            newInsts.Add(new MirSetField(new MirLocalOperand(tid),
+                                calleeOp, drop.FrameFieldSymbol));
+                        }
+                        else if (drop.ReceiverTypeIdOwner != null)
+                        {
+                            var tid = Fresh("$mw.probe.tid.", MirType.Of(".typeid"));
+                            newInsts.Add(new MirGetClassTypeArgument(
+                                drop.ReceiverTypeIdOperand ?? new MirLocalOperand(alarmSlot),
+                                drop.ReceiverTypeIdOwner, drop.ReceiverTypeIdParameter!, tid));
+                            newInsts.Add(new MirSetField(new MirLocalOperand(tid),
+                                calleeOp, drop.FrameFieldSymbol));
+                        }
+                        else
+                        {
+                            newInsts.Add(new MirSetField(
+                                new MirLocalOperand(drop.CallerTypeIdLocal!), calleeOp,
+                                drop.FrameFieldSymbol));
+                        }
+                    }
+                    // callee 槽回存本层 frame：探测挂起后 N' 恢复块从本层
+                    // frame 恢复该槽下钻（EmitCallSplit 同口径）
+                    emitSave(newInsts, new[] { entry.CalleeLocal });
+                    resumeFn.AddBlock(new MirBlock(newId, newInsts,
+                        new MirBranch(callId)));
+
+                    var code = Fresh("$mw.poll.code.", I32);
+                    var codeTable = new BilSwitchTableResource(
+                        "$mw.coroutine.pollprobe." + _resourceCounter++, ".i32",
+                        new[] { "0", "1", "2", "3" });
+                    context.Module.Resources.Add(codeTable);
+                    resumeFn.AddBlock(new MirBlock(callId, new List<MirInst>
+                    {
+                        new MirResumeCall(entry.ResumeSymbol, entry.CalleeLocal, code),
+                    }, new MirSwitch(new MirLocalOperand(code), codeTable,
+                        new[] { parkId, parkId, doneId, failId }, "mw.state.bad")));
+
+                    // DONE：一次性就绪判定——探测返回 true → 就绪续行；
+                    // false → 退回等待（未就绪分支与廉价路径 waitId 共用）。
+                    // 探测完成即脱离子状态：state 写回 N（就绪续行后的
+                    // 下一个挂起点会覆写；未就绪重排恢复必须重回 poll
+                    // gate 再次首探，而非探测恢复链）
+                    var doneInsts = new List<MirInst>();
+                    var doneState = Fresh("$mw.poll.st.", I32);
+                    doneInsts.Add(new MirLoadResource(
+                        ProxyWildcardAbi.AddI32Resource(context, point.State),
+                        doneState));
+                    doneInsts.Add(new MirSetField(new MirLocalOperand(doneState),
+                        frameOp, stateFieldSymbol));
+                    var rdy = Fresh("$mw.poll.rdy.", Bool);
+                    doneInsts.Add(new MirGetField(calleeOp,
+                        entry.ResultFieldSymbol!, rdy));
+                    resumeFn.AddBlock(new MirBlock(doneId, doneInsts,
+                        new MirCondBranch(new MirLocalOperand(rdy), readyId,
+                            waitId)));
+                }
+
+                // 探测中途挂起（isReady 状态机 SUSPENDED/YIELDED 上传）：
+                // 挂起即继续等待——写探测子状态 N'（恢复入口直落探测恢复
+                // 分流链续跑）+ ret SUSPENDED。poll_pending 保持置位；
+                // 唤醒源是 isReady 内部的挂起源（await Task/EventAlarm/
+                // 裸 yield 重发布），polling 退避扫描的重复重发布无害
+                //（N' 恢复 → 探测幂等续跑）。TaskState 投影仅 Tasked
+                var parkInsts = new List<MirInst>();
+                var parkState = Fresh("$mw.poll.st.", I32);
+                parkInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddI32Resource(context, probe.ProbeState),
+                    parkState));
+                parkInsts.Add(new MirSetField(new MirLocalOperand(parkState),
+                    frameOp, stateFieldSymbol));
+                if (taskFieldSymbol != null)
+                {
+                    EmitTaskMark(context, parkInsts, frameOp, taskFieldSymbol,
+                        taskTypeRef!, "markSuspended", Fresh);
+                }
+                var parkCode = Fresh("$mw.code.", I32);
+                parkInsts.Add(new MirLoadResource(
+                    ProxyWildcardAbi.AddI32Resource(context, ResumeSuspended),
+                    parkCode));
+                resumeFn.AddBlock(new MirBlock(parkId, parkInsts,
+                    new MirRet(new MirLocalOperand(parkCode))));
+
+                // 恢复分流链（N' 恢复块落点；probeId 已被首入链占用，
+                // pdispId 即链首）
+                EmitProbeDispatchChain(pdispId, gateId + ".prc", resume: true);
+
+                // untainted 联合臂：$mw.poll_probe 同步廉价路径（现状
+                // probeId 内容；运行期目标必非 tainted——虚派发安全）
+                var pr = Fresh("$mw.poll.pr.", I32);
+                // probe 内用户 isReady 抛出时，普通 MirCall 的 pending 检查须
+                // 直接落探测失败臂；否则会绕到 resume 函数级传播垫，跳过
+                // yield 点保存的词法 try/catch。
+                var probeFailTarget = new MirBlock(failId, new List<MirInst>(),
+                    new MirUnreachable());
+                var probeTable = new BilSwitchTableResource(
+                    "$mw.coroutine.probe." + _resourceCounter++, ".i32",
+                    new[] { "-1", "0", "1" });
+                context.Module.Resources.Add(probeTable);
+                resumeFn.AddBlock(new MirBlock(cheapId, new List<MirInst>
+                {
+                    new MirCall(EnsurePollProbe(context, mir),
+                        new List<MirOperand> { new MirLocalOperand(alarmSlot) }, pr,
+                        probeFailTarget),
+                }, new MirSwitch(new MirLocalOperand(pr), probeTable,
+                    new[] { failId, waitId, readyId }, "mw.state.bad")));
+            }
+            else
+            {
+                // 全 untainted 闭包：廉价路径（现状形态）
+                var pr = Fresh("$mw.poll.pr.", I32);
+                // probe 内用户 isReady 抛出时，普通 MirCall 的 pending 检查须
+                // 直接落探测失败臂；否则会绕到 resume 函数级传播垫，跳过
+                // yield 点保存的词法 try/catch。
+                var probeFailTarget = new MirBlock(failId, new List<MirInst>(),
+                    new MirUnreachable());
+                var probeTable = new BilSwitchTableResource(
+                    "$mw.coroutine.probe." + _resourceCounter++, ".i32",
+                    new[] { "-1", "0", "1" });
+                context.Module.Resources.Add(probeTable);
+                resumeFn.AddBlock(new MirBlock(probeId, new List<MirInst>
+                {
+                    new MirCall(EnsurePollProbe(context, mir),
+                        new List<MirOperand> { new MirLocalOperand(alarmSlot) }, pr,
+                        probeFailTarget),
+                }, new MirSwitch(new MirLocalOperand(pr), probeTable,
+                    new[] { failId, waitId, readyId }, "mw.state.bad")));
+            }
 
             // ready：解除轮询状态 → 原后继续行
             var curR = Fresh("$mw.poll.cur.", I64);

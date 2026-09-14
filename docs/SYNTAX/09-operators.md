@@ -23,6 +23,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 | `-` | `minus` | `operator minus\<TAnother, TResult>(another: TAnother): TResult` |
 | `*` | `times` | `operator times\<TAnother, TResult>(another: TAnother): TResult` |
 | `/` | `div` | `operator div\<TAnother, TResult>(another: TAnother): TResult` |
+| `%` | `mod` | `operator mod\<TAnother, TResult>(another: TAnother): TResult` |
 | `-a`（一元） | `opposite` | `operator opposite\<TResult>(): TResult` |
 
 #### 逻辑运算符
@@ -145,7 +146,7 @@ pub operator plus\<TAnother extends Addable>(another: TAnother): MyType { ... }
 
 #### 通用规则
 
-- `+=`/`-=`/`*=`/`/=`/`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 从对应运算符自动推导（位运算复合赋值与位运算符同限：内建标量仅整数族）
+- `+=`/`-=`/`*=`/`/=`/`%=`/`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 从对应运算符自动推导（位运算复合赋值与位运算符同限：内建标量仅整数族）
 - 不可自定义新运算符名称
 - **复合赋值的目标表达式只求值一次**：无论目标是字段链还是索引，接收者/容器/索引等含副作用的子表达式均在读取前物化为临时变量——`recv.f op= x` 等价于 `{ var __r = recv; __r.f = (__r.f op x) }`，`a[i] op= x` 等价于 `{ var __c = a; var __i = i; __c[__i] = (__c[__i] op x) }`；求值序为接收者（含容器/索引）→ 右值。局部变量与参数目标天然单次求值，无需物化。字段链中间层含值类型时，叶写后对值类型中间层反向写回（§10 嵌套字段链写穿）。
 - **赋值的求值顺序不可依赖**：编译器当前按「接收者（含容器/索引）先求值、右值后求值」落地（简单赋值与复合赋值同规则），但使用者不应假设该求值顺序——依赖赋值两侧求值顺序的行为是未定义行为，编译器可在不另行通知的情况下改变求值顺序。

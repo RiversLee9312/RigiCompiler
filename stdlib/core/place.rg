@@ -66,7 +66,9 @@ priv unsafe func handle_load\<T>(capability: Any): T {
 
 priv unsafe func handle_asMutable\<T>(capability: Any): MutableHandle\<T> {
     if ((handle_kind(capability) == 1) and handle_type_is_value\<T>()) {
-        const storage = handle_make\<ObjectHandleStorage>(handle_target(capability), 1, true) as ObjectHandleStorage
+        // 3b-β：经源 capability 的壳指针共享计数派生（同壳新 capability，
+        // 不新建壳、不二次 acquire——裁定 #7）
+        const storage = handle_as_mutable(capability) as ObjectHandleStorage
         return new MutableHandle\<T>(storage)
     }
     throw new ImmutablePlaceException()
@@ -89,7 +91,17 @@ priv unsafe native func handle_make\<THandle>(target: Any, kind: i32, mutable: b
 
 @NativeLibrary("rigi_rt")
 @NativeSymbol("handle_target")
+// 3b-δ1：借用返回——目标引用不被 acquire（无 +1），消费链不产生
+// release 义务。借用寿命纪律：借用值不得比借出它的 Handle 活得更久，
+// 不得存入字段/数组/被捕获逃逸（违反是 UB；Handle 仅 unsafe 域可达）
+@NativeBorrow
 priv unsafe native func handle_target(capability: Any): Any
+
+// 3b-β：asMutable 壳共享派生面——经源 capability 的壳指针 increment
+//（直接原子加）返回指同一壳的新 capability（mutable 置位、kind 继承）
+@NativeLibrary("rigi_rt")
+@NativeSymbol("handle_as_mutable")
+priv unsafe native func handle_as_mutable(capability: Any): Any
 
 @NativeLibrary("rigi_rt")
 @NativeSymbol("handle_is_mutable")

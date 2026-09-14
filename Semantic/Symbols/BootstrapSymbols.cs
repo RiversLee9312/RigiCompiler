@@ -8,7 +8,7 @@ namespace RigiCompiler
     public enum BilIntrinsicOp
     {
         // §11.2 算术
-        Add, Sub, Mul, Div, Opposite,
+        Add, Sub, Mul, Div, Mod, Opposite,
         // §11.3 逻辑（两个输入均已求值的类型驱动形态；内建 bool 的短路
         // and/or 由 frontend 用 if + 临时变量表达，不得直接发 and/or）
         And, Or, Not,
@@ -184,8 +184,8 @@ namespace RigiCompiler
             var floating = name is "float" or "double";
             if (signed || unsigned || floating)
                 ops.UnionWith(new[] { BilIntrinsicOp.Add, BilIntrinsicOp.Sub, BilIntrinsicOp.Mul, BilIntrinsicOp.Div,
-                    BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe, BilIntrinsicOp.CmpLt, BilIntrinsicOp.CmpLe,
-                    BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe });
+                    BilIntrinsicOp.Mod, BilIntrinsicOp.CmpEq, BilIntrinsicOp.CmpNe, BilIntrinsicOp.CmpLt,
+                    BilIntrinsicOp.CmpLe, BilIntrinsicOp.CmpGt, BilIntrinsicOp.CmpGe });
             if (signed || floating) ops.Add(BilIntrinsicOp.Opposite);
             if (signed || unsigned)
                 ops.UnionWith(new[] { BilIntrinsicOp.BinAnd, BilIntrinsicOp.BinOr, BilIntrinsicOp.BinXor,

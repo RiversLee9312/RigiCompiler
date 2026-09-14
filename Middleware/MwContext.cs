@@ -36,6 +36,12 @@ namespace RigiCompiler.Middleware
         // 派发闭包查询（Layout 实现、Mir 消费；Layout 未挂载时为 null）
         public IMwDispatchQuery? DispatchQuery => Layout;
 
+        // 3b-δ1 产物：借用返回函数 canonical 集合（RcInjectionPass 挂载；
+        // Emit 侧据此重算各 fn 的借用槽，对借用槽的 cast 读侧裸取——
+        // 与义务豁免配平，缺侧即泄漏/UAF）
+        public System.Collections.Generic.HashSet<string>? BorrowedReturnSymbols
+        { get; internal set; }
+
         public MwContext(BilModule module)
         {
             Module = module;

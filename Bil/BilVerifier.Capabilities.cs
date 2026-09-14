@@ -27,6 +27,8 @@ namespace RigiCompiler.Bil
                 {
                     "handle_make" => "core::$handle_make(.generic.THandle:.typeid,target:.any,kind:.i32,mutable:.bool)@.any",
                     "handle_target" => "core::$handle_target(capability:.any)@.any",
+                    // 3b-β：asMutable 壳共享派生面（同壳新 capability）
+                    "handle_as_mutable" => "core::$handle_as_mutable(capability:.any)@.any",
                     "handle_kind" => "core::$handle_kind(capability:.any)@.i32",
                     "handle_is_mutable" => "core::$handle_is_mutable(capability:.any)@.bool",
                     "handle_type_is_value" => "core::$handle_type_is_value(.generic.T:.typeid)@.bool",
@@ -87,12 +89,15 @@ namespace RigiCompiler.Bil
                 var native = method.Modifiers.OfType<BilNativeSymbolModifier>().FirstOrDefault()?.Symbol;
                 if (native?.StartsWith("handle_", StringComparison.Ordinal) != true) return;
                 var caller = context.Function.Symbol;
+                // 3b-β：handle_make 只剩 Place.expose（asMutable 改走
+                // 壳共享面 handle_as_mutable，不再二次 make）
                 var allowed = native == "handle_make"
-                    ? caller is "core::Place$expose()@core::Handle<.generic<$.generic.T>>"
-                        or "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
-                    : caller is "core::$handle_load(capability:.any)@.generic<$.generic.T>"
-                        or "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
-                        or "core::$handle_store(capability:.any,value:.generic<$.generic.T>)@.void";
+                    ? caller == "core::Place$expose()@core::Handle<.generic<$.generic.T>>"
+                    : native == "handle_as_mutable"
+                        ? caller == "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
+                        : caller is "core::$handle_load(capability:.any)@.generic<$.generic.T>"
+                            or "core::$handle_asMutable(capability:.any)@core::MutableHandle<.generic<$.generic.T>>"
+                            or "core::$handle_store(capability:.any,value:.generic<$.generic.T>)@.void";
                 if (!allowed) Error("Handle 隐藏机制不能由普通 BIL 函数调用");
             }
             void CheckNew(string typeRef, IReadOnlyList<BilVariableOperand> args)

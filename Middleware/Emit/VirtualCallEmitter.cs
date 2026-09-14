@@ -33,8 +33,7 @@ namespace RigiCompiler.Middleware.Emit
                 var callResult = builder.BuildCall2(callee.Type, entry,
                     CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
                         call.Result, temps, boxed), "");
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
                 CallEmitter.StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
                     callResult, call.Result, call.ExcTarget);
@@ -47,8 +46,7 @@ namespace RigiCompiler.Middleware.Emit
             var abstractResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, call.Args, call.Result,
                     temps, boxed, coerceParameters: cellSlot), "");
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
             CallEmitter.StoreCoercedResult(session, builder, slots,
                 MirType.Of(signature.ReturnTypeRef), abstractResult, call.Result, call.ExcTarget);
@@ -92,8 +90,7 @@ namespace RigiCompiler.Middleware.Emit
                     CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
                         call.Result, temps, boxed, hostConstructedRef: host,
                         excTarget: call.ExcTarget), "");
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
                 CallEmitter.StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
                     result, call.Result, call.ExcTarget);
@@ -136,8 +133,7 @@ namespace RigiCompiler.Middleware.Emit
                 var result = builder.BuildCall2(MethodFunctionTypeOf(session, target, slotSignature), entry,
                     CallEmitter.MarshalArgs(session, builder, slots, slotSignature, call.Args, call.Result,
                         temps, boxed, coerceParameters: true), "");
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
                 CallEmitter.StoreCoercedResult(session, builder, slots,
                     MirType.Of(slotSignature.ReturnTypeRef), result, call.Result, call.ExcTarget);
@@ -148,8 +144,7 @@ namespace RigiCompiler.Middleware.Emit
                 var callResult = builder.BuildCall2(callee.Type, entry,
                     CallEmitter.MarshalArgs(session, builder, slots, callee.Mir, call.Args,
                         call.Result, temps, boxed), "");
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
                 CallEmitter.StoreCoercedResult(session, builder, slots, callee.Mir.ReturnType,
                     callResult, call.Result, call.ExcTarget);
@@ -160,8 +155,7 @@ namespace RigiCompiler.Middleware.Emit
             var abstractResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, call.Args, call.Result,
                     temps, boxed), "");
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, call.ExcTarget);
             CallEmitter.StoreCoercedResult(session, builder, slots,
                 MirType.Of(signature.ReturnTypeRef), abstractResult, call.Result, call.ExcTarget);
@@ -225,8 +219,7 @@ namespace RigiCompiler.Middleware.Emit
             var callResult = builder.BuildCall2(fnType, entry,
                 CallEmitter.MarshalArgs(session, builder, slots, signature, callArgs, inst.Result,
                     temps, boxed, coerceParameters: interfaceSlot || FatValueSlotAbi.IsCallable(session, callOperator)), "");
-            ArcEmitter.DestroyRichTemps(session, builder, temps);
-            ArcEmitter.DestroyFatTemps(session, builder, boxed);
+            ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             ExceptionEmitter.EmitPendingCheck(session, builder, inst.ExcTarget);
             CallEmitter.StoreCoercedResult(session, builder, slots,
                 MirType.Of(signature.ReturnTypeRef), callResult, inst.Result, inst.ExcTarget);

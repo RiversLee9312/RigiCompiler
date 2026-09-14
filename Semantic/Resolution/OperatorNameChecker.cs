@@ -7,7 +7,7 @@ namespace RigiCompiler
     {
         private static readonly HashSet<string> AllowedNames = new(StringComparer.Ordinal)
         {
-            "plus", "minus", "times", "div", "opposite",
+            "plus", "minus", "times", "div", "mod", "opposite",
             "and", "or", "not",
             "leftShift", "rightShift", "unsignedRightShift",
             "bitwiseAnd", "bitwiseOr", "bitwiseXor", "bitwiseNot",

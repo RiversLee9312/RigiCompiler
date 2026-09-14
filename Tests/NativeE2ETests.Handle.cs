@@ -123,5 +123,61 @@ namespace RigiCompiler.Tests
                 return 0
             }
             """;
+
+        // 3b-δ1 借用化对拍①：load() 消费链借用槽多跳传播（call→copy→
+        // cast→传参→出口返回）。handle_target 已去 acquire（返回裸引用，
+        // RcInjection 豁免借用槽全部义务），本用例锁定行为不变 + memtrack
+        // 零泄漏口径自动检测 ARC 配平（借用槽漏 release 成 owned 或反向
+        // 都会在双宿主对拍/泄漏退出码暴露）
+        private const string HandleBorrowChainSource = """
+            class Item { pub var n: i32 = 1 }
+            unsafe func echo(v: i32): i32 { return v }
+            unsafe func probe(item: Item): i32 {
+                seq using(const q = placeOf item) {
+                    const h = q.expose()
+                    const a = h.load()
+                    const b = h.load()
+                    const c = h.load()
+                    core.io.Console.println(a.n.toString())
+                    core.io.Console.println(b.n.toString())
+                    core.io.Console.println(c.n.toString())
+                    return (echo(a.n) + echo(b.n)) + echo(c.n)
+                }
+                return 0
+            }
+            pub func main(): i32 {
+                const item = new Item()
+                item.n = 7
+                var result: i32 = 0
+                unsafe seq using(const w = placeOf item) {
+                    result = probe(item)
+                }
+                return result
+            }
+            """;
+
+        // 3b-δ1 借用化对拍②：跨协程借用 load——expose/load 发生在 async
+        // 帮手体内（CoroutineSplit 后的 resume 状态机 fn 中间），借用返回
+        // 推导与借用槽传播必须覆盖 split 后的全部函数；Handle/借用值随
+        // frame move 跨挂起点不破坏配平
+        private const string HandleBorrowCoroutineSource = """
+            shared class Item { pub var n: i32 = 1 }
+            async func probe(item: Item): i32 {
+                unsafe seq using(const q = placeOf item) {
+                    const h = q.expose()
+                    return h.load().n
+                }
+                return 0
+            }
+            async func run(): i32 {
+                const item = new Item()
+                item.n = 42
+                return await probe(item)
+            }
+            pub func main(): i32 {
+                const t = run()
+                return await t
+            }
+            """;
     }
 }

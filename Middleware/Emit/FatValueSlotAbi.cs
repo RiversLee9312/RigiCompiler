@@ -185,8 +185,7 @@ namespace RigiCompiler.Middleware.Emit
                 var actualArgs = CallEmitter.MarshalArgs(session, builder, slots, function,
                     args, hasResult ? "result" : null, temps, boxed);
                 var result = builder.BuildCall2(callee.Type, callee.Value, actualArgs, "");
-                ArcEmitter.DestroyRichTemps(session, builder, temps);
-                ArcEmitter.DestroyFatTemps(session, builder, boxed);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
                 // 不消费 pending；适配器先返回零值，原调用点既有异常边接力。
                 var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
                 var (pendingFn, pendingType) = CallEmitter.DeclareHelperFace(session,

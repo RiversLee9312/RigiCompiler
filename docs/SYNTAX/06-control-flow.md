@@ -195,7 +195,7 @@ yield sleep(1000)             // 基于 EventAlarm 的非阻塞睡眠
 pub func isReady(): bool
 ```
 
-执行 `yield pollingAlarm` 后，当前协程挂起。每当 Executor 再次给该等待任务一次调度机会时，运行时调用一次 `isReady()`：返回 `false` 时继续等待，返回 `true` 时才恢复 `yield` 后的代码。`isReady()` 必须同步、线程安全且不得阻塞或挂起。
+执行 `yield pollingAlarm` 后，当前协程挂起。每当 Executor 再次给该等待任务一次调度机会时，在该等待协程自己的恢复块内执行一次 `isReady()`：返回 `false` 时继续等待，返回 `true` 时才恢复 `yield` 后的代码。`isReady()` 是普通 Rigi 代码，允许 `await`/`yield`——探测中途挂起即继续等待，唤醒后在恢复块内完成探测再做就绪判定；探测抛出的异常视为发生在 `yield` 点（词法 `try`/`catch` 可捕获）。isReady 应幂等且无长期阻塞副作用——探测可能因重排或挂起恢复而多次执行（完整语义见 `RUNTIME.md` §19.2）。
 
 `core.coroutine.EventAlarm` 由事件源通过 callback 通知 Executor。执行 `yield eventAlarm` 后，协程保持挂起，直到 EventAlarm 发出通知；callback 只负责把协程重新发布到原 Executor，不直接执行用户代码。用户自定义 EventAlarm 子类无自有事件源时由运行时提供默认底座，子类经 `protected signal()` 触发通知（粘滞、重复触发幂等，`RUNTIME.md` §19.3）。
 
@@ -251,7 +251,7 @@ pub abstract class Exception { ... }   // 实际声明在 stdlib/core/exceptions
 | `core.IOException` | I/O 相关异常 |
 | `core.CastException` | `as`/`as?`/nullable 展开等类型转换失败（BIL §12.1） |
 | `core.NoSuchMethodException` | 运行期 init 重载解析失败与 wrapper 派发失败（§10/§14.6） |
-| `core.DividedByZeroException` | 整数除法除零（BIL §11.2；float/double 除零按 IEEE 754 产 inf/NaN，不抛） |
+| `core.DividedByZeroException` | 整数除法/取模模零（BIL §11.2；float/double 除零/模零按 IEEE 754 产 inf/NaN，不抛） |
 | `core.OutOfBoundException` | 内建数组/Span 越界**写入**抛出（可捕获；越界读取不抛，按空安全得 `null`，§13.2） |
 | `core.IllegalStateException` | 对象当前状态不允许该操作：重复启动已启动 Task（§4.5）、`Timer.RepeatOption` 非正 repeatCount（`RUNTIME.md` §19.5）等 |
 | `core.NoSuchElementException` | 集合/映射缺键：`Parcel.getElement` 对 absent key 抛出（与「存了 null」返回 `null` 区分） |

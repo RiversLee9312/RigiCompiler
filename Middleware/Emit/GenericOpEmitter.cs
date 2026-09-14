@@ -189,6 +189,13 @@ namespace RigiCompiler.Middleware.Emit
                             isSigned: primitive.Kind == PrimitiveOpKind.IntSDiv,
                             inst.ExcTarget);
                     }
+                    // G4 内建臂取模（mod-3）：与 ScalarEmitter 同构的
+                    // 除零检查（无 MIN/-1 abort 臂）
+                    else if (primitive.Kind is PrimitiveOpKind.IntSMod or PrimitiveOpKind.IntUMod)
+                    {
+                        session.Checks.EmitModGuard(session, builder, right,
+                            inst.ExcTarget);
+                    }
                     value = ScalarEmitter.SelectPrimitive(builder, primitive.Kind, left, right);
                     break;
                 case RuntimeFaceBinding face:

@@ -30,6 +30,7 @@ namespace RigiCompiler
                 BilIntrinsicOp.Sub => BilBinaryOp.Sub,
                 BilIntrinsicOp.Mul => BilBinaryOp.Mul,
                 BilIntrinsicOp.Div => BilBinaryOp.Div,
+                BilIntrinsicOp.Mod => BilBinaryOp.Mod,
                 BilIntrinsicOp.And => BilBinaryOp.And,
                 BilIntrinsicOp.Or => BilBinaryOp.Or,
                 BilIntrinsicOp.BinAnd => BilBinaryOp.BinAnd,

@@ -73,12 +73,11 @@ Linux 侧前置：`dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。细节见 `docs/a
 |---|---|
 | `docs/agent_guide/architecture.md` | 代码库结构 + 核心设计决策（**改动代码前必读**）⭐⭐⭐ |
 | `docs/agent_guide/development.md` | 构建/CLI/测试策略/开发约定/新功能标准流程 ⭐⭐ |
-| `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 中端（语义分析 + Lowering）架构 ⭐⭐⭐ |
+| `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 中端（语义分析 + Lowering）架构（§7.2 为 async lowering 专项） ⭐⭐⭐ |
 | `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` | Middleware（BIL → 原生）架构 ⭐⭐⭐ |
 | `docs/compiler/vm/BIL_VM_DESIGN.md` | BIL VM 设计（值模型/执行模型/hook 表）⭐⭐ |
 | `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式层架构专项 ⭐⭐ |
 | `docs/compiler/syntax/FRONTEND_TYPES.md` | 前端数据类型（Token/AST/Span）⭐⭐ |
-| `docs/compiler/semantic/ASYNC_LOWERING_DESIGN.md` | async lowering 专项 ⭐⭐ |
 | `docs/legacy/` | 历史档案（PROGRESS_REPORT 编年史、两份 ROADMAP；不再更新）|
 
 ## 5. 仓库结构速览

@@ -83,6 +83,22 @@ namespace RigiCompiler.Bil.Vm
             hooks.Register("rigi_rt", "handle_make", HandleMake);
             hooks.Register("rigi_rt", "handle_target", (ctx, args) =>
                 new VmAny(HandleObject(args[0]).HandleTarget!));
+            // 3b-β：asMutable 壳共享派生（同 HandleTarget 的新 capability，
+            // mutable 置位；VM 无壳计数，共享语义由对象字段直接仿真）
+            hooks.Register("rigi_rt", "handle_as_mutable", (ctx, args) =>
+            {
+                var src = HandleObject(args[0]);
+                return new VmAny(new VmObject(".handle", false)
+                {
+                    HandleTarget = src.HandleTarget,
+                    HandleMutable = true,
+                    HandleKind = src.HandleKind,
+                });
+            });
+            // 3b-β 壳释放消息两面对拍 stub（shell_msg_try_take /
+            // shell_handle_release）已随 3b-δ2 壳释放属主化删除：
+            // coroutine.rg 的消息面退场，VM 无壳计数通道（capability
+            // 由 GC 托管），无对应 hook 键。
             hooks.Register("rigi_rt", "handle_is_mutable", (ctx, args) =>
                 new VmBool(HandleObject(args[0]).HandleMutable));
             hooks.Register("rigi_rt", "handle_kind", (ctx, args) =>

@@ -479,6 +479,11 @@ namespace RigiCompiler
         // NativeSymbol = @NativeSymbol 实参（缺省取函数名）；NativeLibrary = @NativeLibrary 实参
         public string? NativeSymbol { get; internal set; }
         public string? NativeLibrary { get; internal set; }
+        // 3b-δ1 借用返回标记（§4.6 内建注解 @NativeBorrow，P2 读注解后填；
+        // 仅 native 函数可置位——P4b 发射 native-borrow 修饰符，RcInjection
+        // 据此豁免调用结果槽的 acquire/release 义务：返回值是无 +1 的借用
+        // 胖引用，借用寿命纪律由 unsafe 契约约束）
+        public bool NativeBorrow { get; internal set; }
         // 程序入口标记（§17 内建注解 @EntryPoint，P2 EntryPointChecker 落定；
         // 裸 main 命名约定不经此标记——P4 发射侧两条件取或）
         public bool IsEntryPoint { get; internal set; }

@@ -74,6 +74,18 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
         {
+            // Phase 1.2：批量段（ModuleBuilder region 合并）在调用前已进入
+            // 外层 region，单槽发射免自带的显式进出（C 侧天然无包裹）。
+            // 单发路径无外层，仍由 ARC 面自身 region 进出兜底，语义不变。
+            AcquireSlotBody(session, builder, slots, name);
+        }
+
+        // 单槽 acquire 的发射体（无显式 region 进出；胖引用克隆回写、
+        // String/rich acquire 均为纯运行时调用）。
+        internal static void AcquireSlotBody(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
+        {
             var (slot, local) = slots[name];
             switch (TypeLayout.ClassifySlot(session.Layout, local.Type))
             {
@@ -105,11 +117,23 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
         {
+            // Phase 1.2：批量段在调用前已进入外层 region，槽清零与释放自动
+            // 处于该 region 内（不变量「清空与释放同处一个 region」由外层
+            // 满足）；单发路径仍自带显式进出。
+            ReleaseSlotBody(session, builder, slots, name);
+        }
+
+        // 单槽 release 的发射体（无显式 region 进出）：§23.3「托管局部槽
+        // 释放旧值时必须在同一 region 内清零并撤销所有权」——调用方保证
+        // 当前处于 region 内（单发 = 自带的显式对；批量段 = 外层对）。
+        internal static void ReleaseSlotBody(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, string name)
+        {
             var (slot, local) = slots[name];
             // 产出指令可在释放旧值之后抛异常；必须同步撤销槽位所有权，
             // 否则传播垫会再次释放旧值。清空与释放同处一个 region，
             // 防止 macroGC 观察到已经释放但仍挂在槽内的引用。
-            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
             switch (TypeLayout.ClassifySlot(session.Layout, local.Type))
             {
                 case ManagedSlotKind.FatReference:
@@ -139,7 +163,6 @@ namespace RigiCompiler.Middleware.Emit
                     }
                     break;
             }
-            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
         // 先 acquire 新值再 release 旧值（自赋值安全），写回 {typeid, newPayload}。
@@ -311,6 +334,33 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
+        // Phase 1.2 region 合并：调用点表达式求值后的 temps 级联析构（rich
+        // 值 + 胖引用两组连续销毁）是同一复合操作的收尾——§23.5 把「ARC 归零
+        // 后的级联字段 release」纳入 fence 覆盖操作，§23.3 明文允许级联
+        // release 复用当前 region。两组均为纯运行时调用（rigi_value_release /
+        // rigi_ref_release；C 侧 enter/exit 退化为 TLS 嵌套计数），销毁序列
+        // 之间无挂起点与可抛 Rigi 异常调用，两条 region 不变量静态成立。
+        // 总数 < 2 不外包：单个析构 C 侧本来就只有一对，外包白付嵌套计数。
+        internal static void DestroyTemps(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, List<RichTemp> temps, List<FatTemp> boxed)
+        {
+            if (temps.Count + boxed.Count < 2)
+            {
+                DestroyRichTemps(session, builder, temps);
+                DestroyFatTemps(session, builder, boxed);
+                return;
+            }
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
+            DestroyRichTemps(session, builder, temps);
+            DestroyFatTemps(session, builder, boxed);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
+        }
+
+        // 单 rich temps 列表形态（无 boxed 组的调用点）
+        internal static void DestroyTemps(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, List<RichTemp> temps) =>
+            DestroyTemps(session, builder, temps, new List<FatTemp>());
+
         internal static void EmitReleaseFatValue(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef fat)
         {
@@ -475,7 +525,8 @@ namespace RigiCompiler.Middleware.Emit
             builder.BuildCall2(fnType, fn, new[] { addr, sheet }, "");
         }
 
-        private static void CallRegionFace(ModuleBuilder.Session session,
+        // Phase 1.2 起 ModuleBuilder 的连续 ARC 段合并也经此发射 region 边界
+        internal static void CallRegionFace(ModuleBuilder.Session session,
             LLVMBuilderRef builder, string face)
         {
             var (fn, fnType) = CallEmitter.DeclareArcFace(session, face);

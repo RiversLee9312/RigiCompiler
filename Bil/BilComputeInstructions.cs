@@ -10,7 +10,7 @@ namespace RigiCompiler.Bil
     // 内建 bool 短路已在 P4a 展开）
     public enum BilBinaryOp
     {
-        Add, Sub, Mul, Div,             // §11.2 算术
+        Add, Sub, Mul, Div, Mod,        // §11.2 算术
         And, Or,                        // §11.3 逻辑（不短路）
         BinAnd, BinOr, BinXor,          // §11.4 位运算
         ShiftLeft, ShiftRight, ShiftRightUnsigned,
@@ -710,6 +710,8 @@ namespace RigiCompiler.Bil
                     return BoxInt(unchecked(left.Bits * right.Bits), left);
                 case BilBinaryOp.Div:
                     return BoxInt(DivInt(left, right, context, coroutine), left);
+                case BilBinaryOp.Mod:
+                    return BoxInt(ModInt(left, right, context, coroutine), left);
                 case BilBinaryOp.BinAnd:
                     return BoxInt(left.Bits & right.Bits, left);
                 case BilBinaryOp.BinOr:
@@ -753,6 +755,8 @@ namespace RigiCompiler.Bil
                     return BoxFloat(left * right, isF32);
                 case BilBinaryOp.Div:
                     return BoxFloat(left / right, isF32);
+                case BilBinaryOp.Mod:
+                    return BoxFloat(left % right, isF32);
                 case BilBinaryOp.CmpEq:
                     return new VmBool(left == right);
                 case BilBinaryOp.CmpNe:
@@ -920,6 +924,29 @@ namespace RigiCompiler.Bil
                 return Mask((ulong)(Signed(left) / Signed(right)), left.Width);
             }
             return left.Bits / Mask(right.Bits, right.Width);
+        }
+
+        // 整数取模（§11.2）：截断取余（同 C#/C，结果符号随被除数）；
+        // 模零与除零同一语言级异常（core::DividedByZeroException）。
+        // i64 MIN % -1 = 0：CLR rem 对 MIN % -1 抛 OverflowException
+        //（硬件 idiv 溢出陷阱，unchecked 不豁免，与 DivInt 的 unchecked
+        // 回绕不同款），按数学恒等 x % ±1 == 0 特判绕开
+        private static ulong ModInt(IntBits left, IntBits right, VmContext context,
+            VmCoroutine coroutine)
+        {
+            if (right.Bits == 0)
+            {
+                throw context.DividedByZero(coroutine);
+            }
+            if (left.Signed)
+            {
+                if (Signed(right) == -1)
+                {
+                    return Mask(0UL, left.Width);
+                }
+                return Mask((ulong)(Signed(left) % Signed(right)), left.Width);
+            }
+            return left.Bits % Mask(right.Bits, right.Width);
         }
     }
 }

@@ -150,6 +150,23 @@ namespace RigiCompiler
             method.NativeSymbol = symbolAnnotation == null
                 ? method.Name
                 : env.NativeAnnotationStringArgument(symbolAnnotation, entry);
+            // 3b-δ1：@NativeBorrow 借用返回标记（无实参形态）——只允许挂
+            // native 函数（非 native 函数声明上的出现已由 VisitCore 的
+            // 「内建注解只允许 native」检查拒绝），此处只校验实参形态并落位
+            var borrowAnnotation = fn.Annotations.FirstOrDefault(
+                a => ResolveEnvironment.NativeAnnotationNameOf(a) == "NativeBorrow");
+            if (borrowAnnotation != null)
+            {
+                if (borrowAnnotation.Arguments.Count != 0)
+                {
+                    env.Error(borrowAnnotation.Span ?? entry.Node.Span,
+                        "@NativeBorrow does not take arguments");
+                }
+                else
+                {
+                    method.NativeBorrow = true;
+                }
+            }
             // capability 机制只由真正内嵌标准库触达，伪造库路径/符号名不能取得特权。
             if (!entry.Context.File.IsCompilerLibrary && method.NativeLibrary == "rigi_rt"
                 && (method.NativeSymbol?.StartsWith("handle_", StringComparison.Ordinal) == true

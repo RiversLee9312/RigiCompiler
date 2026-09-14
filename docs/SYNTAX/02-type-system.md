@@ -141,7 +141,7 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 
 `placeOf operand` 返回 local `core.Place\<T>`，实现 `IDisposable` 并保留目标身份。Object 使用对象自身身份；值类型的稳定局部变量、参数或全局存储复用捕获 Cell，常量使用 ReadonlyCell，临时值被拒绝。`==` / `!=` 比较目标身份；`dispose()` 释放 Place 自己的持有，不释放其他 Place/Handle 的持有。当前普通实例字段、未落地 companion 静态字段与复杂索引不支持稳定提升，必须给出诊断。
 
-`Place.expose(): Handle\<T>` 是 unsafe 能力升级入口。`Handle\<T>` 与可写变体 `MutableHandle\<T>` 是 unsafe shared object，可保留 local T，但没有普通 Rigi T 字段；两者不实现 `IDisposable`，按普通 shared ARC 生命周期释放隐藏目标。`load(): T` 对 Object 返回对象引用，对 Cell 返回正常值副本。只有逻辑 T 是 ValueType 且目标为可写 Cell 时，`asMutable()` 成功；Object、ReadonlyCell 或 `Handle\<Any>` 均抛 `core.ImmutablePlaceException`。`MutableHandle.store(T)` 写回同一 Cell。用户不能构造、继承或借 native 声明伪造 Handle。
+`Place.expose(): Handle\<T>` 是 unsafe 能力升级入口。`Handle\<T>` 与可写变体 `MutableHandle\<T>` 是 unsafe shared object，可保留 local T，但没有普通 Rigi T 字段。Handle 是一枚不透明 capability：目标不进入 Handle 布局，由运行时的计数壳锚定保活（`RUNTIME.md` §28）；复制 Handle 只复制 capability，最后一枚 capability 释放时运行时经属主通道（属主注册表或释放消息）释放目标，属主协程终止时其名下壳锚定的子图整体转入 shared 会计。`load(): T` 对 Object 返回对象引用，对 Cell 返回正常值副本——目标存活由壳锚保证，load 无需等待任何跨协程协议。3b-δ1 起 load 的目标解析是**借用读取**（`handle_target` 借用返回：解析过程不触碰目标引用计数，壳锚保活语义不变）。借用的寿命纪律（unsafe 契约，违反是 UB）：**解析出的引用不得比借出它的 Handle 活得更久**；借用值不得存入字段/数组/盒或被 lambda/协程捕获逃逸——存储逃逸形态在编译期被借用逃逸检查（RcInjection 逃逸边界）拒绝，借用作普通实参传递合法（被调方自行建立持有）。Cell 值路径（kind 1/2）保持值拷贝语义不变。只有逻辑 T 是 ValueType 且目标为可写 Cell 时，`asMutable()` 成功；Object、ReadonlyCell 或 `Handle\<Any>` 均抛 `core.ImmutablePlaceException`。`MutableHandle.store(T)` 写回同一 Cell。用户不能构造、继承或借 native 声明伪造 Handle。
 
 这两个类型是独立的普通具化类：`Handle<i32>`、`Handle<String>` 与
 `MutableHandle<i32>` 的身份互不等价，经 Any 的 `is`/`as` 也必须严格区分。
@@ -151,7 +151,7 @@ Handle 的类型身份，不得把 facade 擦除成该存储。此机制操作 R
 
 `core.Atomic\<T>` 是 unsafe shared object，仅私有持有 Handle 与 Mutex，允许 local T。unsafe `init(T)`、`load(): T`、`mutate(Func\<T,T>)` 通过稳定参数/局部 Place 建立能力。load/mutate 是普通同步方法，内部取得异步 Mutex 后在 finally 释放；mutate 仅在回调成功返回后替换 Handle，回调抛错保留旧值（不回滚用户另行 unsafe 修改的对象）。普通回调可挂起，锁仍保持。
 
-`core.AtomicStruct\<T extends ValueType>` 是安全 shared 门面，公开 safe `init(T)`、`load(): T`、`store(T)`；store 内部通过私有 Atomic 的回调替换值，不向用户提供 mutate，也不暴露 Atomic/Handle/Cell。
+`core.AtomicStruct\<T extends ValueType>` 是安全 shared 门面，公开 safe `init(T)`、`load(): T`、`store(T)` 与 `mutate(Func\<T,T>)`；store 内部通过私有 Atomic 的回调替换值；mutate 一步式转发私有 Atomic 的 `mutate`（语义同上段：Mutex 持锁回调、回调成功返回后才替换 Handle、回调抛错保留旧值，普通回调可挂起，锁仍保持），配合 trailing lambda 即 `counter.mutate{(v: i64): i64 -> (v + 1L)}` 的一步式安全 RMW（替代易丢更新的 `store(load() + 1)` 形态）；仍不暴露 Atomic/Handle/Cell。
 
 ### 3.2 基本类型
 

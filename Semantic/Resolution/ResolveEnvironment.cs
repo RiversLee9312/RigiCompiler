@@ -134,13 +134,15 @@ namespace RigiCompiler
                 : Accessibility.Private;
         }
 
-        // 内建 native 注解（@NativeLibrary/@NativeSymbol）按末段名识别；非 native 注解返回 null
+        // 内建 native 注解（@NativeLibrary/@NativeSymbol/@NativeBorrow）按末段名
+        // 识别；非 native 注解返回 null
         public static string? NativeAnnotationNameOf(AnnotationASTNode annotation)
         {
             var elements = annotation.Name.symbol.elements;
             if (elements.Count == 0) return null;
             var last = elements[^1].name;
-            return last == "NativeLibrary" || last == "NativeSymbol" ? last : null;
+            return last == "NativeLibrary" || last == "NativeSymbol"
+                || last == "NativeBorrow" ? last : null;
         }
 
         // 内建入口注解（§17 @EntryPoint）按末段名识别——同 @NativeLibrary 先例：

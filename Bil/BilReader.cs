@@ -769,7 +769,7 @@ namespace RigiCompiler.Bil
             switch (opcode)
             {
                 // §11 二元
-                case "add": case "sub": case "mul": case "div":
+                case "add": case "sub": case "mul": case "div": case "mod":
                 case "and": case "or":
                 case "bin.and": case "bin.or": case "bin.xor":
                 case "shift.left": case "shift.right": case "shift.right.unsigned":
@@ -1175,6 +1175,9 @@ namespace RigiCompiler.Bil
                 case "override": return new BilKeywordModifier(BilKeyword.Override);
                 case "async": return new BilKeywordModifier(BilKeyword.Async);
                 case "unsafe": return new BilKeywordModifier(BilKeyword.Unsafe);
+                // 3b-δ1：借用返回标记（仅 native 声明；RcInjection 按此豁免
+                // 调用结果槽的 acquire/release 义务）
+                case "native-borrow": return new BilKeywordModifier(BilKeyword.NativeBorrow);
             }
             if (TryUnwrap(word, "operator(", out var name))
                 return new BilOperatorModifier(name);
@@ -1242,6 +1245,7 @@ namespace RigiCompiler.Bil
                 "sub" => BilBinaryOp.Sub,
                 "mul" => BilBinaryOp.Mul,
                 "div" => BilBinaryOp.Div,
+                "mod" => BilBinaryOp.Mod,
                 "and" => BilBinaryOp.And,
                 "or" => BilBinaryOp.Or,
                 "bin.and" => BilBinaryOp.BinAnd,
