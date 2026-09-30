@@ -126,10 +126,12 @@ namespace RigiCompiler
             var call = (BoundCallStatement)node;
             // S1/g9：值类型 receiver 的可写 place 链（§10）——receiver
             // 拷贝物化，调用语句之后把 this 修改反向写回 place（块返回）
+            // （chainfix：接管判定携带 ctx，环可写回性与写回构造同一
+            // setter 使用点可见性口径）
             if (call.Receiver is not null and not BoundWrapperAccessExpression
                 && !call.IsIndirect
                 && WrapperPlaceLowering.TryValueReceiverCallTarget(call.Receiver,
-                    call.Method.Owner, out var valueRoot, out var valueChain))
+                    call.Method.Owner, ctx, out var valueRoot, out var valueChain))
             {
                 return RewriteValueReceiverCallStatement(call, valueRoot, valueChain, ctx, env);
             }

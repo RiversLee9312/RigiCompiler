@@ -191,7 +191,7 @@ Bil/
   发布失败且协程仍 Suspended、纪元未变 ⇒ 判定调度器丢失唤醒，立即 `Fail`
   留证（否则协程永久 Suspended、quiescence 死锁且无证据）；其余失败均为
   benign 竞态（stale 唤醒 / 取消 / 已就绪），静默容忍。
-- 静态字段存储、hook 表 stdout/stderr 写入各自加锁；单次 `print` 调用原子。
+- 静态字段存储、hook 表 stdout/stderr 写入各自加锁；单次 `print` 调用原子。两路各自以原始字节按调用顺序累积：`stdout_write`/`stderr_write` 不在单次调用边界解码，允许同通道后续调用续写 UTF-8 多字节序列；`print`/`printErr` 将文本编码为 UTF-8 后写入对应的同一缓冲。`BilVm.Run` 在完成调度与事件派发（包括异常收尾）后，从各通道字节快照生成结果文本，各自仅作一次 UTF-8 替换式解码；不得提前显示分片残字节、把两路合并或对另一通道的字节续写。未要求两路跨通道的统一顺序；同一通道的单次追加受锁保护。
 - 原子性契约仅到「单次 native print 调用」为止：需要行级原子的包装
   （如 stdlib `Console.println`）必须在 Rigi 层先拼好整行、只发一次
   native print——两次 print 之间 VM 不提供任何不交错保证。另注：VM
@@ -255,6 +255,7 @@ indirect 是表达正常 Rigi 程序（泛型、lambda、运行时类型驱动�
 | `rigi_rt` / `any_to_string` | §3.8 标准文本；未覆写者为 canonical 类型名（toString 成员方法不再直接 hook——其默认实现是编译器合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_to_string` 触达本 hook） |
 | `rigi_rt` / `any_hash` | §3.8.1 i64 哈希（Map 键判等，用户裁定扩充，同 `any_to_string` 的 stdlib native 面形态）：String 按内容、标量按值、对象按身份、null 固定 0；仅同一宿主内同值必同哈希，与 native 宿主数值不要求一致（hash 成员方法同样不直接 hook——默认实现是合成 fn，经 .bootstrap.rg 的 priv 全局 native `any_hash` 触达本 hook） |
 | `rigi_rt` / `time_now` | §17.4 时钟原语：返回自 1970/1/1 00:00 UTC 起毫秒（i64）。`core.time.DateTime.now()` 与 `core.coroutine` 的 `rigi_time_now` 声明均显式 `@NativeSymbol("time_now")` 命中本键 |
+| `rigi_rt` / `host_is_windows` | 施工块 7-1（STDLIB §4.5.2/§4.5.9，D5）宿主平台判定私有原语：非 0 = Windows。`core.fs` Path 平台路径词法校验内部使用（公共平台信息 API 继续后置）；VM 侧 `OperatingSystem.IsWindows()` 同语义镜像，native 侧 `_WIN32` 编译期判定 |
 | `rigi_rt` / `alloc_array` | 零值初始化 `.array<T>`；T 为 enum struct 按宿主错误（§14.3） |
 | `rigi_rt` / `timer_create` | 时钟底座句柄；`sleep`/`Timer` 经 stdlib 构造调用（RUNTIME §19.4/§19.5）。旧 `make_sleep_alarm` 已删除 |
 | （方法 hook）`core::Any$call???` | 按 symbol 路由；无路由抛 `core::NoSuchMethodException` |

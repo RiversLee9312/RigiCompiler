@@ -45,6 +45,11 @@ namespace RigiCompiler.Middleware.Runtime
         public const string RegionExit = "rigi_region_exit";
         public const string RefAcquire = "rigi_ref_acquire";
         public const string RefRelease = "rigi_ref_release";
+        // 泛型胖引用形态守卫（数组元素 ABI 归一防御）：Reference ABI 的
+        // 16B 槽合法形态只有 null{0,0} / tag1 盒 / tag2 对象；tag0 且
+        // payload 非零即 ABI 错配（如 String 特化槽被当胖引用解释），
+        // 立即 abort 定位，不放行到 typecheck 深处段错误
+        public const string RefCheck = "rigi_check_fat_ref";
         public const string ValueAcquire = "rigi_value_acquire";
         public const string ValueRelease = "rigi_value_release";
         public const string StringAcquire = "rigi_string_acquire";

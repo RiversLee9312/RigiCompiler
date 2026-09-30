@@ -36,7 +36,7 @@ pub func main(): i32 {
     const root = deepCopy(source.event)
     if ((not (root is .Second)) or (root.payload.value != 99)) { return 4 }
     const malformed = source.event:Serializable.toParcel()
-    malformed.setElement\<String>("..case", "Missing")
+    malformed.setMetaElement\<String>("..case", "Missing")
     var rejected = false
     try { const bad = fromParcel\<Event>(malformed) }
     catch (e: IllegalStateException) { rejected = true }

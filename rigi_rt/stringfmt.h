@@ -9,7 +9,7 @@ void rigi_u64_to_string(rigi_string *out, uint64_t value);
 void rigi_f64_to_string(rigi_string *out, double value);
 void rigi_f32_to_string(rigi_string *out, float value);
 void rigi_bool_to_string(rigi_string *out, int8_t value);
-void rigi_char_to_string(rigi_string *out, int16_t value);
+void rigi_char_to_string(rigi_string *out, int32_t value);
 int64_t rigi_string_character_count(const rigi_string *value);
 void rigi_any_to_string(rigi_string *out, const void *anySlot);
 int64_t rigi_any_hash(const void *anySlot);

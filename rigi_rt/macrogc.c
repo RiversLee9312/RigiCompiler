@@ -1760,8 +1760,9 @@ static RigiLocalLedger *lgc_ledger_current(void)
 
 /* ---- 局部三阶段克隆变体（与 gc_mark_gray/scan/scan_black/gather 和
  * compensate 一一对应；系统性差异两处，改任一侧须双侧同步）：
- *   ① rc 访问 plain（local 闭包属主独占，无并发——arc.c local 会计
- *      非原子化的同款论证）；
+ *   ① rc 访问 atomicfix 起改原子 RMW（原 plain 依赖「属主独占」论证，
+ *      已被跨协程共享实证打破——见 lgc_is_mechanism_object 段 ③ 勘误；
+ *      原子 RMW 保证 Bacon-Rajan 计数收支精确，内存安全闭合）；
  *   ② shared 会计子对象整条跳过染色（不减/不加/不灰化/不传播）。
  * promote 翻位配套摘除的前向声明（定义见账本内核段）。 */
 
@@ -1773,7 +1774,11 @@ static void lgc_mark_gray_child(void *child, void *ctx)
     {
         return; /* shared 子图不进局部染色（他线程可原子触碰） */
     }
-    ch->rc = ch->rc - 1u;
+    /* atomicfix：plain 减量改原子 RMW——他线程 mutator 可并发触碰
+     * （「属主独占」前提已被跨协程共享实证打破），原子 RMW 保证 rc
+     * 收支精确，与 mutator 的 acquire/release 相互不覆盖。 */
+    atomic_fetch_sub_explicit((_Atomic uint32_t *)&ch->rc, 1,
+        memory_order_relaxed);
     if (gc_color(ch) != RIGI_GC_GRAY)
     {
         gc_set_color(ch, RIGI_GC_GRAY);
@@ -1806,7 +1811,9 @@ static void lgc_scan_black_child(void *child, void *ctx)
     {
         return; /* 对称跳过：markGray 未减 shared 子，scanBlack 不加 */
     }
-    ch->rc = ch->rc + 1u;
+    /* atomicfix：同 mark_gray_child，原子 RMW。 */
+    atomic_fetch_add_explicit((_Atomic uint32_t *)&ch->rc, 1,
+        memory_order_relaxed);
     if (gc_color(ch) != RIGI_GC_BLACK)
     {
         gc_set_color(ch, RIGI_GC_BLACK);
@@ -1850,7 +1857,9 @@ static void lgc_scan(void *root, GcVec *scan_st, GcVec *black_st)
         {
             continue;
         }
-        if (oh->rc > 0u) /* plain：local 闭包计数属主独占 */
+        /* atomicfix：plain 读改原子读（与 mutator 原子写配套）。 */
+        if (atomic_load_explicit((_Atomic uint32_t *)&oh->rc,
+                memory_order_relaxed) > 0u)
         {
             lgc_scan_black(o, black_st);
         }
@@ -1897,8 +1906,10 @@ static void lgc_compensate_child(void *child, void *ctx)
     }
     if (gc_color(ch) != RIGI_GC_GRAY)
     {
-        /* 存活子引用：补偿 markGray 的减量（白→白边由同批释放湮灭） */
-        ch->rc = ch->rc + 1u;
+        /* 存活子引用：补偿 markGray 的减量（白→白边由同批释放湮灭）
+         * atomicfix：原子 RMW 同上。 */
+        atomic_fetch_add_explicit((_Atomic uint32_t *)&ch->rc, 1,
+            memory_order_relaxed);
     }
 }
 
@@ -2106,15 +2117,16 @@ static void lgc_teardown_fat(uint64_t type_id, uint64_t payload)
             return; /* 白色同胞：同批释放，边整条跳过 */
         }
         {
-            uint32_t rc = ch->rc; /* plain：local 子图他线程不触碰 */
-            if (rc <= 1u)
+            /* atomicfix：原 plain 读-判-减改原子 fetch_sub（old==1
+             * ⟺ 减后归零 ⟹ 真死对象级联；补偿不变量下 old==0 不
+             * 出现）。他线程 mutator 并发时 RMW 不丢收支。 */
+            uint32_t old = atomic_fetch_sub_explicit(
+                (_Atomic uint32_t *)&ch->rc, 1, memory_order_acq_rel);
+            if (old <= 1u)
             {
-                /* 补偿不变量下 rc==0 不出现、rc==1 减后归零的级联也只
-                 * 发生在「外部引用全断」的真死对象上；递归兜底防御 */
                 lgc_teardown((void *)ch, ch->typeId);
                 return;
             }
-            ch->rc = rc - 1u;
         }
         return;
     }
@@ -2133,7 +2145,11 @@ static uint64_t lgc_stats_collected = 0;
 
 /* 锁语义满足前提下的登记内核（属主账本无锁直调；兜底账本锁内直调）：
  * closed / 收集期 / PURPLE 复检 + append + 置 PURPLE|idx + 债务累计。
- * 返回 1 = 已登记（+1 已驻留 rc）；0 = 未登记。 */
+ * 返回 1 = 已登记（+1 已驻留 rc）；0 = 未登记。
+ * atomicfix：唯一调用方（rigi_gc_local_after_release 的登记分支）已随
+ * mutator 登记面停用一并封存，本定义同步封存（避免 -Wall unused 告警）；
+ * 重启登记面时与 after_release 历史块一并解封。 */
+#if 0
 static int lgc_note_locked(RigiLocalLedger *lg, void *object,
                            const RigiTypeSheet *sheet)
 {
@@ -2175,20 +2191,25 @@ static int lgc_note_locked(RigiLocalLedger *lg, void *object,
     gc_flags_replace(h, RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT),
         RIGI_GC_PURPLE | (idx << RIGI_GC_INDEX_SHIFT));
     /* 账本持 +1 强引用（Phase 1.3 不变量的局部版）：PURPLE 在册 ⟹
-     * rc = U + 1。属主单线程无在飞 pin，plain 加即可（macroGC 的 pin
-     * 由 release 调用方驻留后无偿转账，这里由登记方直接补上）。缺此
-     * +1 会破坏「在册 ⟹ rc ≥ 1」不变量——在册对象可被外部 release
-     * 减穿归零走「非在册终态」误析构，账本悬垂 UAF。 */
-    h->rc = h->rc + 1u;
+     * rc = U + 1。登记方直接补上（macroGC 的 pin 由 release 调用方
+     * 驻留后无偿转账）。缺此 +1 会破坏「在册 ⟹ rc ≥ 1」不变量——
+     * 在册对象可被外部 release 减穿归零走「非在册终态」误析构，账本
+     * 悬垂 UAF。atomicfix：原 plain 加在他线程并发 release 下丢失
+     * 更新（rc 收支失衡 → 提前归零误析构，case 455 实证），改原子
+     * RMW。 */
+    atomic_fetch_add_explicit((_Atomic uint32_t *)&h->rc, 1,
+        memory_order_relaxed);
     lg->debt += size;
     return 1;
 }
+#endif /* atomicfix：lgc_note_locked 随 mutator 登记面封存 */
 
-/* 账本内摘除（swap-remove + 债务回减 + 清位 + plain 归还 +1）。调用方
+/* 账本内摘除（swap-remove + 债务回减 + 清位 + 原子归还 +1）。调用方
  * 保证候选在册（PURPLE）与锁语义（属主无锁 / 兜底锁内）。返回 1 = 摘
- * 除、0 = 索引校验未命中（跨账本防御）。plain rc 归还的前提：摘除语境
- * = 属主线程（登记方）或 promote 翻位的发布前窗口（翻位前置协议：
- * macrogc.h rigi_gc_promote_subgraph 契约）——对象此刻只被本语境触碰。 */
+ * 除、0 = 索引校验未命中（跨账本防御）。atomicfix：归还 +1 由 plain 改
+ * 原子 fetch_sub（acq_rel）——跨协程共享对象的引用交接需要与 mutator
+ * 原子操作配对（原「plain 归还前提 = 属主独占」已被实证打破，见
+ * lgc_is_mechanism_object 段 ③ 勘误）。 */
 static int lgc_detach_from(RigiLocalLedger *lg, void *object)
 {
     RigiObjectHeader *h = (RigiObjectHeader *)object;
@@ -2213,7 +2234,10 @@ static int lgc_detach_from(RigiLocalLedger *lg, void *object)
     lg->len--;
     gc_flags_replace(h, RIGI_GC_COLOR_MASK | (0xFFFFFFu << RIGI_GC_INDEX_SHIFT),
         0);
-    h->rc = h->rc - 1u; /* 归还账本 +1（plain） */
+    /* atomicfix：plain 归还改原子 RMW（归还可能使 rc 归 0 并触发
+     * 调用方终态判定，acq_rel 定序与 mutator 原子操作配对）。 */
+    atomic_fetch_sub_explicit((_Atomic uint32_t *)&h->rc, 1,
+        memory_order_acq_rel); /* 归还账本 +1 */
     return 1;
 }
 
@@ -2249,7 +2273,9 @@ static void lgc_pass(RigiLocalLedger *lg)
     for (i = 0; i < lg->len; i++)
     {
         RigiObjectHeader *cand = (RigiObjectHeader *)lg->items[i].object;
-        cand->rc = cand->rc - 1u;
+        /* atomicfix：plain 减改原子 RMW（同上，mutator 可并发）。 */
+        atomic_fetch_sub_explicit((_Atomic uint32_t *)&cand->rc, 1,
+            memory_order_relaxed);
     }
     for (i = 0; i < lg->len; i++)
     {
@@ -2355,18 +2381,43 @@ static void lgc_maybe_collect(RigiLocalLedger *lg)
  *   ③ 残余窗口的诚实边界：兜底 lgc_pass（债务触发，可在 worker 线程
  *      跑）对机制候选的 plain 扫描与另一 worker 的 $mw.frame 引用操作
  *      理论可并发——Bacon-Rajan 的「计数快照」前提在该窗口不成立，最
- *      坏后果是候选误判（活帧早收 UAF / 死帧滞留）。工程验收以此窗口
- *      实际不可达为准：failure/Task 完成族、Stress 长跑与 memtrack 零
- *      泄漏口径全绿（本阶段 3d-2 复验）。
+ *      坏后果是候选误判（活帧早收 UAF / 死帧滞留）。
+ *      atomicfix 勘误（2026-09）：本段旧文「工程验收以此窗口实际不可达
+ *      为准」已被实证推翻——窗口真实可达，且不止于「兜底 pass 与 mutator」
+ *      一处：凡 local 会计对象被跨协程并发 acquire/release（实证违约者：
+ *      core.coroutine::CoroutineHandle 经 Task/Dispatcher 完成链被 main
+ *      与 worker 两端触碰；编译器生成的闭包捕获 cell ..cell..<hash> 经
+ *      Task 闭包同样跨协程），plain rc 读改写丢失更新、登记路径
+ *      lgc_note_locked 的 plain rc+1 / lgc_detach_from 的 plain 归还、
+ *      本文件局部收集三阶段的 plain 模拟减量/补偿，均与他线程引用操作
+ *      失守。NativeE2E case 455（4 worker 并发 mutate + await join）
+ *      UAF 实证：默认 25% 量级、RIGI_RT_GC_THRESHOLD=64 放大至 90%。
+ *      已落地修复（atomicfix）：
+ *      (a) rigi_gc_local_after_release 的 !alive 分支不再把「减后值==1」
+ *          误判为终态（终态判定只认 after==0 / PURPLE detach 成功）；
+ *      (b) local 会计的 rc 访问全面原子化——mutator 侧
+ *          rigi_account_acquire/release_local 与本文件局部收集全部
+ *          plain 点（markGray/scanBlack/scan 判活/补偿/teardown 子边/
+ *          登记 +1/detach 归还/pass 归还批减）统一改原子 RMW，恢复
+ *          「任何时刻 rc == 真实引用数」无竞态不变量；Bacon-Rajan 语义
+ *          只要求计数收支精确（回收 ⟺ rc 归 0 且扫描不见外部引用），
+ *          原子 RMW 即闭合内存安全；代价是 3d-1「零 locked 热路径」
+ *          收益让位于正确性（对策见下段根本消除路线的重新评估）。
+ *      曾评估「实证违约类型名单 + 分配即翻 shared 会计」方案并短期落地
+ *      CoroutineHandle 一例，因违约对象含编译器动态命名的闭包 cell
+ *      （无法静态穷举）而撤名单、改 (b) 全面原子化。
  *
  * 根本消除路线 =「frame 分配即 promote（恒 shared 会计）」，3d-2 评估
  * 后否决，理由：(a) frame root slots 是用户 local 对象的主锚，promote
  * 语义要求子图连带翻位（只翻本体打破「shared 不引 local」图不变量，
  * 全局 pass 会拆进 plain 子图）——async 触碰过的对象全体升 shared 会计，
  * split-heap 在协程场景的收益归零；(b) 分配热路径纳税（机制识别判定 +
- * shared release 协议的 pin 三原子）；(c) 换来的是 ①② 已覆盖、③ 工程
- * 验收管控的窄窗口，代价收益不成比例。后续若移植非 x86 架构或出现 ③
- * 的实锚，再重启该路线。 */
+ * shared release 协议的 pin 三原子）。atomicfix 复评：③ 已实证可达且
+ * 造成 UAF，收益必须让位正确性——但「本体的翻位」同样打破图不变量，
+ * 故不采纳 promote，改采 (b) 原子化（保留 split-heap 的账本/收集结构
+ * 与收集归属分流，仅恢复计数操作的原子性）；split-heap 后续收益可另经
+ * 「逃逸分析证实的真属主独占对象白名单」重启，须逐类型实证 + 并发回归
+ * 把关。 */
 static bool lgc_is_mechanism_object(const RigiTypeSheet *sheet)
 {
     const RigiTypeInfo *ti = sheet != NULL ? sheet->typeInfoId : NULL;
@@ -2380,14 +2431,37 @@ static bool lgc_is_mechanism_object(const RigiTypeSheet *sheet)
     return false;
 }
 
-/* release local 非终态/在册收口（arc.c plain 减量后 after>0 调用；
- * after = 减后值）：在册（PURPLE）走终态快路径（after==1：摘除 + 归还
- * +1 → 返回 1 终态）或债务触发；非在册尝试登记候选（may-cycle 过滤 +
- * 账本 +1）+ 债务阈值检查。返回值与 rigi_gc_release_shared 完全同约
- * 定：1 = 终态析构信号；否则返回减前值 after+1（≥2）——绝不能把减后
- * 值透传（减后值==1 的非终态对象会被调用方误判终态析构 → UAF）。 */
+/* release local 非终态/在册收口——atomicfix 定案后本入口自 mutator
+ * 并发面停用（短路返回非终态；完整定案与历史封存见函数体内注释），
+ * 候选环检测统一交 macroGC 全局 pass（fence 保护路径）。 */
 uint32_t rigi_gc_local_after_release(void *object, uint32_t after)
 {
+    /* atomicfix 定案（2026-09）：**本入口自 mutator 并发面停用**——arc.c
+     * rigi_account_release_local 已统一转发 rigi_gc_release_shared
+     * （pin-before-sub 原子协议 + macroGC 全局候选账本），本函数不再被
+     * 任何调用方触达。停用理由：局部账本的「属主独占」前提（登记方唯一
+     * / plain rc+1 与归还无并发 / markGray 临时减量中间态不对外暴露）
+     * 被跨协程共享对象（core.coroutine::CoroutineHandle、编译器动态命名
+     * 的闭包捕获 cell）实证打破，且名单制不可穷举；仅「rc 访问原子化」
+     * 亦不足——markGray 中间态暴露使 mutator 的「rc==0 即死」终态判定
+     * 仍可误判（case 455 实测回归）。本修复（入口短路，候选环检测统一
+     * 交 macroGC 全局 pass 的 fence 保护路径）+ arc.c local 会计原子化
+     * + 终态析构 rc==0 前置断言，构成对 case 455 UAF 的完整闭环。
+     * 历史缺陷存档：本函数旧 !alive 分支曾把「减后值==1」误判为终态
+     * （返回 1 ⟹ rc==1 的对象被提前 rigi_destruct，幸存引用 release
+     * 即 UAF）——终态判定的合法来源只有 after==0（调用方 arc.c 已在
+     * 减后==0 时短路）与 PURPLE 在册 detach 成功归还账本 +1 后 rc 归 0。 */
+    (void)object;
+    /* after ≥ 1（本入口契约：调用方只在减后 >0 时进入）⟹ 非终态，
+     * 如实返回减前值 after+1。绝不能透传减后值——减后值==1 的非终态
+     * 对象会被调用方误判终态析构（UAF，见上存档）。 */
+    return after + 1u;
+#if 0
+    /* atomicfix：下方历史实现随入口停用一并封存（仅供研究；编译器不
+     * 编译，规避 unreachable/unused 告警）。重启本路径的前提：重新论证
+     * 「属主独占」前提对全部 local 会计对象成立（含跨协程机制对象与
+     * 闭包捕获 cell），并补 case 455 三环境（默认 / RIGI_RT_GC_OFF=1 /
+     * RIGI_RT_GC_THRESHOLD=64）并发回归全绿。 */
     RigiObjectHeader *h = (RigiObjectHeader *)object;
     const RigiTypeSheet *sheet;
     RigiLocalLedger *lg;
@@ -2431,6 +2505,19 @@ uint32_t rigi_gc_local_after_release(void *object, uint32_t after)
             {
                 return before; /* 交登记账本的收集者回收 */
             }
+            /* atomicfix 断言：detach 成功 ⟹ 账本 +1 已 plain 归还，本边
+             * release 的减后值 1 再减 1 ⟹ rc 必归 0。违反即终态判定破坏
+             * （析构后必悬垂），响亮失败炸在源头（ arc.c
+             * rigi_release_by_accounting 的 rc==0 析构前置断言为第二道
+             * 汇聚防线）。 */
+            if (h->rc != 0u)
+            {
+                fprintf(stderr,
+                    "rigi_rt: PURPLE detach 终态但 rc=%u 非零（终态判定破坏，"
+                    "atomicfix 断言）\n", h->rc);
+                fflush(NULL);
+                abort();
+            }
             return 1u; /* 终态：调用方析构 */
         }
         if (alive)
@@ -2441,13 +2528,20 @@ uint32_t rigi_gc_local_after_release(void *object, uint32_t after)
     }
     if (!alive)
     {
-        /* 生命周期闸（stop/closed/off）只挡登记与触发，不挡非在册
-         * 终态析构——after==1 的对象若被误判非终态将永不析构（泄漏，
-         * shutdown 末批释放路径实测命中）。终态判定与账本零交互。 */
-        if (after == 1u)
-        {
-            return 1u;
-        }
+        /* 生命周期闸（stop/closed/off）：只挡登记与触发，不改变终态
+         * 判定语义——本函数的返回值契约是「1 = 终态析构信号」，其成立
+         * 条件只有两个：调用方在 after==0 时已短路返回 1（arc.c
+         * rigi_account_release_local），或 PURPLE 在册 detach 成功（下
+         * 方快路径）。非在册对象 after==1 ⟹ 减后仍剩一条外部引用，
+         * 属非终态，必须如实返回 before——atomicfix 修复记录：旧实现
+         * 在此处把 after==1 误判为终态（旧注释以「shutdown 末批释放
+         * 路径实测命中」为由强拧），后果是 rc==1 的对象被提前
+         * rigi_destruct，幸存引用随后 release 即 UAF（NativeE2E
+         * 「AtomicStruct 并发mutate自增无丢失」case 455 native 宿主
+         * 崩溃实证：GC_OFF 下 20/20 复现，插桩对账锁定
+         * core.coroutine::CoroutineHandle 被提前析构）。终态滞留
+         * （真泄漏）交给账本兜底与 shutdown 收干按 after==0 语义
+         * 处理，不在此用误判代偿。 */
         return before;
     }
     sheet = h->typeId;
@@ -2494,6 +2588,7 @@ uint32_t rigi_gc_local_after_release(void *object, uint32_t after)
     }
     lgc_maybe_collect(lg);
     return before;
+#endif /* atomicfix：局部账本 mutator 登记面历史封存（见函数头注释） */
 }
 
 /* 分配热路径债务检查（rigi_alloc 尾部）：兜底「只有分配没有释放」的

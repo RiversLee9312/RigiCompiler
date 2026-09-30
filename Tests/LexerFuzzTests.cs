@@ -53,6 +53,20 @@ namespace RigiCompiler.Tests
             // 斜杠家族相邻形态
             ExpectTokens("a //", "W(a) C() EOF");
             ExpectTokens("a /= b", "W(a) N(/) N(=) W(b) EOF");
+            // 字段名 Unicode 边界：BMP 字母与 Nd 后缀是词，差异八码点、
+            // 组合符/补充平面字符并非 WordToken（仅检查前端拒绝类别）。
+            ExpectTokens("字段 αβ a١", "W(字段) W(αβ) W(a١) EOF");
+            ExpectLexerError("a\u0301");
+            ExpectLexerError("a\u088F");
+            ExpectLexerError("a\u0C5C");
+            ExpectLexerError("a\u0CDC");
+            ExpectLexerError("a\uA7CE");
+            ExpectLexerError("a\uA7CF");
+            ExpectLexerError("a\uA7D2");
+            ExpectLexerError("a\uA7D4");
+            ExpectLexerError("a\uA7F1");
+            ExpectLexerError("a𐐀");
+            ExpectTokens("١abc", "W(١abc) EOF"); // 命名点由 Keywords 拒首位 Nd
             // 空输入：只有 EOF
             ExpectTokens("", "EOF");
             // 纯空白
@@ -367,7 +381,8 @@ namespace RigiCompiler.Tests
             {
                 WordToken w => $"W({w.Content})",
                 StringToken s => $"S({s.Content})",
-                CharToken c => $"CH({c.Value})",
+                // char32 标量：可打印 ASCII 直接显字符（CH(A) 形态），其余显数值
+                CharToken c => $"CH({(c.Value is >= 0x20 and <= 0x7E ? ((char)c.Value).ToString() : c.Value.ToString())})",
                 CommentToken c => $"C({c.Content})",
                 LineBreakToken => "LB",
                 NotationToken n => $"N({n.Content})",
@@ -428,6 +443,42 @@ namespace RigiCompiler.Tests
             failCount++;
         }
 
+        // 快照分类真值全 BMP 锁定：任何 .NET 升级变化必须连同数据/文档
+        // 一并评审，不能让宿主分类升级后词法与 Parcel 悄然分叉。
+        private static void TestIdentifierCategorySnapshot()
+        {
+            var states = new byte[65536];
+            var firstMismatch = -1;
+            for (var cp = 0; cp < states.Length; cp++)
+            {
+                var c = (char)cp;
+                bool letter = IdentifierCharacters.IsLetter(c);
+                bool digit = IdentifierCharacters.IsDigit(c);
+                states[cp] = (byte)(letter ? 'L' : digit ? 'D' : '.');
+                if (firstMismatch < 0 &&
+                    (letter != char.IsLetter(c) || digit != char.IsDigit(c) ||
+                     IdentifierCharacters.IsLetterOrDigit(c) != (letter || digit)))
+                    firstMismatch = cp;
+            }
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(states));
+            if (firstMismatch < 0 && sha ==
+                "16E9C532ABEE5ECF8BDA353626CAC146AA9F32CE0E3958EE677B1A58ADD14A98")
+                passCount++;
+            else
+                Fail("BMP-category-snapshot", $"首次差异 U+{firstMismatch:X4}, SHA256={sha}");
+
+            // 标识符首字符不能为 Nd；后续可为 Nd；补充平面 UTF-16 代理
+            // 单元不得被词法收为字母或数字。
+            if (Keywords.IsIdentifierStart("字段") && Keywords.IsIdentifierStart("α") &&
+                Keywords.IsIdentifierStart("a١") && !Keywords.IsIdentifierStart("١a") &&
+                !Keywords.IsIdentifierStart("𐐀a") &&
+                !IdentifierCharacters.IsLetterOrDigit('\uD801') &&
+                !IdentifierCharacters.IsLetterOrDigit('\uDC00'))
+                passCount++;
+            else
+                Fail("identifier-head", "字母/Nd/代理元首位分类不一致");
+        }
+
         // ===== 入口 =====
         public static int RunAll()
         {
@@ -439,6 +490,7 @@ namespace RigiCompiler.Tests
             failCount = 0;
             fuzzFailureLog.Clear();
 
+            TestIdentifierCategorySnapshot();
             TestFixedCases();
             TestErrorCases();
             TestPositions();

@@ -2,6 +2,8 @@
 
 > 代码库结构与核心设计决策；改动代码前必读。开发约定见 [development.md](development.md)；本文件由 AGENTS.md §1/§3/§4 拆分而来。
 
+标准库扩展的范围与分层见 [标准库 MVP 设计](../STDLIB.md)；该文档区分既有语义、建议基线和待定公共契约。
+
 ---
 
 ## 1. 项目概述
@@ -84,7 +86,7 @@ RigiCompiler/
 │   ├── Exceptions.cs            # LexerException / ParserException（用户源码错误）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成
-│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/help 五个 COMMAND 及其 --sub-cmd
+│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/run/help 六个 COMMAND 及其 --sub-cmd
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断

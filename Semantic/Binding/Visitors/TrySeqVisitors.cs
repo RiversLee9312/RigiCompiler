@@ -34,13 +34,25 @@ namespace RigiCompiler
                         $"(got '{BoundAnalysis.TypeDisplay(exceptionType)}')");
                 }
                 // catch 变量：_ 即丢弃（VariableName 为 null）；const 局部，
-                // 命中即已赋值（作用域限 catch 体）
+                // 命中即已赋值（作用域限 catch 体）。异常类型解析失败
+                // （exceptionType == null，诊断已落袋）时登记 ErrorType 毒化
+                // 变量——catch 体内使用不再级联「Undefined name」（同
+                // LocalDeclarationVisitor 毒化静默补齐）
                 LocalSymbol? variable = null;
                 var catchScope = new Scope(scope);
                 if (catchNode.VariableName != null && exceptionType != null)
                 {
                     variable = new LocalSymbol(catchNode.VariableName, exceptionType,
                         isConst: true);
+                    catchScope.Declare(variable);
+                    ctx.Locals.Add(variable);
+                    ctx.Flow.MarkAssigned(variable);
+                }
+                else if (catchNode.VariableName != null
+                    && !catchScope.DeclaresHere(catchNode.VariableName))
+                {
+                    variable = new LocalSymbol(catchNode.VariableName,
+                        env.Unit.Symbols.ErrorType, isConst: true);
                     catchScope.Declare(variable);
                     ctx.Locals.Add(variable);
                     ctx.Flow.MarkAssigned(variable);
@@ -250,7 +262,22 @@ namespace RigiCompiler
                     scope, ctx, env, declaredType as TypeSymbol);
                 var resourceType = declaredType ?? initializer?.Type;
                 if (initializer == null || resourceType is not TypeSymbol type
-                    || type is ErrorTypeSymbol) continue;
+                    || type is ErrorTypeSymbol)
+                {
+                    // 毒化静默补齐（同 LocalDeclarationVisitor）：using 初值
+                    // 绑定失败仍登记毒化资源局部，seq 块内使用不再级联
+                    // 「Undefined name」（不生成 using 绑定——错误路径无
+                    // dispose 义务）
+                    if (!scope.DeclaresHere(usingNode.VariableName))
+                    {
+                        var poisoned = new LocalSymbol(usingNode.VariableName,
+                            env.Unit.Symbols.ErrorType, usingNode.IsConst);
+                        scope.Declare(poisoned);
+                        ctx.Locals.Add(poisoned);
+                        ctx.Flow.MarkAssigned(poisoned);
+                    }
+                    continue;
+                }
                 // 推断资源类型使用点检查（§16.1，F1/V4：seq using 漏列——
                 // 与同局部推断口径；初始化表达式经统一收口已报时按驻留
                 // 类型去重跳过；显式标注路径由 TypeReferences.Resolve 检查）

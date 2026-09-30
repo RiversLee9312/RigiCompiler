@@ -29,6 +29,7 @@ namespace RigiCompiler.Middleware.Emit
             try
             {
                 module.Target = LlvmHost.HostTriple;
+                module.DataLayout = LlvmHost.HostDataLayout;
                 new Session(module, mir, context.Layout, context.Symbols, context.Module,
                     context.Singletons, context.BorrowedReturnSymbols).EmitAll();
                 return module;

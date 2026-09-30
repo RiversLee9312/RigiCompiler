@@ -313,10 +313,13 @@ namespace RigiCompiler
             return sb.ToString();
         }
 
-        // 解码字符 → BIL 字符字面量原文（转义表与字符串同集，外加单引号）
-        public static string EscapeChar(char c)
+        // 解码标量 → BIL 字符字面量原文（转义表与字符串同集，外加单引号）。
+        // 参数是 32 位 Unicode 标量（char 32 位语义，STDLIB §4.3.1）：
+        // BMP 内沿用原转义/直写形态；补充平面（>0xFFFF）输出 \u{hex}
+        // 转义（BilScalarLiteral.Unescape 可读回），避免依赖文本文件编码。
+        public static string EscapeChar(uint scalar)
         {
-            switch (c)
+            switch (scalar)
             {
                 case '\\': return "\\\\";
                 case '\'': return "\\'";
@@ -327,7 +330,10 @@ namespace RigiCompiler
                 case '\v': return "\\v";
                 case '\f': return "\\f";
                 case '\r': return "\\r";
-                default: return c.ToString();
+                default:
+                    return scalar > 0xFFFFu
+                        ? "\\u{" + scalar.ToString("X", System.Globalization.CultureInfo.InvariantCulture) + "}"
+                        : char.ConvertFromUtf32(unchecked((int)scalar));
             }
         }
 

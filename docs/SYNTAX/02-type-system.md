@@ -161,7 +161,7 @@ Handle 的类型身份，不得把 facade 擦除成该存储。此机制操作 R
 | `u8`/`u16`/`u32`/`u64` | 无符号整数 | ValueType |
 | `float`/`double` | 浮点数 | ValueType |
 | `bool` | 布尔值 | ValueType |
-| `char` | 字符 | ValueType |
+| `char` | 字符（32 位 Unicode 标量，见 §3.3） | ValueType |
 | `String` | 字符串（非 rich 值类型，值语义深拷贝，见 §3.1.2） | ValueType |
 | `Type\<T>` | 运行时类型（typeid 的封装） | ValueType |
 | `Span\<T extends ValueType>` | 连续、无装箱的缓冲区对象（内建 class，引用语义，见 RUNTIME.md §5） | Object |
@@ -206,6 +206,7 @@ false
 // 字符
 'A'
 '\n'        // 转义与字符串同一套（\' \\ \n \t 等），未知转义是编译错误
+'😀'        // 补充平面字符（32 位 Unicode 标量，见 §3.3 字符字面量规则）
 ```
 
 浮点字面量支持科学计数法形态：指数标记 `e`/`E` 后可带可选的 `+`/`-` 符号，其后必须至少有一位十进制指数数字（如 `3.14e5`、`3.14e-5`、`2e3`），可与 `f`/`F` 后缀组合（`1.5e3f`）；`e`/`E` 后无合法指数数字（如 `3.14e-`、`3.14e+x`）是编译错误。
@@ -214,7 +215,7 @@ false
 
 **负号折叠**：一元负号 `-` 直接作用于整数字面量时（之间只允许空白/换行），负号并入字面量参与定型与解析期范围检查，由此各符号整数类型的下界可以直接书写（`-2147483648` 是合法 i32、`-128B` 是合法 i8、`-9223372036854775808L` 是合法 i64）；超出下界（`-2147483649`）是编译错误，无符号类型不允许负值（`-1U` 是编译错误）。负号与字面量之间有括号或其他语法介入时不折叠：字面量按正数区间检查（`-(2147483648)`、二元减号右侧的 `a - 2147483648` 均因超 i32 上限报错），负号保持为一元运算符 `opposite`（如 `-x`、`-(5)`、`-1.5`）。
 
-字符字面量规则：单引号内必须恰好是一个字符或一个转义序列，类型为 `char`（§3.2）；空（`''`）或多于一个字符（`'ab'`）是编译错误。
+字符字面量规则：单引号内必须恰好是一个字符或一个转义序列，类型为 `char`（§3.2）；空（`''`）或多于一个字符（`'ab'`）是编译错误。`char` 是 32 位 Unicode 标量（`STDLIB/04-text.md` §4.3.1）：取值 U+0000–U+10FFFF，排除 U+D800–U+DFFF 代理区。补充平面字符（如 `'😀'`）直接书写合法——源码以 UTF-16 代理对到达词法层，合法代理对在词法层合成为单个标量；孤立代理、组合字符序列（如重音符）不构成单个 `char`。整数转 `char`（`as char`）在运行期检查标量值域：越界（如 `0x110000`）、落入代理区（如 `0xD800`）或负值均为 cast 失败——`as` 抛 `core.CastException`、`as?` 得 `null`（§3.5），不截断也不回绕。`char` 与 `String`（§3.1.2，UTF-8 字节序列）互换时按标量编码，单个 `char` 在 String 中占 1–4 字节。
 
 多行字符串（`"""`）是编译期处理的严格多行形式（Swift 风格）：
 
@@ -265,6 +266,8 @@ obj as? String
 - `if?` 的左操作数必须是可空类型 `T?`（含 `T` 为泛型参数的 `T?`）；右操作数（空值回退值）必须可赋值到 `T`，整个表达式的类型为 `T`。右操作数延迟求值：左操作数非空时不对其求值。
 
 **null 判等**：`==`/`!=` 的一侧为 `null` 字面量、另一侧类型为 `T0` 时合法，结果为 `bool`（`null` 定型为 `Nullable\<T0>`，按引用/值判等）。`T0` 非可空时（如 `i32 == null`）不报错不警告，运行期恒 `false`/`true`（与 §3.5「不做静态不可能性拒绝」口径一致）。`null == null`（两侧皆无锚定类型）是编译错误。null 判等是 smart cast 的收窄来源之一（§3.5）。
+
+**可空判等**：`==`/`!=` 的两侧为同型 `T?` 时合法，语义为 **nullness 短路 + 解包内层判等**：双空为 `true`（`!=` 为 `false`）；单空为 `false`（`!=` 为 `true`）；双非空解包内层值后按 `T` 的既有判等处理（`T` 声明的 `operator equals` / Any 默认 equals-or-hash 链 / 内建内容判等，如 `String` 按内容、`i32` 按值）。即 `a == b` 等价于 `a == null ? b == null : (b != null and a.unwrap == b.unwrap)`。异内层类型 `T? == U?` 不经此特判，走既有类型规则（不兼容即编译期拒绝）。可空判等不产生 smart cast 收窄（收窄只锚定 `null` 字面量形态）。开放泛型占位内层（泛型代码内的 `T? == T?`）也遵循同一规则：双非空先解包再按实际类型的内建判等、用户 `operator equals` 或 Any 默认判等派发；即使两侧是同一对象也不得跳过用户 `equals`。泛型值类型宿主 operator 与 Entity wrapper 代理链仍受各自泛型动态派发能力边界约束，不因此视为已全覆盖。
 
 ### 3.5 类型转换与类型检查
 
@@ -450,6 +453,35 @@ if (obj supers t) { ... }
 ```rigi
 if (obj with Serializable) { ... }
 ```
+
+**通用字段反射（`typeNameOf` / `isSerializable` / `fieldsOf` / `casesOf`，§4.6.3「反射与实现边界」）**：`core.serialization` 提供类型元信息查询面，供序列化格式层等消费——JSON 经它判断成员应读为对象还是 Map、数字应构造为何种宽度。所有函数体由编译器按编译单元内已登记的闭合类型合成填充，走普通函数产物流。
+
+```rigi
+// 实际类型的规范标识（含闭合泛型实参；不调用业务对象的 toString）；
+// 无参形态取调用点泛型实参的类型
+pub func typeNameOf\<T>(typeValue: Type\<T>): String
+pub func typeNameOf\<T>(): String
+// Serializable 能力查询（未知/未登记类型返回 false）
+pub func isSerializable\<T>(typeValue: Type\<T>): bool
+// 字段清单 = 应序列化字段闭包（含继承字段；@Temporary / static /
+// 无支撑存储的计算属性排除）；无参形态取调用点泛型实参的类型
+pub func fieldsOf\<T>(): Array\<FieldInfo>
+pub func fieldsOf\<T>(typeValue: Type\<T>): Array\<FieldInfo>
+// 枚举 case 清单（含各 case 参数洞的名称与声明类型）
+pub func casesOf\<T>(): Array\<EnumCaseInfo>
+pub func casesOf\<T>(typeValue: Type\<T>): Array\<EnumCaseInfo>
+// 按类型名的重载（块 5-2c，§4.7.1 递归契约）：与泛型形态同一候选集
+// 与筛选口径；输入为规范类型名文本（分发双拼写并收），供格式层在
+// 嵌套成员引导读取时按 FieldInfo.typeName 取得嵌套类型元信息
+pub func fieldsOf(typeName: String): Array\<FieldInfo>
+pub func casesOf(typeName: String): Array\<EnumCaseInfo>
+pub func isSerializable(typeName: String): bool
+```
+
+- `FieldInfo { name, typeName, nullable }`：`typeName` 为规范类型名文本（闭合泛型实参与容器键值/元素类型完整保留，如 `core.collections::Map<.string, .i32>`），可空性由 `nullable` 结构化表达（`.nullable` 包装不进 `typeName` 文本）。宿主类型不限于 `@Serializable`——「参与序列化的字段」闭包对任何 class/struct/enum struct 可计算；`@SerializationBase` 宿主（标量/String/容器/Parcel）经编解码器而非字段表，其字段清单恒为空数组。字段筛选与 Serializable 合成规则一致，不另建格式专用的字段规则。
+- `EnumCaseInfo { name, fields }`：固定 case 的 `fields` 为空数组；参数化 case 的 `fields` 按参数洞顺序给出（名称 + 声明类型）。
+- 未登记（编译单元内无闭合使用点）的类型查询抛 `core.IllegalArgumentException`；`isSerializable` 对未知类型返回 `false` 而非抛异常。「已登记」候选的精确口径（块 5-1b 收敛）：用户源声明的 class/struct/enum struct（泛型定义取闭合构造）+ 内建标量 + `@SerializationBase` 宿主（标量/String/容器/Parcel 等）的闭合构造；stdlib 内部类等非宿主类型不在候选内，查询按未登记抛异常。
+- 两宿主文本约定：反射 API 返回的 `typeName` 文本恒为规范拼写（不依赖 VM/native 各自 `toString` 的宿主差异）。
 
 ---
 

@@ -457,7 +457,10 @@ namespace RigiCompiler.Bil.Vm
                 "core::u64" => new VmU64(unchecked((ulong)value)),
                 "core::float" => new VmF32(value),
                 "core::double" => new VmF64(value),
-                "core::char" => new VmChar(unchecked((char)value)),
+                // 整数 → char 检查标量值域（0..0x10FFFF 排除代理区），越界
+                // 返回 null → TryNumericCast false → 走既有 cast 失败路径
+                // （CastOrThrow 抛 CastFailed / CastSafe 得 null）
+                "core::char" => TryCreateChar(value >= 0 ? (ulong)value : ulong.MaxValue),
                 _ => null!,
             };
         }
@@ -476,7 +479,8 @@ namespace RigiCompiler.Bil.Vm
                 "core::u64" => new VmU64(value),
                 "core::float" => new VmF32(value),
                 "core::double" => new VmF64(value),
-                "core::char" => new VmChar(unchecked((char)value)),
+                // 无符号 → char：同上，标量值域检查，失败返回 null
+                "core::char" => TryCreateChar(value),
                 _ => null!,
             };
         }
@@ -495,9 +499,26 @@ namespace RigiCompiler.Bil.Vm
                 "core::u64" => new VmU64(unchecked((ulong)value)),
                 "core::float" => new VmF32((float)value),
                 "core::double" => new VmF64(value),
-                "core::char" => new VmChar(unchecked((char)(long)value)),
+                // 浮点 → char：先按 long 截断（NaN/超界得不确定负值，必被
+                // 下面的值域检查拒绝），再走同一标量值域检查
+                "core::char" => TryCreateChar(unchecked((long)value) >= 0
+                    ? (ulong)unchecked((long)value)
+                    : ulong.MaxValue),
                 _ => null!,
             };
+        }
+
+        // char 标量值域：U+0000–U+10FFFF，排除 U+D800–U+DFFF（STDLIB §4.3.1）。
+        // 合法返回 VmChar；越界/代理区返回 null（受控 cast 失败，与该组
+        // From* 转换的 null! 失败通道同口径）
+        private static VmValue TryCreateChar(ulong scalar)
+        {
+            if (scalar > 0x10FFFFul
+                || (scalar >= 0xD800ul && scalar <= 0xDFFFul))
+            {
+                return null!;
+            }
+            return new VmChar((uint)scalar);
         }
 
         private static bool IsNumericTarget(string normalized)

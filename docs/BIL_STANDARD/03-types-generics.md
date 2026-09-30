@@ -42,6 +42,7 @@
 - `.any`、`.object`、`.valuetype` 是 Rigi 根类型的标准 BIL 别名；
 - `.handle` 是 `Handle\<T>` / `MutableHandle\<T>` 的固定能力投影，绝无 `.handle<T>` 形态。模块必须提供唯一、无泛型、无成员的 `class shared unsafe compiler-generated` 声明。源码的逻辑 T 由私有泛型 helper 的方法 typeid 保留，不进入 Handle 布局。禁止普通 `new`、动态构造、继承与伪造字段。
 - `.string` 是**非 rich 值类型**（`SYNTAX.md` §3.1.2），赋值兼容与复制按值类型规则处理，不属于 `.object` 分支。它的物理表示是运行时特权裸缓冲区；BIL 与 BIL VM 一律按值语义（深拷贝）理解 `.string`，不得假设任何共享缓冲区、驻留或 copy-on-write 优化的存在——与「BIL 不得假设特定 GC 模型」同理。
+- `.char` 是**非 rich 标量值类型**，32 位承载一个 Unicode 标量：U+0000–U+10FFFF，排除 U+D800–U+DFFF 代理区（`STDLIB/04-text.md` §4.3.1）。`.char` 资源与整数→`.char` 转换均须满足该值域，越界/代理区是运行期 cast 失败（`core::CastException`），不截断或回绕；String 的物理表示是 UTF-8 字节序列，与 `.char` 的标量值经标准编解码换算。
 
 ### 6.3 标准类型构造
 

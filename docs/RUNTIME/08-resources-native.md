@@ -110,3 +110,105 @@ CoroutineHandle / CoroutineCarriage 是内部示例：Task 与 Task<T> 保持独
 的语言类型和布局，只共同持有 CoroutineCarriage。调度器保留运行所需
 原生强引用，协程清理完成后释放；Carriage 不保活已结束且没有其它
 持有者的资源。MQ 不使用 NativeRcHandle 或原生队列句柄。
+
+### 26.2 FS 原语层（rigi_rt `fs.c`，施工块 7-2）
+
+`core.fs` 的 OS 操作经私有 native 原语与 VM hook 接入（STDLIB §4.5.9），
+两侧同键同语义（错误分类、EOF 语义、挂起行为），公共面在 stdlib
+`core/fs/primitives.rg`（全部 internal，7-3/7-4/7-5/7-6 组装）：
+
+- **句柄生命周期**：文件/目录句柄包进 rigi_rt 侧结构（fd/HANDLE + 在途
+  槽），经 NativeRc 注册表持有（§26.1 同一底座）；Rigi 层
+  `FileHandle`/`DirHandle` 强引用 + `FileCarriage`/`DirCarriage` 弱搬运。
+  close 不设独立原语——dispose 释放最后强引用触发析构回调关闭句柄
+  （close 错误不上报：持久化错误归 flush 面，§4.5.6）。
+- **同步/挂起分界**：read/write/flush 等待数据传输或持久化（可能任意
+  久），挂起两段式——start 把阻塞系统调用卸载到现起 detached 后台线程
+  （绝不占 Compute Worker，§3.3），返回 0 = 已卸载；Rigi 层 yield 一次性
+  EventAlarm 挂起，完成登记（结果登记 happens-before 事件触发，恢复必见
+  结果）后 rigi_event_signal 唤醒，take 取结果。open/seek/tell/
+  getLength/setLength/stat/lstat/realpath/mkdir/rmdir/unlink/rename/
+  diropen/dirread 是命名空间/元数据操作，本地文件系统上通常快速返回，
+  同步直调。挂起期间句柄由 FileHandle 强引用保活、缓冲区借用（§3.2，
+  stdin Span 借用先例）；同一句柄同类同时刻至多一个在途操作，冲突属
+  违反 §4.4 契约，宿主面防御诊断（native abort / VM 抛错）。
+- **错误归一**：C 侧只传归一错误码（类 errno 钉死值，Windows
+  GetLastError 与 Linux errno 各自映射到同一套码；VM 侧 .NET 异常经
+  Win32 HResult / errno 映射到同一套），映射 FileSystemErrorKind 的
+  分类表在 Rigi 层（`fsErrKind`，三处同值；链接循环不伪装 NotFound，
+  §4.5.3）。
+- **路径编码**：String（UTF-8）传入；Windows 严格转 UTF-16 走 `_w` 族
+  （非法序列拒绝 → InvalidNameEncoding，不替换不跳过，§4.5.2），绝对
+  路径超长时内部加 `\\?\` 前缀（内部原生前缀不作用户路径语法扩展）；
+  Linux 直接用 UTF-8 字节（目录名经严格 UTF-8 校验，无法无损表达的
+  名称失败整个目录读取，§4.5.2）。变长输出（realpath/目录条目名）经
+  out/meta 缓冲协议，不足回正数哨兵与所需长度，Rigi 层放大重试一次。
+- **追加的系统保证**：Append 每次写入的位置由 OS 在该次写系统调用内
+  原子选择到当时末尾——Windows 仅 FILE_APPEND_DATA（不含
+  FILE_WRITE_DATA）的句柄上 WriteFile 忽略句柄当前位置、Linux
+  O_APPEND fd 的 write(2) 落当时末尾；不能用用户态 Seek(End)+Write
+  模拟（两步之间其他写入者可增长文件致本笔覆盖），也不能只在打开时
+  定位一次末尾。注意 .NET FileMode.Append 不具备该语义（两平台都只是
+  普通写句柄、写经显式 offset 提交），VM 侧经追加专用互操作打开并单
+  系统调用写入（`Bil/Vm/VmDispatch.cs` 的 OpenAppendStream /
+  AppendWriteCore，与 native 面同语义）；不承诺跨进程单笔大 write 或
+  整行的原子性（§4.5.6）。
+- **setLength 的实现义务**：缩短截断、增长补零、成功后游标保持不变
+  （即使已在新末尾之后）——Windows `SetEndOfFile` 不定义扩展区域内容，
+  由实现显式写零补齐，不假定宿主保证（§4.5.6）。
+- **stat/lstat 创建时间的可信度**：Windows 保持 FILETIME/.NET 的可得时间；Linux x64 的 VM 从同一次 libc `stat/lstat` 主体快照取得类型、长度、mtime/atime 与 dev+ino，第二次 libc `statx(AT_FDCWD, path, follow ? 0 : AT_SYMLINK_NOFOLLOW, STATX_BTIME)` 只补 birth，且必须同时核 `stx_mask & STATX_BTIME`、dev major/minor 与 inode、合法纳秒。两次查询使用同一次 cwd 基准的原始路径（不词法消除符号链接前的 `..`）；身份变更/辅助入口缺失/权限错误/文件系统无 birth 仅将 birth 写不可得哨兵，不覆盖成功主体或伪造 ctime/mtime。.NET Unix `CreationTimeUtc` 可能回退，不能用于 birth；statx 纳秒直接拆为毫秒与纳秒余量（不经 DateTime 的 100ns 截断），其余平台不新增 birth 可得承诺。Linux x64 statx 互操作使用完整 256B ABI 镜像而非短前缀，偏移与结构大小用 C `sizeof/offsetof` 探针及 VM 布局断言锁定（§4.5.3）。
+- **文件打开的目录拒绝**：Linux `open(O_RDONLY)` 可成功打开真实目录，
+  不能以 open 成功代替文件类型验证；native `fs_open` 成功后按已打开
+  fd 的 `fstat` 判目录并关闭句柄报 IsDirectory，`fstat` 出错保留原
+  errno 且关闭句柄。不能用事先 stat 路径分类，以免与实际打开对象
+  不一致；文件复制目录源同样在此打开边界受控拒绝（§4.5.7）。
+- **rename 的不替换保证**：NoReplace 用系统机制（Windows `MoveFileExW`
+  不带 REPLACE_EXISTING；Linux `renameat2(RENAME_NOREPLACE)`，VM 面经
+  `Bil/Vm/VmDispatch.cs` 的 libc.so.6 固定参数 P/Invoke（AT_FDCWD 双路
+  径同一次系统调用内同一 cwd 基准解析，glibc ≥ 2.28 导出；缺库/缺入口
+  /EINVAL/ENOSYS/EOPNOTSUPP 受控归 Unsupported），native 面经
+  `SYS_renameat2`），文件/目录/符号链接（含断链，末段不跟随）统一由内
+  核原子「检查+移动」裁决；宿主或文件系统不能提供该保证时显式报
+  Unsupported（如 WSL2 DrvFs/9P 挂载对 RENAME_NOREPLACE 返回 EINVAL，
+  VM/native 同归一码），不以 exists + 覆盖 rename 查询模拟承担契约，
+  也不跨文件系统退化复制删除（EXDEV → CrossDevice）；目录源的
+  Replace 也使用系统 RENAME_NOREPLACE，防止目标在检查后变成空目录
+  而被普通 rename 静默覆盖；Linux 目标已是目录归 IsDirectory，已是
+  文件/链接归 AlreadyExists，Windows 维持既有宿主错误映射。文件/链接源的 Replace 保留系统覆盖 rename（不能
+  回退到 NoReplace），VM 不用 Unix File.Move(overwrite:true)：该 BCL
+  跨设备时会复制并删除源，违背 CrossDevice 契约。符号链接源末段按条目
+  分类，目标查询仅用于系统调用失败后的错误归类，不能充当并发保证。
+  源路径类型由事前 lstat/File.GetAttributes 分类；保证范围是调用期间
+  该源路径仍为所判定条目类型，外部同时换掉源路径可使分支判定失效，
+  不宣称具备跨进程源路径换型隔离（§4.5.7）。
+- **diropen 打开面的异常边界（VM 侧 `Bil/Vm/VmDispatch.cs` FsDirOpen）**：
+  OS 打开目录的时机是 BCL 实现细节——既可在 DirectoryInfo/GetEnumerator
+  建立期（.NET 10 双平台实证：缺失/非目录多在 GetEnumerator 抛出，Unix
+  构造期即 openat），也可推迟到首次 MoveNext；三段同属一次「打开」的生
+  命周期，必须共用同一受控异常边界，不按平台特判（边界不变量）。失败
+  路径绝不发布 token：未建枚举器不释放（不空解引用），已建就地释放
+  （枚举器 Dispose 是纯句柄关闭不上抛，不遮盖主错误），登记中途失败
+  回滚强引用计数与登记再释放；错误分类沿用 MapFsError + 文件挡路补查
+  NotDirectory（§4.5.9 归一码出仓，宿主异常不漏出）。
+- 双宿主一致性以 e2e 语料 `fs_primitives.rg`（NativeE2E「fs 原语对拍」
+  复用）与 VM 机制套件 `Tests/VmFsNoReplaceTests.cs`（文件/目录/断链与
+  链接条目、并发争用恰一成、跨设备 EXDEV）验证；NoReplace 的 Linux 生
+  效范围取决于宿主文件系统（WSL2 DrvFs/9P 等不支持 RENAME_NOREPLACE 的
+  挂载按契约报 Unsupported）。目录源 Replace 的 Linux 原生机制还由
+  `Tests/NativeE2ETests.cs` 独立 C FFI 探针直接调用最终链接的
+  `rigi_fs_rename`，验证已有空目录/文件/断链目标不覆盖、文件/链接
+  原有覆盖与双线程目标争用（Barrier、超时和失败者源保持）；不以仅
+  VM 通过替代原生保证。
+- **rigi_rt 现场编译纪律（RigiRtBuilder unity 单翻译单元）**：glibc
+  feature-test 宏（收口在 `RigiRtBuilder.RtFeatureMacros`）必须在任何
+  系统头之前生效——`-std=c11` 下显式定义 `_POSIX_C_SOURCE` 会抑制
+  glibc 默认派生的 `_DEFAULT_SOURCE`，`realpath`/`syscall`/`DT_*`
+  （守卫 `__USE_MISC`）随之不可见；宏集合三处同源派生（clang 命令行
+  `-D`、unity.c 前导 `#define`、内容哈希）。`-DNAME=VALUE` 转为
+  `#define NAME VALUE` 时只替换首个分隔等号，值内的等号保持不变；无值
+  `-DNAME` 的宏体为 `1`，显式空值保持空宏体。**编译参数、特性集合或
+  unity 生成规则变化必须换缓存键**：实际生成的 unity 文本也纳入内容
+  哈希，不能只哈希原始 C 文件与 `-D` 列表。旧 bitcode 不得复用；一切改动以真实 native 管线
+  验证（WSL clang 现场编 rigi_rt 并**运行**产物），Windows 可编过不代
+  表 Linux 面正确（realpath 的跨分配器配对（glibc malloc 指针流进
+  `rigi_track_free` 即段错误）这类运行期缺陷只有真实运行才暴露）。

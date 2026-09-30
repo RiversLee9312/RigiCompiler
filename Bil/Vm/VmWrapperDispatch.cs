@@ -413,6 +413,18 @@ namespace RigiCompiler.Bil.Vm
             {
                 return false;
             }
+            // nullablefix：可空接收者先解包再收集 wrapper/建链——成员
+            // 派发不应对 Nullable 盒子操作（用户 hash/equals 体内成员
+            // 访问会以「字段访问目标不是对象：.nullable<...>」崩）。可空
+            // 抵达此处即上游已判非空（判等经 ExecuteBinary 解包 +
+            // IsNullLike 短路），HasValue 恒真；无值盒归一为 VmNull，
+            // wrapper 收集对 .null 为空集自然返回 false。
+            if (receiver is VmNullable nullableReceiver)
+            {
+                receiver = nullableReceiver.HasValue
+                    ? nullableReceiver.Value!
+                    : VmNull.Instance;
+            }
             // 与方法链同口径：运算符也按 receiver 实际类型收集 Entity wrapper
             var wrappers = context.CollectEntityWrappers(VmTypeOps.ActualType(receiver));
             if (wrappers.Count == 0)

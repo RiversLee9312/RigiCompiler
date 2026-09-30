@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 using LLVMSharp.Interop;
 
@@ -18,6 +19,65 @@ namespace RigiCompiler.Middleware.Emit
         // opaque pointer 下函数的真实类型不能从 Value.TypeOf 反推。
         public static LLVMTypeRef FunctionTypeOf(LLVMValueRef function) =>
             LLVM.GlobalGetValueType(function);
+
+        internal static string HostDataLayout()
+        {
+            var data = LLVM.CreateTargetDataLayout(LlvmHost.SharedHostMachine);
+            try
+            {
+                var text = LLVM.CopyStringRepOfTargetData(data);
+                try { return new string(text); }
+                finally { LLVM.DisposeMessage(text); }
+            }
+            finally { LLVM.DisposeTargetData(data); }
+        }
+
+        // 命中与新产物均解析真实 bitcode，而不信任缓存目录名或 manifest。
+        // 宿主 TargetMachine 的布局由 libLLVM 计算，拒绝相同 triple 下的
+        // ABI 布局漂移；拒绝发生在 LinkModules2 输出 warning 之前。
+        internal static void ValidateRuntimeTarget(string bitcodePath, string targetTriple)
+        {
+            var pathBytes = Utf8(bitcodePath);
+            fixed (byte* pathPtr = pathBytes)
+            {
+                LLVMOpaqueMemoryBuffer* buffer;
+                sbyte* message;
+                if (LLVM.CreateMemoryBufferWithContentsOfFile((sbyte*)pathPtr,
+                        &buffer, &message) != 0)
+                {
+                    try
+                    {
+                        throw new InvalidOperationException("rigi_rt bitcode 读取失败: "
+                            + (message != null ? new string(message) : bitcodePath));
+                    }
+                    finally
+                    {
+                        if (message != null) LLVM.DisposeMessage(message);
+                    }
+                }
+                try
+                {
+                    LLVMMemoryBufferRef bufferRef = buffer;
+                    using var context = LLVMContextRef.Create();
+                    if (!context.TryParseBitcode(bufferRef, out var runtime, out var error))
+                        throw new InvalidOperationException($"rigi_rt bitcode 解析失败: {error}");
+                    using (runtime)
+                    {
+                        // TargetData 是 TargetMachine 的真实布局；不由 triple 文本推断。
+                        var layout = LlvmHost.HostDataLayout;
+                        if (!StringComparer.Ordinal.Equals(runtime.Target, targetTriple)
+                            || !StringComparer.Ordinal.Equals(runtime.DataLayout, layout))
+                            throw new InvalidOperationException(
+                                $"rigi_rt bitcode 目标不兼容：triple={runtime.Target}（期望 {targetTriple}），"
+                                + $"data layout={runtime.DataLayout}（期望 {layout}）");
+                    }
+                }
+                finally
+                {
+                    LLVM.DisposeMemoryBuffer(buffer);
+                }
+            }
+        }
 
         // 读取 bitcode 文件并合并进目标模块；失败抛 MwNotSupportedException
         //（rigi_rt 编译产物损坏属环境/工具链问题，非编译器 bug）
@@ -59,6 +119,16 @@ namespace RigiCompiler.Middleware.Emit
                     LLVM.DisposeMemoryBuffer(buffer);
                 }
             }
+        }
+
+        // 只遍历函数句柄计数，避免 PrintToString 巨型 IR 的分配/序列化开销。
+        internal static int CountFunctions(LLVMModuleRef module)
+        {
+            var count = 0;
+            for (var fn = LLVM.GetFirstFunction(module); fn != null;
+                fn = LLVM.GetNextFunction(fn))
+                count++;
+            return count;
         }
 
         // 新 PM 默认优化管线（MIDDLEWARE §1：通用优化全交 LLVM；运行时面的

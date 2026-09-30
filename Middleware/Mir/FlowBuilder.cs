@@ -42,6 +42,11 @@ namespace RigiCompiler.Middleware.Mir
         private readonly TryExpander _tryExpander;
         private readonly List<MirBlock> _blocks = new();
         private readonly List<Scope> _scopes = new();
+        // null 常量资源物化的局部名（load null → 局部）：BinaryIntrinsicLowering
+        // 以此识别「x ==/!= null」nullness-only 形态（同型 Nullable 判等展开
+        // 不适用于该形态——位比即语义；且展开会在 wrapper bake 特化体内留下
+        // 占位指令 + 具化槽的形态分裂，见 NullableEqualityLowering 注释）
+        private readonly HashSet<string> _nullConstantLocals = new(System.StringComparer.Ordinal);
         private string _currentId = "";
         private List<MirInst> _currentInsts = new();
         private MirTerminator? _terminator;
@@ -76,6 +81,10 @@ namespace RigiCompiler.Middleware.Mir
         }
 
         internal MirType TypeOf(string name) => _localMap[name].Type;
+
+        // null 常量资源物化登记（LoadLowering 调用）与查询
+        internal void MarkNullConstant(string localName) => _nullConstantLocals.Add(localName);
+        internal bool IsNullConstant(string localName) => _nullConstantLocals.Contains(localName);
 
         internal void PushScope(Scope scope) => _scopes.Add(scope);
 

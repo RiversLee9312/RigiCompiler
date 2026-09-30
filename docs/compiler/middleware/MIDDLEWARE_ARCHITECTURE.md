@@ -38,6 +38,8 @@ BilModule（BIL 内存对象模型）
 
 工具链调用默认设十分钟期限，超时终止本次子进程树并报告受控错误；双路输出读取也受期限约束。`--verbose`/日志记录所用 clang 的路径与 SHA256，运行时 bitcode 缓存身份包含该摘要。部署方可通过 `RIGI_LLVM_SHA256` 钉住可信 clang 内容；未设置钉值时，`--toolchain`、`RIGI_LLVM` 和本机工具链仍属于用户显式信任输入，内容指纹本身不证明发行来源。
 
+**运行时目标与缓存防线**：libLLVM 的 `LlvmHost.HostTriple` 是生成 LLVM 模块的唯一目标三元组来源；`rigi_rt` 现场 clang 编译和最终 clang 驱动链接都显式传入该模块目标（`--target=<triple>`）；Windows clang 会从本机 VS 自动补 MSVC 版本，编 bitcode 时另以 `-Xclang -triple -Xclang <triple>` 钉住 cc1 的精确模块目标，仍由驱动发现 VS/SDK 头文件与 CRT。不能依赖 clang 自身默认 vendor，也不能通过改写 bitcode 文本掩盖编译目标。缓存身份包含有序完整 clang 编译参数（含目标、特性宏、libuv 头目录）、clang 内容 SHA256、全部内嵌源及生成的 unity 翻译单元；不同目标不复用旧缓存。生成模块显式采用同一 TargetMachine 的 data layout；缓存命中与新编译产物均在合并前解析真实 bitcode，核对 triple 及 libLLVM 宿主 TargetMachine 实际 data layout；不相容、无法解析或目标工具链编译失败必须明确拒绝，不能吞掉 LLVM 合并 warning 继续产物。此处比较的是 LLVM 目标布局，外部 CRT/系统库仍由目标 clang 驱动发现；若未来启用不同 CPU/ABI 选项，必须同步纳入编译参数、缓存身份和目标机布局检查。
+
 LLVM 元数据全局名保留完整 canonical，由 LLVM API 处理文本引号转义，不将泛型逗号和类型名中的点折叠成同一字符。
 
 内部 `MirGetClassTypeArgument` 按含元数的宿主布局键读取真实实例实参：普通类读取已规划的隐藏 typeid 槽，固定 ABI 数组读取前缀中的元素 sheet；不把数组伪装成具有普通隐藏字段的类。泛型函数的 coroutine frame 名虽包含原函数签名，但 frame 声明本身是固定布局的非泛型类，是否开放必须按声明判定。
@@ -233,7 +235,12 @@ ref/value/string 面。四规则：（1）入口对胖引用/String 参数 acqui
 `.this` 豁免，其 +1 由落槽建立，避免与本规则双计）；（2）托管 `CopyLocal`
 展开为 Release–Copy–Acquire 三段式，dst==src 删除；（3）产出类指令前置
 Release 目标槽；（4）ret 块将返回值迁入合成局部 `$mw.ret` 后按登记序
-Release 其余托管槽（出口序列不含 `$mw.ret`）。region 协议由运行时面自身
+Release 其余托管槽（出口序列不含 `$mw.ret`）。Emit 层对 `$mw.ret` 的
+交付即移动（richretrfix）：`MirRet` 值类型分支对隐藏 out 首参纯
+memcpy、不再 release `$mw.ret`——tag1 盒槽（Nullable 装箱）acquire
+有深拷回写副作用（`arc.c` `rigi_value_walk`），三段式交付会让 out 拿
+到已释放块；契约详见 `TerminatorEmitter` 与 `ArcEmitter`
+`EmitDestroyRichValue` 注释。region 协议由运行时面自身
 enter/exit，pass 不另插 region 指令。
 
 ### 4.3 两级 ARC
@@ -413,6 +420,22 @@ M88 边界：frontend 只携带标记，烘焙全归 Middleware。
 - `..init.wrapper` 在实体 init 前自动调用；`..companion` singleton 壳体（无名
   称 UUID，BIL §8.7）随 singleton 急切初始化构造（§7）；
 - inner 链接与可变泛型包的解包/shim 合成。
+- **特化类型替换边界（槽/指令形态分裂陷阱，segvfix 实证）**：
+  `ProxyBakeSupport.BuildSpecializedBody` 的类型代入只改写 `built.Locals`
+  槽类型与返回类型，**不重写指令内嵌类型**（`MirGenericBinaryOp` 等自带
+  `LeftType`/`RightType` 的指令按 BIL→MIR 转换期（`MirBuilder`）的模板
+  占位类型残留）。模板期按占位展开、且发射期**按指令类型语义加载槽**的
+  lowering 落进特化体即成「槽=具化类型、指令=占位」的分裂形态。已知裂
+  口：同型 Nullable 判等全展开（`DataVisitors.NullableEqualityLowering`）
+  对 `TField? != null`（`Temporary` proxy 的 `cached if? resumeStub()` 脱
+  糖）产出占位 `MirGenericBinaryOp`，特化后配 `core::i32` 标量槽，发射
+  期 `GenericOpEmitter` 的 `BuildExtractValue` 对非聚合在 LLVM 原生层
+  SIGSEGV（编译器进程崩，无诊断）。两条防线：① nullness-only 形态
+  （`x ==/!= null`，一侧为 null 常量物化局部，`FlowBuilder` 登记）不走
+  展开——位比即语义（ImplBinder 的 Nullable 位比规则本就只服务该形
+  态）；② `GenericOpEmitter` 发射前恒验操作数槽为 16B 胖聚合，形态不
+  符响亮失败（`CompilerInternalException` 带函数与槽类型上下文）。新增
+  「按占位生成、按指令类型消费」的 MIR lowering 时必须自查该组合。
 
 ## 6. 协程降级
 

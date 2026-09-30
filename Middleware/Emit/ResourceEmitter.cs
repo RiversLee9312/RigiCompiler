@@ -122,7 +122,9 @@ namespace RigiCompiler.Middleware.Emit
                 case BilScalarType.Bool:
                     return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, text == "true" ? 1u : 0u, false);
                 case BilScalarType.Char:
-                    return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, BilScalarLiteral.DecodeChar(text), false);
+                    // 32 位 Unicode 标量常量（DecodeChar 已保证值域）
+                    return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32,
+                        BilScalarLiteral.DecodeChar(text), false);
                 case BilScalarType.I8 or BilScalarType.I16 or BilScalarType.I32 or BilScalarType.I64:
                     return LLVMValueRef.CreateConstInt(TypeLayout.MapType(context, targetType),
                         unchecked((ulong)BilScalarLiteral.ParseSigned(text)), true);

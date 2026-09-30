@@ -823,6 +823,20 @@ namespace RigiCompiler.Middleware.Mir
         private static void AddUserOperatorEdges(MwContext context, BilBinaryOp op,
             string leftType, string rightType, List<string> edges)
         {
+            // 同型 Nullable<T> 双非空一律解包内层（包含开放占位），
+            // 占位 T 的运行期 operator 候选由下方泛型臂全量收编；
+            // Any 默认 equals 合成体由 ResolveBuildOrder 恒收编。
+            // 内建标量/String 由 IsBuiltinBinaryOperand 早退；与
+            // NullableEqualityLowering 的派发分支保持同构。
+            if (op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe
+                && Layout.TypeLayout.TryGetNullableInner(
+                    MirType.Of(MwTypeKey.Normalize(leftType)), out var nullableInner)
+                && MwTypeKey.Normalize(rightType) == MwTypeKey.Normalize(leftType))
+            {
+                AddUserOperatorEdges(context, op, nullableInner.Canonical,
+                    nullableInner.Canonical, edges);
+                return;
+            }
             if (ImplBinder.IsBuiltinBinaryOperand(leftType))
             {
                 return;

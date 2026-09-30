@@ -17,21 +17,21 @@ pub func main(): i32 {
     try { const ignored = source:Serializable.toParcel() }
     catch (_: core.IllegalStateException) { core.io.Console.println("tree-cycle") }
     const reference = new Parcel("ErrorNode")
-    reference.setElement\<i64>("..ref", 99L)
+    reference.setMetaElement\<i64>("..ref", 99L)
     try { const ignored = fromParcel\<ErrorNode>(reference, true) }
     catch (_: core.IllegalStateException) { core.io.Console.println("bad-ref") }
     const negative = source:Serializable.toParcel(true)
-    negative.setElement\<i64>("..ref", -1L)
+    negative.setMetaElement\<i64>("..ref", -1L)
     try { const ignored = fromParcel\<ErrorNode>(negative, true) }
     catch (_: core.IllegalStateException) { core.io.Console.println("negative-ref") }
     const malformed = source:Serializable.toParcel(true)
-    malformed.setElement\<i64>("..id", 2L)
+    malformed.setMetaElement\<i64>("..id", 2L)
     try { const ignored = fromParcel\<ErrorNode>(malformed, true) }
     catch (_: core.IllegalStateException) { core.io.Console.println("bad-id") }
     const duplicate = source:Serializable.toParcel(true)
-    const payload = duplicate.getElement\<Parcel>("..data") as Parcel
+    const payload = duplicate.getMetaElement\<Parcel>("..data") as Parcel
     const arrayNode = payload.getElement\<Parcel>("items") as Parcel
-    arrayNode.setElement\<i64>("..id", 1L)
+    arrayNode.setMetaElement\<i64>("..id", 1L)
     try { const ignored = fromParcel\<ErrorNode>(duplicate, true) }
     catch (_: core.IllegalStateException) { core.io.Console.println("duplicate-id") }
     const copy = deepCopy(source, loopedRefEnabled=true)

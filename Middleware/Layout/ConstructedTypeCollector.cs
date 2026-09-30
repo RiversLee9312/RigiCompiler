@@ -99,8 +99,92 @@ namespace RigiCompiler.Middleware.Layout
                 }
             }
 
+            // ---- b4-2 typeof 装箱视图完备性 ----
+            // getid.var 的运行时结果是「操作数值的实际类型」X 的 TypeSheet*；
+            // 该 Type<X> 值再装箱为 Any（typeOf(v).toString()、存入 Any 槽、
+            // 传 Any 形参）时，BoxEmitter 的 TypeId 装箱路径
+            // （ResolveTypeIdViewSheet）需要 `.typeid<X>` 视图 sheet 做身份
+            // 选择，否则运行时抛 CastException（VM 符号侧无此问题）。X 是
+            // 运行期身份，静态收集只看得见 getid.var 操作数的声明类型
+            // （.any），无法靠使用点枚举——保守取全量：全部已收集构造
+            // 类型 + 全部非 External 声明类型（非泛型按裸符号，泛型具化已
+            // 在构造清单）+ 内建标量/String。X 自身为 .typeid<...> 的不递归
+            // （Type<Type<...>> 不具化，与泛型实参视图规则同）；含开放
+            // 占位 (.generic<) 的跳过；`.typeid<.null>` 已按 getid.var 使用
+            // 点在上方登记。
+            // 守卫：只有 X 自身 sheet 保证存在时才补视图（镜像
+            // ConstructedLayout 的具化判定）——视图表 emission 要写
+            // typeIdBound（指向 X 的 sheet），X 无 sheet 会在
+            // ModuleBuilder.Build 以「闭合 TypeSheet 缺失」响亮失败
+            // （Middleware 手写 BIL 用例实证：order 里可有永不具化的类型）。
+            foreach (var x in order.ToArray())
+            {
+                if (!GuaranteedSheet(context, x))
+                {
+                    continue;
+                }
+                Enqueue(".typeid<" + x + ">", seen, order, queue);
+            }
+            foreach (var type in context.Symbols.Types)
+            {
+                if (type.IsExternal
+                    || type.Declaration.GenericParameters.Count != 0
+                    || TypeLayout.IsTypeIdCanonical(type.Canonical))
+                {
+                    continue;
+                }
+                Enqueue(".typeid<" + type.Canonical + ">", seen, order, queue);
+            }
+            foreach (var builtin in BuiltinScalarAndStringRefs)
+            {
+                Enqueue(".typeid<" + builtin + ">", seen, order, queue);
+            }
+
             Logger.Verbose("Middleware", $"构造类型收集 {order.Count} 项");
             return order;
+        }
+
+        // typeof 装箱视图需要覆盖的内建标量/String（BIL 别名形态，与
+        // BuiltinSheetCanonical 对译；装箱标量经 Any 槽流过 getid.var 时
+        // 其视图必须已在布局计划中）。
+        private static readonly string[] BuiltinScalarAndStringRefs =
+        {
+            ".bool", ".char", ".i8", ".u8", ".i16", ".u16",
+            ".i32", ".u32", ".i64", ".u64", ".f32", ".f64", ".string",
+        };
+
+        // X 的布局 sheet 是否保证存在（b4-2 typeof 视图补充的守卫）：
+        // 镜像 ConstructedLayout 各类具化/合成路径的准入条件——Nullable /
+        // Span / SharedSpan / TypeId 走合成路径恒出；其余闭合构造须模板
+        // 可解析且通过 ShouldMaterialize。不含开放占位（调用方另查）。
+        // 内建 Array 的闭合具化例外：ShouldMaterialize 有意排除 Array
+        // 模板（数组走内建数组布局，不经模板 plan），但其 sheet 由同一
+        // 内建路径对每个闭合实参恒出——`.typeid<X>` 视图必须同样覆盖，
+        // 否则运行时对已物化数组的 typeOf 装箱（isSbRepresentable /
+        // typeOf(v).toString()）会因视图缺失抛 CastException。视图收集
+        // 不得依赖无关表达式里的 getid.type 使用点碰巧覆盖。
+        private static bool GuaranteedSheet(MwContext context, string canonical)
+        {
+            if (canonical.IndexOf(".generic<", StringComparison.Ordinal) >= 0)
+            {
+                return false;
+            }
+            if (BilVerificationContext.StripTypeArguments(canonical)
+                == TypeLayout.ArrayTypeCanonical)
+            {
+                return true;
+            }
+            if (TypeLayout.IsTypeIdCanonical(canonical)
+                || BilVerificationContext.StripTypeArguments(canonical)
+                    == TypeLayout.NullableTypeCanonical
+                || TypeLayout.IsSpanCanonical(canonical)
+                || TypeLayout.IsSharedSpanCanonical(canonical))
+            {
+                return GenericAbi.IsClosedConstructed(canonical);
+            }
+            return GenericAbi.IsClosedConstructed(canonical)
+                && context.Symbols.FindTypeByRef(canonical) is { IsExternal: false } template
+                && GenericAbi.ShouldMaterialize(template);
         }
 
         // 是否为需入队的构造类型（.generic 占位不是构造类型）

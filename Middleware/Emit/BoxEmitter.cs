@@ -73,6 +73,20 @@ namespace RigiCompiler.Middleware.Emit
             {
                 throw new CompilerInternalException("Box 源必须是局部");
             }
+            // typefix 防御：MirBoxAny 产物是 16B 胖值，目标槽必须是胖引用
+            // 表示（.any / 泛型占位）。typeid 等 8B 裸指针槽若被误作装箱
+            // 目标，opaque pointer 下 BuildStore 无点类型检查，16B 直接写
+            // 穿 8B 槽、读取端再静默截断第 0 字段（协程帧编组 ABI 错配
+            // 曾借此存活为 "core::Type<X>" 缺陷）——编组错误在此处响亮
+            // 失败，不允许落 IR。
+            var targetMirType = slots[inst.Target].Local.Type;
+            if (TypeLayout.ClassifySlot(session.Layout, targetMirType)
+                != ManagedSlotKind.FatReference)
+            {
+                throw new CompilerInternalException(
+                    "MirBoxAny 目标槽必须是胖引用槽（.any/泛型占位），实际: "
+                    + targetMirType.Canonical);
+            }
             builder.BuildStore(BoxFromLocal(session, builder, slots, local.Name),
                 slots[inst.Target].Slot);
         }
@@ -131,15 +145,15 @@ namespace RigiCompiler.Middleware.Emit
         internal static void UnboxToLocal(ModuleBuilder.Session session, LLVMBuilderRef builder,
             Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
             LLVMValueRef fat, MirType targetType, string target, MirType fromType,
-            MirBlock? excTarget) =>
+            MirBlock? excTarget, bool allowNullSource = false) =>
             UnboxToSlot(session, builder, fat, targetType, slots[target].Slot, fromType,
-                excTarget);
+                excTarget, allowNullSource);
 
         // UnboxToLocal 的槽指针形态（无 MIR 局部的临时槽拆箱用：占位
         // 接收者/占位值类型宿主的调用点适配）
         internal static void UnboxToSlot(ModuleBuilder.Session session, LLVMBuilderRef builder,
             LLVMValueRef fat, MirType targetType, LLVMValueRef targetSlot, MirType fromType,
-            MirBlock? excTarget)
+            MirBlock? excTarget, bool allowNullSource = false)
         {
             // R3：open struct 目标可含子类型盒（VM 动态解析可过）——
             // 中枢转协变链守卫 + 前缀拷贝（所有调用点同口径）
@@ -174,6 +188,43 @@ namespace RigiCompiler.Middleware.Emit
                 var hit = builder.BuildCall2(checkType, check, new[] { typeId, payload, sheet }, "unbox.type.bound");
                 mismatch = builder.BuildOr(tagBad, builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
                     hit, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0), "unbox.type.bad"));
+            }
+            // null 短路（VM 同口径，VmTypeOps.TryCast：null → 引用型目标
+            // 放行）：String 槽 null = 零 {data,len} 位形。仅放行「非显式
+            // cast」调用点（StoreCoercedResult 的泛型返回值闭合接收——VM
+            // 侧返回值赋槽无 cast 检查）；显式 as cast（CastEmitter）维持
+            // VM TryCast 的 null 拒绝口径，防止 String? null as String 被
+            // 宽放行造成双宿主分歧。值类型目标恒 CastException。
+            if (targetType.IsString && allowNullSource)
+            {
+                var fn = session.CurrentFunction;
+                var nullBits = builder.BuildOr(typeId, payload, "unbox.nullbits");
+                var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nullBits,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "unbox.isnull");
+                var nullBlock = fn.AppendBasicBlock("unbox.null");
+                var checkBlock = fn.AppendBasicBlock("unbox.check");
+                var endBlock = fn.AppendBasicBlock("unbox.end");
+                builder.BuildCondBr(isNull, nullBlock, checkBlock);
+                builder.PositionAtEnd(nullBlock);
+                builder.BuildStore(
+                    LLVMValueRef.CreateConstNull(StringAbi.ValueType(session.Context)),
+                    targetSlot);
+                builder.BuildBr(endBlock);
+                builder.PositionAtEnd(checkBlock);
+                EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
+                if (expectedTag == TagInline)
+                {
+                    UnpackInline(session, builder, payload, targetType, size, targetSlot);
+                }
+                else
+                {
+                    var blk = builder.BuildIntToPtr(payload, PointerType(), "unbox.block");
+                    session.EmitMemCopy(builder, targetSlot, blk, size);
+                    ArcEmitter.EmitValueAcquire(session, builder, targetSlot, targetType);
+                }
+                builder.BuildBr(endBlock);
+                builder.PositionAtEnd(endBlock);
+                return;
             }
             EmitThrowOnMismatch(session, builder, mismatch, sheet, fromType, excTarget);
 
@@ -486,7 +537,8 @@ namespace RigiCompiler.Middleware.Emit
                     var width = inner.Key switch
                     {
                         "i8" or "u8" => LLVMTypeRef.Int8,
-                        "char" or "i16" or "u16" => LLVMTypeRef.Int16,
+                        "char" => LLVMTypeRef.Int32,   // 32 位 Unicode 标量
+                        "i16" or "u16" => LLVMTypeRef.Int16,
                         "i32" or "u32" => LLVMTypeRef.Int32,
                         "i64" or "u64" => LLVMTypeRef.Int64,
                         _ => throw new CompilerInternalException(
@@ -584,6 +636,10 @@ namespace RigiCompiler.Middleware.Emit
 
         // TypeId 运行期类型 = Type<payload>：按已收集的构造 sheet 选视图。
         // VM TypeRef = .typeid<ActualType>，不变（无 Type 协变）。
+        // 完备性依赖收集侧：ConstructedTypeCollector 为全部 typeof 可达
+        // 类型（已收集构造 + 非 external 声明类型 + 内建标量/String）补
+        // `.typeid<X>` 视图（b4-2）；此处只按表选择，缺失即抛
+        // CastException（防御——漏收集时响亮失败，不静默退化）。
         internal static LLVMValueRef ResolveTypeIdViewSheet(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef describedSheet, MirType staticType)
         {
@@ -632,6 +688,16 @@ namespace RigiCompiler.Middleware.Emit
             return builder.BuildCall2(fnType, fn,
                 new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)size, false) },
                 "box.mem");
+        }
+
+        // Malloc 的运行时尺寸变体：泛型占位数组读路径的元素 size 来自
+        // elemSheet 运行时读数，编译期拿不到常量（size 为 i32）。
+        internal static LLVMValueRef MallocDynamic(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef size)
+        {
+            var (fn, fnType) = CallEmitter.DeclareHelperFace(session, RuntimeFaces.Malloc,
+                PointerType(), new[] { LLVMTypeRef.Int32 });
+            return builder.BuildCall2(fnType, fn, new[] { size }, "box.mem");
         }
 
         private static LLVMTypeRef PointerType() =>

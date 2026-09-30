@@ -24,6 +24,14 @@ namespace RigiCompiler.Tests
     ///   // expect-exit: &lt;整数&gt;            断言 main 返回的 i32 退出码（可省略）；
     ///   // expect-error: &lt;诊断子串&gt;       可多条；出现即负例——断言编译失败
     ///                                     且每条子串都能在 Error 级诊断中找到。
+    ///   // e2e-slow-gate: &lt;理由&gt;        慢速压力用例门控（慢例评审，块 4-3
+    ///                                     收尾）：默认套件跑（RunAll/数值区间，
+    ///                                     含并行子进程——子进程继承环境变量，
+    ///                                     过滤口径一致、区间索引不错位）跳过
+    ///                                     该用例；环境变量 RIGI_E2E_SLOW=1
+    ///                                     时并入默认跑。按用例名过滤（非数字
+    ///                                     suite-args）不受门控限制，便于单例
+    ///                                     调试，会打印提示行。
     ///
     /// 套件支持 --suite-args &lt;子串...&gt; 按用例名过滤（便于单条调试）。
     /// </summary>
@@ -38,7 +46,15 @@ namespace RigiCompiler.Tests
             public int? ExpectExit { get; set; }
             public List<string> ExpectErrors { get; } = new();
             public bool IsNegative => ExpectErrors.Count > 0;
+            // 慢速压力用例（e2e-slow-gate 旁注）：默认套件跑跳过，
+            // RIGI_E2E_SLOW=1 或按名显式过滤时仍运行
+            public bool SlowGate { get; set; }
         }
+
+        // 慢速门控开关：环境变量 RIGI_E2E_SLOW=1 启用默认跑
+        private static bool SlowGateEnabled =>
+            string.Equals(Environment.GetEnvironmentVariable("RIGI_E2E_SLOW"), "1",
+                StringComparison.Ordinal);
 
         public static int RunAll()
         {
@@ -68,10 +84,25 @@ namespace RigiCompiler.Tests
             get
             {
                 var cases = new List<(string Label, Action Run)>();
+                var skipped = new List<string>();
                 foreach (var kase in Discover())
                 {
+                    if (kase.SlowGate && !SlowGateEnabled)
+                    {
+                        skipped.Add(kase.Name);
+                        continue;
+                    }
                     var captured = kase;
                     cases.Add((captured.Name, () => RunCase(captured)));
+                }
+                // 门控跳过只在非派生进程汇报一次（子进程同样过滤，口径一致，
+                // 但汇报行重复 16 份只会刷屏）
+                if (skipped.Count > 0 && !TestRunner.IsSpawned)
+                {
+                    Console.WriteLine(
+                        $"  [slow-gate] e2e 慢速压力用例跳过 {skipped.Count} 例" +
+                        $"（{string.Join(", ", skipped)}）；RIGI_E2E_SLOW=1 并入默认跑，" +
+                        "或 test --run 56 --suite-args <名字> 单独调试");
                 }
                 return new ParallelSuiteRunner.SuiteSpec("E2e", cases, sectionTitle: "E2e");
             }
@@ -92,6 +123,12 @@ namespace RigiCompiler.Tests
             }
             foreach (var kase in cases)
             {
+                // 按名显式过滤不受慢速门控限制（单例调试语义），但给出提示
+                if (kase.SlowGate && !SlowGateEnabled)
+                {
+                    Console.WriteLine(
+                        $"  [slow-gate] {kase.Name} 为慢速压力用例（RIGI_E2E_SLOW=1 默认并入）");
+                }
                 RunCase(kase);
             }
             stopwatch.Stop();
@@ -173,6 +210,11 @@ namespace RigiCompiler.Tests
                 else if (TryAnnotation(comment, "expect-error:", out var errorPart))
                 {
                     kase.ExpectErrors.Add(errorPart);
+                }
+                else if (TryAnnotation(comment, "e2e-slow-gate:", out _))
+                {
+                    // 慢速压力用例门控：理由文本只作文档，不参与逻辑
+                    kase.SlowGate = true;
                 }
                 else if (TryAnnotation(comment, "expect-exit:", out var exitText))
                 {

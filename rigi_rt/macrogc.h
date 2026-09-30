@@ -58,15 +58,19 @@
 #define RIGI_PF_DISPOSED    0x4u
 
 /* Phase 3a（GC_OPTIMIZATION_PLAN §2.1）：每实例会计模式位。1 = shared
- * （原子）会计，0 = local（非原子）会计。分配点按 TypeSheet typeFlags
- * 静态判定置位（rigi_pf_accounting_init：shared/array 类型实例恒置位，
- * local 类型实例不置）；3b Handle 锚定 / 3c 失败 Task 异常图 promotion
- * 经 rigi_gc_promote_shared_accounting 冷路径翻位（local→shared 单调）。
- * Phase 3d-1 起两路分道：local 会计 = 非原子 rc + per-协程候选账本 +
- * 属主协作收集（macrogc.c 3d-1 段）；shared 会计 = pin-before-sub 原子
- * 协议 + 全局候选账本 + macroGC pass（零变化）。既有 packedFlags 改写
- * 面（gc_flags_replace 只碰 COLOR/INDEX mask、disposed 的 fetch_or
- * 0x4）均不触碰本位。 */
+ * 会计，0 = local 会计（atomicfix 起两路 rc 操作同为原子 RMW）。分配
+ * 点按 TypeSheet typeFlags 静态判定置位（rigi_pf_accounting_init：
+ * shared/array 类型实例恒置位，local 类型实例不置）；3b Handle 锚定 /
+ * 3c 失败 Task 异常图 promotion 经 rigi_gc_promote_shared_accounting
+ * 冷路径翻位（local→shared 单调）。
+ * Phase 3d-1 曾按两路分道（local = 非原子 rc + per-协程候选账本 +
+ * 属主协作收集；shared = pin-before-sub 原子协议 + 全局候选账本 +
+ * macroGC pass）。atomicfix（2026-09）定案：local 会计同样原子化，
+ * release 两路统一收口 rigi_gc_release_shared（同协议同全局账本）——
+ * 本位不再决定计数是否原子，保留用于局部收集/账本归属判别（mutator
+ * 登记面已停用、机制封存待重启，见文件尾 3d-1 段）与 promote/detach
+ * 的账本归属防御。既有 packedFlags 改写面（gc_flags_replace 只碰
+ * COLOR/INDEX mask、disposed 的 fetch_or 0x4）均不触碰本位。 */
 #define RIGI_PF_SHARED_ACCOUNTING 0x8u
 
 /* Phase 3a：分配时会计模式静态判定（rigi_alloc / rigi_alloc_contiguous
@@ -93,9 +97,10 @@ void rigi_gc_region_fence_exit(void);
 /* release 路径钩子（region 内调用，Phase 1.3 候选强引用协议）：
  * 账本持有候选的 +1 强引用——PURPLE 在册 ⟹ rc = U + 1，登记窗口对象必
  * 活。release_shared 是 pin-before-sub 完整协议：叶类型与单引用终态
- * （old==1/old==2 无账本）免锁；在册对象 PURPLE 快路径 plain sub，
- * old==2（最后一次用户引用）进锁摘除候选并归还账本引用后立即终态
- * 析构（确定性语义同旧协议），old ≥ 3 免锁；非终态经 note_release
+ * （old==1/old==2 无账本）免锁；在册对象 PURPLE 快路径免 pin 直减
+ * （原子 sub），old==2（最后一次用户引用）进锁摘除候选并归还账本
+ * 引用后立即终态析构（确定性语义同旧协议），old ≥ 3 免锁；非终态
+ * 经 note_release
  * 登记（锁外判定 + 锁内 append/置位/债务/唤醒，返回 1 = 本次完成
  * 登记、调用方 pin 转账本引用）。债务累计 + 阈值比较 + 原子 pending
  * 去重后触发 GCWakeAlarm（§22.3/§23.5 同 region）。 */
@@ -115,10 +120,12 @@ int rigi_gc_forget_candidate(void *object);
  * 经既有 alarm/dispatch 通道的 happens-before）。冷路径专用：3b Handle
  * 锚定（属主终止过户）/ 3c 失败发布点翻图。3d-1 起有调用方：
  * rigi_gc_promote_subgraph（见下）。
- * 单调不回落：对象一旦 shared 会计永不回 local（非原子会计以「属主
- * 独占触碰」为前提，无法事后追溯重建）。前置协议（3b/3c 落实时必须
- * 成立）：翻位瞬间该对象 rc 只被属主线程触碰，翻位与其后的首次非属主
- * 触碰之间的同步由发布方保证。 */
+ * 单调不回落：对象一旦 shared 会计永不回 local（3d-1 原案理由是
+ * 「非原子会计无法事后追溯重建」；atomicfix 后 local 会计虽已原子化，
+ * 单调不回落仍是「局部账本在册 ⟹ local 会计」账本归属判别与图不变
+ * 量的前提）。前置协议（3b/3c 落实时必须成立）：翻位瞬间该对象 rc
+ * 只被属主线程触碰，翻位与其后的首次非属主触碰之间的同步由发布方
+ * 保证。 */
 void rigi_gc_promote_shared_accounting(void *object);
 
 /* Phase 3c：子图 shared 会计提升 walker（共用面；shell.c 属主终止
@@ -137,13 +144,14 @@ void rigi_gc_promote_shared_accounting(void *object);
  * 被属主线程触碰，且翻位完成先于任何非属主触碰——3b teardown 改指
  * 锁内 / 3c 失败发布点「节点入链前、id 未发布」语境满足）。
  * Phase 3d-1 扩展：对位未置的 local 对象，**先摘除局部候选账本条目并
- * 归还账本 +1**（rigi_gc_local_ledger_detach，plain 操作——翻位前置
- * 协议保证此刻无并发触碰），**再翻位**。顺序不可颠倒：detach 内部有
- * SHARED 防御（shared 会计对象的 PURPLE 属全局账本），先翻位会让
- * detach 自我拦截、条目残留。此举维持 3d-1 核心不变量：「局部候选
- * 账本在册 ⟹ local 会计」——已 promote 对象绝不残留局部账本条目，
- * 局部收集器的 plain rc 访问前提因此恒成立。已 shared 会计对象整只
- * 跳过（翻位幂等 + 其 PURPLE 若在则属全局账本，不得触碰）。 */
+ * 归还账本 +1**（rigi_gc_local_ledger_detach——归还自 atomicfix 起为
+ * 原子 RMW，原「plain 操作、翻位前置协议保证此刻无并发触碰」论证
+ * 退役），**再翻位**。顺序不可颠倒：detach 内部有 SHARED 防御（shared
+ * 会计对象的 PURPLE 属全局账本），先翻位会让 detach 自我拦截、条目
+ * 残留。此举维持 3d-1 核心不变量：「局部候选账本在册 ⟹ local 会计」
+ * ——已 promote 对象绝不残留局部账本条目（局部收集器 rc 访问自
+ * atomicfix 起已原子化，该不变量仍是收集语义前提）。已 shared 会计
+ * 对象整只跳过（翻位幂等 + 其 PURPLE 若在则属全局账本，不得触碰）。 */
 void rigi_gc_promote_subgraph(uint64_t type_id, uint64_t payload);
 
 /* 3b-β：gc_teardown_fat 的导出包装（壳冻结期清理回调用）：白色同胞
@@ -152,52 +160,70 @@ void rigi_gc_promote_subgraph(uint64_t type_id, uint64_t payload);
 void rigi_gc_raw_release_fat(uint64_t type_id, uint64_t payload);
 
 /* ================================================================== */
-/* Phase 3d-1：local 会计非原子化 + per-协程候选账本 + 属主协作收集     */
+/* Phase 3d-1：local 会计分道 + per-协程候选账本 + 属主协作收集         */
+/* （atomicfix 定案：mutator 登记面停用，本段机制封存/保留为兜底）      */
 /* ================================================================== */
-/* split-heap 兑现（GC_OPTIMIZATION_PLAN 3d-1）。三件套：               */
+/* 原案（GC_OPTIMIZATION_PLAN 3d-1）三件套：                            */
 /*   ① local 会计去原子化（arc.c rigi_account_acquire/release_local     */
-/*      改普通 load/store——local 实例只被属主协程触碰：类型系统静态     */
-/*      划分（SYNTAX §3.1.1 闭包表 + 逃逸闸门）保证 local 引用不跨     */
-/*      Coroutine 边界，3b Handle 壳封住 capability 借用面，3c 异常图   */
-/*      promotion 在发布前翻位；macroGC 全局 pass 期间 mutator 全冻结   */
-/*      （fence），GC 线程的 plain rc 访问不与任何写并发）。            */
+/*      改普通 load/store——前提「local 实例只被属主协程触碰」：类型     */
+/*      系统静态划分（SYNTAX §3.1.1 闭包表 + 逃逸闸门）、3b Handle 壳  */
+/*      封 capability 借用面、3c 异常图 promotion 发布前翻位）。        */
 /*   ② per-协程 local 候选账本：挂 RigiCoHandle（仿 shell_registry      */
-/*      先例，懒建）；无协程上下文（main 流 / globals init——TLS 协程    */
-/*      槽为 NULL）落全局兜底账本 + 自旋锁（低频）。release 非终态且    */
-/*      may-cycle 且非 PURPLE → 登记进属主自己的账本（属主单线程无      */
-/*      锁；兜底账本锁内）。账本持 +1（plain rc+1，PURPLE+索引位与      */
-/*      全局账本共用位域但同一对象不可能同时在两本账：对象要么 local    */
-/*      要么 shared 会计）。                                            */
-/*   ③ 属主协作收集：收集者 = 属主自己（mutator 自冻结在收集 C 栈内，   */
-/*      图天然稳定，零 fence）。触发 = safepoint 债务阈值（复用         */
-/*      RIGI_RT_GC_THRESHOLD；release 登记 / rigi_alloc 尾部检查），     */
-/*      协程终态（rigi_ch_destroy_payload）与 gc_shutdown 终轮兜底      */
-/*      收干。算法复用 gc_pass 三阶段骨架的局部变体（lgc_*：对          */
-/*      shared 会计子对象整条跳过染色——他线程可能原子触碰 shared 子     */
-/*      图，Bacon-Rajan 的计数前提只对「无人并发触碰的闭包」成立；      */
-/*      local 闭包 plain 操作，白色批清理的 shared 子边走原子           */
-/*      fetch_sub 终态协议 + 级联）。                                   */
-/* 正确性不变量：                                                       */
+/*      先例，懒建）；无协程上下文（main 流 / globals init）落全局兜底  */
+/*      账本 + 自旋锁。账本持 +1（PURPLE+索引位与全局账本共用位域）。   */
+/*   ③ 属主协作收集：收集者 = 属主自己，触发 = safepoint 债务阈值 /     */
+/*      协程终态 / shutdown 终轮兜底收干；算法 = gc_pass 三阶段骨架的   */
+/*      局部变体（lgc_*：shared 会计子对象整条跳过染色——Bacon-Rajan    */
+/*      的计数前提只对「无人并发触碰的闭包」成立）。                    */
+/* atomicfix 定案（2026-09，现行）：① 的「属主独占触碰」前提被运行时   */
+/* 调度面系统性实证打破——core.coroutine::CoroutineHandle 经 Task/      */
+/* Dispatcher 完成链、编译器生成的闭包捕获 cell（动态命名无法静态穷举） */
+/* 经 Task 闭包，均被 main/worker 两端并发触碰；plain rc 丢失更新 ⟹    */
+/* rc 收支失衡 ⟹ 提前终态析构 ⟹ UAF（NativeE2E case 455，GC_OFF 100%   */
+/* 复现）。定案三点：                                                   */
+/*   (a) local 会计 acquire/release 全面原子化；release 统一转发        */
+/*       rigi_gc_release_shared——local 与 shared 同协议（pin-before-   */
+/*       sub 原子协议）同账本（macroGC 全局候选账本），候选环检测统一   */
+/*       交 macroGC 全局 pass（fence 保护）。                            */
+/*   (b) mutator 登记面停用：rigi_gc_local_after_release 入口短路       */
+/*       （历史实现 #if 0 封存），lgc_note_locked 随之封存——局部账本    */
+/*       不再新增候选；局部三阶段（lgc_*）rc 访问亦全部原子化。         */
+/*   (c) 防御断言：终态析构前置断言（arc.c rigi_release_by_accounting： */
+/*       终态信号 ⟹ rc==0，否则 abort）为现行汇聚防线；PURPLE detach   */
+/*       的 rc==0 断言随封存体保留（局部路线重启时生效）。              */
+/* 局部账本机制的保留语境（入口在、登记面停用后账本不再新增候选）：     */
+/*   - shutdown 终轮收干（rigi_gc_shutdown 就地 lgc_pass 全局兜底账本， */
+/*     空账本跳过）；                                                   */
+/*   - 协程终态收干（rigi_gc_local_ledger_teardown，cohandle.c 协程     */
+/*     销毁调用——仍负责 lgc_pass 兜底与账本结构释放）；                 */
+/*   - promote detach（rigi_gc_local_ledger_detach：翻位前摘局部条目，  */
+/*     维持「局部账本在册 ⟹ local 会计」不变量）；                      */
+/*   - 分配尾部债务检查 / 挂出点收集（债务不再增长，实际空转）；        */
+/*   - 析构中间态 guard（只剩「收集触发延迟到析构外」防御语义）。       */
+/* 历史不变量存档（局部路线重启前提，详勘误见 macrogc.c 3d-1 段）：     */
 /*   - 局部账本在册 ⟹ local 会计（promote 翻位同步摘条目）；            */
-/*   - 收集期间禁触发重入（collecting 标志）与禁析构中间态触发          */
-/*     （rigi_destruct 的 TLS guard——析构拆边到一半的图不满足扫描       */
-/*     快照一致性）；                                                   */
-/*   - 局部收集与 macroGC pass 经既有 fence 互斥（局部收集在 region     */
-/*     内 ⟹ cFlag PROCESSING ⟹ GC pass 排空等待；反之 mutator 挡在      */
-/*     region 外），且两收集器图不相交（shared 闭包 vs local 闭包），    */
-/*     颜色位无跨写者。                                                 */
+/*   - 终态判定只认「减量后归零 / PURPLE detach 成功归还 +1 后归零」，  */
+/*     任何「减后值==1 即终态」形态都是实证过的 UAF 根因（case 455）；  */
+/*   - 局部收集与 macroGC pass 经 region/fence 互斥、两收集器图不相交、 */
+/*     颜色位无跨写者；                                                 */
+/*   - 重启前须重新论证「属主独占」对全部 local 会计对象成立（含跨协程  */
+/*     机制对象与闭包捕获 cell），并过 case 455 三环境（默认 / GC_OFF / */
+/*     RIGI_RT_GC_THRESHOLD=64）并发回归。                              */
 
-/* release local 收口（arc.c plain 减量后 after>0 调用，after = 减后
- * 值）：在册（PURPLE）走终态快路径——after==1 时摘除候选 + 归还账本
- * +1 并返回 1（rc 已 0，调用方立即终态析构，确定性语义同 macroGC 协
- * 议）；非在册尝试登记候选（may-cycle 过滤 + 账本 +1）+ 债务阈值检查
- * （超阈值就地跑一轮属主收集）。返回值与 rigi_gc_release_shared 完全
- * 同约定：1 = 终态析构信号；否则返回减前值 after+1（≥2）——绝不能把
- * 减后值透传（减后值==1 的非终态对象会被调用方误判终态析构）。 */
+/* release local 收口——atomicfix 定案后本入口自 mutator 并发面停用：
+ * arc.c rigi_account_release_local 已统一转发 rigi_gc_release_shared，
+ * 本函数不再被任何调用方触达，入口短路返回 after+1。历史契约（PURPLE
+ * after==1 detach 终态快路径 / 非在册登记候选 + 债务阈值就地收集）
+ * 随实现 #if 0 封存于 macrogc.c（重启前提见上段与该处函数头注释）。
+ * 返回值约定不变：1 = 终态析构信号（停用后不可能返回）；否则减前值
+ * after+1（≥2）——绝不能把减后值透传（减后值==1 的非终态对象会被调
+ * 用方误判终态析构，case 455 UAF 根因）。 */
 uint32_t rigi_gc_local_after_release(void *object, uint32_t after);
 
 /* 分配热路径债务检查（rigi_alloc 尾部调用）：当前上下文账本债务超
- * 阈值时就地跑一轮属主收集（兜底「只有分配没有释放」的长循环）。 */
+ * 阈值时就地跑一轮属主收集（兜底「只有分配没有释放」的长循环）。
+ * atomicfix：mutator 登记面停用后债务不再增长，本检查实际空转，入口
+ * 保留待局部收集路线重启。 */
 void rigi_gc_local_maybe_collect(void);
 
 /* Phase 3d-2：挂出点顺手小回收（cohandle.c rigi_coroutine_resume 段尾
@@ -206,19 +232,24 @@ void rigi_gc_local_maybe_collect(void);
  * ——激进 debt>0 判据的实施验证见 macrogc.c 注释）；账本未建（从未
  * 登记候选）零开销返回。park 滞留控制：bench10 形态（挂出前债务远超
  * 阈值）在挂出瞬间清账 ⟹ parked 期间无 local 债务滞留（与终止收干的
- * 组合替代「park 闹钟唤醒」，延迟上界 = 首个超阈挂出点）。 */
+ * 组合替代「park 闹钟唤醒」，延迟上界 = 首个超阈挂出点）。
+ * atomicfix：登记面停用后债务不再增长，本入口实际空转，保留待局部
+ * 收集路线重启。 */
 void rigi_gc_local_suspend_collect(void);
 
 /* 析构中间态 guard（arc.c rigi_destruct 包围置位）：析构拆边到一半的
- * 图不满足收集扫描的快照一致性——guard 期间登记照做（+1/账本/债务
- * 语义不变）、触发延迟到析构外的下一次 release/alloc 检查。 */
+ * 图不满足收集扫描的快照一致性——guard 期间收集触发延迟到析构外的
+ * 下一次 release/alloc 检查（atomicfix：登记面停用后「登记照做」的
+ * 原语义已不存在，guard 保留为触发延迟的防御位）。 */
 void rigi_gc_local_guard_enter(void);
 void rigi_gc_local_guard_exit(void);
 
 /* 协程终态收干（cohandle.c rigi_ch_destroy_payload 调用，在
  * rigi_shell_owner_teardown 之前——先收干纯 local 账本，再让 promote
- * 过户翻位，两步的 plain/原子前提各自成立）。收干 = 强制跑一轮属主
- * 收集（终态语境：属主已死，local 对象无人竞争触碰）+ 释放账本结构。
+ * 过户翻位；atomicfix 后两步 rc 访问均已原子化，该顺序保留为「局部
+ * 账本在册 ⟹ local 会计」归属判别的结构性前提）。收干 = 强制跑一轮
+ * 属主收集（终态语境：属主已死，local 对象无人竞争触碰）+ 释放账本
+ * 结构。
  * memtrack 零泄漏口径的协程侧兜底。
  * Phase 3d-2 批发 teardown（免环检测）评估不落地：挂起帧/壳锚/
  * CoroutineLocal 绑定三类活锚 + 死环成员互指边使「免判活整堆丢弃」

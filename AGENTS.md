@@ -69,6 +69,8 @@ Linux 侧前置：`dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。细节见 `docs/a
 
 ### 项目架构与开发
 
+标准库设计入口：[docs/STDLIB.md](docs/STDLIB.md)，涵盖 MVP 范围、NS 职责、公共契约与施工依赖；其中待定 API 不代表已经实现。
+
 | 文档 | 内容 |
 |---|---|
 | `docs/agent_guide/architecture.md` | 代码库结构 + 核心设计决策（**改动代码前必读**）⭐⭐⭐ |

@@ -62,6 +62,11 @@ void *rigi_alloc(const RigiTypeSheet *desc)
      * 实例恒置位（shared 会计）；local 类型实例不置位（local 会计，3a
      * 仍按原子路径执行）。分配期单线程写、与 memset 的 0 值同序，无并发。 */
     object->packedFlags = rigi_pf_accounting_init(desc->typeFlags);
+    /* atomicfix：local 会计的实现自本修复起同为原子 RMW（见
+     * rigi_account_acquire_local/release_local），原「分配即翻位名单」
+     * 无需引入——跨协程共享对象（CoroutineHandle、闭包捕获 cell 等编译
+     * 期不可判定集合）统一由原子会计保内存安全，收集归属仍按实例位
+     * 分流。 */
     /* Phase 3d-1：分配热路径债务检查——兜底「只有分配没有释放」的
      * 长循环（局部债务只在 release 登记时增长，alloc 检查让已积压
      * 的账本在无 release 的分配流中也能被收）。检查本身一次 TLS 读
@@ -88,16 +93,19 @@ static uint32_t rigi_pf_accounting(const RigiObjectHeader *h)
         & RIGI_PF_SHARED_ACCOUNTING;
 }
 
-/* local 会计 acquire（Phase 3d-1 非原子化）：普通 ++rc。内存安全论证
- * （macrogc.h 3d-1 段同款）：local 实例只被属主协程触碰——类型系统
- * 静态划分（SYNTAX §3.1.1 闭包表 + 逃逸闸门：local 引用不跨 Coroutine
- * 边界）+ 3b Handle 壳封住 capability 借用面 + 3c 异常图 promotion 在
- * 发布前翻位（翻位后经 shared 分流原子路径）；macroGC pass 期间
- * mutator 全冻结（fence），GC 线程的 plain rc 访问不与任何写并发。
- * 本线程读改写与他线程之间不存在并发触碰窗口。 */
+/* local 会计 acquire。atomicfix 修复记录：3d-1 曾将本操作 plain 化
+ * （++rc），论证前提是「local 实例只被属主协程触碰」——该前提被运行时
+ * 调度面系统性打破（CoroutineHandle 经 Task/Dispatcher 完成链、闭包捕获
+ * cell 经 Task 闭包均被 main/worker 两端并发触碰；后者为编译器动态命名
+ * 类型，无法静态识别），plain 读改写的丢失更新导致 rc 收支失衡 → 提前
+ * 终态析构 → UAF（NativeE2E case 455 实证）。自本修复起 local 会计与
+ * shared 会计同样使用原子 RMW（relaxed 序与 acquire_shared 同口径——
+ * 引用交接的 happens-before 由队列/门闸边供给，不靠 rc 操作定序），
+ * 「任何时刻 rc == 真实引用数」恢复为无竞态不变量。 */
 static void rigi_account_acquire_local(RigiObjectHeader *h)
 {
-    h->rc = h->rc + 1u;
+    atomic_fetch_add_explicit((_Atomic uint32_t *)&h->rc, 1,
+        memory_order_relaxed);
 }
 
 /* shared 会计 acquire（原子计数，跨线程共享） */
@@ -224,6 +232,18 @@ static void rigi_value_walk(void *ptr, const RigiTypeSheet *sheet, bool is_acqui
             else
             {
                 rigi_ref_release(type_id, payload);
+                /* 防御（richretfix）：tag1 盒槽是唯一「release 即 free」
+                 * 的引用槽种类，release 后清零槽位——若上层交付协议破约
+                 * （如对已交付/已死槽再 release），悬垂指针退化为 null
+                 * 槽（tag0，后续 release/acquire 走 no-op 分支，确定性），
+                 * 而非随机 UAF。STRING/tag2 槽 release 不 free 对象，保
+                 * 持原样；按值语义 release 后槽位已死，合法发射序列均在
+                 * release 后 memset 或 memcpy 覆盖，清零不可见。 */
+                if ((type_id >> RIGI_TAG_SHIFT) == RIGI_TAG_HEAP_VALUE)
+                {
+                    *(uint64_t *)(void *)(base + cursor) = 0;
+                    *(uint64_t *)(void *)(base + cursor + 8) = 0;
+                }
             }
         }
         cursor += 16u;
@@ -242,6 +262,39 @@ void rigi_value_release(void *ptr, const RigiTypeSheet *sheet)
     rigi_region_enter();
     rigi_value_walk(ptr, sheet, false);
     rigi_region_exit();
+}
+
+/* 泛型胖引用形态守卫（数组元素 ABI 归一防御）。形态合法性口径（与
+ * docs/RUNTIME/03-type-metadata.md「元素槽布局铁律」同步）：
+ *   - null{0,0} / tag1 盒 / tag2 对象引用：一切 16B 引用槽的合法形态；
+ *   - tag0（RIGI_TAG_INLINE）且 payload 非零 = 装箱标量的泛型形态：
+ *     typeid 低 56 位（RIGI_SHEET_MASK）是标量的 TypeSheet 指针
+ *     （发射层 TypeLayout 为全部标量置 RIGI_TYPE_INLINE_VALUE），
+ *     payload 是标量位形。引用擦除容器槽（elemSheet 为 core::Any /
+ *     Nullable 族的 .array<.any> 载荷等）由调用方静态路径写入装箱
+ *     标量属合法形态，泛型共享体读回时经此处放行（box-span 对拍、
+ *     array_boxed_scalar 语料定点）；
+ *   - 其余 tag0（payload 非零且 tid 低 56 位解引用后不具备
+ *     RIGI_TYPE_INLINE_VALUE，如 String 特化槽 {data,len} 被误当胖
+ *     引用解释——data 指向的字符串块无 sheet 布局）说明发射层 ABI
+ *     错配——立即 abort 定位，不放行到 typecheck 深处段错误。 */
+void rigi_check_fat_ref(uint64_t type_id, uint64_t payload)
+{
+    if ((type_id >> RIGI_TAG_SHIFT) != RIGI_TAG_INLINE || payload == 0)
+    {
+        return;
+    }
+    const RigiTypeSheet *scalarSheet =
+        (const RigiTypeSheet *)(uintptr_t)(type_id & RIGI_SHEET_MASK);
+    if (scalarSheet != NULL
+        && (scalarSheet->typeFlags & RIGI_TYPE_INLINE_VALUE) != 0)
+    {
+        return;
+    }
+    fprintf(stderr,
+        "rigi_rt: 泛型胖引用形态非法（tag0 且 payload 非零、tid 非装箱标量 "
+        "sheet）——数组元素 ABI 错配\n");
+    abort();
 }
 
 /* 数组共用擦除元素类型的 sheet：生命周期保守使用原子 RC，覆盖嵌套数组。
@@ -476,45 +529,26 @@ void rigi_native_resources_destroy(void *object, const RigiTypeSheet *desc)
     }
 }
 
-/* local 会计 release（Phase 3d-1 非原子化 + 属主协作收集协议）：
- * plain fetch_sub + PURPLE 终态快路径 + 非终态登记（per-协程候选账本，
- * 全部收口在 rigi_gc_local_after_release）。与 rigi_gc_release_shared
- * （pin-before-sub 原子协议）的对应关系：
- *   - plain 减量：属主独占触碰（论证见 rigi_account_acquire_local）。
- *   - 在册（PURPLE）：账本持 +1 ⟹ rc = U + 1（plain 减后 old = U）。
- *     old==1 ⟺ 最后一次用户引用：摘除候选 + 归还账本 +1（rc 归 0）后
- *     返回 1 由调用方终态析构——确定性释放语义（§22.2）同 macroGC 协
- *     议。属主单线程无在飞 pin/并发终态，无需 macroGC 的进锁快路径。
- *   - 非终态（old ≥ 2）：非 PURPLE 且 may-cycle → 登记进属主账本
- *     （plain rc+1 账本引用；无并发窗口故无需 macroGC 的 pin 驻留），
- *     随后债务阈值检查可能就地跑一轮属主收集。
- *   - old==0：非在册终态（在册对象不可达：账本 +1 ⟹ 调 release 时
- *     rc = U+1 ≥ 2），与账本零交互。 */
+/* local 会计 release——atomicfix 定案：与 shared 会计统一收口
+ * rigi_gc_release_shared（pin-before-sub 原子协议 + macroGC 全局候选
+ * 账本）。演化记录：3d-1 曾把本路拆为「plain 减量 + per-协程局部账本
+ * 登记/PURPLE 快路径」，论证前提「local 实例只被属主协程触碰」被运行时
+ * 调度面系统性打破（CoroutineHandle 经 Task/Dispatcher 完成链、闭包捕获
+ * cell 经 Task 闭包均被 main/worker 两端并发触碰；后者为编译器动态命名
+ * 类型无法静态识别），plain rc 丢失更新 → rc 收支失衡 → 提前终态析构 →
+ * 幸存引用 UAF（NativeE2E case 455 实证，GC_OFF 20/20、默认 25%、
+ * GC_THRESHOLD=64 达 90%）；其间亦实证「仅原子化」不足——局部收集
+ * markGray 的临时减量使 rc 中间态暴露给并发 mutator，「rc==0 即死」判定
+ * 仍失守。本函数遂回归 3d-1 之前的已验证形态（a20fff8^ 沿革：local
+ * 计数原子、release 与 shared 同协议同账本——彼注释明言「不保证运行时
+ * 引用只在一个线程计数」）。local 账本的 mutator 登记面随之停用
+ * （rigi_gc_local_after_release 入口短路），候选环检测统一交 macroGC
+ * 全局 pass（fence 保护）。
+ * 返回值约定同 rigi_gc_release_shared：1 = 终态析构信号（析构时刻 rc
+ * 必已归 0，调用方有 rc==0 前置断言）；否则减前值 ≥2 非终态。 */
 static uint32_t rigi_account_release_local(void *object)
 {
-    RigiObjectHeader *h = (RigiObjectHeader *)object;
-    uint32_t before;
-    uint32_t after;
-    before = h->rc;
-    after = before - 1u;
-    h->rc = after;
-    /* 返回值约定与 rigi_gc_release_shared 完全一致：1 = 终态析构信号；
-     * 否则返回减前值（≥2 = 非终态）。绝不能把减后值当返回值透传——
-     * 减后值 ==1 的非终态对象（U=1）会被调用方误判终态析构（UAF）。 */
-    if (after == 0u)
-    {
-        /* 在册对象 after==0 不可达：在册 ⟹ rc = U + 1 ≥ 2（账本 +1）。
-         * 命中即不变量已被破坏（账本引用丢失），带病继续必是账本悬垂
-         * UAF——响亮失败（macroGC 的协议破坏同口径）。 */
-        if ((h->packedFlags & RIGI_GC_COLOR_MASK) == RIGI_GC_PURPLE)
-        {
-            fprintf(stderr,
-                "rigi_rt: local 会计在册候选计数归零（账本不变量破坏）\n");
-            abort();
-        }
-        return 1u; /* 非在册终态：账本零交互 */
-    }
-    return rigi_gc_local_after_release(object, after);
+    return rigi_gc_release_shared(object);
 }
 
 /* 按实例位分流的 release 体（两入口共用）：返回 1 = 终态，析构在
@@ -530,6 +564,22 @@ static void rigi_release_by_accounting(void *object)
             : rigi_account_release_local(object);  /* local 会计 */
         if (old == 1)
         {
+            /* atomicfix 终态析构前置不变量断言：返回 1（终态析构信号）
+             * 的合法来源只有两个——local/shared 统一经
+             * rigi_gc_release_shared 原子减后 rc==0（叶类型/pin 协议
+             * 路径），或 PURPLE 在册 detach 成功归还账本 +1 后 rc 归 0。
+             * 三者析构时刻 rc 必为 0；任何「减后值==1 即判终态」的误判
+             * （历史缺陷：rigi_gc_local_after_release !alive 分支，
+             * case 455 UAF 根因）都会在此以 rc!=0 响亮失败，调试期
+             * 炸在析构源头而非悬垂 release 的 0xDD 解引用现场。 */
+            if (header->rc != 0u)
+            {
+                fprintf(stderr,
+                    "rigi_rt: 终态析构信号但 rc=%u 非零（终态判定破坏，"
+                    "atomicfix 断言）\n", header->rc);
+                fflush(NULL);
+                abort();
+            }
             rigi_destruct_guarded(object, header->typeId);
         }
     }

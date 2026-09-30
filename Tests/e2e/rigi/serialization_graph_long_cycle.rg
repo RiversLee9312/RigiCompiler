@@ -1,3 +1,7 @@
+// e2e-slow-gate: 图模式序列化压力用例（256 节点真闭环 × 6 趟逐节点
+// placeOf 校验，解释执行下净 VM 约 76 秒）。256 是幂等身份表增长
+// 边界，6 趟校验各自独立（源↔恢复↔拷贝两两隔离），不可裁剪；
+// RIGI_E2E_SLOW=1 时并入默认跑。
 import core.serialization.*
 import core.io.Console
 // 真正的256节点闭环：逐节点比较编号、重复边、回指与两份拷贝的隔离。

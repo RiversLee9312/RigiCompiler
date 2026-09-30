@@ -26,19 +26,32 @@ namespace RigiCompiler.Middleware.Emit
                     {
                         builder.BuildRetVoid();
                     }
-                    else if (session.IsInlineValueType(fn.ReturnType, out _))
+                    else if (session.IsInlineValueType(fn.ReturnType, out var retPlan))
                     {
-                        // 值类型返回：InitRichValue 到隐藏 out 首参（调用方
-                        // 槽已零初始化）；归还 $mw.ret / 源槽的 +1
+                        // 值类型返回 = 交付即移动契约：RcInjectionPass 三段
+                        // 式（release/copy/acquire）已让 $mw.ret 独立持有返
+                        // 回值（借用返回 fn 的 $mw.ret 零义务，3b-δ1 C4），
+                        // 这里对隐藏 out 首参（调用方供槽）纯 memcpy 交付，
+                        // out 接管 $mw.ret 的 +1（借用形态接管零义务裸值），
+                        // 交付后立即 ret，$mw.ret 不再任何 release。
+                        // 禁止改回「acquire + memcpy + release」三段交付：
+                        // tag1 堆盒槽（Nullable<T> 装箱，NullableEmitter
+                        // WrapFromSlot）的 rigi_ref_acquire 有深拷回写副作
+                        // 用（rigi_rt/arc.c rigi_value_walk 回写槽 payload），
+                        // memcpy 会拷出「回写后的新块」而紧随的 release 又
+                        // 将该块 free——out 拿到悬垂块，返回含 Nullable 字
+                        // 段的 rich struct 必现 UAF（rich_return_nullable
+                        // 语料定点）。tag1 是唯一有回写副作用的引用槽种类，
+                        // 交付即移动对 STRING/tag2/tag0 槽同样正确（tag2/
+                        // STRING 的 acquire+release 本相互抵消）。
                         if (ret.Value is not MirLocalOperand returned)
                         {
                             throw new CompilerInternalException(
                                 $"未覆盖的返回值形态: {ret.Value.GetType().Name}");
                         }
                         var src = slots[returned.Name].Slot;
-                        ArcEmitter.EmitInitRichValue(session, builder,
-                            llvmFunction.GetParam(0), src, fn.ReturnType);
-                        ArcEmitter.EmitDestroyRichValue(session, builder, src, fn.ReturnType);
+                        session.EmitMemCopy(builder, llvmFunction.GetParam(0), src,
+                            retPlan.Size);
                         builder.BuildRetVoid();
                     }
                     else

@@ -12,7 +12,7 @@ namespace RigiCompiler
 
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
-            if (Char.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
+            if (IdentifierCharacters.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
             {
                 currentToken.Append(currentChar);
                 return LexerLayerResult.Continue.Instance;

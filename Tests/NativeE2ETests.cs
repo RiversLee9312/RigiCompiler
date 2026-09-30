@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -7,6 +8,7 @@ using System.Text;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
 using RigiCompiler.Middleware.Cli;
+using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Middleware.Runtime;
 using RigiCompiler.Middleware.Toolchain;
 
@@ -21,14 +23,110 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class NativeE2ETests
     {
+        internal enum NativeE2eRunKind
+        {
+            List,
+            Range,
+            NameFilter,
+        }
+
+        // 完整文件流等慢例仅手动按名执行；显式环境变量可并入默认跑。
+        private static bool SlowGateEnabled =>
+            string.Equals(Environment.GetEnvironmentVariable("RIGI_NATIVE_E2E_SLOW"),
+                "1", StringComparison.Ordinal);
+
+        private static (string Label, Action Run)[] DefaultCases =>
+            SlowGateEnabled ? Cases.Concat(SlowCases).ToArray() : Cases;
+
         public static int RunAll()
         {
             return TrySkipEntireSuite() ?? ParallelSuiteRunner.RunAll(Spec);
         }
 
+        // suite-args 选择语义（纯函数，供解析测试与 RunWithArgs 共用）：
+        //   list                    —— 列出索引+Label；
+        //   首参为整数              —— 数字 from/to 区间（原语义原样转发，
+        //                              含不完整区间的用法报错）；
+        //   其余非空参数序列        —— 按 Label 子串过滤；
+        //   空参数                  —— Range 转发（由 runner 打印用法并报
+        //                              非 0，与历史行为一致）。
+        internal static (NativeE2eRunKind Kind, int From, int To,
+            IReadOnlyList<string> Filters) ParseRunArgs(IReadOnlyList<string> args)
+        {
+            if (args.Count == 1 && args[0] == "list")
+            {
+                return (NativeE2eRunKind.List, 0, 0, Array.Empty<string>());
+            }
+            if (args.Count == 0)
+            {
+                // 空参数保持历史行为：交回 runner 打印用法并报非 0。
+                return (NativeE2eRunKind.Range, 0, 0, Array.Empty<string>());
+            }
+            if (args.Count > 0 && int.TryParse(args[0], out var from))
+            {
+                var to = args.Count > 1 && int.TryParse(args[1], out var parsed) ? parsed : from;
+                return (NativeE2eRunKind.Range, from, to, Array.Empty<string>());
+            }
+            return (NativeE2eRunKind.NameFilter, 0, 0, args);
+        }
+
         public static int RunWithArgs(IReadOnlyList<string> args)
         {
-            return TrySkipEntireSuite() ?? ParallelSuiteRunner.RunWithArgs(Spec, args);
+            // `list` 优先于工具链跳过判定：无 clang 的环境同样要能列出
+            // 真实索引与标签（定位/验收的基准面）。
+            var parsed = ParseRunArgs(args);
+            if (parsed.Kind == NativeE2eRunKind.List)
+            {
+                var listed = DefaultCases;
+                for (var i = 0; i < listed.Length; i++)
+                {
+                    Console.WriteLine($"{i}: {listed[i].Label}");
+                }
+                Console.WriteLine($"  （默认共 {listed.Length} 例；慢例可按标签指定，或设 RIGI_NATIVE_E2E_SLOW=1 并入默认）");
+                return 0;
+            }
+            var skip = TrySkipEntireSuite();
+            if (skip != null) return skip.Value;
+            // 非数字参数按 Label 子串过滤（对齐 E2e 套件 RunNameFilter 语义：
+            // OrdinalIgnoreCase Contains，进程内执行，[PASS]/[FAIL] 行自带
+            // 标签），零匹配退出 2。数字开头（含不完整区间）保持
+            // ParallelSuiteRunner 原有 from/to 语义与其用法报错不变。
+            if (parsed.Kind == NativeE2eRunKind.NameFilter)
+            {
+                TestHarness.Reset();
+                TestHarness.Section("native 对拍（VM vs 原生可执行）");
+                var matched = 0;
+                // 单个参数恰为正式标签时优先精确匹配：默认核心标签是
+                // 完整慢例标签的前缀，不能因子串过滤把慢例也启动。
+                var exactLabel = parsed.Filters.Count == 1 &&
+                    Cases.Concat(SlowCases).Any(c => string.Equals(c.Label,
+                        parsed.Filters[0], StringComparison.OrdinalIgnoreCase))
+                    ? parsed.Filters[0] : null;
+                foreach (var entry in Cases.Concat(SlowCases))
+                {
+                    if (exactLabel != null
+                        ? !string.Equals(entry.Label, exactLabel, StringComparison.OrdinalIgnoreCase)
+                        : !parsed.Filters.Any(f => entry.Label.Contains(f,
+                            StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+                    matched++;
+                    if (!SlowGateEnabled && SlowCases.Any(c => c.Label == entry.Label))
+                    {
+                        Console.WriteLine($"  [slow-gate] {entry.Label} 为手动慢例");
+                    }
+                    entry.Run();
+                }
+                if (matched == 0)
+                {
+                    Console.WriteLine(
+                        $"  （按名过滤零匹配：{string.Join(", ", args)}）");
+                    return 2;
+                }
+                return TestHarness.Summary("NativeE2E");
+            }
+            return ParallelSuiteRunner.RunWithArgs(Spec, args);
         }
 
         private static int? TrySkipEntireSuite()
@@ -46,7 +144,7 @@ namespace RigiCompiler.Tests
 
         private static ParallelSuiteRunner.SuiteSpec Spec => new(
             "NativeE2E",
-            Cases,
+            DefaultCases,
             sectionTitle: "native 对拍（VM vs 原生可执行）",
             beforeSpawn: PreheatRigiRt);
 
@@ -57,7 +155,8 @@ namespace RigiCompiler.Tests
             {
                 // 与 NativeCommand 同一 libuv 解析（预热同一份内容哈希缓存，
                 // 否则并行用例会各自重建带 RIGI_HAS_LIBUV 的 bitcode）
-                RigiRtBuilder.EnsureBitcode(clang, out _, LibuvResolver.Resolve(null));
+                RigiRtBuilder.EnsureBitcode(clang, LlvmHost.HostTriple,
+                    out _, LibuvResolver.Resolve(null));
             }
         }
 
@@ -73,9 +172,18 @@ namespace RigiCompiler.Tests
         // 目标文件，经 native --link 链入，断言 stdout/退出码字面量
         private static (string Label, Action Run) NativeOnlyCase(string label,
             string source, string cSource, string expectedStdout, int expectedExit,
-            IReadOnlyDictionary<string, string>? env = null) =>
-            (label, () => RunNativeOnlyCase(label, source, cSource,
-                expectedStdout, expectedExit, env));
+            IReadOnlyDictionary<string, string>? env = null,
+            bool useFixtureRoot = false) =>
+            (label, () =>
+            {
+                if (useFixtureRoot && !OperatingSystem.IsLinux())
+                {
+                    Console.WriteLine("  SKIP " + label + "：仅 Linux 原生文件系统机制探针");
+                    return;
+                }
+                RunNativeOnlyCase(label, source, cSource,
+                    expectedStdout, expectedExit, env, useFixtureRoot);
+            });
 
         private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
             (label, () => RunFailCase(label, source, needle, null));
@@ -94,21 +202,282 @@ namespace RigiCompiler.Tests
             (label, () => RunNativeErrCase(label, source, needle, needlePresent));
 
         // MW12c：per-case env——env 与 MemtrackEnv 合并（MEMTRACK 恒在，
-        // 泄漏即 exit 1 的判定口径不可关），per-case 同名键覆盖
+        // 泄漏即 exit 1 的判定口径不可关），per-case 同名键覆盖。
+        // maxSteps 透传给两宿主执行预算（并发长跑用例需放宽，与 Case 同口径）
         private static (string Label, Action Run) EnvCase(string label, string source,
-            IReadOnlyDictionary<string, string> env)
+            IReadOnlyDictionary<string, string> env, long maxSteps = 20_000_000)
         {
             var merged = new Dictionary<string, string>(MemtrackEnv);
             foreach (var pair in env)
             {
                 merged[pair.Key] = pair.Value;
             }
-            return (label, () => RunCase(label, source, merged));
+            return (label, () => RunCase(label, source, merged, maxSteps));
         }
 
         // 注：声明须在 Cases 之前（静态初始化按文本序，EnvCase 合并要用）
         private static readonly Dictionary<string, string> MemtrackEnv =
             new() { ["RIGI_RT_MEMTRACK"] = "1" };
+
+        // Linux 原生 fs_rename 机制探针：直接调用最终链接进 native 产物的
+        // rigi_rt 符号，在套件自建唯一目录内断言目录源 Replace 系统保证。
+        // 不注入生产竞态钩子；Barrier 双线程只是制造真实内核争用，
+        // 已有目标空目录是无需碰调度运气的确定性判别例。
+        private const string FsReplaceNativeProbe = """
+            #define _GNU_SOURCE
+            #include <errno.h>
+            #include <pthread.h>
+            #include <stdint.h>
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include <string.h>
+            #include <sys/stat.h>
+            #include <time.h>
+            #include <unistd.h>
+
+            typedef struct { const char *data; int64_t len; } rigi_string;
+            extern int32_t rigi_fs_rename(const rigi_string *, const rigi_string *, int32_t);
+            static int move_path(const char *src, const char *dst, int replace) {
+                rigi_string a = {src, (int64_t)strlen(src)};
+                rigi_string b = {dst, (int64_t)strlen(dst)};
+                return rigi_fs_rename(&a, &b, replace);
+            }
+            static int make_path(char *out, const char *root, const char *name) {
+                int n = snprintf(out, 1024, "%s/%s", root, name);
+                return n > 0 && n < 1024;
+            }
+            static int put_file(const char *path, const char *text) {
+                FILE *f = fopen(path, "w");
+                if (!f) return 0;
+                int ok = fputs(text, f) >= 0;
+                return fclose(f) == 0 && ok;
+            }
+            static int file_is(const char *path, const char *text) {
+                char buf[64] = {0};
+                FILE *f = fopen(path, "r");
+                if (!f) return 0;
+                int ok = fgets(buf, sizeof buf, f) && strcmp(buf, text) == 0;
+                fclose(f);
+                return ok;
+            }
+            static int is_dir(const char *path) {
+                struct stat st;
+                return lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+            }
+            static int fail(const char *what, int rc) {
+                fprintf(stderr, "fs_rename %s: rc=%d errno=%d\n", what, rc, errno);
+                return 1;
+            }
+            typedef struct {
+                pthread_barrier_t *barrier;
+                const char *src;
+                const char *dst;
+                int rc;
+            } mover_arg;
+            static void *move_thread(void *raw) {
+                mover_arg *arg = (mover_arg *)raw;
+                int wait = pthread_barrier_wait(arg->barrier);
+                arg->rc = wait == 0 || wait == PTHREAD_BARRIER_SERIAL_THREAD
+                    ? move_path(arg->src, arg->dst, 1) : -999;
+                return NULL;
+            }
+            static int join_before(pthread_t thread) {
+                struct timespec limit;
+                if (clock_gettime(CLOCK_REALTIME, &limit)) return 0;
+                limit.tv_sec += 30;
+                return pthread_timedjoin_np(thread, NULL, &limit) == 0;
+            }
+            int rigi_fs_replace_native_probe(void) {
+                const char *root = getenv("RIGI_FS_PROBE_ROOT");
+                if (!root) return fail("fixture root", -1);
+                char src[1024], dst[1024], child[1024], source2[1024];
+                if (!make_path(src, root, "src_dir") || !make_path(dst, root, "dst_dir")
+                    || !make_path(child, root, "src_dir/marker")) return fail("path", -1);
+                if (mkdir(src, 0700) || mkdir(dst, 0700) || !put_file(child, "source"))
+                    return fail("setup directory", -1);
+                int rc = move_path(src, dst, 1);
+                if (rc != -21 || !is_dir(dst) || !file_is(child, "source"))
+                    return fail("existing empty directory", rc);
+                if (!make_path(dst, root, "dst_file") || !put_file(dst, "old"))
+                    return fail("setup file", -1);
+                rc = move_path(src, dst, 1);
+                if (rc != -17 || !file_is(dst, "old") || !file_is(child, "source"))
+                    return fail("directory over file", rc);
+                if (!make_path(dst, root, "dst_link") || symlink("missing", dst))
+                    return fail("setup broken link", -1);
+                rc = move_path(src, dst, 1);
+                struct stat st;
+                if (rc != -17 || lstat(dst, &st) || !S_ISLNK(st.st_mode)
+                    || !file_is(child, "source")) return fail("directory over link", rc);
+                if (!make_path(src, root, "file_src") || !make_path(dst, root, "file_dst")
+                    || !put_file(src, "new") || !put_file(dst, "old"))
+                    return fail("setup file overwrite", -1);
+                rc = move_path(src, dst, 1);
+                if (rc || access(src, F_OK) == 0 || !file_is(dst, "new"))
+                    return fail("file overwrite", rc);
+                if (!make_path(src, root, "link_src") || !make_path(dst, root, "link_dst")
+                    || symlink("new_missing", src) || symlink("old_missing", dst))
+                    return fail("setup links", -1);
+                rc = move_path(src, dst, 1);
+                char link_target[64] = {0};
+                ssize_t len = readlink(dst, link_target, sizeof link_target - 1);
+                if (rc || len != 11 || strcmp(link_target, "new_missing") != 0)
+                    return fail("link entry overwrite", rc);
+
+                // 两个稳定目录同时争用缺失目标：内核只能接受一个移动。
+                if (!make_path(src, root, "race_a") || !make_path(source2, root, "race_b")
+                    || !make_path(dst, root, "race_dst") || mkdir(src, 0700)
+                    || mkdir(source2, 0700)) return fail("setup race", -1);
+                pthread_barrier_t barrier;
+                pthread_t a, b;
+                if (pthread_barrier_init(&barrier, NULL, 2)) return fail("barrier", -1);
+                mover_arg one = {&barrier, src, dst, -999};
+                mover_arg two = {&barrier, source2, dst, -999};
+                if (pthread_create(&a, NULL, move_thread, &one)
+                    || pthread_create(&b, NULL, move_thread, &two))
+                    return fail("thread start", -1);
+                if (!join_before(a) || !join_before(b)) return fail("thread timeout", -1);
+                pthread_barrier_destroy(&barrier);
+                if (!((one.rc == 0 && two.rc == -21 && is_dir(source2))
+                    || (two.rc == 0 && one.rc == -21 && is_dir(src)))
+                    || !is_dir(dst)) return fail("directory race", one.rc);
+                puts("fs-replace-native-ok");
+                return 0;
+            }
+            """;
+
+        // native-only：独立 statx 真值与 rigi_rt 的 48B 结构逐字段对照。
+        // 受控 mtime 明显早于 birth；procfs 无 STATX_BTIME 时必须为哨兵。
+        private const string FsBirthNativeProbe = """
+            #define _GNU_SOURCE
+            #include <fcntl.h>
+            #include <inttypes.h>
+            #include <linux/stat.h>
+            #include <stdint.h>
+            #include <stdio.h>
+            #include <stdlib.h>
+            #include <string.h>
+            #include <sys/stat.h>
+            #include <sys/sysmacros.h>
+            #include <sys/types.h>
+            #include <time.h>
+            #include <unistd.h>
+
+            typedef struct { const char *data; int64_t len; } rigi_string;
+            typedef struct { uint64_t type_id, payload; } RigiFatRef;
+            extern int32_t rigi_fs_stat(const rigi_string *, const RigiFatRef *);
+            extern int32_t rigi_fs_lstat(const rigi_string *, const RigiFatRef *);
+            static int read_native(const char *path, int follow, uint8_t out[80]) {
+                memset(out, 0, 80);
+                int32_t length = 48;
+                memcpy(out + 24, &length, 4);
+                rigi_string p = {path, (int64_t)strlen(path)};
+                RigiFatRef buf = {0, (uintptr_t)out};
+                int rc = follow ? rigi_fs_stat(&p, &buf) : rigi_fs_lstat(&p, &buf);
+                if (!rc) memmove(out, out + 32, 48);
+                return rc;
+            }
+            static int64_t i64_at(const uint8_t *p, int offset) {
+                uint64_t v = 0;
+                for (int i = 0; i < 8; i++) v |= (uint64_t)p[offset + i] << (8 * i);
+                return (int64_t)v;
+            }
+            static int32_t i32_at(const uint8_t *p, int offset) {
+                uint32_t v = 0;
+                for (int i = 0; i < 4; i++) v |= (uint32_t)p[offset + i] << (8 * i);
+                return (int32_t)v;
+            }
+            static int fail(const char *name) {
+                fprintf(stderr, "fs-birth native mismatch: %s\n", name);
+                return 1;
+            }
+            int rigi_fs_birth_native_probe(void) {
+                const char *root = getenv("RIGI_FS_PROBE_ROOT");
+                if (!root) return fail("fixture root");
+                char file[1024], link[1024];
+                if (snprintf(file, sizeof file, "%s/fixture", root) >= sizeof file
+                    || snprintf(link, sizeof link, "%s/link", root) >= sizeof link)
+                    return fail("path");
+                FILE *f = fopen(file, "wb");
+                if (!f || fputc('x', f) == EOF || fclose(f)) return fail("create");
+                struct timespec times[2] = {{1700000000, 123456700},
+                    {1700000000, 123456700}};
+                if (utimensat(AT_FDCWD, file, times, 0)) return fail("utimensat");
+                struct stat st;
+                struct statx sx;
+                if (stat(file, &st) || st.st_mtim.tv_sec != 1700000000
+                    || st.st_mtim.tv_nsec != 123456700) return fail("mtime fixture");
+                // 测试目录不保证位于 ext4：无 birth 的卷只钉哨兵，
+                // 有 STATX_BTIME 才进入真实创建时间逐值断言。
+                if (statx(AT_FDCWD, file, 0, STATX_BTIME, &sx)
+                    || !(sx.stx_mask & STATX_BTIME)) {
+                    uint8_t missing[80];
+                    if (read_native(file, 1, missing)
+                        || i64_at(missing, 36) != INT64_MIN
+                        || i32_at(missing, 44) != 0)
+                        return fail("unsupported birth not null");
+                    puts("fs-birth-native-ok");
+                    return 0;
+                }
+                if (sx.stx_btime.tv_sec == st.st_mtim.tv_sec)
+                    return fail("birth not independent from mtime");
+                uint8_t out[80];
+                if (read_native(file, 1, out)) return fail("native stat");
+                int64_t birth_ms = sx.stx_btime.tv_sec * 1000
+                    + sx.stx_btime.tv_nsec / 1000000;
+                int32_t birth_ns = sx.stx_btime.tv_nsec % 1000000;
+                if (i64_at(out, 36) != birth_ms || i32_at(out, 44) != birth_ns) {
+                    fprintf(stderr, "native birth=%" PRId64 "/%" PRId32
+                        " statx=%" PRId64 "/%" PRId32 " mask=0x%x"
+                        " st dev=%u:%u ino=%" PRIu64
+                        " sx dev=%u:%u ino=%" PRIu64 "\n",
+                        i64_at(out, 36), i32_at(out, 44), birth_ms, birth_ns,
+                        sx.stx_mask, major(st.st_dev), minor(st.st_dev),
+                        (uint64_t)st.st_ino, sx.stx_dev_major, sx.stx_dev_minor,
+                        sx.stx_ino);
+                    return fail("native birth != statx birth");
+                }
+                if (i64_at(out, 12) != 1700000000123LL
+                    || i32_at(out, 20) != 456700)
+                    return fail("mtime precision");
+                if (symlink("fixture", link)) return fail("symlink");
+                if (statx(AT_FDCWD, link, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &sx)
+                    || !(sx.stx_mask & STATX_BTIME)) return fail("link birth mask");
+                if (read_native(link, 0, out) || i32_at(out, 0) != 2
+                    || i64_at(out, 36) != sx.stx_btime.tv_sec * 1000
+                        + sx.stx_btime.tv_nsec / 1000000
+                    || i32_at(out, 44) != sx.stx_btime.tv_nsec % 1000000)
+                    return fail("native lstat link birth");
+                if (read_native(link, 1, out) || i32_at(out, 0) != 0
+                    || i64_at(out, 36) != birth_ms || i32_at(out, 44) != birth_ns)
+                    return fail("native stat follows link");
+                // procfs 若明确缺 birth，核真实不可得哨兵；平台若支持
+                // procfs birth 则不据平台名猜测，不断言不可得。
+                if (!statx(AT_FDCWD, "/proc/self/stat", 0, STATX_BTIME, &sx)
+                    && !(sx.stx_mask & STATX_BTIME)) {
+                    if (read_native("/proc/self/stat", 1, out)
+                        || i64_at(out, 36) != INT64_MIN || i32_at(out, 44) != 0)
+                        return fail("proc unsupported birth not null");
+                }
+                puts("fs-birth-native-ok");
+                return 0;
+            }
+            """;
+
+        // 手动慢组仍有正式 native 注册；按精确标签显式执行不依赖开关。
+        private static readonly (string Label, Action Run)[] SlowCases =
+        {
+            // Windows 单例在 230 秒内仅完成 VM，native 编译链接尚无结果；
+            // 保留精确标签手动重测，不纳入默认 NativeE2E。
+            ("JSON Map 保留形普通字符串键独立烟测", RunJsonMapReservedKeySmoke),
+            Case("JSON 嵌套 Map wire 扩展慢例对拍",
+                SerializationGraphCorpus("json_map_wire_extended")),
+            Case("fs 文件流对拍（完整慢例）", SerializationGraphCorpus("fs_filestream")),
+            Case("fs 文件流对拍（核心慢例）", SerializationGraphCorpus("fs_stream_core")),
+            // 空 List 排序烟测在 Windows 独立单例编译链接超过 180 秒，
+            // 暂放手动慢组；仍可按精确标签直接执行，不影响默认套件。
+            ("空List排序枚举器失效烟测", RunEmptyListSortSmoke),
+        };
 
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -5319,6 +5688,11 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 0\n" +
                 "}\n"),
+            // DateTime.now 亚毫秒单采样（§4.9.4：time_now_parts 一次 UTC
+            // 采样写 12 字节小端 i64 毫秒 + i32 毫秒外纳秒余量，不拆两
+            // 次采样）。VM/native 共用 e2e 语料断言纳秒余量范围、毫秒
+            // 窗口与年份窗口，避免复制两份测试源码
+            Case("DateTime.now 亚毫秒单采样对拍", SerializationGraphCorpus("time_now_precision")),
             // ===== MW11a 棒3 协程对拍（VM 母本移植；B-1 起 main 与
             // 其同步调用链可直接挂起——本组保留「await 收进 async run()
             // 体内」写法作回归，main 直接 await 形态见下方 B-1 组；
@@ -8350,6 +8724,16 @@ namespace RigiCompiler.Tests
             Case("AtomicStruct 安全更新", "pub func main(): i32 { const a = new AtomicStruct\\<i32>(3)\n a.store(7)\n return a.load() }") ,
             // review-20260910 Phase 2.5：安全门面一步式 RMW（转发私有 Atomic.mutate）
             Case("AtomicStruct 并发mutate自增无丢失", AtomicStructMutateConcurrentSource, maxSteps: 50_000_000),
+            // atomicfix 回归（atomic-455-gcoff）：同用例在纯 ARC 对照（GC 关）
+            // 下跑。历史缺陷（rigi_gc_local_after_release !alive 分支把
+            // 「plain 减后值==1」误判终态 + CoroutineHandle plain 会计被
+            // Task/Dispatcher 链跨协程并发触碰）在该环境 100% 复现
+            // 0xC0000005，是修复最灵敏的回归探针；RIGI_RT_MEMTRACK 由
+            // EnvCase 基线注入，顺带锁定退出零泄漏口径。
+            EnvCase("AtomicStruct 并发mutate自增无丢失（GC_OFF 纯ARC对照）",
+                AtomicStructMutateConcurrentSource,
+                new Dictionary<string, string> { ["RIGI_RT_GC_OFF"] = "1" },
+                maxSteps: 50_000_000),
             Case("AtomicStruct mutate尾随lambda形态", AtomicStructMutateTrailingLambdaSource),
             Case("AtomicStruct mutate回调抛错保留旧值", AtomicStructMutateThrowKeepsOldValueSource),
             Case("Atomic nullable 值与对象往返", AtomicNullableSource),
@@ -8453,7 +8837,23 @@ namespace RigiCompiler.Tests
             // 并行回调下丢更新，曾被误诊为「协程不恢复」。
             Case("MQ listener回调定时器挂起恢复全量投递",
                 ReceiverListenerTimerResumeSource),
-            Case("MQ 四生产者跨执行器广播与封存排空", SerializationGraphCorpus("mq_oop_concurrent")),
+            // b4-1/constfix：字段键校验已切回字节级扫描（toUtf8Span 单次
+            // 拷贝 + Span 下标；初值绑定失败的级联诊断经毒化静默补齐后
+            // 解除阻断），步数 rail 从 40M 回落 20M（characterAt 版实测
+            // ~27M，字节版回到默认 rail 以内）。D3 字段键契约要求
+            // setElement 运行时校验键合法性，messaging 经 deepCopy 每消息
+            // 数十次走该校验；对拍语义不变，native 路径无 rail 不受影响。
+            // 步数 rail 60M（paramfix 核查）：本用例 4 生产者并发 + 真实
+            // 定时器挂起，VM 总步数随真实时钟驱动的交错**本质波动**——
+            // 同一棵树实测至少 20M～31M+（CLI vm 单进程二分 (20.0, 20.5]M；
+            // NativeE2E 子进程环境多次 >20M、一次 >30M 后 <31.4M 收敛），
+            // 20M rail 的历史失败均为时序不利侧的采样而非语义退步
+            //（b4-1/constfix 字节级字段键校验基线 ≈20M 边缘）。native 路
+            // 径无 rail 不受影响（VM 超限轮 native 仍正确输出并完成）。
+            // 60M = 观测上限约 2 倍熔断余量；真失控（死循环）仍在分钟级
+            // 被拦截。
+            Case("MQ 四生产者跨执行器广播与封存排空", SerializationGraphCorpus("mq_oop_concurrent"),
+                maxSteps: 60_000_000),
             Case("纯RigiMQ水位部分compact与全部drain", SerializationGraphCorpus("mq_pure_watermark")),
             Case("纯RigiMQ重复唤醒release与异常解锁", SerializationGraphCorpus("mq_pure_wakeup_release")),
             Case("泛型new隐式typeid跨挂起恢复", SerializationGraphCorpus("generic_new_after_suspend")),
@@ -8536,6 +8936,620 @@ namespace RigiCompiler.Tests
             Case("Any 参数的动态 Type 视图精确物化", SerializationGraphCorpus("type_of_dynamic_view")),
             NativeOnlyCase("GC 债务 64 位计量与重复登记摘除", GcDebtSource,
                 GcDebtC(), "gc-debt-ok\n", 0),
+            // B2-4a：Span<u8> native ABI 对拍——stdlib core.native 的
+            // spanU8Echo 包装（priv native rigi_span_u8_echo）：XOR 回声
+            // 原语读+写+返回三面双宿主一致（复用 e2e 语料 span_native_abi.rg）
+            Case("Span<u8> native ABI 回声原语对拍", SerializationGraphCorpus("span_native_abi")),
+            // B2-4b1：标准流原语对拍——StandardStreams.standardOutput()/
+            // standardError() 经 stdout_write/stderr_write 写通道与
+            // stdout_flush 刷新助手（shim.c）写已知字节行，双宿主 stdout
+            // 一致（复用 e2e 语料 io_stdstreams.rg：含关闭态拒绝与新
+            // 包装对象可写的生命周期断言；stderr 字节走 nativeErr，
+            // 不参与 stdout 比对）
+            Case("标准流原语 stdout 对拍", SerializationGraphCorpus("io_stdstreams")),
+            // UTF-8 分片续写与 Console 文本交错：两路输出按原始字节各自精确断言。
+            ("标准流分片 UTF-8 与文本交错", RunSplitUtf8StdstreamsCase),
+            ("标准输入原始字节往返", RunBinaryStdinCase),
+            // B2-4b2：标准输入 EOF 对拍——StandardStreams.standardInput()
+            // 的 stdin_read_start/stdin_read_take「启动即返」卸载原语，
+            // 测试进程/native 产物 stdin 均为空/已关闭 → read 挂起后被
+            // EOF 唤醒返回 0（§4.4 EOF 路径确定性；含 EOF 粘滞共享、
+            // count==0、范围校验、dispose 生命周期断言；复用 e2e 语料
+            // io_stdin.rg。挂起有数据路径由 playground 手工探测覆盖——
+            // 对拍框架无法喂输入）
+            Case("标准输入 EOF 对拍", SerializationGraphCorpus("io_stdin")),
+            // char 32 位标量对拍——补充平面字面量标量值、整数→char 值域
+            // 检查（越界/代理区/负值 cast 失败抛 CastException）、比较、
+            // Span<char> 读写保值、char_to_string 插值输出、Serializable
+            // 序列化往返与 String UTF-8 长度语义，双宿主 stdout 一致
+            //（复用 e2e 语料 char_scalar32.rg）
+            Case("char 32 位标量对拍", SerializationGraphCorpus("char_scalar32")),
+            // 块 3-2：core.text 字符串核心操作对拍——切片/标量遍历/查找/
+            // 分割/替换/裁剪/拼接（stdlib core/text/text.rg，字节原语
+            // text_copy_out/text_from_bytes 双宿主同语义），固定样例组
+            //（A中😀B）与边界负例，双宿主 stdout 一致
+            //（复用 e2e 语料 text_basic.rg）
+            Case("text 核心操作对拍", SerializationGraphCorpus("text_basic")),
+            // Array<String> 元素槽 ABI 归一对拍——静态 .string 写与泛型
+            // 共享体读经数组头 elemSheet 归一（RUNTIME §5）：asEnumerable
+            // for-in（修复前 native 0xC0000005 主路径，含零槽 null 元素
+            // 放行）、arrayOfElements 泛型写、while 索引读、手动
+            // ListEnumerator current、AtomicSnapshot 快照遍历，双宿主
+            // stdout 一致（复用 e2e 语料 array_string_abi.rg）
+            Case("Array<String> 元素槽 ABI 归一对拍", SerializationGraphCorpus("array_string_abi")),
+            // Array<T> 泛型占位 >8B 内联 struct 元素读写对拍——泛型共享体
+            // （typeid 擦除）下内联判定按 elemSheet 的 FlagInlineValue，
+            // 禁止 size≤8 启发式：16B/72B struct（含 @Serializable 隐藏
+            // 存储的 TimeSpan）经 arrayOfElements 泛型写槽与泛型形参
+            // 读/写（修复前 native 把 {sheet指针, box指针} 当元素值落槽
+            // /读崩于 rigi_check_fat_ref，VM 正常）；带 String 引用字段
+            // struct 覆盖 refMap rich copy（acquire 源盒内嵌引用/release
+            // 旧槽）；i32/String/class 负向不回归，双宿主 stdout 一致
+            //（复用 e2e 语料 array_inline_struct.rg）
+            Case("Array<T> >8B 内联 struct 元素对拍", SerializationGraphCorpus("array_inline_struct")),
+            // jsonfix：泛型胖引用形态守卫放行面——装箱标量 tag0 胖值经调用
+            // 方静态路径写入 Any-sheet 引用槽（.array<.any>），泛型共享体
+            // 构造环（读-写-读）按守卫自证（tid 低 56 位 sheet 带
+            // FlagInlineValue）放行（修复前误判「tag0 且 payload 非零即
+            // ABI 错配」abort，json_write G3 形态最小定点）；unbox 保真、
+            // 深度上限写出、默认深度值语义不回归，双宿主 stdout 一致
+            //（复用 e2e 语料 array_boxed_scalar.rg）
+            Case("Array<Any?> 装箱标量形态对拍", SerializationGraphCorpus("array_boxed_scalar")),
+            // 块 3-3a：core.text Unicode 大小写映射对拍——toLower/toUpper 逐
+            // 标量查 case_data.rg 固定表（Unicode 17.0.0 无条件映射，Rigi 层
+            // 实现即双宿主同源），契约固定样例（straße→STRASSE、İ→i+U+0307、
+            // I→i、ΟΣ/Σ→σ 上下文无关）、无映射保持、ASCII 往返、幂等性、
+            // 补充平面、长度变化（一对多），双宿主 stdout 一致
+            //（复用 e2e 语料 text_case.rg）
+            Case("text 大小写映射对拍", SerializationGraphCorpus("text_case")),
+            // 块 3-3b：compare(String, String) 标量字典序对拍——algorithms.rg
+            // 新增 String 比较辅助重载（§4.2.3 + §4.3.2 次序统一）：UTF-8
+            // 无符号字节字典序（Rigi 层经 toUtf8Span 逐字节比较，双宿主
+            // 同源），基本序/前缀短串在前/空串最小、U+E000 vs U+10000 的
+            // 标量序 vs UTF-16 码元序差异用例、sorted 联用（含补充平面
+            // 字符），双宿主 stdout 一致
+            //（复用 e2e 语料 collalgo_string_compare.rg）
+            Case("String compare 标量字典序对拍", SerializationGraphCorpus("collalgo_string_compare")),
+            // 块 3-4：core.text StringBuilder 与 UTF-8 增量编解码对拍——
+            // builder.rg 分块追加/length 字节数/clear/toString 独立性/容量
+            // 增长（字节原语 text_copy_out/text_from_bytes 双宿主同语义）；
+            // utf8.rg Utf8Decoder 单块与跨块增量解码、isFinal 截断、非法
+            // 序列严格抛 TextFormatException 与替换模式 U+FFFD 最大子部分
+            // 割（Rigi 层状态机，双宿主同源）、reset 复用；Utf8Encoder
+            // encode/encodeChar/encodeTo 与 toUtf8Span 一致性及容量守卫，
+            // 双宿主 stdout 一致（复用 e2e 语料 text_builder_codec.rg）
+            Case("text StringBuilder 与 UTF-8 编解码对拍", SerializationGraphCorpus("text_builder_codec")),
+            // 块 3-5a：core.text 整数 parse/tryParse 对拍——parse.rg 八种
+            // 整数（i8/i16/i32/i64/u8/u16/u32/u64）×IntegerRadix 四进制：
+            // 进制完全由参数决定（无前缀自动识别/无 Auto）、0x/0X 前缀
+            // 必需（hex）、有效数字前缀读取（123abc→123、12 34→12、
+            // 1_000→1）、无符号拒负号（-0/-0x0）、范围按完整前缀数学值
+            //（128abc 失败、i8 0xFF 不解释补码 -1、i64/u64 极值）、
+            // NumberParseException 两类失败（isOutOfRange+position）与
+            // tryParse 一致性（失败 null、0 正常）——纯 Rigi 层实现即
+            // 双宿主同源，固定样例与失败分类，双宿主 stdout 一致
+            //（复用 e2e 语料 text_parse_int.rg）
+            Case("text 整数解析对拍", SerializationGraphCorpus("text_parse_int")),
+            // 块 3-5b：core.text 浮点 parse/tryParse 对拍——parse.rg
+            // float/double 四入口：完整消费语法（.5/1./1e/空白/0x1p3/
+            // 1f/尾随垃圾均失败）、区分大小写特殊值四文本（NaN/
+            // Infinity/+Infinity/-Infinity）、正中取偶固定向量（2^52/2^53
+            // 刻度中点、double 0.1 上邻中点、float 0.1 上邻中点——float
+            // 走独立 24 位任意精度路径，不经 double 中转）、最大/最小
+            // 正规与次正规边界（含 2.2250738585072011e-308 著名向量）、
+            // 负零符号位（1.0/x = -Infinity）、超范围不自动产生 Infinity、
+            // 中下溢到带符号零、tryParse 一致性——FltBig（u32 limb 任意
+            // 精度整数）+ 逐位长除 guard/sticky 取偶，物化走精确 2 幂
+            // 乘法（与舍入模式无关），纯 Rigi 层即双宿主同源，双宿主
+            // stdout 一致（复用 e2e 语料 text_parse_float.rg）
+            Case("text 浮点解析对拍", SerializationGraphCorpus("text_parse_float")),
+            // 块 3-6：core.io 文本流适配器对拍——text.rg 的 TextReader
+            //（readChar 逐标量/EOF null、readLine LF/CRLF/单独 CR 与跨
+            // 底层读块切分/空行/末尾无换行/空输入 null、BOM 跳过与仅
+            // BOM 得空、readToEnd 与 maxBytes 按结果 UTF-8 字节数超限
+            // 抛 OutOfBoundException、严格模式非法 UTF-8 抛
+            // TextFormatException 且故障化后只允许清理、替换模式
+            // U+FFFD）与 TextWriter（write 字节正确、writeLine LF 默认
+            // 与 CRLF 配置、写后不自动 flush 与显式 flush 计数、dispose
+            // Borrowed 不关 host 但收尾 flush/Owned 关 host、
+            // Memory/AutoBuffer 双向 roundtrip）——逐标量解码按码点
+            // 宽度计上限（与 String.length 字节口径一致）纯 Rigi 层
+            // 状态机即双宿主同源，双宿主 stdout 一致
+            //（复用 e2e 语料 io_text_streams.rg）
+            Case("io 文本流适配器对拍", SerializationGraphCorpus("io_text_streams")),
+            // 块 4-1：Parcel 元数据隔离 + Map 统一键值条目序列 + 字段键
+            // 收紧对拍（§4.6.3/D3）——业务字段表只含业务字段（树/图），
+            // 保留键（..value/..case/..id/..ref/..data）只进受控元数据槽；
+            // 所有 Map（含 String 键）统一为有序键值条目序列，'.rigi.type-
+            // identifier'/'content'/'a.b'/空串等业务键往返原样保留、非
+            // String 键（i32）真实类型往返；setElement 对非法字段键抛
+            // IllegalArgumentException；enum 载荷 case 名不进业务字段表
+            //（复用 e2e 语料 parcel_metadata_isolation.rg）
+            Case("Parcel 元数据隔离与 Map 条目序列对拍", SerializationGraphCorpus("parcel_metadata_isolation")),
+            // 块 4-2：Parcel 动态访问面对拍（§4.6.1/D3）——getDynamic 真实
+            // null 且不泄漏 NullSentinel、contains 区分「键不存在」与「键存
+            // 在且值为 null」、setDynamic 与 setElement 同款字段名合法性
+            // 校验（非法键/非 SB 值抛 IllegalArgumentException，含普通
+            // 业务对象与 Pair）且合法 SB 值（标量/容器/Parcel/嵌套/可空
+            // 元素）写入后类型化 getElement 读回、iterate 项为
+            // Pair<String, Any?> 且 null 原样出现、elementCount/迭代只含
+            // 业务字段（meta 不漏）。纯 Rigi 层即双宿主同源，双宿主
+            // stdout 一致（复用 e2e 语料 parcel_dynamic_access.rg）
+            Case("Parcel 动态访问对拍", SerializationGraphCorpus("parcel_dynamic_access")),
+            // 字段名 Unicode 固定 BMP 分类双宿主对拍；与普通动态访问
+            // 分开按名执行，非法键抛错不落业务表。
+            Case("Parcel Unicode 字段键固定分类对拍", SerializationGraphCorpus("parcel_unicode_key")),
+            // 块 4-2：typeOf 装箱视图完备性对拍（native 缺陷修复回归）——
+            // getid.var 运行时结果是操作数实际类型的 TypeSheet*，Type<X>
+            // 值再装箱为 Any（toString/存 Any 槽/is 右侧 Type 值）需要
+            // `.typeid<X>` 视图 sheet；早前收集器只为闭合泛型实参建视图，
+            // 非泛型类/标量的 typeOf(x).toString() 在 native 抛 CastException
+            // （VM 正常）。本对拍锁定可空形参收窄后取 typeOf、Type 值装箱
+            // 进 Any 容器、is 右侧 Type 值三面双宿主一致
+            //（复用 e2e 语料 typeof_boxing_views.rg）
+            Case("TypeOf 装箱视图对拍", SerializationGraphCorpus("typeof_boxing_views")),
+            // typefix：协程帧编组 ABI 同构判定——被协程切分的泛型方法收
+            // Type\<T> 值形参，调用点闭合 typeOf(x) 实参在 tainted 臂
+            // frame 打包时按 ABI 同构白名单恒等拷贝（早前误 MirBoxAny
+            // 装箱、16B 写穿 8B 槽截断第 0 字段 = 视图 sheet，下游
+            // typeNameOf 输出 "core::Type\<X>" 抛未登记）；DONE 返回臂
+            // 同口径。挂起点 frame 保存对 Type\<T> 局部的 Nullable
+            // wrap/unwrap 走 8B 裸指针支（早前按胖引用 extractvalue，
+            // native 0xC0000005）。三面双宿主一致
+            //（复用 e2e 语料 typeid_frame_marshal.rg）
+            Case("TypeId 协程帧编组对拍", SerializationGraphCorpus("typeid_frame_marshal")),
+            // 块 4-2 B 面：格式层最小动态面（擦除 SB 视图）对拍——sbKind
+            // 标量宽度分类与业务对象拒绝、sbLength、sbElementAt 活值上抛与
+            // 元素 null 原样、sbKeyAt/sbValueAt 插入序、sbBuild* 双拼写名称
+            // 分发（VM ".i32" / native "core::i32"）与严格核验（名义 is 先
+            // 于 cast——rigi_try_cast 带数值宽展，cast 不是类型检查）。分支
+            // 只用双宿主共有运行时运算，stdout 一致（复用 e2e 语料
+            // sb_container_views.rg）
+            Case("SB 容器动态视图对拍", SerializationGraphCorpus("sb_container_views")),
+            // 块 4-3：严格恢复契约（§4.6.3 / D3）对拍——标量 cast 前置名义
+            // 核验（i64→i32 / double→i32 / String→i32 拒绝）、字段集合完全
+            // 匹配（缺失/多余/可空缺项/null→非可空）、集合形状与元素逐层
+            // 核验、合法多态/空容器/图模式环与别名/@Temporary 懒恢复往返；
+            // 异常类型双宿主一致（复用 e2e 语料 strict_fromparcel.rg）
+            Case("严格恢复对拍", SerializationGraphCorpus("strict_fromparcel")),
+            // 块 4-3 rich 枚举载荷面：..case 只进 meta 槽、载荷字段集合
+            // （含 const）完全匹配、载荷类型互换拒绝；与多态用例分文件
+            // （rich 枚举 case 构造与继承多态同单元组合触发既有绑定器
+            // 解析缺陷，见 strict_fromparcel.rg 头注）（复用
+            // e2e 语料 strict_fromparcel_enum.rg）
+            Case("严格恢复枚举对拍", SerializationGraphCorpus("strict_fromparcel_enum")),
+            // 块 4-4：Serializer 抽象基类两层职责（§4.6.2/D3）对拍——
+            // 用户继承 Serializer 实现 ToySerializer（SB 视图遍历的自定义
+            // 标签格式）：抽象 read/write 被基类 serialize/deserialize
+            // 便利层复用；传入流借用语义（成功/失败后均未关闭未 flush，
+            // 探测计数）；serializeToString/deserializeFromString 往返
+            // （嵌套对象、List/Map 字段、null 字段）；null 根值格式层
+            // 走通、deserialize 遇 null 根值抛 SerializationException；
+            // 严格性衔接（字段集合不匹配/非 Parcel 根值抛
+            // SerializationException）；同一实例顺序复用。纯 Rigi 层
+            // 状态机 + Parcel 动态访问，双宿主 stdout 一致（复用
+            // e2e 语料 serializer_base.rg）
+            Case("Serializer 基类对拍", SerializationGraphCorpus("serializer_base")),
+            // 块 5-1b：通用字段反射 native 面对拍（§4.6.3「反射与实现
+            // 边界」）——typeNameOf / isSerializable / fieldsOf / casesOf
+            // 分发按 typeid 装箱 toString 双拼写（VM BIL 别名形 / native
+            // canonical 形）并收匹配，返回文本恒 VM 别名形；字段闭包
+            // （继承并入、@Temporary / static 排除、可空结构化）、泛型
+            // 闭合实参代入、容器键值/元素类型保留、enum case 载荷，
+            // 双宿主 stdout 一致（复用 e2e 语料 reflection_fields.rg）
+            Case("字段反射对拍", SerializationGraphCorpus("reflection_fields")),
+            // 块 5-2a：JsonSerializer 写出面对拍（§4.7 写侧）——SB 表示
+            // → JSON 文本全值域（标量/char 补充平面/容器/嵌套对象/可空
+            // 字段）；类型信息两形式（.rigi.type-identifier /
+            // .rigi.enum-case 与互操作表示，含 RequestResult.Failed 与
+            // Map<String, i32> 契约固定示例逐字）；Map content 条目数组
+            // 与互操作 String 键对象（非 String 键报错边界含空 Map）；
+            // 环/图模式 Parcel 拒绝、无环重复引用展开副本；数字边界
+            // （i64/u64 最大、浮点最短往返、负零、NaN/±Infinity 报错）；
+            // 缩进配置与深度上限；借用语义（不关闭不 flush 探测计数）；
+            // serialize/serializeToString 便利层；浮点 toString 经
+            // Ryu 最短往返双宿主呈现一致（复用 e2e 语料 json_write.rg）
+            Case("JSON 写侧对拍", SerializationGraphCorpus("json_write")),
+            // 最小核心：Serializable 单 Map 字段的内部交替键值 wire
+            // 在 typed/plain 两模式均写成精确 JSON；复杂容器组合在
+            // SlowCases 中按名显式对拍，不占默认 native 套件。
+            Case("JSON 嵌套 Map wire 边界对拍", SerializationGraphCorpus("json_nested_map_wire")),
+            // 块 5-2b：JsonSerializer 读取面对拍（§4.7 读侧）——动态读
+            // 全值域（对象→Map 键序保留、数组→Array、空对象/空数组区
+            // 分、i64/u64 边界与超 u64 报错、小数/指数→double）；语法
+            // 拒绝（空文档/第二根值/注释/尾随逗号/重复成员名含转义
+            // 还原判重/非法转义/未配对代理/控制字符/数字词法前导零
+            // 等）；深度 255/256/257 边界与可配置上限、总字节/字符串/
+            // 数字 token 限制；BOM 跳过与错误偏移精确（含 BOM 计数）；
+            // 借用语义（不关闭探测）；写读往返（Map content 形态恢复
+            // 活 Map、数值键重复判重、枚举两形态恢复 Parcel 且原样再
+            // 写出、类型标识恢复 Parcel）；readAs 类型引导（i32 不经
+            // i64、char 恰一标量含补充平面、List/Map/嵌套对象/可空
+            // 字段、枚举两形态与未知 case、Map 业务键原样、Type\<T>
+            // 值形态）；deserialize 走通与宽度不兼容负例（复用 e2e
+            // 语料 json_read.rg）
+            Case("JSON 读侧对拍", SerializationGraphCorpus("json_read")),
+            // 块 5-2c：readAs 嵌套对象类型引导（§4.7.1「递归到每个成员
+            // 时重复这一判断」）+ 按名反射重载对拍——嵌套 i32/i16 宽度
+            // 保真（经 toParcel 声明宽度槽二次确认）、嵌套嵌套、嵌套
+            // 枚举（无载荷裸 case 名/对象形态、带载荷 case 对象、保留
+            // 类型信息形态、未知 case/形状错误负例）、List/Map 成员的
+            // 自定义对象元素引导与顶层 List/Map 目标通道、可空嵌套
+            // 对象显式 null 与存在值、嵌套字段缺失/多余/null 进非可空
+            // （严格恢复）与类型不匹配/小数词法（读取面）负例、自引用
+            // 类型 256 层链正常恢复/257 层深度上限拒绝；fieldsOf/
+            // casesOf/isSerializable 按名重载直接断言（字段闭包文本、
+            // case 载荷、未登记名抛 IllegalArgumentException）（复用
+            // e2e 语料 json_read_nested.rg）
+            Case("JSON 读侧嵌套引导对拍", SerializationGraphCorpus("json_read_nested")),
+            // jsonnullfix：可空集合元素的裸 null（§4.7.1 按目标声明可空性
+            // 读取 / §4.7.5 null 对应空值）对拍——readAs 对象内
+            // Array<i32?> / List<String?> / Map<String, i32?> 显式 null
+            // 元素/值（混排/空容器/嵌套容器/String "null" 与 null 区分）
+            // 经 wire null 哨兵记录受控桥恢复；写出两模式（默认/互操作）
+            // null 元素逐位输出 JSON null、不泄漏 NullSentinel 内部表示；
+            // 非可空元素遇 null 仍拒绝（复用 e2e 语料
+            // json_nullable_elements.rg）
+            Case("JSON 可空集合元素裸 null 对拍", SerializationGraphCorpus("json_nullable_elements")),
+            // wb-5-2d：readAs 顶层自定义对象容器恢复对拍（§4.7.1 顶层
+            // 对象容器无免责）——手写普通 JSON 固定样例的
+            // Array<RcPoint> / List<RcPoint> / Map<String, RcPoint> 根
+            // （普通字典与 §4.7.3 content 包装两形态）、i32/String 字段
+            // 精确恢复（toParcel 宽度槽二次确认）、空容器依声明恢复、
+            // 可空对象元素/值（null 混排）、嵌套容器 List<List<RcPoint>>
+            // （子 envelope 递归）、合法派生类型（类型标识恢复进基类声
+            // 明）与不兼容标识/未登记标识拒绝、Type<T> 值重载入口、
+            // 元素字段缺失/多余/null 进非可空/标量类型不匹配/重复键/
+            // 形状错误负例、write 两模式产物 readAs 往返补充（Map
+            // envelope 内部载荷转为对外 Map 对象表示）（复用
+            // e2e 语料 json_root_object_containers.rg）
+            Case("JSON 顶层对象容器对拍", SerializationGraphCorpus("json_root_object_containers")),
+            // 已物化闭合数组的 typeOf 装箱视图对拍：setDynamic(Array<String>
+            // 活值) → isSbRepresentable → typeOf(值) 装箱需 `.typeid<.array<
+            // .string>>` 视图做身份选择；视图收集按 GuaranteedSheet 物化
+            // 边界覆盖内建 Array 闭合具化，不依赖任何无关表达式的
+            // getid.type 使用点（缺失即抛 CastException(.typeid<.any> →
+            // Array<String>)）（复用 e2e 语料 typeid_view_array_string.rg）
+            Case("TypeId 数组视图装箱对拍", SerializationGraphCorpus("typeid_view_array_string")),
+            // 块 6-1（§4.9.1 / §4.9.4 / §4.9.5，D6）：core.time 时间值
+            // 纳秒化与运算对拍——TimeSpan 规范化分解（-1ns = -1ms +
+            // 999999ns、零唯一表示）、七单位换算与溢出、total 属性族
+            // 向零截断与超 i64 报错、加减进位借位、取负（最小值报错）、
+            // 乘除整数的 base-100 limb 精确宽中间形态（不足一纳秒向零
+            // 截断、除零报错）、比较含纳秒；DateTime ±TimeSpan、两时刻
+            // 相减保完整纳秒精度、UTC 公历范围构造与运算校验；
+            // Timer.schedule 正持续时间向上取整（<1ms 余量不提前到期，
+            // 墙上时钟断言）与过去时刻立即触发；Serializable 往返与
+            // 恢复路径不变量校验（纳秒 0..999999、DateTime 范围越界
+            // Parcel 拒绝）（复用 e2e 语料 time_values.rg）
+            Case("时间值对拍", SerializationGraphCorpus("time_values")),
+            // DateTime 全公历跨度不经 i64 总纳秒；双方向与纳秒边界独立对拍。
+            Case("DateTime-wide 对拍", SerializationGraphCorpus("time_wide_datetime")),
+            // 块 6-2（§4.9.2 / §4.9.3 / §4.9.5，D6）：core.time 文本格式
+            // 对拍——DateTime RFC 3339 收窄子集（Z/±偏移/fraction 1～9 位
+            // 直接形成纳秒、严格全文消费、拒绝缺偏移/非法日期/秒 60/24:00/
+            // -00:00/超九位/尾随垃圾/空白、±偏移换算 UTC、当地与 UTC 界内、
+            // 往返恒等含纳秒、显示偏移超范围报错、tryParse 一致性、
+            // TimeParseException 非法文本与超范围两类可区分）；TimeSpan
+            // ISO 8601 Duration 日时分秒子集（固定样例 P1DT2H3M4.5S /
+            // -PT0.000000001S / PT90M→PT1H30M、P/PT/P1DT/P1M/P1W/混合符号/
+            // 前导加号/超九位/空白拒绝、零统一 PT0S 含负零归一、范围溢出
+            // 不截断不回绕、向零截断衔接、往返恒等）（复用 e2e 语料
+            // time_text.rg）
+            Case("时间文本对拍", SerializationGraphCorpus("time_text")),
+            // §4.9.1 UTC 六分量：紧凑固定样例，独立 VM/native 对拍。
+            Case("DateTime UTC 分量对拍", SerializationGraphCorpus("time_utc_components")),
+            // 块 6-3（§4.9.4 / §4.9.5，D6）：core.time 单调时钟与 Stopwatch
+            // 对拍——MonotonicClock.now() 顺序采样不倒退（允许相等）、
+            // 采样差非负 TimeSpan、反向求差负 TimeSpan（有符号表示）、
+            // MonotonicInstant compareTo/equals；Stopwatch 初始停止且零、
+            // start/stop 幂等、start→sleep→stop 累计 ≥ 睡眠量级、再次
+            // start 不丢前段、reset 清零停止、restart 清零开始、运行中
+            // elapsed 含当前区间并随等待增长；跨 Worker（ComputeExecutor
+            // 挂起/恢复）读数不倒退（同一进程时钟域）。MonotonicInstant/
+            // Stopwatch 无 Serializable（§4.9.5 注释级）。VM/native 原语
+            // 同语义（排除整机睡眠；Windows QueryUnbiasedInterruptTime
+            // Precise / Linux CLOCK_MONOTONIC）（复用 e2e 语料
+            // time_clock.rg）
+            Case("单调时钟对拍", SerializationGraphCorpus("time_clock")),
+            // 块 6-4（§4.11.1–§4.11.3 / D7）：core.math 函数与常量对拍——
+            // abs 全宽度（有符号最小值抛 OutOfBoundException、无符号原样、
+            // 浮点 -0→+0、NaN 传播）；min/max/clamp（NaN 传播、±0 规则、
+            // clamp 无效区间与 NaN 边界抛错、无穷边界）；floor/ceil/trunc/
+            // round 两模式（负数、±0 符号保持、NaN/无穷）；sqrt 正确舍入
+            // （√2/√(1/2)/√10/√(1e-300) 与 float √2 等值断言、
+            // sqrt(-0)=-0、负有限→NaN）；
+            // pow 固定组合表（0^0/NaN^0/1^NaN=1、负底非整数指→NaN、零/
+            // 无穷/奇偶整数指/±0 组合、上溢±inf、下溢±0——VM/native 经
+            // fdlibm e_pow/e_powf 同款移植实现，不依赖宿主库差异）；
+            // exp/ln/log2/log10 定义域与特殊值；三角/反三角（弧度）；
+            // atan2 四象限 ±0 与 NaN 传播；超越函数 4 ULP 验证（独立
+            // mpmath 高精度真值正确舍入到目标格式的参考值，间距按 |ref|
+            // 规格化度量，向量参考值全在正规区；阈值 4.0，不叠加舍入
+            // 余量）；NaN/无穷/±0 分类
+            // 单独核对；常量 pi/e/tau 与已知 double 最近值逐文本一致
+            // （字面量经编译器前端单一路径正确舍入，VM/native 位表示
+            // 相同）（复用 e2e 语料 math_basic.rg）
+            Case("数学函数对拍", SerializationGraphCorpus("math_basic")),
+            // 施工块 6-5：core.math Random 对拍——SplitMix64 展开 +
+            // xoshiro256** 1.0 已知向量（种子 0/1/0xDEADBEEF/u64max）、
+            // 全宽整数最高位消费、有界拒绝采样（非法区间不消耗、单元素
+            // 区间消耗一次、跨零点宽度、u8 [0,10) 20000 发逐桶计数）、
+            // 浮点网格（24/53 位 / 2^24 / 2^53 向量 + [0,1) 与网格对齐）、
+            // bool 最高位、fillBytes 小端/尾块丢弃/零长度/越界不消耗、
+            // 混合调用序列可复现、无参构造系统随机源两次序列不同
+            // （VM 侧 RandomNumberGenerator / native 侧 BCryptGenRandom，
+            // 只要求材料质量不要求同种子；失败路径无法常规测试）。
+            // 显式种子序列由算法契约钉死，VM/native 与 Windows/Linux
+            // 逐位一致（复用 e2e 语料 math_random.rg）
+            Case("Random 已知向量与范围语义对拍", SerializationGraphCorpus("math_random")),
+            // 施工块 7-1（STDLIB §4.5.1 / §4.5.2 / §4.5.9，D5）：core.fs
+            // Path 词法对拍——构造拒绝（空文本/内嵌 NUL/C:foo/\foo/设备
+            // 命名空间/保留设备名/末尾空格点/ADS 冒号）、盘符与 UNC 接受、
+            // equals/hash 文本精确（大小写敏感）、normalizeLexically（配对
+            // 消解/相对开头 .. 保留/绝对不越根/分隔符统一）、join（绝对
+            // 参数报错携双路径）、toAbsolute/relativeTo（根不同报错）、
+            // root/parent/name/extension/nameWithoutExtension/isAbsolute、
+            // Serializable 往返与恢复路径构造校验。平台判定经私有原生
+            // 原语 host_is_windows（VM 宿主判定/native _WIN32 编译期判定，
+            // 两形态同语义）；①②④⑤⑥ 平台分歧断言按宿主分支——Windows
+            // 侧保留本机实测原断言，Linux 侧对称覆盖（'/' 根组合推导、
+            // Windows 盘符文本在 Linux 是普通相对名称：构造接受、
+            // toAbsolute/relativeTo 拒其为非绝对 base/异根，§4.5.2
+            //「语法遵循当前平台」）
+            //（复用 e2e 语料 fs_path.rg）
+            Case("路径词法对拍", SerializationGraphCorpus("fs_path")),
+            // 施工块 7-2（STDLIB §4.5.6 / §4.5.9 + §3.2/§3.3，D5）：
+            // core.fs native 原语层对拍——挂起写/flush（后台线程 + 事件
+            // 唤醒，stdin 先例两段式）与同步 seek/tell/getLength/
+            // setLength（缩短截断/增长补零/游标保持，§4.5.6 明文）/
+            // stat/lstat（kind/length/时间原始对，非普通文件不伪造长
+            // 度）/mkdir/rmdir/unlink/rename（NoReplace 系统不替换保证
+            // 与 Replace 文件覆盖，§4.5.7）/diropen/dirread（计数 + 名
+            // 称命中 + 结束后持续 null）/realpath（解析为绝对路径）双
+            // 宿主往返；错误映射 NotFound/IsDirectory/AlreadyExists/
+            // NotDirectory 经 FileSystemErrorKind 分类（不解析错误消
+            // 息，§4.5.9）。目录名取系统随机源，e2e 并行与双宿主各自
+            // 唯一；末尾自清理。VM 侧 Windows 实测，Linux 分支按契约
+            // 实现未实测（fs_path.rg 已转双平台分支断言口径）
+            //（复用 e2e 语料 fs_primitives.rg）
+            Case("fs 原语对拍", SerializationGraphCorpus("fs_primitives")),
+            // nullablefix（SYNTAX §3.4 可空判等条）：同型 T? 的 ==/!= =
+            // nullness 短路 + 解包内层判等——内层矩阵（String 引用内建/
+            // i32 标量/EqClass 引用/PlainStruct 值类型无 hash override/
+            // core.fs.Path 富 struct 双覆写）× 值矩阵（同值/异值/单空/
+            // 双空）× 来源矩阵（局部/形参/字段）× ==/!=；Any?→Any 的
+            // null 解包放行（修复前 native 抛 CastException、Map<String,
+            // Any> 非空解包路径不变）。修复前双宿主各自错误：native 胖值
+            // 位比同值内容恒 false；VM 覆写 hash 的 struct 崩「字段访问
+            // 目标不是对象」、无 hash override 值类型身份哈希误判
+            //（复用 e2e 语料 nullable_equality.rg）
+            Case("可空判等对拍", SerializationGraphCorpus("nullable_equality")),
+            // richretrfix 回归：函数返回含 Nullable 装箱（tag1 盒）字段的
+            // rich struct——交付即移动契约（TerminatorEmitter 纯 memcpy，
+            // 修复前 acquire 回写副作用使 out 拿到已释放块）。复用 e2e 目
+            // 录组 rich_return_nullable（跨命名空间 + 同文件两形态；多文
+            // 件组走 RunCaseFiles），MEMTRACK 零泄漏口径同全局
+            MultiFileCase("rich struct 返回 Nullable 字段对拍",
+                CorpusGroup("rich_return_nullable")),
+            // 以下完整覆盖说明对应 SlowCases 的「fs 文件流对拍（完整慢例）」；
+            // 核心与完整语料均已慢门控；默认仅留独立字节预期的小烟测。
+            // 施工块 7-3（STDLIB §4.5.6 + §4.4，D5）：core.fs 文件流对拍
+            // ——FileWriteMode 五模式全表（OpenExisting 不截断/CreateNew
+            // 系统仅创建不覆盖/CreateOrTruncate 截断/OpenOrCreate 不截断/
+            // Append 不存在则创建 + 系统追加机制每次写到达当时末尾，含
+            // 另一写入者并发增长后仍接其尾部）；读流 EOF 不粘滞（另一
+            // 写入者追加后再次读取可见新增）、seek 末尾之后读即 EOF、负
+            // 位置范围错误、getLength 实时性；输出流 setLength 缩短截断
+            // /增长补零/游标保持（含游标已在新末尾之后）、越末写入空隙
+            // 补零、负长度范围错误；追加流 as ISeekableStream 被拒（接
+            // 口能力由具体返回类型体现）；flush 持久化（写-flush-close
+            // 重开读回，FlushFileBuffers/fsync 语义由原语层保证）；dispose
+            // 关闭后各操作 IllegalStateException + 幂等 + using 组合；
+            // pipe/MemoryOutputStream/AutoBuffer/readAll/TextReader/
+            // TextWriter 组合。错误映射 NotFound/AlreadyExists 经
+            // FileSystemErrorKind（不解析错误消息，§4.5.9）。目录名取系
+            // 统随机源各自唯一，产物限唯一目录内、末尾自清理；VM 侧
+            // Windows 实测，Linux 分支按契约实现未实测（fs_primitives.rg
+            // 同口径）；默认仅复用独立烟测 fs_stream_smoke.rg；两大例在慢组。
+            ("fs 文件流对拍", RunFileStreamSmoke),
+            // 施工块 7-4（STDLIB §4.5.3 + §4.5.9 序列化条目 + §4.5.5
+            // removeLink，D5）：core.fs 信息查询与链接对拍——getInfo/
+            // tryGetInfo/exists（不存在 NotFound→抛/null/false 一致；
+            // followLinks=false 末段链接形态经既有 junction 只读探测，
+            // kind=.Link、length null）；非 NotFound 失败不伪装成不存
+            // 在——库层转换口径 = 宿主归一类别（先原语探测超长末段名
+            // 的宿主类别：native 侧 \\?\ 长路径折叠 NotFound、VM 侧
+            // .NET 归非 NotFound 类别的双端原始错误差异，再断言非
+            // NotFound 原样抛、NotFound 才转
+            // null/false；中间分量是文件原样失败，只钉不吞面）；FileInfo
+            // 组装（kind
+            // 映射/length 非普通文件 null/时间亚毫秒保留与合理量级、
+            // createdAt ≤ modifiedAt）；getRealPath 绝对化解析（结果
+            // exists 为真）与不存在 NotFound；removeLink 非链接
+            // WrongType（条目保留）、不存在 NotFound；FileInfo deepCopy
+            // /Serializable 往返（不查盘不刷新——记录后追加文件，记录
+            // length 不变、实时查询得新值）与恢复校验（非空字段收
+            // null 拒绝）。既有链接探测只钉 followLinks=false 识别面
+            //（系统既有 junction 属系统过滤保护条目：VM 侧 ResolveLink
+            // Target(final) 返回 NotFound、native 侧可正常跟随——链接
+            // 跟随面由普通链接承担，创建入口 §4.5.3 后置且 Windows 需
+            // 权限，环境限制见块报告）；删链接不删目标的删除面由
+            // fsUnlink 系统语义与 7-2 原语对拍承担；目录名
+            // 取系统随机源各自唯一，末尾自清理；VM 侧 Windows 实测，
+            // Linux 分支按契约实现未实测（fs_filestream.rg 同口径）
+            //（复用 e2e 语料 fs_info.rg）
+            Case("fs 信息查询与链接对拍", SerializationGraphCorpus("fs_info")),
+            ("Linux getRealPath 链接前点点独立预期", RunRealpathDotDotLinux),
+            // 施工块 7-5（STDLIB §4.5.4 + §4.5.5，D5）：core.fs 目录读取
+            // + 创建/删除对拍——create/createAll（父级缺失 NotFound、目
+            // 标已存在 AlreadyExists、createAll 逐级补建并允许已有目录、
+            // 中途遇普通文件 AlreadyExists 且不回滚既有子树、失败目标
+            // 未创建）；DirectoryReader 流式读取（恰好 5 条目逐一读出、
+            // 不排序不递归、无 `.`/`..`、含隐藏项、条目 path 为基于打开
+            // 基准的绝对路径且末段=条目名称、kindHint 正确或 null 容忍
+            // ——Linux readdir d_type=DT_UNKNOWN 时提示不可得）、结束后
+            // 持续 null（重扫须重新打开）、提前离开 seq using 收尾、重
+            // 复 dispose 幂等、关闭后 read IllegalStateException；故障
+            // 态 I/O 失败面无法在合法名称环境内构造（名称解码失败
+            // InvalidNameEncoding 由 7-2 原语对拍承担）；Directory.list
+            // 整体收集、maxEntries 超限报错不截断（-1 不设上限、其他负
+            // 值非法、空目录空列表）；删除族 File.delete 文件/目录
+            // IsDirectory、Directory.delete 空目录/普通文件
+            // NotDirectory/非空 DirectoryNotEmpty（VM 侧 rmdir 非空归一
+            // 类别与 native 不同，由公共层判空统一）/不存在 NotFound、
+            // deleteIfExists 只把不存在转 false 不吞其他失败。断链与指
+            // 向目录链接的删除形态：无创建链接入口（Windows 需权限）
+            // 无法构造，由 7-2 unlink/rmdir 系统调用语义与 lstat 判别承
+            // 担。createAll 中途遇普通文件的错误类别按平台分支断言
+            //（Windows AlreadyExists / Linux NotDirectory——「文件/
+            // 子路径」的 stat 错误类别是宿主系统差异：Windows
+            // ERROR_PATH_NOT_FOUND → NotFound、Linux ENOTDIR →
+            // NotDirectory，§4.5.3 平台语义注记）。目录名取系统随机源
+            // 各自唯一，末尾自清理；双平台分支断言，各侧按平台语义实测
+            //（fs_info.rg 同口径）。契约拼写注：§4.5.4 Directory.open 的 open 是语言
+            // 保留修饰符关键字（M31 拦截声明名位），实现用 openReader
+            // 过渡拼写（见块报告待裁决问题）
+            //（复用 e2e 语料 fs_directory.rg）
+            Case("fs 目录读取与创建删除对拍",
+                SerializationGraphCorpus("fs_directory")),
+            ("文件断链删除 VM/native", RunDanglingDeleteCase),
+            ("junction 删除 VM/native", RunJunctionDeleteCase),
+            ("Windows junction Replace 原生公共 move 与原字节", RunJunctionReplaceNativeCase),
+            ("文件断链 CreateNew VM/native", RunDanglingCreateNewCase),
+            // chainfix：值类型 receiver 写穿接管的 setter 使用点可见性口径
+            // 对拍——priv set 链直调/语句位 void 直调/深链混合可见性/pub set
+            // 突变外溢/只读 place 突变不外溢（复用 e2e 语料
+            // accessor_chain_writeback.rg）
+            Case("访问器链直调写穿对拍",
+                SerializationGraphCorpus("accessor_chain_writeback")),
+            // 施工块 7-6（STDLIB §4.5.7 + §4.5.8，D5）：core.fs 复制/
+            // 移动/临时资源对拍——File.copy 两模式全表（CreateNew 默认
+            // 与显式：新目标内容一致、已有目标 AlreadyExists 且内容不
+            // 动；Overwrite 打开或创建+写入前截断——旧目标更长时截到
+            // 源长度；均不自动创建父目录 NotFound、复制后源不变、源缺
+            // 失 NotFound、源为目录 IsDirectory）；自复制拒绝按实际打
+            // 开句柄的系统文件身份（fs_same_file 原语：Windows 卷序列
+            // 号+文件索引 / Linux st_dev+st_ino，7-6 双宿主同语义——同
+            // 路径 CreateNew AlreadyExists、同路径 Overwrite Other 且
+            // 源未被截断即「截断前拒绝」的直接证据；经硬链接/不同路径
+            // 访问同一文件的形态本机无创建链接入口无法构造，由原语承
+            // 担）；move（§4.5.7 系统移动/重命名能力：文件/目录移动、
+            // NoReplace 遇已有目标 AlreadyExists 两侧不动、Replace 覆
+            // 盖文件、Replace 对目录目标 IsDirectory 不覆盖不合并、目
+            // 录移动要求目标不存在两模式均成且条目随迁、跨文件系统
+            // CrossDevice 由原语 EXDEV 归一映射承担——单卷宿主无法稳
+            // 定构造）；临时文件/目录（§4.5.8：显式目录+prefix、原子
+            // 创建返回已打开输出流、同 prefix 多次互异不冲突、关闭后
+            // 不自动删除、prefix 含 '/'/NUL 报 InvalidPath——'\' 仅
+            // Windows 拒绝不钉平台）。目录名取系统随机源各自唯一，产
+            // 物限唯一目录内、末尾自清理；VM 侧 Windows 实测，Linux 分
+            // 支按契约实现未实测（fs_directory.rg 同口径）
+            //（复用 e2e 语料 fs_copymove.rg）
+            Case("fs 复制移动临时资源对拍",
+                SerializationGraphCorpus("fs_copymove")),
+            // Linux fs_rename 原生符号机制回归：不通过 VM 替代 native，
+            // 稳定真实目录源 Replace 空目录/文件/断链目标、文件与链接覆盖、
+            // Barrier 并发争用；Windows 路径用现有 VM/语料测试。
+            NativeOnlyCase("Linux native fs_rename Replace 目录不覆盖",
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"fs_replace_native_probe\")\n" +
+                "native func probe(): i32\n" +
+                "pub func main(): i32 { return probe() }\n",
+                FsReplaceNativeProbe, "fs-replace-native-ok\n", 0,
+                useFixtureRoot: true),
+            NativeOnlyCase("Linux native fs_stat statx 创建时间",
+                "@NativeLibrary(\"rigi_rt\")\n" +
+                "@NativeSymbol(\"fs_birth_native_probe\")\n" +
+                "native func probe(): i32\n" +
+                "pub func main(): i32 { return probe() }\n",
+                FsBirthNativeProbe, "fs-birth-native-ok\n", 0,
+                useFixtureRoot: true),
+            // 施工块 8-1（STDLIB §8 应用验收场景 1-4）：MVP 应用闭环对拍
+            // ——四类组合场景各复用一份完整 e2e 语料，VM/native 双宿主
+            // stdout/退出码一致（时间相关断言均为不变量与量级，不依赖
+            // 墙钟具体值与平台分辨率）：
+            //   场景 1 配置转换：内存流 JSON → readAs 类型引导严格恢复
+            //     （嵌套对象/List<i32>/String/bool）→ 改两字段 →
+            //     keepTypeInfo=false 互操作写回逐字断言；坏 JSON 解析错误
+            //     原样传播（JsonException 携非负 offset）；类型不匹配严格
+            //     恢复报错；借用流读/写两路不关闭不 flush（探测计数）+
+            //     调用方 seq using/dispose 各层收尾（复用 e2e 语料
+            //     accept_config_transform.rg）
+            Case("验收场景1 配置转换对拍", SerializationGraphCorpus("accept_config_transform")),
+            //   场景 2 数据处理：约 17 KiB 整体输入（>4 倍 TextReader
+            //     4 KiB 预读缓冲，中文/补充平面标量跨块）逐行 readLine →
+            //     保留全部行与 readToEnd/join 双路径逐字对照 → parse →
+            //     fold 聚合（count/sum/min/max）→ map/filter/sorted →
+            //     math（round 定标均值、sqrt、pow、clamp）确定值输出
+            //     （复用 e2e 语料 accept_data_pipeline.rg）
+            Case("验收场景2 数据处理对拍", SerializationGraphCorpus("accept_data_pipeline")),
+            //   场景 3 对象状态往返：一致状态点 Parcel → JSON 写入
+            //     AutoBuffer（保留类型信息逐字断言，重复引用展开两份）→
+            //     输入流 readAs 恢复强类型对象（i32 按声明宽度）→ 再写出
+            //     文本与首写一致（类型标识往返稳定）→ current/backup 恢复
+            //     后为独立副本（修改互不影响）→ 自环 Parcel 写出报错
+            //     （offset -1）→ 恢复对象经 Messenger 发送/Reader 接收，
+            //     send 深复制快照独立于发送方（JSON 非消息路径必要中间
+            //     步骤）（复用 e2e 语料 accept_state_roundtrip.rg）
+            Case("验收场景3 对象状态往返对拍", SerializationGraphCorpus("accept_state_roundtrip")),
+            //   场景 4 时间与耗时：DateTime RFC 3339 子集解析/输出（偏移
+            //     换算 UTC、9 位纳秒）与 ISO Duration（P1DT2H3M4.5S、负值
+            //     整体负号）；纳秒运算（TimeSpan 乘除/加减/取负、DateTime
+            //     ±TimeSpan 跨日进借位、时刻相减保纳秒）；Stopwatch 与
+            //     MonotonicClock 测量 32 次处理循环（elapsed ≥ 0 且
+            //     < 60 s 量级、采样不倒退、reset/start/stop 幂等、
+            //     sleep(20) 累计 ≥ 15 ms 下限）（复用 e2e 语料
+            //     accept_time_measure.rg）
+            Case("验收场景4 时间与耗时对拍", SerializationGraphCorpus("accept_time_measure")),
+            // 施工块 8-2（STDLIB §8 应用验收场景 5-7）：MVP 应用闭环对拍
+            // 下半——三类组合场景各复用一份完整 e2e 语料，VM/native 双
+            // 宿主 stdout/退出码一致（文件系统产物限程序内组装的相对唯
+            // 一目录、末尾整体删除自清理，fs_copymove.rg 同口径；随机数
+            // 全部固定种子，无墙钟/系统随机源依赖）：
+            //   场景 5 文件保存恢复：显式模式文件流（openWrite
+            //     .CreateOrTruncate / openRead）+ JsonSerializer 两代写读
+            //     往返（keepTypeInfo 默认逐字精确断言、readAs 严格恢复、
+            //     同路径截断重写无残留）；借用探测流证 using 逆序清理
+            //     （内层先收尾、序列化器不 flush 不关闭、外层收尾即持久
+            //     化刷新点——关闭重开逐字完整）+ dispose 后操作
+            //     IllegalStateException + 重复 dispose 幂等；文本文件双
+            //     层嵌套 using 组合 TextWriter/TextReader（逐行 + EOF +
+            //     readToEnd 对照）；不存在 NotFound、坏 JSON
+            //     JsonException（非负 offset）、类型不匹配严格恢复报错；
+            //     临时目录自清理（复用 e2e 语料 accept_file_roundtrip.rg）
+            Case("验收场景5 文件保存恢复对拍", SerializationGraphCorpus("accept_file_roundtrip")),
+            //   场景 6 可复现随机数据：固定种子 Random 已知向量锚点
+            //     （math_random.rg 口径的种子 42 首发有界/全宽/单值区间/
+            //     浮点向量）+ 同程序双实例同调用序列逐值相等（24 发有界
+            //     i32、12 发 double、8 发 float、fillBytes 16 字节、8 发
+            //     有界 u8）+ 区间/网格不变量（[min,max)、[0,1)、×2^53/
+            //     ×2^24 整数）→ 集合 map/filter/fold/sorted（与手写循环
+            //     对照：聚合同值、计数一致、加倍和、非降+首末极值+总和
+            //     保持）→ math round 定标/clamp/floor 确定值输出（输出
+            //     面全为整数，不依赖浮点文本格式）（复用 e2e 语料
+            //     accept_random_pipeline.rg）
+            Case("验收场景6 可复现随机数据对拍", SerializationGraphCorpus("accept_random_pipeline")),
+            //   场景 7 目录与文件管理：显式给定相对唯一目录内 create/
+            //     createAll 逐级补建 + 临时文件/临时目录（前缀命中、原子
+            //     创建流写后关闭读回、关闭不自动删除）→ DirectoryReader
+            //     恰好 4 条目遍历（name 命中、无 ./..、条目 path 绝对且
+            //     末段=名称、kindHint 正确或 null 容忍）+ 提前停止读取
+            //     （读 2 条即离开 using，重扫须重新打开）→ 复制规则
+            //     （CreateNew 内容一致/冲突 AlreadyExists 旧内容不动/
+            //     Overwrite 截断）→ 移动规则（NoReplace 归档应用流/
+            //     冲突两侧不动/Replace 覆盖文件/Replace 目录目标
+            //     IsDirectory）→ 删除规则（deleteIfExists 真/假、缺失
+            //     NotFound、非空 DirectoryNotEmpty、目录 IsDirectory、
+            //     空目录成功、文件 NotDirectory）→ 失败后的部分结果
+            //     （已建子树不回滚、失败目标未创建；createAll 遇普通
+            //     文件挡路的类别平台分支：Windows AlreadyExists /
+            //     Linux NotDirectory，fs_directory.rg ① 同口径）；链接
+            //     条目无创建
+            //     入口（Windows 需权限）无法构造，由 7-2 原语语义承担
+            //     （语料注释说明）；产物限唯一目录、末尾整体删除自清理
+            //    （复用 e2e 语料 accept_dir_management.rg）
+            Case("验收场景7 目录与文件管理对拍", SerializationGraphCorpus("accept_dir_management")),
         };
 
         // 单用例：源 → 中端全管线 → BIL 文本 → VM 执行 + native 编译执行，
@@ -8573,11 +9587,284 @@ namespace RigiCompiler.Tests
         private static void RunCase(string label, string source,
             IReadOnlyDictionary<string, string>? env = null, long maxSteps = 20_000_000)
         {
+            RunCaseModule(label, EmitNativeSource(source, label), env, maxSteps);
+        }
+
+        // 标准流分片 UTF-8 单例：绕过 RunCaseModule 的文本解码/换行
+        // 归一化；直接捕获双通道原始字节，Windows 也必须与 VM 一致。
+        private static void RunSplitUtf8StdstreamsCase()
+        {
+            const string label = "标准流分片 UTF-8 与文本交错";
+            var module = EmitNativeSource(
+                SerializationGraphCorpus("io_stdstreams_split_utf8"), label);
+            var text = BilWriter.Write(module);
+            var vm = BilVm.Run(BilReader.Read(text), maxSteps: 20_000_000);
+            TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+                vm.Exception?.Message ?? "");
+            TestHarness.Check(label + "：VM stdout 精确", vm.Stdout, "前\n中\n后\n");
+            TestHarness.Check(label + "：VM stderr 精确", vm.Stderr, "中\n");
+            TestHarness.CheckTrue(label + "：VM 退出码 0",
+                vm.ReturnValue is VmI32 { Value: 0 });
+
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             try
             {
-                var module = EmitNativeSource(source, label);
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, text, new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    OperatingSystem.IsWindows() ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0) return;
+
+                var start = new ProcessStartInfo(exePath)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    RedirectStandardInput = true,
+                    CreateNoWindow = true,
+                };
+                start.Environment["RIGI_RT_MEMTRACK"] = "1";
+                using var process = Process.Start(start)
+                    ?? throw new InvalidOperationException(label + "：native 产物无法启动");
+                process.StandardInput.Close();
+                // 同时抽取两路原始管道，避免文本 ReadToEnd 把 CRLF 或
+                // 非法 UTF-8 提前归一/替换；同步等待前并发读避免满管道死锁。
+                using var stdoutBytes = new MemoryStream();
+                using var stderrBytes = new MemoryStream();
+                var stdoutRead = process.StandardOutput.BaseStream.CopyToAsync(stdoutBytes);
+                var stderrRead = process.StandardError.BaseStream.CopyToAsync(stderrBytes);
+                if (!process.WaitForExit(600_000)
+                    || !System.Threading.Tasks.Task.WhenAll(stdoutRead, stderrRead)
+                        .Wait(30_000))
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    throw new InvalidOperationException(label + "：native 产物执行超时");
+                }
+                var stdout = stdoutBytes.ToArray();
+                var stderr = stderrBytes.ToArray();
+                // 独立字节常量包含 E4 B8 AD 0A；不能用文本换行归一化
+                // 或同一编码器重建预期而掩盖 CRT 的 LF→CRLF 转写。
+                TestHarness.Check(label + "：native stdout 原始字节", Convert.ToHexString(stdout),
+                    "E5898D0AE4B8AD0AE5908E0A");
+                TestHarness.Check(label + "：native stderr 原始字节", Convert.ToHexString(stderr),
+                    "E4B8AD0A");
+                TestHarness.CheckTrue(label + "：native 退出码 0", process.ExitCode == 0,
+                    $"exit={process.ExitCode} stderr={Convert.ToHexString(stderr)}");
+            }
+            finally
+            {
+                DeleteNativeTestDirectory(dir);
+            }
+        }
+
+        // Windows _read 的文本模式还会折叠 CRLF、把 0x1A 当 EOF；
+        // 通过真实 stdin 管道喂入原字节并由 Rigi 逐字节读回至 stdout。
+        private static void RunBinaryStdinCase()
+        {
+            const string label = "标准输入原始字节往返";
+            const string source = """
+                import core.io.*
+                import core.collections.*
+                pub func main(): i32 {
+                    const input = StandardStreams.standardInput()
+                    const output = StandardStreams.standardOutput()
+                    const data = spanOf\<u8>(8)
+                    const count = input.read(data, 0, 8)
+                    output.write(data, 0, count)
+                    output.flush()
+                    input.dispose()
+                    output.dispose()
+                    return 0
+                }
+                """;
+            var module = EmitNativeSource(source, label);
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var bilPath = Path.Combine(dir, "case.bil");
+                File.WriteAllText(bilPath, BilWriter.Write(module), new UTF8Encoding(false));
+                var exePath = Path.Combine(dir,
+                    OperatingSystem.IsWindows() ? "case.exe" : "case");
+                var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
+                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                    compiled.Err);
+                if (compiled.Code != 0) return;
+
+                var start = new ProcessStartInfo(exePath)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                };
+                start.Environment["RIGI_RT_MEMTRACK"] = "1";
+                using var process = Process.Start(start)
+                    ?? throw new InvalidOperationException(label + "：native 产物无法启动");
+                var expected = new byte[] { 0x41, 0x0D, 0x0A, 0x42, 0x1A, 0x43 };
+                using var actual = new MemoryStream();
+                using var errors = new MemoryStream();
+                var stdoutRead = process.StandardOutput.BaseStream.CopyToAsync(actual);
+                var stderrRead = process.StandardError.BaseStream.CopyToAsync(errors);
+                process.StandardInput.BaseStream.Write(expected);
+                process.StandardInput.Close();
+                if (!process.WaitForExit(600_000)
+                    || !System.Threading.Tasks.Task.WhenAll(stdoutRead, stderrRead)
+                        .Wait(30_000))
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                    throw new InvalidOperationException(label + "：native 产物执行超时");
+                }
+                TestHarness.Check(label + "：stdin 原字节回显",
+                    Convert.ToHexString(actual.ToArray()), Convert.ToHexString(expected));
+                TestHarness.Check(label + "：stderr 无诊断",
+                    Convert.ToHexString(errors.ToArray()), "");
+                TestHarness.CheckTrue(label + "：退出码 0", process.ExitCode == 0,
+                    $"exit={process.ExitCode}");
+            }
+            finally
+            {
+                DeleteNativeTestDirectory(dir);
+            }
+        }
+
+        // richretrfix：多文件语料组对拍。语料目录组 = e2e/rigi/<name>/*.rg
+        //（E2eCorpusTests Discover 同规则：按文件名序一起编译），VM 参照
+        // + native 对拍与 RunCase 完全同口径（stdout 一致 + 退出码一致 +
+        // RIGI_RT_MEMTRACK 零泄漏）
+        private static (string Label, Action Run) MultiFileCase(string label,
+            IReadOnlyList<string> files) =>
+            (label, () => RunCaseFiles(label, files));
+
+        private static IReadOnlyList<string> CorpusGroup(string name,
+            [System.Runtime.CompilerServices.CallerFilePath] string path = "") =>
+            Directory.GetFiles(Path.Combine(Path.GetDirectoryName(path)!,
+                    "e2e", "rigi", name), "*.rg")
+                .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+
+        private static void RunCaseFiles(string label, IReadOnlyList<string> files)
+        {
+            // 多 root 编译（stdlib 在前 + 组内全部源文件），与 E2eCorpusTests
+            // RunCase 同一管线序
+            var roots = new List<RootASTNode>();
+            roots.AddRange(StdlibSources.ParseAll());
+            foreach (var file in files)
+            {
+                roots.Add(TestHarness.ParseRoot(File.ReadAllText(file),
+                    Path.GetFileName(file)));
+            }
+            var unit = new CompilationUnit(roots.ToArray());
+            var declarations = DeclarationCollector.Collect(unit);
+            DeclarationResolver.Resolve(unit, declarations);
+            var bodies = Binder.Bind(unit, declarations);
+            if (unit.Diagnostics.HasErrors)
+            {
+                throw new InvalidOperationException(label + "：正向语料必须零 Error；" +
+                    string.Join("; ", unit.Diagnostics.Diagnostics
+                        .Where(d => d.Severity == DiagnosticSeverity.Error)
+                        .Select(d => d.Phase + ": " + d.Message)));
+            }
+            var lowered = Lowerer.Lower(unit, bodies);
+            var module = BilEmitter.Emit(unit, lowered, "case_group");
+            RunCaseModule(label, module);
+        }
+
+        // RunCase 的执行半场（BIL 模块 → VM 参照 + native 编译执行对拍），
+        // 供单源（RunCase）与多文件组（RunCaseFiles）共享
+        private static void RunRealpathDotDotLinux()
+        {
+            const string label = "Linux getRealPath 链接前点点独立预期";
+            if (!OperatingSystem.IsLinux())
+            {
+                Console.WriteLine("  SKIP " + label + "：仅 Linux 实盘链接解析，当前平台未验证");
+                return;
+            }
+            var root = Path.Combine(Path.GetTempPath(), $"rigi_realpath_dotdot_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path.Combine(root, "real", "sub"));
+            var link = Path.Combine(root, "link");
+            try
+            {
+                var marker = Path.Combine(root, "real", "marker");
+                File.WriteAllBytes(marker, new byte[] { 0x72, 0x65, 0x61, 0x6c });
+                Directory.CreateSymbolicLink(link, "real/sub");
+                TestHarness.CheckTrue(label + "：词法折叠目标不存在",
+                    !File.Exists(Path.Combine(root, "marker")));
+                var input = root + "/link/../marker";
+                // 公共 Path.of 不做词法正规化；两宿主均须按原始路径访问磁盘。
+                var source = $$"""
+                    import core.fs.*
+                    import core.io.*
+                    import core.collections.*
+                    pub func main(): i32 {
+                        const resolved = getRealPath(Path.of("{{input}}"))
+                        Console.println(resolved.text)
+                        const reader = File.openRead(resolved)
+                        const bytes = spanOf\<u8>(4)
+                        reader.readExactly(bytes)
+                        reader.dispose()
+                        if (((((bytes[0] if? (0 as u8)) == (114 as u8))
+                            and ((bytes[1] if? (0 as u8)) == (101 as u8)))
+                            and ((bytes[2] if? (0 as u8)) == (97 as u8)))
+                            and ((bytes[3] if? (0 as u8)) == (108 as u8))) {
+                            Console.println("real-marker-ok")
+                            return 0
+                        }
+                        return 1
+                    }
+                    """;
+                RunCaseModule(label, EmitNativeSource(source, label),
+                    expectedStdout: marker + "\nreal-marker-ok\n", expectedExitCode: 0,
+                    assertVmExpected: true);
+            }
+            finally
+            {
+                if (Directory.Exists(link)) Directory.Delete(link);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+
+        private static void RunJsonMapReservedKeySmoke()
+        {
+            const string label = "JSON Map 保留形普通字符串键独立烟测";
+            RunCaseModule(label,
+                EmitNativeSource(SerializationGraphCorpus("json_map_reserved_key_smoke"), label),
+                expectedStdout: "json-map-reserved-key-smoke-ok\n",
+                expectedExitCode: 0, assertVmExpected: true);
+        }
+
+        private static void RunFileStreamSmoke()
+        {
+            const string label = "fs 文件流对拍";
+            RunCaseModule(label,
+                EmitNativeSource(SerializationGraphCorpus("fs_stream_smoke"), label),
+                expectedStdout: "fs-stream-smoke-ok\n", expectedExitCode: 0);
+        }
+
+        // §4.2.4：固定 stdout/退出码在 VM 与 native 各自独立断言，
+        // 避免两宿主同错时仅靠对拍放行。
+        private static void RunEmptyListSortSmoke()
+        {
+            const string label = "空List排序枚举器失效烟测";
+            RunCaseModule(label,
+                EmitNativeSource(SerializationGraphCorpus("collalgo_sort_empty"), label),
+                expectedStdout: "empty-sort-move-ise\nempty-sort-current-ise\n",
+                expectedExitCode: 0, assertVmExpected: true);
+        }
+
+        private static void RunCaseModule(string label, BilModule module,
+            IReadOnlyDictionary<string, string>? env = null, long maxSteps = 20_000_000,
+            string? expectedStdout = null, int? expectedExitCode = null,
+            bool assertVmExpected = false)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir);
+            try
+            {
                 var text = BilWriter.Write(module);
 
                 // VM 侧（行为参考实现）
@@ -8587,6 +9874,17 @@ namespace RigiCompiler.Tests
                 TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
                 var expectedExit = vm.ReturnValue is VmI32 value ? value.Value : 0;
+                if (assertVmExpected)
+                {
+                    if (expectedStdout != null)
+                        TestHarness.Check(label + "：VM stdout 独立预期",
+                            NormalizeNewlines(vm.Stdout), expectedStdout);
+                    if (expectedExitCode != null)
+                        TestHarness.CheckTrue(label + "：VM 退出码独立预期",
+                            vm.ReturnValue is VmI32 { Value: var exit }
+                                && exit == expectedExitCode.Value,
+                            $"vm={expectedExit} expected={expectedExitCode.Value}");
+                }
 
                 // native 侧：CLI 编译 → 进程执行
                 var bilPath = Path.Combine(dir, "case.bil");
@@ -8601,11 +9899,24 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv,
+                    // closeStdin = true：产物 stdin 一律为「启动后立即关闭
+                    // 的管道」——确定性 EOF（B2-4b2 标准输入对拍），与其
+                    // 继承测试宿主可能无效/未知的句柄，不如统一口径；
+                    // 不读 stdin 的既有用例不受影响
+                    closeStdin: true);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
                 TestHarness.CheckTrue(label + "：退出码一致",
                     runExit == expectedExit, $"native={runExit} vm={expectedExit} stderr={nativeErr}");
+                // 烟测另以固定常量钉死 native 结果，不能仅凭 VM 对拍同错放行。
+                if (expectedStdout != null)
+                    TestHarness.Check(label + "：native stdout 独立预期",
+                        NormalizeNewlines(nativeOut), expectedStdout);
+                if (expectedExitCode != null)
+                    TestHarness.CheckTrue(label + "：native 退出码独立预期",
+                        runExit == expectedExitCode.Value,
+                        $"native={runExit} expected={expectedExitCode.Value} stderr={nativeErr}");
             }
             finally
             {
@@ -9109,7 +10420,12 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv,
+                    // closeStdin = true：产物 stdin 一律为「启动后立即关闭
+                    // 的管道」——确定性 EOF（B2-4b2 标准输入对拍），与其
+                    // 继承测试宿主可能无效/未知的句柄，不如统一口径；
+                    // 不读 stdin 的既有用例不受影响
+                    closeStdin: true);
                 TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit}");
                 TestHarness.CheckTrue(label + "：native stderr 含关键字",
@@ -9179,7 +10495,12 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv,
+                    // closeStdin = true：产物 stdin 一律为「启动后立即关闭
+                    // 的管道」——确定性 EOF（B2-4b2 标准输入对拍），与其
+                    // 继承测试宿主可能无效/未知的句柄，不如统一口径；
+                    // 不读 stdin 的既有用例不受影响
+                    closeStdin: true);
                 TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit} stderr={nativeErr}");
                 TestHarness.CheckTrue(label + "：native stderr 含循环链前缀",
@@ -9897,7 +11218,12 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
-                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv);
+                    out var nativeOut, out var nativeErr, environment: env ?? MemtrackEnv,
+                    // closeStdin = true：产物 stdin 一律为「启动后立即关闭
+                    // 的管道」——确定性 EOF（B2-4b2 标准输入对拍），与其
+                    // 继承测试宿主可能无效/未知的句柄，不如统一口径；
+                    // 不读 stdin 的既有用例不受影响
+                    closeStdin: true);
                 TestHarness.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
                 TestHarness.CheckTrue(label + "：退出码一致",
@@ -9914,7 +11240,8 @@ namespace RigiCompiler.Tests
         // --link 一次编译链接；执行产物断言 stdout（行尾归一）与退出码
         private static void RunNativeOnlyCase(string label, string source,
             string cSource, string expectedStdout, int expectedExit,
-            IReadOnlyDictionary<string, string>? env = null)
+            IReadOnlyDictionary<string, string>? env = null,
+            bool useFixtureRoot = false)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -9956,6 +11283,12 @@ namespace RigiCompiler.Tests
                 var runEnv = new Dictionary<string, string>(MemtrackEnv);
                 if (env != null)
                     foreach (var entry in env) runEnv[entry.Key] = entry.Value;
+                if (useFixtureRoot)
+                {
+                    var fixture = Path.Combine(dir, "fs_probe_root");
+                    Directory.CreateDirectory(fixture);
+                    runEnv["RIGI_FS_PROBE_ROOT"] = fixture;
+                }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var nativeOut, out var nativeErr, environment: runEnv);
                 TestHarness.Check(label + "：stdout 符合预期",

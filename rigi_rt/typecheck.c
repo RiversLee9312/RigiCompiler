@@ -305,14 +305,31 @@ static uint64_t rigi_pack_int_payload(int kind, int64_t signed_v, uint64_t unsig
     case RIGI_NK_I8: return (uint64_t)(uint8_t)(int8_t)v;
     case RIGI_NK_U8: return (uint64_t)(uint8_t)u;
     case RIGI_NK_I16: return (uint64_t)(uint16_t)(int16_t)v;
-    case RIGI_NK_U16:
-    case RIGI_NK_CHAR: return (uint64_t)(uint16_t)u;
+    case RIGI_NK_U16: return (uint64_t)(uint16_t)u;
+    /* char 内联载荷 4 字节（32 位 Unicode 标量）；值域由
+     * rigi_numeric_convert 的 rigi_char_scalar_ok 检查后保证 */
+    case RIGI_NK_CHAR: return (uint64_t)(uint32_t)u;
     case RIGI_NK_I32: return (uint64_t)(uint32_t)(int32_t)v;
     case RIGI_NK_U32: return (uint64_t)(uint32_t)u;
     case RIGI_NK_I64: return (uint64_t)v;
     case RIGI_NK_U64: return u;
     default: return 0;
     }
+}
+
+/* char 目标值域：U+0000–U+10FFFF 且排除代理区 U+D800–U+DFFF
+ * （32 位 Unicode 标量，STDLIB §4.3.1）；不合法不截断不回绕 */
+static int rigi_char_scalar_ok(uint64_t cand)
+{
+    if (cand > 0x10FFFFu)
+    {
+        return 0;
+    }
+    if (cand >= 0xD800u && cand <= 0xDFFFu)
+    {
+        return 0;
+    }
+    return 1;
 }
 
 static int rigi_numeric_convert(int src_kind, uint64_t src_payload, int dst_kind,
@@ -347,8 +364,9 @@ static int rigi_numeric_convert(int src_kind, uint64_t src_payload, int dst_kind
     case RIGI_NK_I8: s = (int8_t)src_payload; u = (uint64_t)s; break;
     case RIGI_NK_U8: u = (uint8_t)src_payload; s = (int64_t)u; break;
     case RIGI_NK_I16: s = (int16_t)src_payload; u = (uint64_t)s; break;
-    case RIGI_NK_U16:
-    case RIGI_NK_CHAR: u = (uint16_t)src_payload; s = (int64_t)u; break;
+    case RIGI_NK_U16: u = (uint16_t)src_payload; s = (int64_t)u; break;
+    /* char 源载荷 4 字节（32 位标量）；s 与 u 一致（char 恒非负） */
+    case RIGI_NK_CHAR: u = (uint32_t)src_payload; s = (int64_t)u; break;
     case RIGI_NK_I32: s = (int32_t)src_payload; u = (uint64_t)s; break;
     case RIGI_NK_U32: u = (uint32_t)src_payload; s = (int64_t)u; break;
     case RIGI_NK_I64: s = (int64_t)src_payload; u = (uint64_t)s; break;
@@ -368,6 +386,12 @@ static int rigi_numeric_convert(int src_kind, uint64_t src_payload, int dst_kind
             memcpy(out_payload, &as_f64, sizeof(as_f64));
         }
         return 1;
+    }
+    /* char 目标：整数源先过标量值域检查（失败 → try_cast 失败口径），
+     * 与 VM 的 VmTypeOps.TryCreateChar 同语义 */
+    if (dst_kind == RIGI_NK_CHAR && !rigi_char_scalar_ok(u))
+    {
+        return 0;
     }
     *out_payload = rigi_pack_int_payload(dst_kind, s, u, src_signed);
     return 1;
@@ -392,9 +416,14 @@ from_float:
         else if (dst_kind == RIGI_NK_I64) kind = 2;
         else if (dst_kind == RIGI_NK_U64) kind = 3;
         bits = rigi_cast_f64_to_int(as_f64, kind);
-        /* kind0：i32 饱和后再按位截断（u8(-1.5)=255）；其余已是目标位宽 */
+        /* kind0：i32 饱和后再按位截断（u8(-1.5)=255）；其余已是目标位宽。
+         * char 目标（kind 恒 0）同样先过标量值域检查 */
         if (kind == 0)
         {
+            if (dst_kind == RIGI_NK_CHAR && !rigi_char_scalar_ok((uint64_t)bits))
+            {
+                return 0;
+            }
             *out_payload = rigi_pack_int_payload(dst_kind, bits, (uint64_t)bits, 1);
         }
         else

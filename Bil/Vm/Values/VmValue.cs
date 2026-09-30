@@ -114,13 +114,18 @@ namespace RigiCompiler.Bil.Vm
         public override string ToStandardText() => Value ? "true" : "false";
     }
 
+    // char 是 32 位 Unicode 标量（U+0000–U+10FFFF 排除代理区，STDLIB §4.3.1）；
+    // 构造入口（字面量解码/数值转换范围检查）保证值域，此处不再复检
     public sealed class VmChar : VmValue
     {
-        public char Value { get; }
-        public VmChar(char value) { Value = value; }
+        public uint Value { get; }
+        public VmChar(uint value) { Value = value; }
         public override string TypeRef => ".char";
         public override VmValue Copy() => this;
-        public override string ToStandardText() => Value.ToString();
+        // 标量 → 标准文本：补充平面经代理对承载（String 仍是 C# string，
+        // 与 native char_to_string 的 UTF-8 3/4 字节序列同语义）
+        public override string ToStandardText() =>
+            char.ConvertFromUtf32(unchecked((int)Value));
     }
 
     public sealed class VmString : VmValue

@@ -22,7 +22,7 @@ namespace RigiCompiler.Middleware.Toolchain
         public static int Run(string exe, IReadOnlyList<string> args,
             out string stdout, out string stderr, string? workingDirectory = null,
             IReadOnlyDictionary<string, string>? environment = null,
-            int timeoutMilliseconds = 600_000)
+            int timeoutMilliseconds = 600_000, bool closeStdin = false)
         {
             if (timeoutMilliseconds <= 0)
                 throw new ArgumentOutOfRangeException(nameof(timeoutMilliseconds));
@@ -32,6 +32,10 @@ namespace RigiCompiler.Middleware.Toolchain
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // closeStdin = true：重定向 stdin 并在启动后立即关闭写端——
+                // 子进程得到一条真实管道 EOF（B2-4b2 标准输入对拍：与其
+                // 继承宿主可能无效/未知的句柄，不如确定性 EOF）
+                RedirectStandardInput = closeStdin,
                 CreateNoWindow = true,
                 // 子进程（clang/lld、rigi 产物）一律 UTF-8 交互：不设时 .NET 回退
                 // 控制台代码页（Windows en-US 为 CP437），中文 stderr 会解码成乱码
@@ -70,6 +74,10 @@ namespace RigiCompiler.Middleware.Toolchain
 
             using (process)
             {
+                if (closeStdin)
+                {
+                    process.StandardInput.Close();
+                }
                 var elapsed = Stopwatch.StartNew();
                 // 先开双路异步读再等退出：同步顺序读会因子进程缓冲填满而互等死锁
                 Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();

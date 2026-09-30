@@ -23,6 +23,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class AstDescribe
     {
+        // char 标量描述文本（32 位 Unicode 标量，STDLIB §4.3.1）：BMP 内
+        // 直写字符（描述串形态与 16 位时代一致），补充平面用 \u{hex}
+        internal static string CharText(uint scalar) =>
+            scalar > 0xFFFFu
+                ? "\\u{" + scalar.ToString("X", System.Globalization.CultureInfo.InvariantCulture) + "}"
+                : char.ConvertFromUtf32(unchecked((int)scalar));
+
         // ===== 表达式 =====
 
         public static string Expr(ASTNode? node)
@@ -36,7 +43,7 @@ namespace RigiCompiler.Tests
                 StringLiteralASTNode s => s.InterpolationParts != null
                     ? $"StrInterp({string.Join(", ", s.InterpolationParts.Select(InterpPart))})"
                     : $"Str(\"{s.Value}\"{(s.HasInterpolation ? ",interp" : "")})",
-                CharLiteralASTNode c => $"Char('{c.Value}')",
+                CharLiteralASTNode c => $"Char('{CharText(c.Value)}')",
                 BoolLiteralASTNode b => $"Bool({b.Value})",
                 NullLiteralASTNode => "Null",
                 UnaryExpressionASTNode u => $"Unary({u.Operator} {Expr(u.Operand.Expression)})",

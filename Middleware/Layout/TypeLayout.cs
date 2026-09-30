@@ -89,7 +89,7 @@ namespace RigiCompiler.Middleware.Layout
             {
                 case "void": return LLVMTypeRef.Void;
                 case "bool": return LLVMTypeRef.Int1;
-                case "char": return LLVMTypeRef.Int16;   // UTF-16 码元，与 VM 的 C# char 对齐
+                case "char": return LLVMTypeRef.Int32;   // 32 位 Unicode 标量（U+0000–U+10FFFF），与 VM 的 uint 标量对齐
                 case "i8": case "u8": return LLVMTypeRef.Int8;
                 case "i16": case "u16": return LLVMTypeRef.Int16;
                 case "i32": case "u32": return LLVMTypeRef.Int32;
@@ -202,6 +202,19 @@ namespace RigiCompiler.Middleware.Layout
 
         public static ArrayElementAbi ClassifyElement(MirType element, TypeLayoutPlan? plan)
         {
+            // typefix：.typeid/.fieldid 恒为 8B 裸指针 ABI（与 ClassifySlot
+            // 同口径，占位与否无关）——必须先于占位判定。闭合 .typeid<X>
+            // 数组元素本就走 Scalar(8,8)；开放 .typeid<.generic<T>> 若落
+            // Reference(16B)，同一数组在泛型共享体与闭合上下文的槽解释
+            // 即违反元素槽布局铁律，且挂起点 frame 保存对 Type<T> 局部
+            // 的 Nullable wrap 会按胖引用 extractvalue 崩溃（0xC0000005）。
+            if (IsTypeId(element) || IsFieldId(element))
+            {
+                // .typeid = 8B 内联 sheet 指针（sheet 定稿 FlagInlineValue +
+                // typeSize=8，与 BuiltinSheetLayout 一致）；rigi_alloc_array
+                // 按 sheet 算 stride=8，误按 16B 胖槽写会越出分配堆破坏
+                return ArrayElementAbi.Scalar(8, 8);
+            }
             // 未单态化的 T：与 ClassifySlot 同口径走胖引用（模板 fn 体
             // 可含 Array<T>；真正执行的是构造形态，元素 ABI 由构造计划决定）
             if (IsGenericPlaceholder(element))
@@ -212,18 +225,14 @@ namespace RigiCompiler.Middleware.Layout
             {
                 return ArrayElementAbi.Reference();
             }
-            if (IsTypeId(element))
-            {
-                // .typeid = 8B 内联 sheet 指针（sheet 定稿 FlagInlineValue +
-                // typeSize=8，与 BuiltinSheetLayout 一致）；rigi_alloc_array
-                // 按 sheet 算 stride=8，误按 16B 胖槽写会越出分配堆破坏
-                return ArrayElementAbi.Scalar(8, 8);
-            }
             switch (element.Key)
             {
                 case "bool" or "i8" or "u8":
                     return ArrayElementAbi.Scalar(1, 1);
-                case "char" or "i16" or "u16":
+                case "char":
+                    // char 元素 4 字节（32 位标量，STDLIB §4.3.1；i16/u16 仍 2）
+                    return ArrayElementAbi.Scalar(4, 4);
+                case "i16" or "u16":
                     return ArrayElementAbi.Scalar(2, 2);
                 case "i32" or "u32" or "float":
                     return ArrayElementAbi.Scalar(4, 4);
@@ -306,7 +315,9 @@ namespace RigiCompiler.Middleware.Layout
             return canonical switch
             {
                 "core::bool" or "core::i8" or "core::u8" => (1, TypeLayoutPlan.FlagInlineValue),
-                "core::char" or "core::i16" or "core::u16" => (2, TypeLayoutPlan.FlagInlineValue),
+                // char 内联 4 字节（32 位标量）；i16/u16 仍 2 字节
+                "core::char" => (4, TypeLayoutPlan.FlagInlineValue),
+                "core::i16" or "core::u16" => (2, TypeLayoutPlan.FlagInlineValue),
                 "core::i32" or "core::u32" or "core::float" => (4, TypeLayoutPlan.FlagInlineValue),
                 "core::i64" or "core::u64" or "core::double" => (8, TypeLayoutPlan.FlagInlineValue),
                 "core::String" => (16, TypeLayoutPlan.FlagInlineValue | TypeLayoutPlan.FlagString),

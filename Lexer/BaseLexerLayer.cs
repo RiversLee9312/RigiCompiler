@@ -10,7 +10,7 @@ namespace RigiCompiler
     {
         public LexerLayerResult ParseChar(char currentChar, LexerLayerContext context)
         {
-            if (Char.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
+            if (IdentifierCharacters.IsLetterOrDigit(currentChar) || (currentChar == Notations.UNDERSCORE))
             {
 
                 return new LexerLayerResult.PushLayer(

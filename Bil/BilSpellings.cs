@@ -35,7 +35,9 @@ namespace RigiCompiler.Bil
         public const string InitDeserializeMethodName = "..init.deserialize";
         public const string SerializableIfaceName = "..ISerializable";
         public const string SerializableTokenName = "..serializable.token";
-        // Map 字段物化的嵌套 Parcel.typeName
+        // Map wire 物化的 Parcel.typeName 判别锚点（§4.6.3/D3：所有 Map 统一
+        // 为有序键值条目序列后，合成器不再直摊平业务键、不再发射该 typeName；
+        // 常量保留作手动构造 Parcel 的类型名判别与文档锚点）
         public const string MapParcelTypeName = "core.collections.Map";
 
         // §9.3/§8.4.1：全局（及静态）字段初始化器函数保留名——编译器合成

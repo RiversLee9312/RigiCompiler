@@ -651,13 +651,29 @@ namespace RigiCompiler
         private void SynthesizeGlobalFieldInitializers()
         {
             var statements = new List<BoundStatement>();
+            // §17 切片归属：首个被收集字段的命名空间（core.text 等命名空间级
+            // priv var 初值）——..globals.init 的 fn 定义/声明随之落该命名空间
+            // 切片，全局命名空间保持真空（canonical 不变，协议不受影响）
+            string? sliceNs = null;
+            void NoteSliceNs(FieldSymbol field)
+            {
+                if (sliceNs != null) return;
+                var ns = field.Namespace?.FullName;
+                if (ns == null)
+                {
+                    var owner = field.Owner;
+                    while (owner?.DeclaringType != null) owner = owner.DeclaringType;
+                    ns = owner?.Namespace?.FullName ?? "";
+                }
+                sliceNs = ns;
+            }
             foreach (var file in env.Unit.SourceFiles)
             {
                 var fileCtx = env.Declarations.FileContextOf(file);
                 foreach (var decl in file.Declarations)
                 {
                     CollectStaticFieldInitializerAssignments(decl, fileCtx, statements,
-                        isTypeMember: false);
+                        isTypeMember: false, onCollected: NoteSliceNs);
                 }
             }
             if (statements.Count == 0) return;
@@ -667,6 +683,7 @@ namespace RigiCompiler
                 Accessibility = Accessibility.Public,
                 HasBody = true,
                 IsSynthetic = true,
+                SliceNamespaceOverride = sliceNs,
             };
             bodies.Add(new BoundFunctionBody(method, Array.Empty<LocalSymbol>(),
                 new BoundBlock(env.Unit.SourceFiles[0], statements)));
@@ -677,7 +694,8 @@ namespace RigiCompiler
         // cell 化（含 companion 落地）/毒化/仅 get 无 set 的字段跳过
         // （初值通道分别在 cell init / P2 诊断）
         private void CollectStaticFieldInitializerAssignments(ASTNode node,
-            FileContext fileCtx, List<BoundStatement> statements, bool isTypeMember)
+            FileContext fileCtx, List<BoundStatement> statements, bool isTypeMember,
+            Action<FieldSymbol>? onCollected = null)
         {
             switch (node)
             {
@@ -702,6 +720,7 @@ namespace RigiCompiler
                     if (value == null) return;    // 绑定失败（诊断已报）
                     statements.Add(new BoundAssignmentStatement(variable,
                         new BoundFieldReferenceExpression(variable, field, fieldType), value));
+                    onCollected?.Invoke(field);
                     return;
                 case ClassDeclarationASTNode or StructDeclarationASTNode
                     or InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
@@ -709,7 +728,7 @@ namespace RigiCompiler
                     foreach (var member in MembersOf(node))
                     {
                         CollectStaticFieldInitializerAssignments(member, fileCtx, statements,
-                            isTypeMember: true);
+                            isTypeMember: true, onCollected: onCollected);
                     }
                     return;
             }

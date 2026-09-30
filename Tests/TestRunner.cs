@@ -71,6 +71,21 @@ namespace RigiCompiler.Tests
             ("Middleware", MiddlewareTests.RunAll, MiddlewareTests.RunWithArgs),
             ("NativeE2E", NativeE2ETests.RunAll, NativeE2ETests.RunWithArgs),
             ("BilVmTask", BilVmTaskTests.RunAll, BilVmTaskTests.RunWithArgs),
+            ("NativeE2EArgs", NativeE2EArgsParseTests.RunAll, null),
+            ("VmFsNoReplace", VmFsNoReplaceTests.RunAll,
+                VmFsNoReplaceTests.RunWithArgs),
+            ("VmFsDanglingDelete", VmFsDanglingDeleteTests.RunAll,
+                VmFsDanglingDeleteTests.RunWithArgs),
+            ("VmFsJunctionDelete", VmFsJunctionDeleteTests.RunAll,
+                VmFsJunctionDeleteTests.RunWithArgs),
+            ("VmFsIdentity", VmFsIdentityTests.RunAll,
+                VmFsIdentityTests.RunWithArgs),
+            ("VmFsBirthTime", VmFsBirthTimeTests.RunAll,
+                VmFsBirthTimeTests.RunWithArgs),
+            ("VmFsDirOpen", VmFsDirOpenTests.RunAll,
+                VmFsDirOpenTests.RunWithArgs),
+            ("VmFsRealpath", VmFsRealpathTests.RunAll,
+                VmFsRealpathTests.RunWithArgs),
         };
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）

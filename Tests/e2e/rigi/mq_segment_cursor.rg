@@ -1,3 +1,6 @@
+// e2e-slow-gate: 跨段游标压力用例（段容量 64 的边界向量 65/129/194，
+// 解释执行下净 VM 约 25 秒）。判别力在段边界计数，不可裁剪；
+// RIGI_E2E_SLOW=1 时并入默认跑。
 // expect-output: mq-segment-cursor-ok
 // 慢 reader 钉住前段、快 reader 停在段边界、积压期间从尾部 branch。
 import core.messaging.*

@@ -175,6 +175,17 @@ namespace RigiCompiler.Middleware.Emit
         {
             var value = session.LoadLocal(builder, slots, source);
             var converted = ConvertNumeric(session, builder, value, sourceType, targetType);
+            if (targetType.Key == "char")
+            {
+                // 64 位整数源在截断前用全宽位模式检查（VM TryCreateChar 收
+                // 完整值同口径）：0x1_0000_0000 这类值低 32 位恰为合法标量，
+                // 先截断再检查会漏判回绕，违反 §4.3.1「不截断不回绕」。
+                // 浮点源用饱和后的 i32（饱和只发生在已必越界区，判定一致）。
+                var checkValue = sourceType.Key is "i64" or "u64" ? value : converted;
+                EmitCharRangeCheck(session, builder, slots, inst, sourceType, targetType,
+                    resultType, checkValue, converted);
+                return;
+            }
             if (TypeLayout.TryGetNullableInner(resultType, out var inner)
                 && inner.Canonical == targetType.Canonical)
             {
@@ -183,6 +194,70 @@ namespace RigiCompiler.Middleware.Emit
                 return;
             }
             builder.BuildStore(converted, slots[inst.Target].Slot);
+        }
+
+        // char 目标的标量值域检查（32 位 Unicode 标量，STDLIB §4.3.1）：
+        // 0..0x10FFFF 且排除 U+D800–U+DFFF，越界不截断不回绕。失败走既有
+        // cast 失败路径（与 EmitDynamic miss 同形态）：cast.safe 存零胖值，
+        // cast 抛 core.CastException（MW9b-G，与 VM CastFailed 同语义）。
+        // checkValue 是参与值域判定的值（64 位整数源为截断前全宽位模式），
+        // converted 是截断到 char 位宽后的存储值（判定通过时两者低 32 位一致）。
+        private static void EmitCharRangeCheck(ModuleBuilder.Session session,
+            LLVMBuilderRef builder,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots, MirCast inst,
+            MirType sourceType, MirType targetType, MirType resultType,
+            LLVMValueRef checkValue, LLVMValueRef converted)
+        {
+            var ok = CharScalarInRange(builder, checkValue);
+            var current = session.CurrentFunction;
+            var hit = current.AppendBasicBlock("cast.chr.ok");
+            var fail = current.AppendBasicBlock("cast.chr.fail");
+            var join = current.AppendBasicBlock("cast.chr.join");
+            builder.BuildCondBr(ok, hit, fail);
+
+            builder.PositionAtEnd(fail);
+            if (inst.IsSafe)
+            {
+                builder.BuildStore(
+                    LLVMValueRef.CreateConstNull(TypeLayout.MapType(session.Context, resultType)),
+                    slots[inst.Target].Slot);
+                builder.BuildBr(join);
+            }
+            else
+            {
+                var sheet = TypeSheetOf(session, targetType);
+                EmitCastThrow(session, builder, inst, sourceType, sheet);
+            }
+
+            builder.PositionAtEnd(hit);
+            if (TypeLayout.TryGetNullableInner(resultType, out var inner)
+                && inner.Canonical == targetType.Canonical)
+            {
+                builder.BuildStore(WrapScalar(session, builder, converted, targetType),
+                    slots[inst.Target].Slot);
+            }
+            else
+            {
+                builder.BuildStore(converted, slots[inst.Target].Slot);
+            }
+            builder.BuildBr(join);
+            builder.PositionAtEnd(join);
+        }
+
+        // 整数载荷的无符号值域判定：v <= 0x10FFFF 且 (v < 0xD800 或 v > 0xDFFF)。
+        // 常量随被检值位宽（i32 截断后 / i64 全宽）生成；负值按位模式参与
+        // 无符号比较（i32 -1 → 0xFFFFFFFF、i64 负数高位全 1 → 必然越界）。
+        private static LLVMValueRef CharScalarInRange(LLVMBuilderRef builder,
+            LLVMValueRef value)
+        {
+            var scalarMax = LLVMValueRef.CreateConstInt(value.TypeOf, 0x10FFFFu, false);
+            var surLo = LLVMValueRef.CreateConstInt(value.TypeOf, 0xD800u, false);
+            var surHi = LLVMValueRef.CreateConstInt(value.TypeOf, 0xDFFFu, false);
+            var within = builder.BuildICmp(LLVMIntPredicate.LLVMIntULE, value, scalarMax, "chr.le");
+            var below = builder.BuildICmp(LLVMIntPredicate.LLVMIntULT, value, surLo, "chr.lt");
+            var above = builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, value, surHi, "chr.gt");
+            var notSurrogate = builder.BuildOr(below, above, "chr.notsur");
+            return builder.BuildAnd(within, notSurrogate, "chr.ok");
         }
 
         private static void EmitFail(ModuleBuilder.Session session, LLVMBuilderRef builder,

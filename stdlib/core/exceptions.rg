@@ -87,3 +87,11 @@ pub open class NoSuchElementException : RuntimeException {
     pub init(text: String) { message = text }
     pub override func getMessage(): String { return message }
 }
+
+// 调用方实参非法（D3 §4.6.3）：动态入口收到形状不合法的实参——典型是
+// Parcel 字段键不是合法 Rigi 字段名（空串、含 '.'、首字符数字等）。
+// 静态类型系统已排除的实参错误仍归各具体异常。
+pub open class IllegalArgumentException : RuntimeException {
+    pub init(text: String) { message = text }
+    pub override func getMessage(): String { return message }
+}

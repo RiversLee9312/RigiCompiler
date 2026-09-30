@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.IO;
 using System.Text;
 
 namespace RigiCompiler.Bil.Vm
@@ -44,8 +45,10 @@ namespace RigiCompiler.Bil.Vm
         // 期间读写，仍加锁与 _singletons 口径一致
         private readonly List<string> _initializing = new List<string>();
         private readonly object _initializingLock = new object();
-        private readonly StringBuilder _stdout = new StringBuilder();
-        private readonly StringBuilder _stderr = new StringBuilder();
+        // 两路标准流分别按调用顺序保存字节；UTF-8 仅在读取结果时对整个
+        // 通道解码，不能在 write 边界把尚未写完的多字节序列替换掉。
+        private readonly MemoryStream _stdout = new MemoryStream();
+        private readonly MemoryStream _stderr = new MemoryStream();
         private readonly object _stdoutLock = new object();
         private readonly object _stderrLock = new object();
 
@@ -93,27 +96,39 @@ namespace RigiCompiler.Bil.Vm
 
         public string Stdout
         {
-            get { lock (_stdoutLock) return _stdout.ToString(); }
+            get { lock (_stdoutLock) return Encoding.UTF8.GetString(_stdout.ToArray()); }
         }
 
         public string Stderr
         {
-            get { lock (_stderrLock) return _stderr.ToString(); }
+            get { lock (_stderrLock) return Encoding.UTF8.GetString(_stderr.ToArray()); }
         }
 
         public void WriteStdout(string text)
         {
-            lock (_stdoutLock)
-            {
-                _stdout.Append(text);
-            }
+            // Console 的完整文本与标准流原始字节写入同一通道、同一锁，
+            // 因而不会因分别缓存文本/字节而丢掉两种调用的实际先后顺序。
+            WriteStdout(Encoding.UTF8.GetBytes(text));
         }
 
         public void WriteStderr(string text)
         {
+            WriteStderr(Encoding.UTF8.GetBytes(text));
+        }
+
+        public void WriteStdout(ReadOnlySpan<byte> bytes)
+        {
+            lock (_stdoutLock)
+            {
+                _stdout.Write(bytes);
+            }
+        }
+
+        public void WriteStderr(ReadOnlySpan<byte> bytes)
+        {
             lock (_stderrLock)
             {
-                _stderr.Append(text);
+                _stderr.Write(bytes);
             }
         }
 
@@ -969,7 +984,7 @@ namespace RigiCompiler.Bil.Vm
                 case ".f32": case "core::float": return new VmF32(0);
                 case ".f64": case "core::double": return new VmF64(0);
                 case ".bool": case "core::bool": return new VmBool(false);
-                case ".char": case "core::char": return new VmChar('\0');
+                case ".char": case "core::char": return new VmChar(0u);
                 case ".string": case "core::String": return new VmString("");
                 case ".void": return VmVoid.Instance;
                 case ".null": return VmNull.Instance;

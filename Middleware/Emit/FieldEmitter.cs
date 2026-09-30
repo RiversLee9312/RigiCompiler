@@ -320,6 +320,21 @@ namespace RigiCompiler.Middleware.Emit
                     ArcEmitter.AssignStringValue(session, builder, pointer, value);
                     return;
             }
+            // typefix 防御：非标量槽（int/ptr）拒绝聚合值。胖值 {i64,i64}
+            // 被误编组进 8B 字段时，opaque pointer 下 BuildStore 无点类型
+            // 检查，会整 16B 写穿并静默截断第 0 字段（协程帧编组 ABI 错配
+            // 曾借此存活为 "core::Type<X>" 缺陷）——尺寸/表示不符必须在
+            // 编组侧响亮失败，不允许落 IR。
+            var fieldLlType = FieldType(session, fieldSymbol);
+            if (value.TypeOf.Kind == LLVMTypeKind.LLVMStructTypeKind
+                && (fieldLlType.Kind == LLVMTypeKind.LLVMIntegerTypeKind
+                    || fieldLlType.Kind == LLVMTypeKind.LLVMPointerTypeKind))
+            {
+                throw new CompilerInternalException(
+                    "set.field 编组尺寸不符：聚合值写入标量字段 "
+                    + fieldSymbol + "（源 LLVM 类型 " + value.TypeOf.PrintToString()
+                    + "，字段 LLVM 类型 " + fieldLlType.PrintToString() + "）");
+            }
             builder.BuildStore(value, pointer);
         }
 

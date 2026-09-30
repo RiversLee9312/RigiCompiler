@@ -182,6 +182,7 @@ namespace RigiCompiler
             new TestCommand(),
             new VmCommand(),
             new NativeCommand(),
+            new RunCommand(),
             new HelpCommand(),
         };
     }

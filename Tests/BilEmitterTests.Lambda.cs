@@ -976,7 +976,12 @@ namespace RigiCompiler.Tests
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
             var bodies = Binder.Bind(unit, declarations);
-            var local = bodies.SelectMany(b => b.Locals)
+            // 只查用户入口函数体：跨全 bodies 按名 FirstOrDefault 会误中
+            // stdlib 同名局部（阶段 3 stdlib 扩建后 core.algorithms 的
+            // compare 里有 const x——读到它则基类是 ReadonlyCell 风味）
+            var local = bodies
+                .Where(b => b.Method.Owner == null && b.Method.Name == "main")
+                .SelectMany(b => b.Locals)
                 .FirstOrDefault(l => l.Name == localName);
             return local?.CellStorage?.CellClass;
         }

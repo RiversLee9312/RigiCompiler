@@ -34,9 +34,35 @@ namespace RigiCompiler
                 ? null
                 : ExpressionDispatcher.Visit(decl.Initializer.Expression, scope, ctx, env,
                     declaredType as TypeSymbol);
+            // 初值表达式绑定失败（诊断已由初值表达式落袋）：仍登记毒化局部——
+            // 有标注用标注类型，无标注用 ErrorType 单例（同 LambdaVisitors 失败
+            // 形参先例）。后续使用点经作用域解析到毒化符号按毒化静默收口
+            // （同 BinaryVisitor 纪律），不再级联「Undefined name」（级联误诊
+            // 史：循环体/迭代器内 const 初值失败时每个使用点各报一次未定义名，
+            // 位置随上下文漂移，淹没真正根因——b4-1 字节扫描字段键校验踩中）。
+            // 不重报「requires a type annotation or an initializer」：该变量
+            // 写了初值，只是绑定失败，措辞必须与「未写初值」区分
+            if (decl.Initializer != null && init == null)
+            {
+                var poisonType = declaredType != null && declaredType is not ErrorTypeSymbol
+                    ? declaredType
+                    : env.Unit.Symbols.ErrorType;
+                var poisoned = new LocalSymbol(decl.Name, poisonType, decl.IsConst);
+                // 同名已声明时不覆盖（避免毒化遮蔽先前良好声明；重复声明
+                // 检查随早退路径跳过，与修复前口径一致）
+                if (!scope.DeclaresHere(decl.Name))
+                {
+                    scope.Declare(poisoned);
+                    ctx.Locals.Add(poisoned);
+                    ctx.Flow.MarkAssigned(poisoned);
+                }
+                return new BoundLocalDeclarationStatement(node, poisoned, null);
+            }
             var type = declaredType ?? init?.Type;
             if (type == null)
             {
+                // 未写初值且无从推断（有标注的 var x: T 不落入此分支）——
+                // 此措辞仅对「真的没有初值」成立
                 env.Error(decl.Span,
                     $"Variable '{decl.Name}' requires a type annotation or an initializer");
                 return null;
@@ -58,6 +84,8 @@ namespace RigiCompiler
                 env.Error(decl.Span,
                     $"Local '{decl.Name}' with accessors requires a type annotation");
             }
+            // 此分支的 init == null 恒为「未写初值」（初值绑定失败已在上方
+            // 毒化路径早退），措辞如实覆盖
             if (decl.IsConst && init == null)
             {
                 env.Error(decl.Span, $"Const '{decl.Name}' must have an initializer");
@@ -240,8 +268,14 @@ namespace RigiCompiler
                 return null;
             }
             var init = ExpressionDispatcher.Visit(node.Initializer.Expression, scope, ctx, env);
-            if (init == null) return null;
-            if (init.Type is ErrorTypeSymbol) return null;
+            if (init == null || init.Type is ErrorTypeSymbol)
+            {
+                // 毒化静默补齐（同 LocalDeclarationVisitor）：初值绑定失败/
+                // ErrorType 毒化时仍登记毒化分量局部，catch 体内使用不再
+                // 级联「Undefined name」
+                PoisonDeclareDestructuredNames(node, scope, ctx, env);
+                return null;
+            }
             var pairDef = FindCorePairDefinition(node.Span, env);
             if (pairDef == null) return null;
             // S9a：泛型参数类型判型后不参与 Pair 查找（自然报非 Pair 诊断）
@@ -292,6 +326,22 @@ namespace RigiCompiler
                 entries.Add((local, field));
             }
             return new BoundDestructuringDeclarationStatement(node, init, entries);
+        }
+
+        // 解构声明初值失败的毒化分量登记：名字逐个登记 ErrorType 毒化
+        // 局部（同名已声明跳过——不遮蔽先前良好声明；重复声明检查随早退
+        // 跳过，与修复前口径一致）
+        private static void PoisonDeclareDestructuredNames(VariableDeclarationASTNode node,
+            Scope scope, BindContext ctx, BindEnvironment env)
+        {
+            foreach (var name in node.DestructureNames!)
+            {
+                if (scope.DeclaresHere(name)) continue;
+                var local = new LocalSymbol(name, env.Unit.Symbols.ErrorType, node.IsConst);
+                scope.Declare(local);
+                ctx.Locals.Add(local);
+                ctx.Flow.MarkAssigned(local);
+            }
         }
 
         // core.Pair 定义查找（.bootstrap.rg 自举提供；缺席即诊断——

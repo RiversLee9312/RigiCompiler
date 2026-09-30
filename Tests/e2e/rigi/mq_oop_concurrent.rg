@@ -1,3 +1,6 @@
+// e2e-slow-gate: 并发消息压力用例（多读者并发 send/await 深复制往返，
+// 解释执行下净 VM 约 73 秒）。裁剪会失去并发交错判别力；
+// RIGI_E2E_SLOW=1 时并入默认跑。
 // expect-output: mq-concurrent-ok
 import core.messaging.*
 import core.coroutine.*

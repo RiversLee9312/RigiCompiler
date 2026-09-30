@@ -724,9 +724,11 @@ namespace RigiCompiler
             var instanceCall = (BoundInstanceCallExpression)node;
             // S1/g9：值类型 receiver 的可写 place 链（§10）——receiver
             // 拷贝物化，调用结果物化后把 this 修改反向写回 place
+            // （chainfix：接管判定携带 ctx，环可写回性与写回构造同一
+            // setter 使用点可见性口径）
             if (instanceCall.Receiver is not BoundWrapperAccessExpression
                 && WrapperPlaceLowering.TryValueReceiverCallTarget(instanceCall.Receiver,
-                    instanceCall.Method.Owner, out var valueRoot, out var valueChain))
+                    instanceCall.Method.Owner, ctx, out var valueRoot, out var valueChain))
             {
                 return RewriteValueReceiverCall(instanceCall, valueRoot, valueChain, ctx, env);
             }

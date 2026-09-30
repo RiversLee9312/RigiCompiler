@@ -212,7 +212,11 @@ namespace RigiCompiler.Middleware.Layout
             switch (type.Key)
             {
                 case "bool" or "i8" or "u8": return new FieldTypeInfo(1, 1, false, null);
-                case "char" or "i16" or "u16": return new FieldTypeInfo(2, 2, false, null);
+                case "char":
+                    // char 字段 4 字节（32 位 Unicode 标量，STDLIB §4.3.1；
+                    // 与 TypeLayout.MapType 的 i32 存储宽度一致；i16/u16 仍 2）
+                    return new FieldTypeInfo(4, 4, false, null);
+                case "i16" or "u16": return new FieldTypeInfo(2, 2, false, null);
                 case "i32" or "u32" or "float": return new FieldTypeInfo(4, 4, false, null);
                 case "i64" or "u64" or "double": return new FieldTypeInfo(8, 8, false, null);
                 case "String": return new FieldTypeInfo(16, 16, false, null, isStringSlot: true);

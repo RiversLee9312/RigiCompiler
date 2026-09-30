@@ -236,7 +236,7 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 | `rigi_rt` | `f64_to_string` | `value: .f64` | 同上（Ryu 最短往返 + .NET 默认呈现） |
 | `rigi_rt` | `f32_to_string` | `value: .f32` | 同上 |
 | `rigi_rt` | `bool_to_string` | `value: .bool` | 同上（`true`/`false`） |
-| `rigi_rt` | `char_to_string` | `value: .char` | 同上（UTF-16 码元文本） |
+| `rigi_rt` | `char_to_string` | `value: .char` | 同上（`.char` 是 32 位 Unicode 标量，按标量编 UTF-8 1–4 字节文本；补充平面标量为 4 字节序列） |
 | （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 
 `String` 的 `toString` 即值自身，不产生 native 调用。`toString` 成员方法（`core::Any$toString` / `core::Object$toString`）不再直接 hook：它们是 open 普通方法，默认实现体由编译器合成为「装箱接收者后 `invoke` `.bootstrap.rg` 的 `priv` 全局 native `any_to_string`」的小 fn——hook 经该全局函数触达；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中本表（无 `(lib, symbol)` 对），无 BIL fn 定义。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。

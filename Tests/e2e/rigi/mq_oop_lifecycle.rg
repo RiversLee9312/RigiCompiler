@@ -1,3 +1,6 @@
+// e2e-slow-gate: 消息生命周期压力用例（段容量 64 的边界向量 257/386/418/130，
+// 约 1.6 千次 send/await 深复制往返，解释执行下净 VM 约 87 秒）。判别力在边界
+// 计数本身，不可裁剪；RIGI_E2E_SLOW=1 时并入默认跑。
 // expect-output: mq-lifecycle-ok
 import core.messaging.*
 import core.coroutine.*

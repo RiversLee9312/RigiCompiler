@@ -93,8 +93,21 @@ void rigi_sync_mutex_release(int64_t mutex);
  * 槽为库内面（下），棒4 接线 */
 int64_t rigi_tls_current_context(void);
 
-/* 时钟底座（§19.7 DateTime.now）：UTC epoch 毫秒。双形态真实现 */
+/* 旧时钟底座：UTC epoch 毫秒，供 Timer/协程使用，ABI 不变。 */
 int64_t rigi_time_now(void);
+/* DateTime 专用单次 UTC 采样：out Span<u8> 长度至少 12，
+ * 小端 [0..8) 有符号毫秒，[8..12) 毫秒外纳秒 0..999999。 */
+void rigi_time_now_parts(const RigiFatRef *out);
+
+/* 单调时钟底座（施工块 6-3，§4.9.4）：同一进程时钟域内的单调读数
+ * （纳秒），计入协程等待/未调度时间、排除整机睡眠/休眠；VM 宿主
+ * 同语义镜像（不用宿主 Stopwatch 时间源）。实际分辨率平台相关 */
+int64_t rigi_monotonic_now_ns(void);
+
+/* 宿主平台判定（施工块 7-1，§4.5.2/§4.5.9 私有原语）：非 0 = Windows。
+ * core.fs Path 词法校验内部使用；VM 侧 OperatingSystem.IsWindows()
+ * 镜像（VmHooks host_is_windows） */
+uint8_t rigi_host_is_windows(void);
 
 /* ---- 定时器原语（stdlib 对齐；§19.4/§19.5 时钟底座） ---- */
 

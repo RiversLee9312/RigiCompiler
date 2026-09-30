@@ -49,7 +49,7 @@ namespace RigiCompiler.Middleware.Binding
             var isFloat = key is "float" or "double";
             var isBool = key == "bool";
             // char 只有比较（VM 同口径：无 char 算术/位/移位）；比较按
-            // UTF-16 码元无符号序（VM 的 char 比较即码元数值序）
+            // 32 位 Unicode 标量值的无符号数值序（VM 的 char 比较同此序）
             var isChar = key == "char";
             var isUnsigned = key is "u8" or "u16" or "u32" or "u64";
             var isSignedInt = key is "i8" or "i16" or "i32" or "i64";

@@ -495,6 +495,12 @@ namespace RigiCompiler
         // companion 内生成的实例方法（§8.7）：源码体迁入；BIL 有 .this，
         // 但绑定态视同静态（无 this——源体本为静态方法）
         public bool IsCompanionInstance { get; internal set; }
+        // §17 切片归属覆盖（仅编译器合成 fn 使用）：..globals.init 收集
+        // 跨命名空间的字段初值，单一 fn 若按 Namespace（全局）切片会使
+        // 纯命名空间源的全局切片非空——canonical 仍 $..globals.init
+        // （Namespace 保持全局命名空间，init 协议不变），仅发射切分归
+        // 首个被初始化字段的命名空间（SliceNsOf 消费）
+        public string? SliceNamespaceOverride { get; internal set; }
 
         public MethodSymbol(
             string name,

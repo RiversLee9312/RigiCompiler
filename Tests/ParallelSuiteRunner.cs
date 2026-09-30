@@ -135,7 +135,11 @@ namespace RigiCompiler.Tests
             {
                 var completion = ParseCompletion(child.Stdout, spec.SuiteName);
                 var ok = child.StartError == null && child.ExitCode == 0
-                    && completion is { Fail: 0 };
+                    && completion is { Fail: 0 }
+                    // 子进程的 stderr 含 LLVM/clang 目标不兼容警告时，即使
+                    // 用例本身 stdout/退出码通过，也不得静默算作原生成功。
+                    && (spec.SuiteName != "NativeE2E" ||
+                        !child.Stderr.Contains("warning: linking two modules of different", StringComparison.OrdinalIgnoreCase));
                 if (ok)
                 {
                     totalPass += completion!.Value.Pass;
@@ -149,6 +153,7 @@ namespace RigiCompiler.Tests
                     {
                         totalPass += completion.Value.Pass;
                         totalFail += completion.Value.Fail;
+                        if (completion.Value.Fail == 0) totalFail++;
                     }
                     else
                     {
@@ -319,6 +324,8 @@ namespace RigiCompiler.Tests
             {
                 return $"子进程退出码 {child.ExitCode}";
             }
+            if (child.Stderr.Contains("warning: linking two modules of different", StringComparison.OrdinalIgnoreCase))
+                return "LLVM 模块目标失配警告（详见子进程 stderr）";
             return "子进程输出缺失完成统计";
         }
 

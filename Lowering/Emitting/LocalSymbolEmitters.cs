@@ -52,7 +52,9 @@ namespace RigiCompiler
         // AttachToExtTarget 清空）同归宿主类型根——内建类型上的 ext 成员
         // 因此落 core 切片（声明点命名空间在符号上无存；对合并运行无影响）
         internal static string SliceNsOf(MethodSymbol method) =>
-            method.Namespace?.FullName ?? RootNsOf(method.Owner);
+            method.SliceNamespaceOverride
+            ?? method.Namespace?.FullName
+            ?? RootNsOf(method.Owner);
 
         internal static string SliceNsOf(FieldSymbol field) =>
             field.Namespace?.FullName ?? RootNsOf(field.Owner);

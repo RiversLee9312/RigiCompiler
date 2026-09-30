@@ -79,7 +79,11 @@ Running
 - **定时器原语**：Timer 与 `sleep` 的时钟底座（§19.4/§19.5）；
 - **同步 Mutex 原语**：供 Dispatcher 内部队列一致性使用的同步锁。它与语言级异步 `Mutex`（§19.6）是两个东西：前者只服务运行时内部、在任何路径上都不得跨挂起点持有；
 - **TLS 当前上下文原语**；
-- **时钟原语**：`core.time.DateTime.now()` 的底座（§19.7）。
+- **时钟原语**：`core.time.DateTime.now()` 的墙上时钟底座（§19.7；单次 UTC 采样
+  一次性写入 12 字节小端 i64 毫秒 + i32 毫秒外纳秒余量，不拆两次采样，§4.9.4）与
+  `core.time.MonotonicClock.now()` 的单调时钟底座（§19.7；计入协程等待、
+  排除整机睡眠/休眠，VM/native 同语义，§4.9.4）。旧 `rigi_time_now` 毫秒 ABI
+  仍供 Timer/sleep 毫秒级调度使用。
 
 这层划分不改变 §17.1–§17.3 的任何语义不变量：调度逻辑用 Rigi 表达不等于语义可由用户覆写——Dispatcher 与 Worker 的成员不对公共面暴露，用户可见的仍是 Task/Executor/Alarm/Mutex/Timer 类型面。
 
@@ -233,7 +237,7 @@ pub shared class Timer : EventAlarm {
 ```
 
 - **构造即排程**：`new Timer(...)` 立即把首次响铃时刻注册到时钟底座，不需要额外的启动调用。
-- `schedule(ringTime)` 是便捷入口，语义等价 `new Timer(ringTime - DateTime.now())`（时间类型见 §19.7）。
+- `schedule(ringTime)` 是便捷入口：目标时刻向上取整到毫秒网格（非零纳秒余量进一位），与当前采样的整毫秒作差；差 ≤ 0（整毫秒上已到达或过去）立即具备触发条件，亚毫秒未来量取整为 ≥1ms 等待、不提前到期。换算只消费毫秒读数、不依赖 `DateTime.now()` 的亚毫秒采样粒度，VM 与 native 同一可观察行为（#564 口径）；调度时一次性换算成相对延迟，之后不随墙上时钟调整反复修改既有单调 deadline（时间类型见 §19.7）。
 - 嵌套类型 `Timer.RepeatOption` 描述重复策略，共三个选项：
   - `NoRepeat`：不重复（repeatCount=0，isInfinite=false），响铃一次后进入已触发状态；
   - `Repeat(repeatCount)`：有限重复；构造入口校验 `repeatCount > 0`，否则抛 `core.IllegalStateException`；
@@ -270,8 +274,11 @@ pub shared class Mutex {
   - `nanoseconds`（i32）：毫秒之外多出的纳秒数；换算到 1970 起总纳秒 =
     `milliseconds * 1_000_000 + nanoseconds`。该字段经 getter/setter 限制可设置范围
     （0..999_999，越界抛 `core.OutOfBoundException`）。
-- `pub struct TimeSpan`：包 i64 毫秒；`fromMilliseconds(i64)` 构造入口、只读属性 `totalMilliseconds`、比较运算符。
-- `pub struct DateTime`：包一个 `TimeStamp`；`pub static func now(): DateTime`（native 时钟原语底座，§17.4）、减法运算符（两个 `DateTime` 相减得 `TimeSpan`）、比较运算符。
+- `pub struct TimeSpan`：i64 毫秒 + `0..999999` 纳秒余量（与 TimeStamp 同款规范化分解，数学总量 = 毫秒 × 1_000_000 + 纳秒）；`fromDays/fromHours/fromMinutes/fromSeconds/fromMilliseconds/fromMicroseconds/fromNanoseconds` 构造入口、`totalDays/totalHours/totalMinutes/totalSeconds/totalMilliseconds/totalMicroseconds/totalNanoseconds` 只读属性（向零截断不完整单位）、加减/取负/乘除整数运算与比较运算符。
+- `pub struct DateTime`：包一个 `TimeStamp`；`pub static func now(): DateTime`（native 时钟原语底座，§17.4；单次 UTC 采样保留亚毫秒余量，语义见 §4.9.4）、减法运算符（两个 `DateTime` 相减得 `TimeSpan`）、比较运算符。
+- `pub struct MonotonicInstant`：单调时钟读数（纳秒）的专用值类型，仅用于同一进程时钟域内的比较与求差（`compareTo`/`equals`/减法运算符，反向求差得负 `TimeSpan`）；不提供 Serializable（不持久化序列化，§4.9.5），不能转换成日期或当 Unix 时间戳。
+- `pub class MonotonicClock`：`pub static func now(): MonotonicInstant`（单调时钟原语底座，§17.4；计入协程等待与进程未调度时间、排除整机睡眠/休眠，顺序采样不倒退但可以相等，跨 Worker 有效）。
+- `pub class Stopwatch`：本地秒表——`start`/`stop`/`reset`/`restart` 与只读 `elapsed`/`isRunning`；初始停止且为零，start/stop 幂等，运行中 `elapsed` 包含当前区间（经 `MonotonicClock.now()`）；不要求 IDisposable，不支持同实例并发。
 
 ---
 

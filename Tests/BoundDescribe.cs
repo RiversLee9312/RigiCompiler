@@ -277,7 +277,7 @@ namespace RigiCompiler.Tests
                 IntLiteralASTNode i => $"Int({i.Value},{type})",
                 FloatLiteralASTNode f => $"Float({f.Value},{type})",
                 StringLiteralASTNode s => $"Str(\"{s.Value}\",{type})",
-                CharLiteralASTNode c => $"Char('{c.Value}',{type})",
+                CharLiteralASTNode c => $"Char('{AstDescribe.CharText(c.Value)}',{type})",
                 BoolLiteralASTNode b => $"Bool({b.Value},{type})",
                 NullLiteralASTNode => $"Null({type})",
                 var other => $"<{other.GetType().Name}>",

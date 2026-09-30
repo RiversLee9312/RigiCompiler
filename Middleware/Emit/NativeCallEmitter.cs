@@ -108,14 +108,16 @@ namespace RigiCompiler.Middleware.Emit
         }
 
         // String → rigi_string*；Any → 16B 对齐胖引用槽指针（D6：C 边界
-        // 16B 胖值一律指针）；bool → i8（C _Bool/int8 槽，调用点 zext i1）
+        // 16B 胖值一律指针）；Span/SharedSpan → 胖引用槽指针（B2-4a，与
+        // Any 同一 D6 惯例，规避 16B struct 按值的 win-x64/SysV 分歧）；
+        // bool → i8（C _Bool/int8 槽，调用点 zext i1）
         private static LLVMTypeRef MapNativeParamType(ModuleBuilder.Session session, MirType paramType)
         {
             if (paramType.IsString)
             {
                 return StringAbi.PointerType(session.Context);
             }
-            if (paramType.IsAny)
+            if (paramType.IsAny || TypeLayout.IsSpanLike(paramType))
             {
                 return LLVMTypeRef.CreatePointer(
                     TypeLayout.FatReferenceType(session.Context), 0);
@@ -130,7 +132,8 @@ namespace RigiCompiler.Middleware.Emit
         private static LLVMValueRef MarshalNativeArg(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef argValue, MirType paramType)
         {
-            if (paramType.IsString)
+            // String / Span：胖值存临时槽传指针（StringAbi / D6 边界惯例）
+            if (paramType.IsString || TypeLayout.IsSpanLike(paramType))
             {
                 return session.StoreToTemp(builder, argValue);
             }

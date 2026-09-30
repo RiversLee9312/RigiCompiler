@@ -48,7 +48,7 @@ import 即进入编译单元（与用户源同走语义全流程）：
   共存类型（类型名唯一性按「名 + 泛型参数个数」判定；裸名引用解析到
   非泛型声明，带实参引用解析到泛型声明）；
 - `core.time`：`TimeStamp` / `DateTime` / `TimeSpan`（时刻戳（毫秒+纳秒双字段）、
-  UTC 时刻与毫秒跨度，Timer 的时间底座，`RUNTIME.md` §19.7）；
+  UTC 时刻与纳秒精度跨度，Timer 的时间底座，`RUNTIME.md` §19.7）；
 - `core` 命名空间内的异常具体子类（`stdlib/core/exceptions.rg`）：
   `RuntimeException` / `IOException` / `CastException` /
   `NoSuchMethodException` / `DividedByZeroException` /

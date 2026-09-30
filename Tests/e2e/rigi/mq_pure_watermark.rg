@@ -1,3 +1,6 @@
+// e2e-slow-gate: 水位/compact 压力用例（600 条积压 + 慢读者钉住前段的
+// compact 往返，解释执行下净 VM 约 57 秒）。600 条积压是水位回收的
+// 判别规模，不可裁剪；RIGI_E2E_SLOW=1 时并入默认跑。
 // 慢读者阻挡水位；释放后批量compact不改变绝对cursor，branch从tail。
 // expect-output: 179700
 // expect-output: 600

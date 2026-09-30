@@ -111,16 +111,17 @@ namespace RigiCompiler
         public override TokenType Type { get; } = TokenType.InterpolationEnd;
     }
 
-    // 字符字面量 token（'...'，SYNTAX §3.3）：Value 为转义展开后的字符；
-    // char 无插值概念，不复用 StringToken
+    // 字符字面量 token（'...'，SYNTAX §3.3）：Value 为转义展开后的 Unicode
+    // 标量值（U+0000–U+10FFFF，排除 U+D800–U+DFFF；char 32 位标量语义，
+    // STDLIB §4.3.1）；char 无插值概念，不复用 StringToken
     public class CharToken : Token
     {
-        public CharToken(char value)
+        public CharToken(uint value)
         {
             Value = value;
         }
 
-        public char Value { get; }
+        public uint Value { get; }
 
         // Content 即 Value 的字符串形式（ToString/日志用；字符值以 Value 为准）
         public override string Content

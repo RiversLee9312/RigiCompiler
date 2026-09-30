@@ -586,7 +586,8 @@ namespace RigiCompiler
                 intermediates,
             RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
         {
-            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env);
+            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env,
+                isReceiverWriteback: false);
             if (writebacks == null) return null;
             if (writebacks.Count == 0) return leafWrite;
             ctx.Output.Add(leafWrite);
@@ -603,7 +604,8 @@ namespace RigiCompiler
                 intermediates,
             RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
         {
-            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env);
+            var writebacks = BuildWritebacks(origin, intermediates, rootWritePlace, ctx, env,
+                isReceiverWriteback: false);
             if (writebacks == null) return false;
             foreach (var wb in writebacks)
             {
@@ -612,22 +614,31 @@ namespace RigiCompiler
             return true;
         }
 
-        // 按值类型边界从内向外构造写回语句列表（null = 已诊断失败）
+        // 按值类型边界从内向外构造写回语句列表（null = 已诊断失败）。
+        // isReceiverWriteback=true（编译器自发的 receiver 调用写回，chainfix
+        // 防御收口）：任一环分类/可写性失败 → 返回空列表整体放弃写回（写回
+        // 链断一环则更外层全无效，突变按 §10 只读 place 口径不生效）——
+        // 接管判定已用同一谓词把关，此处是双保险，绝不落诊断
         private static List<LoweredStatement>? BuildWritebacks(BoundNode origin,
-            List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
-                intermediates,
-            RootWritePlaceBuilder rootWritePlace, LowerContext ctx, LowerEnvironment env)
+            List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)> intermediates,
+            RootWritePlaceBuilder rootWritePlace,
+            LowerContext ctx, LowerEnvironment env, bool isReceiverWriteback)
         {
             var writebacks = new List<LoweredStatement>();
             for (var i = intermediates.Count - 1; i >= 0; i--)
             {
                 var (local, field, access) = intermediates[i];
-                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env);
-                if (valueKind == null) return null;
-                if (valueKind == false) break;
-                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env))
+                var valueKind = ClassifyWritebackType(local.Type, access.Syntax.Span, env,
+                    reportFailure: !isReceiverWriteback);
+                if (valueKind == null)
                 {
-                    return null;
+                    return isReceiverWriteback ? new List<LoweredStatement>() : null;
+                }
+                if (valueKind == false) break;
+                if (!CheckWritebackWritable(field, access.Syntax.Span, ctx, env,
+                        reportFailure: !isReceiverWriteback))
+                {
+                    return isReceiverWriteback ? new List<LoweredStatement>() : null;
                 }
                 if (i == 0)
                 {
@@ -660,23 +671,30 @@ namespace RigiCompiler
 
         // 写回判定：TypeSymbol → 值/引用分支；GenericParameterSymbol 按
         // extends 约束可否定到 class（引用）或值类型分支（写回）时落地，
-        // 否则收窄诊断（true=值/false=引用/null=已诊断失败）
+        // 否则收窄诊断（true=值/false=引用/null=失败；reportFailure=false
+        // 供编译器自发写回静默降级，chainfix 防御收口）
         private static bool? ClassifyWritebackType(SemanticSymbol? type, CharRange? span,
-            LowerEnvironment env)
+            LowerEnvironment env, bool reportFailure = true)
         {
             if (type is TypeSymbol ts) return ts.IsValueTypeBranch;
             if (type is GenericParameterSymbol gp)
             {
                 var forced = TryClassifyGenericWriteback(gp);
                 if (forced != null) return forced;
-                env.Error(span,
-                    "P4: deep field write-back through unconstrained generic parameter " +
-                    $"intermediate type ('{gp.Name}') is not supported");
+                if (reportFailure)
+                {
+                    env.Error(span,
+                        "P4: deep field write-back through unconstrained generic parameter " +
+                        $"intermediate type ('{gp.Name}') is not supported");
+                }
                 return null;
             }
-            env.Error(span,
-                "P4: deep field write-back through non-concrete intermediate type " +
-                $"(got {type?.GetType().Name ?? "null"}) is not supported");
+            if (reportFailure)
+            {
+                env.Error(span,
+                    "P4: deep field write-back through non-concrete intermediate type " +
+                    $"(got {type?.GetType().Name ?? "null"}) is not supported");
+            }
             return null;
         }
 
@@ -703,21 +721,45 @@ namespace RigiCompiler
             return forced;
         }
 
-        // 中间值字段反向写回可写性（复用 FieldSymbol/ConstFieldRules 口径）
+        // setter 使用点可见性单一谓词（chainfix）：访问器环的写回经 setter
+        // 通道（MW4 SetFieldLowering 把 set.field 改写为 setter 调用），
+        // 可见性一律按使用点（方法所在文件/命名空间/宿主，§16.1）判定。
+        // 接管判定（TryValueReceiverCallTarget）与写回构造（CheckWriteback
+        // Writable）共用本谓词——杜绝「接管按 setter 存在性、写回按可见性」
+        // 的口径漂移（缺陷形态：priv set 字段链上直调方法被 P4 误报
+        // 'X' is inaccessible）
+        private static bool IsSetterVisibleFromContext(FieldSymbol field,
+            LowerContext ctx) =>
+            field.Setter != null && AccessChecker.IsAccessible(field.Setter,
+                ctx.Method.SourceFile, AccessChecker.ContainingNamespaceOf(ctx.Method),
+                ctx.Method.Owner);
+
+        // 链环写回可写性（接管判定口径）：非访问器环直写存储恒可写；访问器
+        // 环 setter 须对使用点可见——「setter 存在但使用点不可见」（priv set
+        // 对外部使用点）按只读 place 口径不接管不写回（§10：只读 place 上
+        // 的 this 修改本就不生效）
+        private static bool IsRingWriteableFromContext(FieldSymbol field,
+            LowerContext ctx) =>
+            (field.Getter == null && field.Setter == null)
+            || IsSetterVisibleFromContext(field, ctx);
+
+        // 中间值字段反向写回可写性（复用 FieldSymbol/ConstFieldRules 口径）。
+        // reportFailure=false（编译器自发的 receiver 调用写回，chainfix 防御
+        // 收口）：判定失败静默返回，由调用方降级为放弃写回——绝不把使用点
+        // 可见性诊断落在纯读表达式上；显式赋值路径（用户写）恒报
         private static bool CheckWritebackWritable(FieldSymbol field, CharRange? span,
-            LowerContext ctx, LowerEnvironment env)
+            LowerContext ctx, LowerEnvironment env, bool reportFailure = true)
         {
             if (field.Getter != null || field.Setter != null)
             {
-                if (field.Setter == null)
+                if (!IsSetterVisibleFromContext(field, ctx))
                 {
-                    env.Error(span, $"'{field.Name}' has no setter");
-                    return false;
-                }
-                if (!AccessChecker.IsAccessible(field.Setter, ctx.Method.SourceFile,
-                        AccessChecker.ContainingNamespaceOf(ctx.Method), ctx.Method.Owner))
-                {
-                    env.Error(span, AccessChecker.InaccessibleMessage(field.Setter));
+                    if (reportFailure)
+                    {
+                        env.Error(span, field.Setter == null
+                            ? $"'{field.Name}' has no setter"
+                            : AccessChecker.InaccessibleMessage(field.Setter));
+                    }
                     return false;
                 }
                 return true;
@@ -728,7 +770,10 @@ namespace RigiCompiler
                 {
                     return true;
                 }
-                env.Error(span, $"Cannot assign to const field '{field.Name}'");
+                if (reportFailure)
+                {
+                    env.Error(span, $"Cannot assign to const field '{field.Name}'");
+                }
                 return false;
             }
             return true;
@@ -843,9 +888,14 @@ namespace RigiCompiler
         // 中间 → 不写回，落普通路径——只读 place 上的 this 修改按 §10
         // 口径本就不生效）。值类型静态/全局根若自身只读（const/无
         // setter）亦不接管——写回无处落。rvalue 根（call/索引/new 等）
-        // 不接管——修改无处写回，无意义
+        // 不接管——修改无处写回，无意义。
+        // chainfix：环可写回判定与写回构造（CheckWritebackWritable）收敛为
+        // 同一谓词（IsSetterVisibleFromContext）——访问器环「setter 存在但
+        // 对使用点不可见」（priv set 对外部使用点）不接管，落普通路径；
+        // 修复前只查 setter 存在性，接管后写回构造按使用点可见性报
+        // 'X' is inaccessible，纯读表达式被误伤
         public static bool TryValueReceiverCallTarget(BoundExpression receiver,
-            SemanticSymbol? methodOwner, out BoundExpression root,
+            SemanticSymbol? methodOwner, LowerContext ctx, out BoundExpression root,
             out List<BoundFieldAccessExpression> chain)
         {
             root = null!;
@@ -870,7 +920,9 @@ namespace RigiCompiler
             for (var i = 0; i < chain.Count; i++)
             {
                 var field = chain[i].Field;
-                if ((field.Getter != null || field.Setter != null) && field.Setter == null)
+                // chainfix：接管与写回同一谓词——访问器环 setter 须对使用点
+                // 可见（含无 setter 形态），否则不接管落普通路径
+                if (!IsRingWriteableFromContext(field, ctx))
                 {
                     chain.Clear();
                     return false;
@@ -889,12 +941,13 @@ namespace RigiCompiler
                 }
             }
             // 值类型静态/全局根须可写回槽位（const/getter-only 不接管，
-            // 与中间环节同口径——调用路径静默不写回）
+            // 与中间环节同口径——调用路径静默不写回；chainfix：可见性
+            // 口径同 IsRingWriteableFromContext）
             if (IsValueTypeFieldRoot(current)
                 && current is BoundFieldReferenceExpression fieldRoot)
             {
                 var field = fieldRoot.Field;
-                if ((field.Getter != null || field.Setter != null) && field.Setter == null)
+                if (!IsRingWriteableFromContext(field, ctx))
                 {
                     chain.Clear();
                     return false;
@@ -936,7 +989,9 @@ namespace RigiCompiler
 
         // receiver 写回语句构造（调用之后执行；null = 已诊断失败）：
         // receiver 拷贝写回父 place 后按值类型边界逐层向外（引用中间停止）；
-        // 值类型静态/全局根额外把宿主拷贝写回槽位
+        // 值类型静态/全局根额外把宿主拷贝写回槽位。编译器自发写回走
+        // isReceiverWriteback 通道（chainfix 防御收口）：任何环级失败静默
+        // 降级为整体放弃写回，不落使用点可见性诊断
         public static List<LoweredStatement>? BuildValueReceiverWritebacks(BoundNode origin,
             List<(LoweredExpression Local, FieldSymbol Field, BoundFieldAccessExpression Access)>
                 intermediates,
@@ -944,11 +999,15 @@ namespace RigiCompiler
         {
             var writebacks = BuildWritebacks(origin, intermediates,
                 (access, field) => new LoweredFieldAccessExpression(access, host, field),
-                ctx, env);
+                ctx, env, isReceiverWriteback: true);
             if (writebacks == null) return null;
-            if (!TryBuildFieldRootWriteback(origin, root, host, ctx, env, out var extra))
+            // 链写回整体放弃时 root 槽位写回一并放弃——写回的是未携带突变的
+            // 原值拷贝，纯 setter 副作用无意义（接管判定谓词已把关，双保险）
+            if (writebacks.Count == 0) return writebacks;
+            if (!TryBuildFieldRootWriteback(origin, root, host, ctx, env, out var extra,
+                    reportFailure: false))
             {
-                return null;
+                return new List<LoweredStatement>();
             }
             if (extra != null) writebacks.Add(extra);
             return writebacks;
@@ -1050,7 +1109,7 @@ namespace RigiCompiler
         // extra = null 且 true = 无需写回；false = 已诊断失败
         private static bool TryBuildFieldRootWriteback(BoundNode origin, BoundExpression root,
             LoweredExpression host, LowerContext ctx, LowerEnvironment env,
-            out LoweredStatement? extra)
+            out LoweredStatement? extra, bool reportFailure = true)
         {
             extra = null;
             if (!IsValueTypeFieldRoot(root)
@@ -1058,7 +1117,8 @@ namespace RigiCompiler
             {
                 return true;
             }
-            if (!CheckWritebackWritable(fieldRef.Field, fieldRef.Syntax.Span, ctx, env))
+            if (!CheckWritebackWritable(fieldRef.Field, fieldRef.Syntax.Span, ctx, env,
+                    reportFailure))
             {
                 return false;
             }

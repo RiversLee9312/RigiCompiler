@@ -63,6 +63,11 @@ namespace RigiCompiler.Middleware.Emit
             var fn = session.CurrentFunction;
             var leftFat = LoadFat(session, builder, slots, inst.Left);
             var rightFat = LoadFat(session, builder, slots, inst.Right);
+            // 防御(旧 406 同族):G4 占位运算操作数槽必须是 16B 胖聚合
+            // ({i64,i64});非聚合直接 BuildExtractValue 在 LLVM 原生层
+            // SIGSEGV(编译器进程崩,无任何诊断)——形态不符必须响亮失败
+            EnsureFatAggregate(session, slots, inst, leftFat, "left");
+            EnsureFatAggregate(session, slots, inst, rightFat, "right");
             var leftTid = builder.BuildExtractValue(leftFat, 0, "gop.ltid");
             var leftPayload = builder.BuildExtractValue(leftFat, 1, "gop.lpl");
             var rightTid = builder.BuildExtractValue(rightFat, 0, "gop.rtid");
@@ -289,6 +294,8 @@ namespace RigiCompiler.Middleware.Emit
         {
             var fn = session.CurrentFunction;
             var operandFat = LoadFat(session, builder, slots, inst.Operand);
+            // 同 EmitBinary 防御:非胖聚合槽 BuildExtractValue 会 SIGSEGV
+            EnsureFatAggregate(session, slots, inst, operandFat);
             var operandTid = builder.BuildExtractValue(operandFat, 0, "gop.tid");
             var operandPayload = builder.BuildExtractValue(operandFat, 1, "gop.pl");
             var done = fn.AppendBasicBlock("gop.done");
@@ -715,6 +722,50 @@ namespace RigiCompiler.Middleware.Emit
                 throw new CompilerInternalException("G4 占位运算操作数必须是局部");
             }
             return session.LoadLocal(builder, slots, operand);
+        }
+
+        // G4 操作数槽形态防御:占位运算按「实际 typeid 派发」消费操作数,
+        // 首步 BuildExtractValue(0/1) 要求槽是 16B 胖聚合 {i64,i64}。槽若
+        // 是标量/String ABI 等非胖聚合形态,LLVM 原生层直接 SIGSEGV(编译器
+        // 进程崩,无任何诊断)——形态不符必须先在托管层响亮失败,给出函数与
+        // 槽类型上下文(旧 NativeE2E 406 同族陷阱)
+        private static void EnsureFatAggregate(ModuleBuilder.Session session,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirGenericBinaryOp inst, LLVMValueRef fat, string side)
+        {
+            var type = fat.TypeOf;
+            // 胖引用 {i64,i64} 是 context 级唯一化的 literal struct,
+            // 直接句柄比对(String ABI 槽 {i8*,i64} 等非胖形态一并拒绝)
+            if (type.Handle == TypeLayout.FatReferenceType(session.Context).Handle)
+            {
+                return;
+            }
+            var operandName = side == "left" ? inst.Left : inst.Right;
+            var slotType = operandName is MirLocalOperand localOperand
+                && slots.TryGetValue(localOperand.Name, out var entry)
+                    ? entry.Local.Type.Canonical : "<unknown>";
+            throw new CompilerInternalException(
+                $"G4 泛型二元运算操作数槽不是 16B 胖聚合({side}):函数 "
+                + $"{session.CurrentFunction.Name}, 槽类型 {slotType}, "
+                + $"指令左型 {inst.LeftType.Canonical}, 右型 {inst.RightType.Canonical}");
+        }
+
+        // 一元同口径防御（MirGenericUnaryOp）
+        private static void EnsureFatAggregate(ModuleBuilder.Session session,
+            Dictionary<string, (LLVMValueRef Slot, MirLocal Local)> slots,
+            MirGenericUnaryOp inst, LLVMValueRef fat)
+        {
+            if (fat.TypeOf.Handle == TypeLayout.FatReferenceType(session.Context).Handle)
+            {
+                return;
+            }
+            var slotType = inst.Operand is MirLocalOperand localOperand
+                && slots.TryGetValue(localOperand.Name, out var entry)
+                    ? entry.Local.Type.Canonical : "<unknown>";
+            throw new CompilerInternalException(
+                $"G4 泛型一元运算操作数槽不是 16B 胖聚合:函数 "
+                + $"{session.CurrentFunction.Name}, 槽类型 {slotType}, "
+                + $"指令操作数型 {inst.OperandType.Canonical}");
         }
 
         private static LLVMValueRef EmitTypeIs(ModuleBuilder.Session session,

@@ -3604,9 +3604,21 @@ namespace RigiCompiler.Middleware.Passes
                                     || TypeLayout.IsGenericPlaceholder(targetType)))
                             {
                                 // 协议臂写具体 callee frame 前显式编组；不能把胖值直接写进标量字段。
+                                // ABI 同构白名单（typefix）：.typeid/.fieldid 与
+                                // FatReference 一样是「值即引用」形态——Type<X> 在
+                                // 调用点（闭合 .typeid<X>）与共享体（开放
+                                // .typeid<.generic<T>>）两侧都是 8B 裸 sheet 指针，
+                                // 恒等拷贝即正确。早前按「非 FatReference ⇒ 装箱」
+                                // 把 Type<X> 装箱成 16B Any 胖值，frame 字段只有
+                                // 8B，StoreAt 裸 store 只搬胖值第 0 字段（视图
+                                // sheet core::Type<X>），被调侧 typeNameOf 的
+                                // typeid 装箱 toString 遂输出 "core::Type<X>"
+                                //（readAs Type<T> 值形态 native 缺陷）。
                                 var converted = fresh("$mw.call.arg.", targetType);
                                 newInsts.Add(TypeLayout.IsGenericPlaceholder(targetType)
-                                    ? TypeLayout.ClassifySlot(context.Layout, sourceType) == ManagedSlotKind.FatReference
+                                    ? TypeLayout.IsTypeId(sourceType)
+                                        || TypeLayout.IsFieldId(sourceType)
+                                        || TypeLayout.ClassifySlot(context.Layout, sourceType) == ManagedSlotKind.FatReference
                                         ? new MirCopyLocal(operand, converted)
                                         : new MirBoxAny(operand, converted)
                                     : new MirCast(operand, converted, false, targetType.Canonical, null, site.ExcTarget));
@@ -3681,8 +3693,16 @@ namespace RigiCompiler.Middleware.Passes
                     {
                         var raw = fresh("$mw.call.result.", sourceType);
                         doneInsts.Add(new MirGetField(calleeOp, impl.ResultFieldSymbol, raw));
+                        // ABI 同构白名单（typefix，与实参方向同口径）：
+                        // 被调返回闭合 Type<X>/FieldId（8B 裸指针）写入调用点
+                        // 开放 Type<T> 结果槽（同为 8B 裸指针）时恒等拷贝；
+                        // 装箱会把视图 sheet 截进结果槽，下游 toString/is
+                        // 全部拿到 "core::Type<X>" 包装器身份。
                         doneInsts.Add(TypeLayout.IsGenericPlaceholder(targetType)
-                            ? new MirBoxAny(new MirLocalOperand(raw), site.Result)
+                            ? TypeLayout.IsTypeId(sourceType)
+                                || TypeLayout.IsFieldId(sourceType)
+                                ? new MirCopyLocal(new MirLocalOperand(raw), site.Result)
+                                : new MirBoxAny(new MirLocalOperand(raw), site.Result)
                             : new MirCast(new MirLocalOperand(raw), site.Result, false,
                                 targetType.Canonical, null, site.ExcTarget));
                     }

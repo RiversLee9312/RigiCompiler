@@ -148,7 +148,7 @@ namespace RigiCompiler
         // 命名位置必须拒绝数字词与保留字）
         public static bool IsIdentifierStart(string word)
         {
-            return word.Length > 0 && (char.IsLetter(word[0]) || word[0] == '_');
+            return word.Length > 0 && (IdentifierCharacters.IsLetter(word[0]) || word[0] == '_');
         }
 
         // 保留字判定（M31 统一）：标识符位置不得使用的关键字

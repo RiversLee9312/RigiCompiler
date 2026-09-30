@@ -755,9 +755,27 @@ pub shared class Timer : EventAlarm {
             delayMilliseconds, repeatInterval, (0 as i64), (repeat.repeatCount as i64))
     }
 
-    // 便捷入口（§19.5）：语义等价 new Timer(ringTime - DateTime.now())
+    // 便捷入口（§19.5；§4.9.4 取整口径，#564 修正为毫秒网格语义）：
+    // 目标时刻向上取整到毫秒网格（非零纳秒余量进一位毫秒），当前采样
+    // 取整毫秒（TimeStamp 的 ms 分量本就是 floor），delay = 二者之差；
+    // 差 ≤ 0 原样传底座（uv/VM Arm(<=0) 口径，响铃即刻到期）。
+    // 关键：只消费两次采样的毫秒读数，不看纳秒余量——旧实现按
+    // 「剩余持续时间」取整，其符号判定交给 now() 的采样粒度：native
+    // 墙钟（GetSystemTimePreciseAsFileTime）100ns 粒度下「now+ε(<1ms)」
+    // 的目标在二次采样时已成过去，退化为立即触发（#564：native 与
+    // VM 可观察行为分歧）；毫秒网格化后亚毫秒未来量恒取整为 ≥1ms
+    // 等待（不提前到期），取整后已到达/过去（含整毫秒相等）恒立即
+    // 触发，双宿主一致且与 now() 亚毫秒精度无关。TimeStamp 纳秒余量
+    // 恒 0..999999，ceil = ms 进位无负数陷阱；DateTime 毫秒有界，
+    // +1 与差值均不可能溢出 i64。schedule 在构造时一次性换算成相对
+    // 延迟，之后不随墙上时钟调整反复修改既有单调 deadline。
     pub static func schedule(ringTime: core.time.DateTime): EventAlarm {
-        return new Timer((ringTime - core.time.DateTime.now()).totalMilliseconds)
+        const now = core.time.DateTime.now()
+        var ceilMs = ringTime.stamp.milliseconds
+        if (ringTime.stamp.nanoseconds > 0) {
+            ceilMs = ceilMs + 1L
+        }
+        return new Timer(ceilMs - now.stamp.milliseconds)
     }
 }
 

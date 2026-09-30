@@ -82,6 +82,33 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 return WrapScalar(session, builder, value, srcType);
             }
+            // typefix：TypeId 值（含开放 Type<.generic<T>>）ABI 恒为 8B 裸
+            // sheet 指针——wrap 即把指针位形打包成 tag0 胖值。必须显式
+            // 先于 IsReferenceElement：inner 为占位时旧口径会把开放
+            // typeid 判成 Reference，落 ProduceFatValue 对 8B 槽
+            // extractvalue（native 0xC0000005，echoType 形态）。
+            // sheet 字取 Type<X> 的视图 sheet：闭合 X 用 core::Type<X>
+            // （b4-2 收集保证存在）；开放占位按文档化擦除锚定
+            // core::Type<core::Any>（MIDDLEWARE_ARCHITECTURE：无界 =
+            // core::Type<core::Any>）。unwrap 对偶不读 sheet 字，仅作帧
+            // 保存胖值的类型锚点，不参与运行期类型判断。
+            if (TypeLayout.IsTypeId(srcType) || TypeLayout.IsTypeId(inner))
+            {
+                if (source is not MirLocalOperand tidLocal)
+                {
+                    throw new CompilerInternalException("Nullable 装箱源必须是局部");
+                }
+                var tidMir = TypeLayout.IsTypeId(srcType) ? srcType : inner;
+                var bits = BoxEmitter.BitsFromSlot(session, builder,
+                    slots[tidLocal.Name].Slot, 8);
+                var viewArg = TypeLayout.IsGenericPlaceholder(tidMir)
+                    ? "core::Any"
+                    : ConstructedTypeCollector.TypeArgumentsOf(tidMir.Canonical)
+                        is { Count: 1 } args ? args[0] : "core::Any";
+                var viewSheet = session.TypeSheetFor("core::Type<" + viewArg + ">");
+                return BoxEmitter.PackFat(session, builder, viewSheet,
+                    BoxEmitter.TagInline, bits, "opt");
+            }
             if (IsReferenceElement(session, inner) || IsReferenceElement(session, srcType))
             {
                 return ArcEmitter.ProduceFatValue(session, builder, value, "opt.wrap");
@@ -115,6 +142,26 @@ namespace RigiCompiler.Middleware.Emit
             {
                 inner = destType;
             }
+            // typefix：TypeId unwrap = wrap 的对偶——零位形还原 null sheet，
+            // 非零 payload 直写 8B 裸指针槽。禁止落 IsReferenceElement
+            // （对 8B 槽 extractvalue 崩溃）也禁止落 UnboxToSlot 的
+            // rigi_type_is 支（开放 .typeid<.generic<T>> 无边界 sheet，
+            // 合成 sheet 会被误拒为 CastException）。
+            else if (TypeLayout.IsTypeId(destType) || TypeLayout.IsTypeId(inner))
+            {
+                var tid = builder.BuildExtractValue(fat, 0, "opt.tid.typeid");
+                var pay = builder.BuildExtractValue(fat, 1, "opt.tid.payload");
+                var bits = builder.BuildOr(tid, pay, "opt.tid.bits");
+                var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, bits,
+                    LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "opt.tid.null");
+                var ptr = builder.BuildIntToPtr(pay,
+                    LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "opt.tid.ptr");
+                var zero = LLVMValueRef.CreateConstPointerNull(
+                    LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                var sheet = builder.BuildSelect(isNull, zero, ptr, "opt.tid.sheet");
+                builder.BuildStore(sheet, slots[target].Slot);
+                return;
+            }
             else if (IsReferenceElement(session, inner) || IsReferenceElement(session, destType))
             {
                 var typeId = builder.BuildExtractValue(fat, 0, "opt.ref.typeid");
@@ -123,16 +170,12 @@ namespace RigiCompiler.Middleware.Emit
                 // 与当前调用帧的真实具化 sheet 核验，禁止退化为裸模板。
                 if (destType.IsAnyOrObject)
                 {
-                    var nullType = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, typeId,
-                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
-                        "opt.ref.null.t");
-                    var nullPayload = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, payload,
-                        LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false),
-                        "opt.ref.null.p");
-                    var nullMismatch = builder.BuildAnd(nullType, nullPayload, "opt.ref.null");
-                    var diagnosticSheet = session.TypeSheetFor("core::Any");
-                    BoxEmitter.EmitThrowOnMismatch(session, builder, nullMismatch, diagnosticSheet,
-                        MirType.Of(".nullable<" + destType.Canonical + ">"), excTarget);
+                    // nullablefix：null（typeId/payload 双零胖值）在 Any/
+                    // Object 目标合法——与 VM TryCast 口径一致（VmTypeOps：
+                    // null 可空 → 引用形态目标得 VmNull），零胖值入槽即
+                    // native 的 null Any，不得抛 CastException（
+                    // MapEnumerator<K,Any> 类 unwrap 双宿主分歧根因）。
+                    // 非空值 Any 本就全接受，EmitThrowOnMismatch 整体移除。
                     builder.BuildStore(ArcEmitter.ProduceFatValue(session, builder, fat,
                         "opt.unwrap"), slots[target].Slot);
                     return;
@@ -154,9 +197,14 @@ namespace RigiCompiler.Middleware.Emit
                     var nullBits = builder.BuildOr(typeId, payload, "opt.ref.bits");
                     var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nullBits,
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, 0, false), "opt.ref.empty");
-                    // T 可以实际具化为 U?；不能仅凭泛型占位放行 null，
-                    // 也不能把 T? 的外层语法当作 T 本身可空的证明。
+                    // 与 VM 同口径（VmTypeOps.IsReferenceLike）：泛型占位
+                    // 目标在共享体执行时未闭合（非值类型 → 引用型），null
+                    // 放行，由调用方以引用语义持有；Nullable 目标恒放行。
+                    // 不得按闭合计数 sheet 的 nullableElement 拒绝——那会
+                    // 把占位 null 收紧成 CastException，与 VM 分歧（借用
+                    // 适配器 for-in 零槽元素的语义分歧来源）。
                     var allowsNull = TypeLayout.IsNullable(destType)
+                        || TypeLayout.IsGenericPlaceholder(destType)
                         ? LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1, false)
                         : IsNullableSheet(session, builder, targetSheet);
                     var validNull = builder.BuildAnd(isNull, allowsNull, "opt.ref.valid.null");
@@ -259,7 +307,8 @@ namespace RigiCompiler.Middleware.Emit
                     var width = inner.Key switch
                     {
                         "i8" or "u8" => LLVMTypeRef.Int8,
-                        "char" or "i16" or "u16" => LLVMTypeRef.Int16,
+                        "char" => LLVMTypeRef.Int32,   // 32 位 Unicode 标量
+                        "i16" or "u16" => LLVMTypeRef.Int16,
                         "i32" or "u32" => LLVMTypeRef.Int32,
                         "i64" or "u64" => LLVMTypeRef.Int64,
                         _ => throw new CompilerInternalException(

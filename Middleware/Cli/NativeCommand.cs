@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using RigiCompiler.Middleware.Emit;
@@ -226,9 +227,13 @@ namespace RigiCompiler.Middleware.Cli
             }
         }
 
-        private static int EmitAndLink(Bil.BilModule module, string? outPath,
+        // run --target native 复用同一 EmitAndLink（merged 模块直接进管线，
+        // 不经 Gate——模块由编译器进程内自产且已过 BilVerifier）；outKind 只
+        // 影响 entrypoint 门槛报错里的命令形态（native --out / run --target native）
+        internal static int EmitAndLink(Bil.BilModule module, string? outPath,
             string? emitObjPath, string? emitLlPath, string? toolchainDir,
-            string? libuvDir, string? mimallocDir, IReadOnlyList<string>? linkInputs)
+            string? libuvDir, string? mimallocDir, IReadOnlyList<string>? linkInputs,
+            string outKind = "native --out")
         {
             // --link 输入先验存在（L6：非 rigi_rt 库链接；仅随 --out 消费，
             // 但早失败优于链接期 lld 报错）
@@ -282,7 +287,7 @@ namespace RigiCompiler.Middleware.Cli
             }
             if (entrypoints != 1)
             {
-                Console.Error.WriteLine($"native --out 需要恰一个 entrypoint fn（当前 {entrypoints} 个）");
+                Console.Error.WriteLine($"{outKind} 需要恰一个 entrypoint fn（当前 {entrypoints} 个）");
                 return 2;
             }
 
@@ -335,15 +340,28 @@ namespace RigiCompiler.Middleware.Cli
             string bitcode;
             try
             {
-                bitcode = RigiRtBuilder.EnsureBitcode(clang, out _, libuv);
+                bitcode = RigiRtBuilder.EnsureBitcode(clang, llvmModule.Target, out _, libuv);
             }
             catch (InvalidOperationException ex)
             {
                 Console.Error.WriteLine("rigi_rt 编译失败: " + ex.Message);
                 return 2;
             }
+            // 诊断仅在 --verbose 下计时；不打印巨型 IR，也不改变优化语义。
+            var measureLlvm = Logger.VerboseEnabled;
+            var phaseClock = measureLlvm ? Stopwatch.StartNew() : null;
+            if (measureLlvm)
+                Logger.Verbose("Middleware", $"LLVM 阶段 merge 开始：{LlvmBitcode.CountFunctions(llvmModule)} fn");
             LlvmBitcode.MergeBitcodeFileInto(llvmModule, bitcode);
+            if (measureLlvm)
+            {
+                Logger.Verbose("Middleware", $"LLVM 阶段 merge 完成：{phaseClock!.Elapsed.TotalSeconds:F3}s，{LlvmBitcode.CountFunctions(llvmModule)} fn");
+                phaseClock.Restart();
+                Logger.Verbose("Middleware", "LLVM 阶段 default<O2> 开始");
+            }
             LlvmBitcode.RunDefaultOptimization(llvmModule);
+            if (measureLlvm)
+                Logger.Verbose("Middleware", $"LLVM 阶段 default<O2> 完成：{phaseClock!.Elapsed.TotalSeconds:F3}s，{LlvmBitcode.CountFunctions(llvmModule)} fn");
 
             var tempObject = Path.Combine(Path.GetTempPath(),
                 "rigi_" + Guid.NewGuid().ToString("N") + ".o");
@@ -357,7 +375,11 @@ namespace RigiCompiler.Middleware.Cli
                 // clang 驱动 lld 链接（-fuse-ld=lld；CRT 发现交 clang）。
                 // libuv 命中时追加静态库全路径 + 平台系统库（win 九个 /
                 // linux pthread+dl，见 LibuvResolver.SystemLibraryArgs）
-                var linkArgs = new List<string> { tempObject, "-o", outPath, "-fuse-ld=lld" };
+                var linkArgs = new List<string>
+                {
+                    "--target=" + llvmModule.Target, tempObject, "-o", outPath,
+                    "-fuse-ld=lld",
+                };
                 // L6：用户 native 库链接输入紧随主目标文件（lld 按序解析，
                 // 外部符号在主目标之后满足）
                 if (linkInputs != null)
@@ -381,6 +403,30 @@ namespace RigiCompiler.Middleware.Cli
                     && libuv == null)
                 {
                     linkArgs.Add("-lpthread");
+                }
+                // 施工块 6-4：rigi_rt math.c 的 libm 依赖（sqrt/pow/超越
+                // 函数族）。Windows 数学函数在 ucrt（lld 默认链接）；
+                // 现代 glibc 数学符号已并入 libc，-lm 为旧发行版兜底
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    linkArgs.Add("-lm");
+                }
+                // 施工块 6-5：rigi_rt random.c 的 Windows BCryptGenRandom 依赖
+                // （bcrypt）；Linux getrandom 在 libc 内，无需额外库
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    linkArgs.Add("-lbcrypt");
+                }
+                // jsonfix：主线程栈保留与 rigi_stack_has_room 守卫预算联动
+                // （shim.c 自递归预算 1 MiB）。win PE 默认栈保留仅 1 MiB——
+                // 守卫预算必须恒小于真实保留，否则递归会在守卫触发前先触
+                // guard page；显式保留 8 MiB（预算 ~1.7× 于 256 层递归环，
+                // json_read_nested 深度安全语料口径）。lld-link 经 clang
+                // 驱动 -Wl, 透传；linux 主线程栈由宿主 ulimit 兜底（glibc
+                // 默认 8 MiB 同量级），不在此设限
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    linkArgs.Add("-Wl,/STACK:8388608");
                 }
                 var linkExit = ExternalProcess.Run(clang, linkArgs,
                     out _, out var linkStderr);

@@ -124,6 +124,10 @@ void rigi_ref_release(uint64_t type_id, uint64_t payload);
 void rigi_value_acquire(void *ptr, const RigiTypeSheet *sheet);
 void rigi_value_release(void *ptr, const RigiTypeSheet *sheet);
 
+/* 泛型胖引用形态守卫（数组元素 ABI 归一防御）：tag0 且 payload 非零
+ * 是 Reference ABI 槽不可能出现的形态 → stderr 报告 + abort 定位。 */
+void rigi_check_fat_ref(uint64_t type_id, uint64_t payload);
+
 /* String ARC：data 为块基址 + 8；NULL / IMMORTAL 跳过 */
 void rigi_string_acquire(const char *data);
 void rigi_string_release(const char *data);

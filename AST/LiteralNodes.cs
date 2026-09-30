@@ -86,9 +86,10 @@ namespace RigiCompiler
     }
 
     // 字符字面量 AST 节点（SYNTAX §3.3：单引号内恰好一个字符或一个转义序列，类型 char）
+    // Value 是 32 位 Unicode 标量值（U+0000–U+10FFFF，排除代理区，STDLIB §4.3.1）
     public class CharLiteralASTNode : LiteralASTNode
     {
-        public char Value;
+        public uint Value;
 
         public CharLiteralASTNode(ASTNode? parent) : base(parent)
         {

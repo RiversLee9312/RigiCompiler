@@ -32,6 +32,9 @@
 .PARAMETER TimeoutSeconds
     超时秒数（默认 600）。到期灭整树并退出 124。
 
+.PARAMETER MaxJobMemoryMiB
+    可选 Job Object 整树提交内存上限（MiB；0 表示不限制）；与超时共同约束耗时探针。
+
 .PARAMETER WorkingDirectory
     子进程工作目录（默认当前目录）。
 
@@ -43,6 +46,7 @@ param(
     [string]$Command,
     [string]$ArgumentList = '',
     [int]$TimeoutSeconds = 600,
+    [int]$MaxJobMemoryMiB = 0,
     [string]$WorkingDirectory = (Get-Location).Path,
     [string]$MetricsPath = '',
     [string]$StderrPath = '',
@@ -107,6 +111,7 @@ public static class RigiJob
 {
     const int JobObjectExtendedLimitInformation = 9;
     const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    const uint JOB_OBJECT_LIMIT_JOB_MEMORY = 0x200;
 
     [StructLayout(LayoutKind.Sequential)]
     struct JOBOBJECT_BASIC_LIMIT_INFORMATION
@@ -159,7 +164,7 @@ public static class RigiJob
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool CloseHandle(IntPtr hObject);
 
-    public static IntPtr CreateKillOnCloseJob()
+    public static IntPtr CreateKillOnCloseJob(ulong maxJobMemoryBytes)
     {
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero)
@@ -167,6 +172,11 @@ public static class RigiJob
 
         var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (maxJobMemoryBytes > 0)
+        {
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+            info.JobMemoryLimit = new UIntPtr(maxJobMemoryBytes);
+        }
         int len = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
         IntPtr ptr = Marshal.AllocHGlobal(len);
         try
@@ -203,7 +213,7 @@ public static class RigiJob
 }
 
 # ---------- 看门狗主流程 ----------
-$job = [RigiJob]::CreateKillOnCloseJob()
+$job = [RigiJob]::CreateKillOnCloseJob([uint64]([Math]::Max(0, $MaxJobMemoryMiB)) * 1048576)
 try {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Command

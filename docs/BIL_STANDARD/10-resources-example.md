@@ -20,6 +20,8 @@ Resources {
 
 整数与浮点资源必须显式写类型，避免解析器依赖源码默认字面量规则。
 
+char 资源单引号包围，解码后必须恰好一个 Unicode 标量（U+0000–U+10FFFF，排除 U+D800–U+DFFF；`.char` 32 位标量，`STDLIB/04-text.md` §4.3.1）。转义与 string 资源同一套；补充平面标量的规范承载形式是 `\u{hex}`（1–6 位十六进制）：解码时 ≤0xFFFF 展开为单码元、>0xFFFF 展开为代理对，随后合成单个标量——BIL 文本直写的代理对字符同样在此合成；孤立代理与多标量内容都拒绝。
+
 `null type(T)` 标注**元素类型** `T`，资源本身的类型为对应的 `.nullable<T>`——因此它可以直接与 `.nullable<T>` 变量做 `cmp.eq` / `cmp.ne` 比较而满足 §11.5 的类型严格相同规则，这就是 §3.4 所称「nullable 检查」的标准形态。
 
 判别值资源（§8.5）：enum case 的 `discriminant res(R)` 使用非负整数标量资源（如 `R_Disc_0 = i32 0`）；其静态类型必须是非负整数标量，判别值与宽度检查由 frontend/verifier 按 `RUNTIME.md` §16.4/§16.1 执行。

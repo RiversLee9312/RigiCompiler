@@ -108,16 +108,17 @@ namespace RigiCompiler
             }
             // 参数类型白名单（ErrorType 毒化静默）——参数仍限基本类型（§4.6）；
             // 例外：Any 胖值槽（VM 统一 ABI 直传任意 VmValue——.bootstrap.rg
-            // 的 any_to_string(value: Any) 落地形态，§3.8 toString 机制）
+            // 的 any_to_string(value: Any) 落地形态，§3.8 toString 机制）；
+            // 例外：core::Span<u8> 字节缓冲区（B2-4a，STDLIB 05-io §4.4 前置：
+            // IO 原语读写字节缓冲区，返回类型一侧 Span 系 class 本就放行）
             foreach (var parameter in method.Parameters)
             {
                 if (parameter.Type is null or ErrorTypeSymbol) continue;    // 毒化静默
                 if (ReferenceEquals(parameter.Type, env.Unit.Symbols.Bootstrap.Any)) continue;
-                if (!compatibleTypes.Contains(parameter.Type))
-                {
-                    env.Error(entry.Node.Span,
-                        $"Parameter '{parameter.Name}' of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
-                }
+                if (compatibleTypes.Contains(parameter.Type)) continue;
+                if (IsByteSpanType(parameter.Type, env)) continue;
+                env.Error(entry.Node.Span,
+                    $"Parameter '{parameter.Name}' of native function '{method.Name}' must be a primitive type (integer, float, bool, char or String)");
             }
             // 返回类型白名单（§4.6，S10 放宽）：基本类型，或用户声明的引用类型
             // （class/interface，含构造类型——运行时原生方法面可返回其句柄，
@@ -172,6 +173,18 @@ namespace RigiCompiler
                 && (method.NativeSymbol?.StartsWith("handle_", StringComparison.Ordinal) == true
                     || method.NativeSymbol == "place_same_target"))
                 env.Error(entry.Node.Span, "Handle/Place runtime symbols are compiler-private");
+        }
+
+        // B2-4a：core::Span<u8> 精确匹配——仅限构造实例（ConstructedFrom 指回
+        // Span 泛型定义）且唯一类型实参为 u8；不泛化到任意 Span<T>，也不含
+        // SharedSpan<T>。C 侧表示 = 16B 胖引用（D6：C 边界胖值一律指针）
+        private static bool IsByteSpanType(SemanticSymbol type, ResolveEnvironment env)
+        {
+            var bootstrap = env.Unit.Symbols.Bootstrap;
+            return type is TypeSymbol span
+                && ReferenceEquals(span.ConstructedFrom, bootstrap.SpanDefinition)
+                && span.TypeArguments is { Count: 1 }
+                && ReferenceEquals(span.TypeArguments[0], bootstrap.UInt8);
         }
     }
 }

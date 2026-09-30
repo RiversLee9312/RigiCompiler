@@ -32,6 +32,9 @@ namespace RigiCompiler.Middleware.Emit
 
         public static LLVMTargetMachineRef SharedHostMachine => HostMachine.Value;
 
+        // 布局指针编组统一收敛于 LlvmBitcode 的唯一 unsafe 边界。
+        public static string HostDataLayout => LlvmBitcode.HostDataLayout();
+
         private static LLVMTargetMachineRef CreateHostTargetMachine()
         {
             var target = LLVMTargetRef.GetTargetFromTriple(HostTriple);

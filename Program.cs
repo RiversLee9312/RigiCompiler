@@ -6,9 +6,9 @@ using RigiCompiler;
 Console.OutputEncoding = new UTF8Encoding(false);
 
 // Rigi 编译器命令行入口：rigic <COMMAND> [--sub-cmd [args...]...]
-// COMMAND 共三个：compile / test / help（注册表见 Core/CommandLine.cs，
-// 插件实现见 Core/Commands.cs；帮助文本由注册表程序生成，可用 help 查看）。
-// 无参数 → 等同于 help（打印概览）。
+// 全部 COMMAND 由注册表单一数据源驱动（Core/CommandLine.cs CommandLineRegistry，
+// 插件实现见 Core/Commands.cs 与 Middleware/Cli/；帮助文本由注册表程序生成，
+// 可用 help 查看概览与详情）。无参数 → 等同于 help（打印概览）。
 if (args.Length == 0)
 {
     CommandLineHelp.PrintOverview();

@@ -73,6 +73,12 @@
 
 **数组无静态 refMap**：`core::Array` 前缀 32B = 对象头 `[0..16)` + `elemSheet*` `@16` + `i32 length` `@24` + pad `@28`，元素从 32 起按元素 ABI 步长排列。析构按头内 `elemSheet × length × stride` 走查，不把变长元素编进静态 refMap。
 
+**元素槽布局铁律（由 elemSheet 唯一决定）**：同一个数组对象会被静态具体类型上下文（如 `.string` 局部的索引读写）与泛型共享体上下文（`.generic<T>` 的占位读写）共同访问，两端的 16 字节槽解释必须一致——否则同一个槽会被一侧按 String 特化形态 `{data, len}`（string ARC）写入、另一侧按泛型胖引用形态 `{typeid, payload}`（ref ARC）解释，第一个 8 字节语义错位（曾致泛型枚举器把 data 指针当 typeid 解引用，native 0xC0000005）。因此：
+
+- 元素值表示由数组头 `elemSheet` 唯一决定：String 元素槽恒为 `{data, len}`（string ARC）；具名引用槽（class / Array / String 特化）只存 null `{0,0}` / tag `1` 盒 / tag `2` 对象三种形态；**引用擦除容器槽**（`elemSheet` 为 `core::Any` / `Nullable` 族的 `.array<.any>` 载荷等）额外允许 tag `0` 装箱标量形态——`{tag0 | 标量 TypeSheet 指针, 标量位形}`（调用方静态路径写入装箱标量即此形态，泛型共享体读回按 `tag==0` + sheet 的 `FlagInlineValue` 自证放行）；
+- 泛型占位读写（`get.array`/`set.array` 目标为 `.generic<T>`）按运行时 `elemSheet` 归一：String 槽读出时重打包为 tag `1` 盒（`BoxFromSlot`），写回时拆盒为 `{data, len}`（string ARC 配对）；≤8 字节内联元素读出后以 `PackFat(tag0)` 重打包；16 字节胖槽直读直写，且发射形态守卫（`rigi_check_fat_ref`：tag `0` 且 payload 非零时自证放行——tid 低 56 位解引用后带 `FlagInlineValue` 即装箱标量；不带该位（如 String 特化槽 `{data, len}` 被误当胖引用解释）即 ABI 错配，abort 定位）；
+- 泛型占位 cast（`.nullable<T>` → `T`，共享体内）对 null 的放行口径与 VM 一致（`VmTypeOps.IsReferenceLike`：占位未闭合按引用型放行）；闭合 `.string` 接收点仅在「非显式 cast」（返回值赋槽）时放行 null 零槽，显式 `as String` 维持 VM `TryCast` 的 null 拒绝。
+
 **与 Box 的关系**：Box 本身的存活由持有者的生命周期确定性决定，GC 不需要为 Box 自身做可达性判定；但 Box 的裸数据块内部可能含托管引用 / String 槽（仅 tag `1` 可能），运行时仍要通过胖引用中的 typeid 找到 `TypeSheet.refMap`，对这些字段执行 ARC 与 macroGC 图扫描。
 
 **与 `Span\<T>` / `SharedSpan\<T>` 的关系**：布局与数组同构（32B 前缀 + 元素内联），无静态 refMap；析构与 GC 走查复用数组机制——按头内 `elemSheet × length × stride` 逐元素处理内部引用（见 §5）。

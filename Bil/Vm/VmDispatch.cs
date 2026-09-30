@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.IO;
+using System.Threading;
 
 namespace RigiCompiler.Bil.Vm
 {
@@ -1365,8 +1367,31 @@ namespace RigiCompiler.Bil.Vm
                 {
                     throw new VmException("NativeRc release 收到无效或已释放 token");
                 }
-                if (strong == 1) _nativeRcStrong.Remove(token);
-                else _nativeRcStrong[token] = strong - 1;
+                if (strong > 1)
+                {
+                    _nativeRcStrong[token] = strong - 1;
+                    return;
+                }
+                _nativeRcStrong.Remove(token);
+                // 施工块 7-2：fs 句柄的归零析构（关闭流/目录枚举器 + 摘
+                // 除记录；锁序 _nativeRcGate → _fsGate 与 FsOpen 一致）。
+                // close 错误不上报——持久化错误归 flush 面（§4.5.6），与
+                // native 侧 NativeRc 析构回调同口径
+                lock (_fsGate)
+                {
+                    if (_fsFiles.TryGetValue(token, out var file))
+                    {
+                        _fsFiles.Remove(token);
+                        if (file.Resource is FileStream stream)
+                        {
+                            stream.Dispose();
+                        }
+                        else if (file.Resource is DirState dir)
+                        {
+                            dir.Enumerator.Dispose();
+                        }
+                    }
+                }
             }
         }
 
@@ -1519,6 +1544,114 @@ namespace RigiCompiler.Bil.Vm
             return new VmI64(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
 
+        // 与 native rigi_time_now_parts 同 ABI：一次 UTC 采样写 i64 ms
+        // 与 i32 毫秒外 ns（小端）；旧 time_now 仍只返回 i64 毫秒。
+        internal VmValue TimeNowParts(IReadOnlyList<VmValue> args)
+        {
+            var output = RequireFsSpan("time_now_parts", args, 0);
+            if (args.Count != 1 || output.Length < 12)
+                throw new VmException("time_now_parts 需要至少 12 字节 Span<u8>");
+            long ms;
+            int ns;
+            if (OperatingSystem.IsWindows())
+            {
+                // 单次 FILETIME 时间源：DateTime.UtcNow.Ticks 为 100ns
+                // 单位；差值可能为负，向下取整至毫秒再留下非负余数。
+                var unix100 = DateTime.UtcNow.Ticks - 621355968000000000L;
+                ms = Math.DivRem(unix100, 10000L, out var rem100);
+                if (rem100 < 0)
+                {
+                    ms -= 1;
+                    rem100 += 10000L;
+                }
+                ns = (int)(rem100 * 100L);
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                // CLOCK_REALTIME=0；同一次 timespec 的秒和纳秒不能拆开
+                // 采样。tv_nsec 是 0..999999999，tv_sec 可为负。
+                if (ClockGetTimeMonotonic(0, out var ts) != 0)
+                    throw new InvalidOperationException(
+                        "time_now_parts clock_gettime(CLOCK_REALTIME) 失败");
+                if (ts.TvNsec < 0 || ts.TvNsec >= 1000000000L
+                    || ts.TvSec < long.MinValue / 1000L + 1
+                    || ts.TvSec > long.MaxValue / 1000L - 1)
+                    throw new InvalidOperationException("time_now_parts 宿主时刻范围异常");
+                ms = checked((ts.TvSec * 1000L) + (ts.TvNsec / 1000000L));
+                ns = (int)(ts.TvNsec % 1000000L);
+            }
+            else throw new NotSupportedException("time_now_parts 暂不支持该宿主");
+            WriteFsI64Le(output, ms);
+            WriteFsI32Le(output, 8, ns);
+            return VmVoid.Instance;
+        }
+
+        // 施工块 6-3（§4.9.4）：VM 与 rigi_rt 同语义的单调时钟读数
+        // （纳秒）。刻意不用宿主 Stopwatch.GetTimestamp——其时间源计入
+        // 整机睡眠，与契约「排除睡眠」语义不同（§4.9.4「不直接继承
+        // 语义不同的宿主便利 API」）：Windows P/Invoke
+        // QueryUnbiasedInterruptTimePrecise、Linux P/Invoke
+        // clock_gettime(CLOCK_MONOTONIC)（man7：不计入挂起），与
+        // rigi_rt worker.c rigi_monotonic_now_ns 逐项对齐。i64 纳秒
+        // ~292 年量级，实际不可能触达，不设额外溢出分支
+        internal VmValue MonotonicNow(IReadOnlyList<VmValue> args)
+        {
+            return new VmI64(MonotonicNowNanos());
+        }
+
+        internal static long MonotonicNowNanos()
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    QueryUnbiasedInterruptTimePrecise(out var unbiasedTime);
+                    return (long)(unbiasedTime * 100UL);
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    // Precise 变体要求 Windows 10 1607+；缺失时退回
+                    // 非 Precise（kernel32，0.5ms 更新批处理；单调、
+                    // 排除睡眠语义不变，对齐 rigi_rt 回退路径）
+                    QueryUnbiasedInterruptTime(out var unbiasedTime);
+                    return (long)(unbiasedTime * 100UL);
+                }
+            }
+            if (OperatingSystem.IsLinux())
+            {
+                // CLOCK_MONOTONIC = 1（<time.h>；man7：不计入系统挂起）
+                var rc = ClockGetTimeMonotonic(1, out var ts);
+                if (rc != 0)
+                {
+                    throw new InvalidOperationException(
+                        "clock_gettime(CLOCK_MONOTONIC) 失败（环境异常）");
+                }
+                return (ts.TvSec * 1000000000L) + ts.TvNsec;
+            }
+            throw new NotSupportedException("单调时钟原语暂不支持该平台");
+        }
+
+        // QueryUnbiasedInterruptTimePrecise 实际导出在 kernelbase.dll
+        // （kernel32 不导出 Precise 变体；非 Precise 的
+        // QueryUnbiasedInterruptTime 才在 kernel32）
+        [System.Runtime.InteropServices.DllImport("kernelbase.dll")]
+        private static extern bool QueryUnbiasedInterruptTimePrecise(
+            out ulong unbiasedTime);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+        private static extern bool QueryUnbiasedInterruptTime(
+            out ulong unbiasedTime);
+
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct PosixTimespec
+        {
+            public long TvSec;
+            public long TvNsec;
+        }
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6", EntryPoint = "clock_gettime")]
+        private static extern int ClockGetTimeMonotonic(int clockId, out PosixTimespec timespec);
         // 棒4b：Timer 原语真排程（§19.5）。VM 契约：ctx 形参承载
         // repeatCount（0=NoRepeat / -1=InfiniteRepeat / n=有限次数）；
         // callbackFn 在 VM 侧不承载语义（响铃 = 发布记录内 waiter）。
@@ -1699,10 +1832,18 @@ namespace RigiCompiler.Bil.Vm
         // rigi_event_signal 同序；signal 前写入对恢复协程可见，§21）
         internal VmValue EventSignal(IReadOnlyList<VmValue> args)
         {
-            var handle = RequireI64("rigi_event_signal", args, 0);
+            EventSignalCore(RequireI64("rigi_event_signal", args, 0));
+            return VmVoid.Instance;
+        }
+
+        // event_signal 的宿主内核心（stdin 后台读线程经此触发 §19.3
+        // 唤醒，与 Rigi 层 signal 同一通道；线程形态先例 = RingTimer/
+        // SchedulePoll 的 .NET 线程池回调 → Publish → InvokeIsolated）
+        private void EventSignalCore(long handle)
+        {
             if (!_timers.TryGetValue(handle, out var record))
             {
-                return VmVoid.Instance;
+                return;
             }
             List<VmCoroutine> waiters;
             lock (record.Gate)
@@ -1716,8 +1857,2390 @@ namespace RigiCompiler.Bil.Vm
             {
                 Publish(waiter, "EventAlarm.signal");
             }
-            return VmVoid.Instance;
         }
+
+        // ===== B2-4b2：标准输入异步读（stdlib core/io/stdstreams.rg 的
+        // stdin_read_start/stdin_read_take 双宿主同语义）=====
+        // 「启动即返」卸载形态（对齐 native shim.c stdin 原语）：把阻塞
+        // 读交给专用后台线程（绝不在 Worker/解释线程上同步阻塞 stdin），
+        // 读完成写回 Span 并登记结果后经 EventSignalCore 触发事件——
+        // 挂起协程由 §19.3 原子握手唤醒（先 signal 后 yield 由粘滞语义
+        // 兜底）。EOF 粘滞全局短路（0 = EOF，跨包装对象共享同一 stdin）。
+
+        // stdin 状态闸：EOF 粘滞旗标、在途读互斥（同一时刻至多一个读，
+        // 契约禁止共享位置并发读）、take 结果槽。每宿主实例一份（stdin
+        // 全局唯一语义不跨宿主实例共享）
+        private readonly object _stdinGate = new object();
+        private Stream? _stdinStream;
+        private bool _stdinEof;
+        private bool _stdinInflight;
+        private int _stdinResult;
+
+        internal VmValue StdinReadStart(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 4 || args[1] is not VmI32 offset
+                || args[2] is not VmI32 count || args[3] is not VmI64 wake)
+            {
+                throw new VmException("stdin_read_start 需要 (Span<u8>, i32, i32, i64)");
+            }
+            var value = args[0] is VmAny any ? any.Payload : args[0];
+            if (value is not VmSpan span || span.ElementType != ".u8")
+            {
+                throw new VmException("stdin_read_start 第一参数必须是 Span<u8>");
+            }
+            var start = offset.Value;
+            var length = count.Value;
+            if (start < 0 || length < 0 || start > span.Length - length)
+            {
+                throw new VmException("stdin_read_start 区间越界：offset=" + start
+                    + " count=" + length + " 长度=" + span.Length);
+            }
+            lock (_stdinGate)
+            {
+                if (_stdinEof)
+                {
+                    return new VmI32(1);  // EOF 粘滞短路（Rigi 层直接返回 0）
+                }
+                if (_stdinInflight)
+                {
+                    throw new VmException("stdin 已有在途读（共享位置并发读违反契约）");
+                }
+                _stdinInflight = true;
+            }
+            // 专用后台线程（非线程池——阻塞读可能占住线程任意久；
+            // IsBackground 保证进程退出不被拖累）。Span 挂起期间借用
+            //（§4.4）：调用协程挂起持有引用，后台线程写入无回收风险
+            var reader = new Thread(() => StdinReadBody(span, start, length, wake.Value))
+            {
+                IsBackground = true,
+                Name = "rigi-stdin",
+            };
+            reader.Start();
+            return new VmI32(0);
+        }
+
+        // 后台读线程体：阻塞读一次（Stream.Read 返回 0 = EOF），写回
+        // Span 后在闸内登记结果，再触发唤醒事件（登记先于 signal——
+        // 恢复协程必见结果）。stdin 不可用（已关闭/无效句柄）抛异常
+        // 按 EOF 处理——对齐 native 面 read 的 EBADF→EOF 口径：进程
+        // 无 stdin 即「已关闭」（§4.4 EOF 路径确定性）
+        private void StdinReadBody(VmSpan span, int start, int length, long wake)
+        {
+            int n;
+            byte[] buffer = new byte[length];
+            try
+            {
+                // 原始字节流（不经 Console.In 的 TextReader——避免其
+                // 内部缓冲预读吞掉后续字节）
+                _stdinStream ??= Console.OpenStandardInput();
+                n = _stdinStream.Read(buffer, 0, length);
+                if (n < 0)
+                {
+                    n = 0;
+                }
+            }
+            catch
+            {
+                n = 0;
+            }
+            for (var i = 0; i < n; i++)
+            {
+                span.Elements[start + i] = new VmU8(buffer[i]);
+            }
+            lock (_stdinGate)
+            {
+                if (n == 0)
+                {
+                    _stdinEof = true;
+                }
+                _stdinResult = n;
+                _stdinInflight = false;
+            }
+            EventSignalCore(wake);
+        }
+
+        internal VmValue StdinReadTake(IReadOnlyList<VmValue> args)
+        {
+            lock (_stdinGate)
+            {
+                // take 只发生在事件唤醒之后：signal 前结果已在闸内登记，
+                // 未登记即到取属时序 bug（防御诊断，正常路径不可达）
+                if (!_stdinEof && _stdinInflight)
+                {
+                    throw new VmException("stdin_read_take：结果未就绪（时序 bug）");
+                }
+                return new VmI32(_stdinResult);
+            }
+        }
+
+        // ===== 施工块 7-2：core.fs native 原语层（stdlib core/fs/
+        // primitives.rg 的 fs_open/fs_read_start/fs_read_take 原语面
+        // 双宿主同语义；rigi_rt fs.c 镜像）=====
+        // 句柄：token 统一经 NewHandle 分配（与协程/定时器/事件同一
+        // 空间）；记录 Dictionary<long, VmFsFile>。retain/release 复用
+        // _nativeRcStrong 通用计数表（NativeRcRetain 对 fs token 天然
+        // 兼容），release 归零时在 NativeRcReleaseCore 内关闭流并摘除
+        // 记录（锁序 _nativeRcGate → _fsGate，与 FsOpen 一致）。
+        // 错误：.NET 异常 → 与 rigi_rt fs.c 同一归一码表（MapFsError，
+        // 与 Rigi 层 fsErrKind 三方同值）；分类映射在 Rigi 层。
+        private readonly object _fsGate = new object();
+        private readonly Dictionary<long, VmFsFile> _fsFiles = new();
+
+        // Resource 是 FileStream（文件句柄）或 DirState（目录句柄）；
+        // read/write/flush 三类在途槽互相独立（同一句柄同类同时刻至多
+        // 一个在途——契约禁止同流并发/重入（§4.4），冲突诊断抛错）
+        private sealed class VmFsFile
+        {
+            public required object Resource { get; init; }
+            // 追加模式（fs_open 带 FAppend|FCreate）：§4.5.6「系统追加
+            // 机制使每次写入始终到达当时末尾」。句柄本身必须是 OS 追加
+            // 专用形态（Windows 仅 FILE_APPEND_DATA 的句柄 / Linux
+            // O_APPEND fd，见 FsOpen→OpenAppendStream）——.NET 的
+            // FileMode.Append 只是「打开时定位一次末尾」的普通写句柄
+            //（Windows GENERIC_WRITE 含 FILE_WRITE_DATA，Linux fdinfo
+            // 实测无 O_APPEND），不能只凭 FileMode 名字推断追加语义；
+            // 写线程体据此走 AppendWriteCore（单次系统调用内由内核选位，
+            // 绝不 Seek(End)+Write——两步用户态非原子，其他进程可在
+            // 两步之间增长文件致本笔覆盖）
+            public bool AppendMode;
+            public bool ReadInflight;
+            public int ReadResult;
+            public bool WriteInflight;
+            public int WriteResult;
+            public bool FlushInflight;
+            public int FlushResult;
+        }
+
+        // 目录句柄状态：diropen 预热首条目（native FindFirstFileW 同口径
+        // ——打开即验证，空目录合法）；结束后持续返回结束
+        private sealed class DirState
+        {
+            public required IEnumerator<FileSystemInfo> Enumerator { get; init; }
+            public FileSystemInfo? Pending;
+            public bool Finished;
+        }
+
+        private static FileStream RequireFsStream(VmFsFile file, string hook)
+        {
+            if (file.Resource is not FileStream stream)
+            {
+                throw new VmException(hook + "：句柄不是文件（目录句柄不可用）");
+            }
+            return stream;
+        }
+
+        private static DirState RequireFsDir(VmFsFile file, string hook)
+        {
+            if (file.Resource is not DirState dir)
+            {
+                throw new VmException(hook + "：句柄不是目录（文件句柄不可用）");
+            }
+            return dir;
+        }
+
+        // .NET 异常 → 归一错误码（与 rigi_rt fs.c 的 rigi_fs_map_winerr
+        // /rigi_fs_map_errno 及 Rigi 层 fsErrKind 三方同表；Windows 的
+        // IOException HResult 低 16 位是 Win32 错误码——IO 错误族的宿主
+        // 形态；Unix 的 IOException HResult 低 16 位是 errno，走同值的
+        // errno 归一表。UnauthorizedAccessException 由调用点先判「目录
+        // 当文件开」补救，到达本表即按权限不足归类）
+        private static int MapFsError(Exception ex)
+        {
+            switch (ex)
+            {
+                case FileNotFoundException:
+                case DirectoryNotFoundException:
+                    return 2;   // NotFound
+                case UnauthorizedAccessException:
+                    return 13;  // PermissionDenied
+                case NotSupportedException:
+                    return 38;  // Unsupported
+                case ArgumentException:
+                    return 22;  // InvalidPath
+                case OutOfMemoryException:
+                    return 12;
+                case IOException io:
+                    return OperatingSystem.IsWindows()
+                        ? MapFsWin32(io.HResult & 0xFFFF)
+                        : MapFsErrno(io.HResult & 0xFFFF);
+                default:
+                    return 1000; // Other
+            }
+        }
+
+        // Unix errno → 归一码（与 rigi_rt fs.c rigi_fs_map_errno 同表同值
+        // ——EDQUOT 归 NoSpace、ETXTBSY 归 SharingViolation、EOPNOTSUPP
+        // 归 Unsupported，注释同源）
+        private static int MapFsErrno(int e)
+        {
+            switch (e)
+            {
+                case 2: return 2;    // ENOENT
+                case 1:             // EPERM
+                case 13: return 13; // EACCES
+                case 17: return 17; // EEXIST
+                case 18: return 18; // EXDEV
+                case 20: return 20; // ENOTDIR
+                case 21: return 21; // EISDIR
+                case 22: return 22; // EINVAL
+                case 26: return 26; // ETXTBSY ≈ 共享冲突
+                case 28: return 28; // ENOSPC
+                case 122: return 28; // EDQUOT 配额满按 NoSpace
+                case 30: return 30; // EROFS
+                case 31: return 31; // EMLINK
+                case 36: return 36; // ENAMETOOLONG
+                case 39: return 39; // ENOTEMPTY
+                case 40: return 40; // ELOOP（链接循环，不伪装 NotFound）
+                case 9: return 9;   // EBADF
+                case 12: return 12; // ENOMEM
+                case 38: return 38; // ENOSYS
+                case 95: return 38; // EOPNOTSUPP
+                case 5: return 5;   // EIO
+                default: return 1000;
+            }
+        }
+
+        private static int MapFsWin32(int err)
+        {
+            switch (err)
+            {
+                case 2:   // ERROR_FILE_NOT_FOUND
+                case 3:   // ERROR_PATH_NOT_FOUND
+                case 15:  // ERROR_INVALID_DRIVE
+                    return 2;
+                case 5:   // ERROR_ACCESS_DENIED
+                case 1314: // ERROR_PRIVILEGE_NOT_HELD
+                case 998: // ERROR_NOACCESS
+                    return 13;
+                case 80:  // ERROR_FILE_EXISTS
+                case 183: // ERROR_ALREADY_EXISTS
+                    return 17;
+                case 17:  // ERROR_NOT_SAME_DEVICE
+                    return 18;
+                case 267: // ERROR_DIRECTORY
+                    return 20;
+                case 145: // ERROR_DIR_NOT_EMPTY
+                    return 39;
+                case 112: // ERROR_DISK_FULL
+                case 39:  // ERROR_HANDLE_DISK_FULL
+                    return 28;
+                case 32:  // ERROR_SHARING_VIOLATION
+                case 33:  // ERROR_LOCK_VIOLATION
+                    return 26;
+                case 206: // ERROR_FILENAME_EXCED_RANGE
+                case 111: // ERROR_BUFFER_OVERFLOW
+                    return 36;
+                case 123: // ERROR_INVALID_NAME
+                case 87:  // ERROR_INVALID_PARAMETER
+                case 131: // ERROR_NEGATIVE_SEEK
+                    return 22;
+                case 6:   // ERROR_INVALID_HANDLE
+                    return 9;
+                case 14:  // ERROR_OUTOFMEMORY
+                    return 12;
+                case 50:  // ERROR_NOT_SUPPORTED
+                    return 38;
+                case 1920: // ERROR_CANT_ACCESS_FILE（断链的跟随打开）
+                    return 2;
+                case 29:  // ERROR_WRITE_FAULT
+                case 30:  // ERROR_READ_FAULT
+                case 31:  // ERROR_GEN_FAILURE
+                    return 5;
+                default:
+                    return 1000;
+            }
+        }
+
+        // i64 小端写入出参 Span（与 rigi_rt fs.c rigi_fs_write_i64le
+        // 同布局；out 长度由 Rigi 层保证 ≥ 8，元素恒 VmU8）
+        private static void WriteFsI64Le(VmSpan span, long value)
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                span.Elements[i] = new VmU8((byte)(value >> (i * 8)));
+            }
+        }
+
+        // fs_open（同步直调，Linux x64 用 O_NONBLOCK + 已打开 fd 的
+        // fstat 防 FIFO 无对端占住 Worker）：flags 位定义与 rigi_rt
+        // fs.c RIGI_FS_F_* 逐位一致；
+        // bufferSize 1 = 近无缓冲（对齐 native 直读直写语义）；FileShare
+        // ReadWrite|Delete = §4.5.6「默认允许其他进程读写，以及平台支持
+        // 的重命名或删除」
+        internal VmValue FsOpen(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 4 || args[1] is not VmI32 flags
+                || args[2] is not VmI32 mode)
+            {
+                throw new VmException("fs_open 需要 (String, i32, i32, Span<u8>)");
+            }
+            var pathValue = args[0] is VmAny pathAny ? pathAny.Payload : args[0];
+            if (pathValue is not VmString path)
+            {
+                throw new VmException("fs_open 第一参数必须是 String");
+            }
+            var outValue = args[3] is VmAny outAny ? outAny.Payload : args[3];
+            if (outValue is not VmSpan outSpan || outSpan.ElementType != ".u8")
+            {
+                throw new VmException("fs_open 第四参数必须是 Span<u8>");
+            }
+            const int FRead = 0x1, FAppend = 0x4, FCreate = 0x8,
+                FTruncate = 0x10, FCreateNew = 0x20;
+            var f = flags.Value;
+            FileMode fileMode;
+            if ((f & FCreateNew) != 0) { fileMode = FileMode.CreateNew; }
+            else if ((f & FCreate) != 0 && (f & FTruncate) != 0)
+            {
+                fileMode = FileMode.Create;
+            }
+            else if ((f & FCreate) != 0 && (f & FAppend) != 0)
+            {
+                fileMode = FileMode.Append;
+            }
+            else if ((f & FCreate) != 0) { fileMode = FileMode.OpenOrCreate; }
+            else { fileMode = FileMode.Open; }
+            var access = (f & FRead) != 0 ? FileAccess.Read : FileAccess.Write;
+            FileStream? stream = null;
+            var registered = false;
+            try
+            {
+                if (fileMode == FileMode.Append)
+                {
+                    // 追加专用句柄保留内核 O_APPEND 原子性。
+                    var rc = OpenAppendStream(path.Value, out stream);
+                    if (rc != 0) { return new VmI32(rc); }
+                }
+                else if (IsFsLinuxX64())
+                {
+                    // Linux FIFO 的只读/只写 open 均可能等待对端；用
+                    // O_NONBLOCK 打开，再按已打开 fd 判定普通文件。
+                    var rc = OpenLinuxRegularStream(path.Value, f, mode.Value,
+                        out stream);
+                    if (rc != 0) { return new VmI32(rc); }
+                }
+                else
+                {
+                    if (OperatingSystem.IsLinux())
+                    {
+                        // 其它 Linux 架构的 openat/fstat ABI 尚未验证，
+                        // 不能回退到可能同步等待 FIFO 的 FileStream。
+                        return new VmI32(-FsErrnoEnosys);
+                    }
+                    stream = new FileStream(path.Value, fileMode, access,
+                        FileShare.ReadWrite | FileShare.Delete, 1);
+                }
+                long token;
+                lock (_nativeRcGate)
+                {
+                    token = NewHandle();
+                    _nativeRcStrong[token] = 1;
+                    lock (_fsGate)
+                    {
+                        _fsFiles[token] = new VmFsFile
+                        {
+                            Resource = stream!, // rc==0 蕴含非 null
+                            AppendMode = fileMode == FileMode.Append,
+                        };
+                    }
+                }
+                registered = true;
+                WriteFsI64Le(outSpan, token);
+                return new VmI32(0);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // 目录当文件开：与 rigi_fs_open 的 Windows 补救同口径
+                //（.NET 对目录开 FileStream 抛 UnauthorizedAccessException；
+                // 失败路径补查，仅错误路径非「先查询再打开」）
+                if (Directory.Exists(path.Value)) { return new VmI32(-21); }
+                return new VmI32(-13);
+            }
+            catch (Exception ex) when (ex is IOException
+                or NotSupportedException or ArgumentException
+                or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+            finally
+            {
+                // 登记失败（异常/返回错误）时句柄不放漏——正常/异常路径
+                // 都不泄漏 OS 资源
+                if (!registered && stream != null) { stream.Dispose(); }
+            }
+        }
+
+        private static bool IsFsLinuxX64() => OperatingSystem.IsLinux()
+            && System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.X64;
+
+        // Linux x64 普通文件入口：非阻塞 openat 防 FIFO 等待，随后仅凭
+        // fd 的完整 fstat 判型。FIFO 无读者/AF_UNIX socket 的 ENXIO
+        // 没有 fd；失败路径用 O_PATH 新句柄判型，其余错误保留原 errno。
+        private static int OpenLinuxRegularStream(string path, int flags,
+            int mode, out FileStream? stream)
+        {
+            stream = null;
+            const int fWrite = 0x2, fCreate = 0x8, fTruncate = 0x10,
+                fCreateNew = 0x20;
+            var write = (flags & fWrite) != 0;
+            var oflags = (write ? FsO_WRONLY : 0) | FsO_NONBLOCK;
+            if ((flags & fCreateNew) != 0) { oflags |= FsO_CREAT | FsO_EXCL; }
+            else
+            {
+                if ((flags & fCreate) != 0) { oflags |= FsO_CREAT; }
+                if ((flags & fTruncate) != 0) { oflags |= FsO_TRUNC; }
+            }
+            int fd;
+            try
+            {
+                fd = OpenAt(FsAtFdcwd, path, oflags, mode);
+                if (fd < 0)
+                {
+                    var e = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                    if (e == FsErrnoEnxio
+                        && ProbeLinuxNonRegular(path)) { return -FsWrongType; }
+                    return -MapFsErrno(e);
+                }
+            }
+            catch (DllNotFoundException) { return -FsErrnoEnosys; }
+            catch (EntryPointNotFoundException) { return -FsErrnoEnosys; }
+            return WrapLinuxRegularFd(fd, write ? FileAccess.Write : FileAccess.Read,
+                out stream);
+        }
+
+        private static bool ProbeLinuxNonRegular(string path)
+        {
+            // 仅 ENXIO 失败时另开 O_PATH 句柄，既可判 socket 也可判
+            // FIFO；不能用 pathname stat 代替句柄校验，也不能当作
+            // 原读写句柄使用。打开/查询失败保留原始 ENXIO。
+            int fd;
+            try { fd = OpenAt(FsAtFdcwd, path, FsO_PATH | FsO_CLOEXEC, 0); }
+            catch (DllNotFoundException) { return false; }
+            catch (EntryPointNotFoundException) { return false; }
+            if (fd < 0) { return false; }
+            using var handle = new Microsoft.Win32.SafeHandles.SafeFileHandle(
+                (IntPtr)fd, ownsHandle: true);
+            try
+            {
+                if (fstat(fd, out var stat) != 0) { return false; }
+                var kind = stat.Mode & FsSIfmt;
+                return kind != FsSIfreg && kind != FsSIfdir;
+            }
+            catch (DllNotFoundException) { return false; }
+            catch (EntryPointNotFoundException) { return false; }
+        }
+
+        private static int WrapLinuxRegularFd(int fd, FileAccess access,
+            out FileStream? stream)
+        {
+            stream = null;
+            var handle = new Microsoft.Win32.SafeHandles.SafeFileHandle(
+                (IntPtr)fd, ownsHandle: true);
+            var transferred = false;
+            try
+            {
+                if (fstat(fd, out var stat) != 0)
+                {
+                    return -MapFsErrno(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                var kind = stat.Mode & FsSIfmt;
+                if (kind == FsSIfdir) { return -21; }
+                if (kind != FsSIfreg) { return -FsWrongType; }
+                var current = Fcntl(fd, FsFGetfl, 0);
+                if (current < 0 || Fcntl(fd, FsFSetfl,
+                    current & ~FsO_NONBLOCK) < 0)
+                {
+                    return -MapFsErrno(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                // 仅构造成功才将 SafeFileHandle 所有权交给 FileStream。
+                stream = new FileStream(handle, access, 1);
+                transferred = true;
+                return 0;
+            }
+            catch (DllNotFoundException) { return -FsErrnoEnosys; }
+            catch (EntryPointNotFoundException) { return -FsErrnoEnosys; }
+            finally { if (!transferred) { handle.Dispose(); } }
+        }
+
+        // 打开 OS 追加专用文件流（§4.5.6「系统追加机制」的 VM 面唯一
+        // 收口）。证据基线（playground/vm_append_atomic/ 探针实证）：
+        // .NET FileMode.Append 两平台都不是系统追加——Windows 句柄
+        // GENERIC_WRITE 含 FILE_WRITE_DATA，写经 NtWriteFile 提交显式
+        // ByteOffset（落到句柄位置而非当时末尾）；Linux fdinfo flags 无
+        // O_APPEND（02100001），ctor 仅 Seek 一次、写走 pwrite 显式
+        // offset。因此：
+        //   Windows：CreateFileW 仅申请 FILE_APPEND_DATA（不含
+        //     FILE_WRITE_DATA）+ FILE_READ_ATTRIBUTES（getLength 查
+        //     FileStandardInformation 所需；不放开内容读）+ SYNCHRONIZE
+        //     ——内核契约：无 FILE_WRITE_DATA 的 FILE_APPEND_DATA 句柄
+        //     上 WriteFile 忽略句柄当前位置、每笔写落当时末尾；
+        //     FlushFileBuffers/Flush(true) 对该句柄可用（flush 持久化
+        //     面）。OPEN_ALWAYS = 不存在则创建、存在不截断；
+        //   Linux：openat(AT_FDCWD, O_WRONLY|O_CREAT|O_APPEND|
+        //   O_NONBLOCK, 0666)，非阻塞打开防 FIFO 无读者等待，随后按
+        //   已打开 fd 判型并清掉 O_NONBLOCK；O_APPEND 保留，确保每次
+        //   write(2) 在系统调用内原子落在当时末尾；
+        //   创建权限 0o666（rw-rw-rw-）受 umask（§4.5.5，对齐 .NET
+        //   FileMode.Append 的 Unix 默认与 native 面）。
+        //   openat 与 open 同为 variadic（POSIX：mode 为可选变参）。
+        //   当前 libc.so.6 的带 mode openat 入口仅在 Linux x64 验证；
+        //   未验证平台（macOS/freebsd x64、Linux 非 x64 等）经平台闸门
+        //   明确报 Unsupported（-38），不在代码里对其它架构的 variadic
+        //   ABI 行为做必对/必错断言；libc.so.6 缺失或入口缺失也受控归
+        //   Unsupported，不漏宿主异常出流契约。
+        // 两平台返回值均由 AppendWriteCore 的系统调用内选位兑现。
+        // 失败返回 -归一码（MapFsWin32/MapFsErrno 同表；Windows 目录
+        // 当文件开是 ACCESS_DENIED，失败路径补查目录归 -21）
+        // 契约：返回 0 时 stream 必非 null，非 0 时 stream 恒 null
+        //（int 返回不适用 NotNullWhen(true)——该属性仅约定 bool 返回；
+        // 调用点以 rc==0 分支为准）
+        internal static int OpenAppendStream(string path,
+            out FileStream? stream)
+        {
+            stream = null;
+            if (OperatingSystem.IsWindows())
+            {
+                var handle = CreateFileW(path,
+                    FsWinFileAppendData | FsWinFileReadAttributes
+                        | FsWinSynchronize,
+                    FsWinShareReadWriteDelete, IntPtr.Zero, FsWinOpenAlways,
+                    FsWinFileAttributeNormal, IntPtr.Zero);
+                if (handle.IsInvalid)
+                {
+                    var err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                    if (err == FsWinErrorAccessDenied
+                        && Directory.Exists(path))
+                    {
+                        return -21; // 目录当文件开（IsDir，与 native 同码）
+                    }
+                    return -MapFsWin32(err);
+                }
+                try
+                {
+                    stream = new FileStream(handle, FileAccess.Write, 1);
+                    return 0;
+                }
+                catch
+                {
+                    handle.Dispose();
+                    throw;
+                }
+            }
+            // 非 Windows 仅限定 Linux x64（glibc）：libc.so.6 仅 glibc
+            // 提供，带 mode 的 openat 入口只在 Linux x64 验证过——其余
+            // 系统/架构（macOS、freebsd x64、Linux 非 x64 等）显式
+            // Unsupported（-38），不把全部非 Windows 当 Linux，也不对
+            // 未验证平台的 variadic ABI 行为做断言
+            if (!OperatingSystem.IsLinux()
+                || System.Runtime.InteropServices.RuntimeInformation
+                    .ProcessArchitecture
+                != System.Runtime.InteropServices.Architecture.X64)
+            {
+                return -FsErrnoEnosys; // Unsupported（=ENOSYS 归一同值）
+            }
+            int fd;
+            try
+            {
+                fd = OpenAt(FsAtFdcwd, path,
+                    FsO_WRONLY | FsO_CREAT | FsO_APPEND | FsO_NONBLOCK,
+                    FsCreateMode0666);
+                if (fd < 0)
+                {
+                    var e = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                    if (e == FsErrnoEnxio && ProbeLinuxNonRegular(path))
+                    {
+                        return -FsWrongType;
+                    }
+                    return -MapFsErrno(e);
+                }
+            }
+            catch (DllNotFoundException)
+            {
+                return -FsErrnoEnosys; // libc.so.6 缺失：受控 Unsupported
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return -FsErrnoEnosys; // 入口缺失：受控 Unsupported
+            }
+            return WrapLinuxRegularFd(fd, FileAccess.Write, out stream);
+        }
+
+        // 追加写核心（§4.5.6：写入位置由 OS 在本系统调用内原子选择，
+        // 到当时末尾）。返回实际写出字节数（允许短写，Rigi 层循环补齐
+        // ——与 native 面单次系统调用形态一致）；错误抛 IOException
+        //（HResult 低 16 位 = Win32 错误码/errno，由 MapFsError 归一）。
+        // Windows WriteFile 无 overlapped = 同步句柄当前位置语义，而
+        // append-only 句柄由内核强制落 EOF；Linux write(2) 由 O_APPEND
+        // 强制落 EOF；EINTR（信号中断）重试——不是流错误
+        internal static int AppendWriteCore(FileStream stream, byte[] buffer,
+            int length)
+        {
+            var handle = stream.SafeFileHandle;
+            if (OperatingSystem.IsWindows())
+            {
+                if (!WriteFile(handle, buffer, length, out var written,
+                    IntPtr.Zero))
+                {
+                    throw new IOException("fs_write",
+                        System.Runtime.InteropServices.Marshal.GetHRForLastWin32Error());
+                }
+                return written;
+            }
+            // SafeFileHandle 租借：DangerousGetHandle 取原始 fd 的调用
+            // 期间显式 AddRef/Release——阻断 JIT 在原生 write 执行期间
+            // 把句柄判不可达而提前终结关闭 fd 的窗口（SafeFileHandle
+            // 官方模式；Windows 分支不需此步——WriteFile 直接收
+            // SafeFileHandle，编组层自动保活）
+            var refAdded = false;
+            try
+            {
+                handle.DangerousAddRef(ref refAdded);
+                var fd = (int)handle.DangerousGetHandle();
+                long n;
+                do
+                {
+                    n = Write(fd, buffer, (IntPtr)length);
+                } while (n < 0 && System.Runtime.InteropServices.Marshal.GetLastWin32Error() == FsErrnoEintr);
+                if (n < 0)
+                {
+                    throw new IOException("fs_write",
+                        System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+                }
+                return (int)n;
+            }
+            finally
+            {
+                if (refAdded) { handle.DangerousRelease(); }
+            }
+        }
+
+        // ===== fs 追加互操作（仅上两函数使用；标量 + byte[] + string，
+        // 无 struct 编组、无 unsafe——winnt.h 常量见逐条注释）=====
+        private const int FsWinFileAppendData = 0x0004;   // FILE_APPEND_DATA
+        private const int FsWinFileReadAttributes = 0x0080; // FILE_READ_ATTRIBUTES
+        private const int FsWinSynchronize = 0x00100000;  // SYNCHRONIZE
+        private const int FsWinShareReadWriteDelete = 0x7; // FILE_SHARE_READ|WRITE|DELETE
+        private const int FsWinOpenAlways = 4;            // OPEN_ALWAYS
+        private const int FsWinFileAttributeNormal = 0x80; // FILE_ATTRIBUTE_NORMAL
+        private const int FsWinErrorAccessDenied = 5;     // ERROR_ACCESS_DENIED
+        private const int FsAtFdcwd = -100;               // AT_FDCWD（openat 相对 cwd）
+        private const int FsO_WRONLY = 0x1;
+        private const int FsO_CREAT = 0x40;
+        private const int FsO_EXCL = 0x80;
+        private const int FsO_TRUNC = 0x200;
+        private const int FsO_APPEND = 0x400;             // 0o2000
+        private const int FsO_NONBLOCK = 0x800;           // 0o4000，仅打开阶段
+        private const int FsO_CLOEXEC = 0x80000;          // 0o2000000，补查句柄不泄漏
+        private const int FsO_PATH = 0x200000;            // 0o10000000，仅 ENXIO 补查
+        private const int FsFGetfl = 3, FsFSetfl = 4;     // fcntl F_GETFL/F_SETFL
+        private const uint FsSIfmt = 0xF000;              // S_IFMT
+        private const uint FsSIfifo = 0x1000, FsSIfdir = 0x4000,
+            FsSIfreg = 0x8000;
+        private const int FsErrnoEnxio = 6;
+        private const int FsWrongType = 1002;             // 自定义归一码 → WrongType
+        private const int FsCreateMode0666 = 0x1B6;       // 0o666=438（rw-rw-rw-，受 umask；§4.5.5）
+        private const int FsErrnoEintr = 4;               // EINTR
+        private const int FsErrnoEinval = 22;             // EINVAL（宿主不认识不替换原语 → Unsupported）
+        private const int FsErrnoEnosys = 38;             // ENOSYS（Unsupported 归一码同值）
+        private const uint FsRenameNoReplace = 1u;        // RENAME_NOREPLACE（<linux/fs.h>；不依赖 _GNU_SOURCE）
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode,
+            SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+            string lpFileName, int dwDesiredAccess, int dwShareMode,
+            IntPtr lpSecurityAttributes, int dwCreationDisposition,
+            int dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            SetLastError = true)]
+        private static extern bool WriteFile(
+            Microsoft.Win32.SafeHandles.SafeFileHandle hFile, byte[] lpBuffer,
+            int nNumberOfBytesToWrite, out int lpNumberOfBytesWritten,
+            IntPtr lpOverlapped);
+
+        // openat 与 open 同为 variadic（POSIX：mode 为可选变参）。
+        // 带 mode 入口仅在 Linux x64 + glibc 验证；调用点由
+        // OpenAppendStream/OpenLinuxRegularStream 的平台闸门与异常捕获
+        // 受控捕获约束（缺库/缺入口归 Unsupported，不漏宿主异常）
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "openat", SetLastError = true)]
+        private static extern int OpenAt(int dirfd, string pathname,
+            int flags, int mode);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "fcntl", SetLastError = true)]
+        private static extern int Fcntl(int fd, int command, int value);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "write", SetLastError = true)]
+        private static extern long Write(int fd, byte[] buf, IntPtr count);
+
+        // renameat2（Linux；glibc ≥ 2.28 导出 renameat2 符号）：固定参数
+        // 原型，无 openat 的 variadic ABI 假设，不设架构闸门（与 native
+        // 面 SYS_renameat2 无架构限制同口径）；路径为 NUL 结尾字节串，
+        // CharSet.Ansi 在 Unix 编组层即 UTF-8，与 OpenAt 先例同口径。
+        // AT_FDCWD 双路径在单次系统调用内以同一 cwd 基准解析
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "renameat2", SetLastError = true)]
+        private static extern int RenameAt2(int oldDirFd, string oldPath,
+            int newDirFd, string newPath, uint flags);
+
+        // Unix Replace 非目录源只允许系统 rename：不可使用 File.Move 的
+        // EXDEV 复制+删除回退（违背 §4.5.7 跨设备报错）。
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "rename", SetLastError = true)]
+        private static extern int RenameUnix(string oldPath, string newPath);
+
+        // renameat2(RENAME_NOREPLACE) helper：返回 0 成功 / -归一码。
+        // 内核在单次系统调用内原子完成「目标不存在检查 + 移动」裁决
+        //（§4.5.7 系统保证，不用 exists + rename 模拟），文件、真实目
+        // 录、符号链接/断链条目一视同仁（rename 系不跟随末段链接）。
+        // errno 读取紧跟失败：ENOSYS/EINVAL/EOPNOTSUPP（内核或文件系
+        // 统不提供该保证，EINVAL 对齐 native 特判——宿主不认识该原语
+        // 不伪装成路径错）→ Unsupported；EXDEV → CrossDevice（不退化
+        // 复制删除）；其余 MapFsErrno 同表。错误原样报告、不隐式重试
+        // 或回退（与现有 native 面同口径；本任务不重写异步 IO 层）。
+        // 缺库/缺入口受控 Unsupported
+        private static int RenameNoReplaceLinux(string src, string dst)
+        {
+            try
+            {
+                if (RenameAt2(FsAtFdcwd, src, FsAtFdcwd, dst,
+                        FsRenameNoReplace) == 0)
+                {
+                    return 0;
+                }
+                var errno = System.Runtime.InteropServices.Marshal
+                    .GetLastWin32Error();
+                if (errno == FsErrnoEinval || errno == FsErrnoEnosys)
+                {
+                    return -FsErrnoEnosys;
+                }
+                return -MapFsErrno(errno); // EOPNOTSUPP 95 → 38 同表
+            }
+            catch (DllNotFoundException)
+            {
+                return -FsErrnoEnosys; // libc.so.6 缺失：受控 Unsupported
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return -FsErrnoEnosys; // 入口缺失：受控 Unsupported
+            }
+        }
+
+        // Replace 非目录源：普通 rename 原子覆盖文件/链接；跨设备原样
+        // EXDEV，绝不经 BCL File.Move 的复制+删除回退。仅 Linux 可用。
+        private static int RenameReplaceFileLinux(string src, string dst)
+        {
+            try
+            {
+                if (RenameUnix(src, dst) == 0)
+                {
+                    return 0;
+                }
+                var errno = System.Runtime.InteropServices.Marshal
+                    .GetLastWin32Error();
+                if (errno == 20 || errno == 21 || errno == 39)
+                {
+                    // 仅在系统调用失败后分类目录目标，不以查询保证安全。
+                    try
+                    {
+                        var attrs = File.GetAttributes(dst);
+                        if ((attrs & FileAttributes.Directory) != 0
+                            && (attrs & FileAttributes.ReparsePoint) == 0)
+                        {
+                            return -21;
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException
+                        or UnauthorizedAccessException or ArgumentException)
+                    {
+                        // 并发目标改变时保留原始系统错误。
+                    }
+                }
+                return -MapFsErrno(errno);
+            }
+            catch (DllNotFoundException)
+            {
+                return -FsErrnoEnosys;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return -FsErrnoEnosys;
+            }
+        }
+
+        // fs_read_start（挂起读启动即返，stdin 先例直复刻）：把阻塞读
+        // 交给专用后台线程（绝不在 Worker/解释线程上同步阻塞），完成
+        // 写回 Span 并登记结果后经 EventSignalCore 触发事件——挂起协程
+        // 由 §19.3 原子握手唤醒。EOF 不粘滞（§4.5.6：读到当前 EOF 返回
+        // 0，之后再次读取可以看到新增内容），每轮 start 都真读
+        internal VmValue FsReadStart(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 5 || args[0] is not VmI64 handle
+                || args[2] is not VmI32 offset || args[3] is not VmI32 count
+                || args[4] is not VmI64 wake)
+            {
+                throw new VmException(
+                    "fs_read_start 需要 (i64, Span<u8>, i32, i32, i64)");
+            }
+            var value = args[1] is VmAny any ? any.Payload : args[1];
+            if (value is not VmSpan span || span.ElementType != ".u8")
+            {
+                throw new VmException("fs_read_start 第二参数必须是 Span<u8>");
+            }
+            var start = offset.Value;
+            var length = count.Value;
+            if (start < 0 || length < 0 || start > span.Length - length)
+            {
+                throw new VmException("fs_read_start 区间越界：offset=" + start
+                    + " count=" + length + " 长度=" + span.Length);
+            }
+            VmFsFile file;
+            FileStream stream;
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out file!))
+                {
+                    throw new VmException("fs_read_start 无效句柄");
+                }
+                if (file.ReadInflight)
+                {
+                    throw new VmException(
+                        "fs_read_start：已有在途读（并发/重入违反契约）");
+                }
+                stream = RequireFsStream(file, "fs_read_start");
+                file.ReadInflight = true;
+            }
+            // 专用后台线程（非线程池——阻塞读可能占住线程任意久；
+            // IsBackground 保证进程退出不被拖累）。Span 挂起期间借用
+            //（§3.2：调用协程挂起持有引用，后台线程写入无回收风险——
+            // stdin Span 借用先例）
+            var reader = new Thread(
+                () => FsReadBody(file, stream, span, start, length, wake.Value))
+            {
+                IsBackground = true,
+                Name = "rigi-fs-read",
+            };
+            reader.Start();
+            return new VmI32(0);
+        }
+
+        // 后台读线程体：阻塞读一次（Stream.Read 返回 0 = 当前 EOF），
+        // 写回 Span 后在闸内登记结果，再触发唤醒事件（登记先于
+        // signal——恢复协程必见结果；native 面同序）
+        private void FsReadBody(VmFsFile file, FileStream stream,
+            VmSpan span, int start, int length, long wake)
+        {
+            int n;
+            var buffer = new byte[length];
+            try
+            {
+                n = stream.Read(buffer, 0, length);
+                if (n < 0) { n = 0; }
+            }
+            catch (Exception ex)
+            {
+                // I/O 失败登记负归一码（Rigi 层映射 FileSystemException；
+                // 与 native 面「结果登记先于事件触发」同序）
+                lock (_fsGate)
+                {
+                    file.ReadResult = -MapFsError(ex);
+                    file.ReadInflight = false;
+                }
+                EventSignalCore(wake);
+                return;
+            }
+            for (var i = 0; i < n; i++)
+            {
+                span.Elements[start + i] = new VmU8(buffer[i]);
+            }
+            lock (_fsGate)
+            {
+                file.ReadResult = n;
+                file.ReadInflight = false;
+            }
+            EventSignalCore(wake);
+        }
+
+        internal VmValue FsReadTake(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 1 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_read_take 需要 (i64)");
+            }
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out var file))
+                {
+                    throw new VmException("fs_read_take 无效句柄");
+                }
+                // take 只发生在事件唤醒之后：signal 前结果已在闸内登记，
+                // 未登记即到取属时序 bug（防御诊断，正常路径不可达）
+                if (file.ReadInflight)
+                {
+                    throw new VmException("fs_read_take：结果未就绪（时序 bug）");
+                }
+                return new VmI32(file.ReadResult);
+            }
+        }
+
+        // ===== fs 原语族阶段 2（写/flush 挂起 + 定位/长度/信息查询/
+        // 创建删除/移动/目录枚举同步；rigi_rt fs.c 镜像，双宿主同语义）=====
+
+        // i32 小端写入出参 Span（dirread/realpath 的 meta 协议）
+        private static void WriteFsI32Le(VmSpan span, int offset, int value)
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                span.Elements[offset + i] =
+                    new VmU8((byte)(value >> (i * 8)));
+            }
+        }
+
+        private static VmString RequireFsString(string hook,
+            IReadOnlyList<VmValue> args, int index)
+        {
+            if (args.Count <= index)
+            {
+                throw new VmException(hook + "：参数不足");
+            }
+            var v = args[index] is VmAny any ? any.Payload : args[index];
+            if (v is not VmString s)
+            {
+                throw new VmException(hook + "：参数 " + index
+                    + " 必须是 String");
+            }
+            return s;
+        }
+
+        private static VmSpan RequireFsSpan(string hook,
+            IReadOnlyList<VmValue> args, int index)
+        {
+            if (args.Count <= index)
+            {
+                throw new VmException(hook + "：参数不足");
+            }
+            var v = args[index] is VmAny any ? any.Payload : args[index];
+            if (v is not VmSpan s || s.ElementType != ".u8")
+            {
+                throw new VmException(hook + "：参数 " + index
+                    + " 必须是 Span<u8>");
+            }
+            return s;
+        }
+
+        private long RequireFsHandle(string hook, IReadOnlyList<VmValue> args)
+        {
+            if (args.Count < 1 || args[0] is not VmI64 handle)
+            {
+                throw new VmException(hook + "：第一参数需要 i64 句柄");
+            }
+            lock (_fsGate)
+            {
+                if (!_fsFiles.ContainsKey(handle.Value))
+                {
+                    throw new VmException(hook + " 无效句柄");
+                }
+            }
+            return handle.Value;
+        }
+
+        // fs_write_start（挂起写，read 同款两段式）：buffer[start..start+
+        // count) 卸载到专用后台线程，完成后写回登记并触发事件。
+        // 非追加 = Stream.Write 全量语义（返回写满的 count）；追加 =
+        // AppendWriteCore 单次系统调用（允许短写，两者 Rigi 层 7-3 流层
+        // 均循环补齐——正常本地文件写实际全量）
+        internal VmValue FsWriteStart(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 5 || args[0] is not VmI64 handle
+                || args[2] is not VmI32 offset || args[3] is not VmI32 count
+                || args[4] is not VmI64 wake)
+            {
+                throw new VmException(
+                    "fs_write_start 需要 (i64, Span<u8>, i32, i32, i64)");
+            }
+            var value = args[1] is VmAny any ? any.Payload : args[1];
+            if (value is not VmSpan span || span.ElementType != ".u8")
+            {
+                throw new VmException("fs_write_start 第二参数必须是 Span<u8>");
+            }
+            var start = offset.Value;
+            var length = count.Value;
+            if (start < 0 || length < 0 || start > span.Length - length)
+            {
+                throw new VmException("fs_write_start 区间越界：offset="
+                    + start + " count=" + length + " 长度=" + span.Length);
+            }
+            VmFsFile file;
+            FileStream stream;
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out file!))
+                {
+                    throw new VmException("fs_write_start 无效句柄");
+                }
+                if (file.WriteInflight)
+                {
+                    throw new VmException(
+                        "fs_write_start：已有在途写（并发/重入违反契约）");
+                }
+                stream = RequireFsStream(file, "fs_write_start");
+                file.WriteInflight = true;
+            }
+            var writer = new Thread(
+                () => FsWriteBody(file, stream, span, start, length,
+                    wake.Value))
+            {
+                IsBackground = true,
+                Name = "rigi-fs-write",
+            };
+            writer.Start();
+            return new VmI32(0);
+        }
+
+        // 后台写线程体：阻塞写一次（全量或抛），写回登记后触发事件
+        //（登记先于 signal——恢复协程必见结果，native 面同序）
+        private void FsWriteBody(VmFsFile file, FileStream stream,
+            VmSpan span, int start, int length, long wake)
+        {
+            var buffer = new byte[length];
+            for (var i = 0; i < length; i++)
+            {
+                buffer[i] = ((VmU8)span.Elements[start + i]).Value;
+            }
+            int n;
+            try
+            {
+                if (file.AppendMode)
+                {
+                    // §4.5.6 系统追加：写入位置由 OS 在本系统调用内原子
+                    // 选择到当时末尾（append-only 句柄/O_APPEND，见
+                    // OpenAppendStream 证据注释）——不能用用户态
+                    // Seek(End)+Write 模拟：两步之间其他进程/句柄可增长
+                    // 文件，本笔会落在过期位置覆盖其数据（探针
+                    // playground/vm_append_atomic 固定交错复现）。返回
+                    // 实际写出字节（允许短写，Rigi 层循环补齐）
+                    n = AppendWriteCore(stream, buffer, length);
+                }
+                else
+                {
+                    stream.Write(buffer, 0, length);
+                    n = length;
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (_fsGate)
+                {
+                    file.WriteResult = -MapFsError(ex);
+                    file.WriteInflight = false;
+                }
+                EventSignalCore(wake);
+                return;
+            }
+            lock (_fsGate)
+            {
+                file.WriteResult = n;
+                file.WriteInflight = false;
+            }
+            EventSignalCore(wake);
+        }
+
+        internal VmValue FsWriteTake(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 1 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_write_take 需要 (i64)");
+            }
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out var file))
+                {
+                    throw new VmException("fs_write_take 无效句柄");
+                }
+                if (file.WriteInflight)
+                {
+                    throw new VmException(
+                        "fs_write_take：结果未就绪（时序 bug）");
+                }
+                return new VmI32(file.WriteResult);
+            }
+        }
+
+        // fs_flush_start（挂起 flush）：Flush(flushToDisk: true) 等价
+        // FlushFileBuffers（§4.5.6 系统持久化刷新，非库缓冲提交）
+        internal VmValue FsFlushStart(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 2 || args[0] is not VmI64 handle
+                || args[1] is not VmI64 wake)
+            {
+                throw new VmException("fs_flush_start 需要 (i64, i64)");
+            }
+            VmFsFile file;
+            FileStream stream;
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out file!))
+                {
+                    throw new VmException("fs_flush_start 无效句柄");
+                }
+                if (file.FlushInflight)
+                {
+                    throw new VmException(
+                        "fs_flush_start：已有在途 flush（并发/重入违反契约）");
+                }
+                stream = RequireFsStream(file, "fs_flush_start");
+                file.FlushInflight = true;
+            }
+            var flusher = new Thread(() => FsFlushBody(file, stream,
+                wake.Value))
+            {
+                IsBackground = true,
+                Name = "rigi-fs-flush",
+            };
+            flusher.Start();
+            return new VmI32(0);
+        }
+
+        private void FsFlushBody(VmFsFile file, FileStream stream, long wake)
+        {
+            int rc;
+            try
+            {
+                stream.Flush(true);
+                rc = 0;
+            }
+            catch (Exception ex)
+            {
+                rc = -MapFsError(ex);
+            }
+            lock (_fsGate)
+            {
+                file.FlushResult = rc;
+                file.FlushInflight = false;
+            }
+            EventSignalCore(wake);
+        }
+
+        internal VmValue FsFlushTake(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 1 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_flush_take 需要 (i64)");
+            }
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out var file))
+                {
+                    throw new VmException("fs_flush_take 无效句柄");
+                }
+                if (file.FlushInflight)
+                {
+                    throw new VmException(
+                        "fs_flush_take：结果未就绪（时序 bug）");
+                }
+                return new VmI32(file.FlushResult);
+            }
+        }
+
+        // fs_seek：whence 0=Begin 1=Current 2=End（SeekOrigin 同值）；out
+        // 写新绝对位置。结果位置为负 → 宿主错误归 22（Rigi 层按范围错误
+        // 抛 OutOfBoundException，§4.5.9）
+        internal VmValue FsSeek(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 4 || args[0] is not VmI64 handle
+                || args[1] is not VmI64 offset || args[2] is not VmI32 whence)
+            {
+                throw new VmException("fs_seek 需要 (i64, i64, i32, Span<u8>)");
+            }
+            var outSpan = RequireFsSpan("fs_seek", args, 3);
+            var w = whence.Value;
+            if (w < 0 || w > 2)
+            {
+                return new VmI32(-22);
+            }
+            try
+            {
+                var stream = RequireFsStream(FsFileOf(handle.Value, "fs_seek"),
+                    "fs_seek");
+                var newPos = stream.Seek(offset.Value, (SeekOrigin)w);
+                WriteFsI64Le(outSpan, newPos);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or NotSupportedException or ArgumentException
+                or OutOfMemoryException or ObjectDisposedException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        private VmFsFile FsFileOf(long handle, string hook)
+        {
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle, out var file))
+                {
+                    throw new VmException(hook + " 无效句柄");
+                }
+                return file;
+            }
+        }
+
+        internal VmValue FsTell(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 2 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_tell 需要 (i64, Span<u8>)");
+            }
+            var outSpan = RequireFsSpan("fs_tell", args, 1);
+            try
+            {
+                var stream = RequireFsStream(FsFileOf(handle.Value, "fs_tell"),
+                    "fs_tell");
+                WriteFsI64Le(outSpan, stream.Position);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or NotSupportedException or ArgumentException
+                or OutOfMemoryException or ObjectDisposedException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        internal VmValue FsGetLength(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 2 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_get_length 需要 (i64, Span<u8>)");
+            }
+            var outSpan = RequireFsSpan("fs_get_length", args, 1);
+            try
+            {
+                var stream = RequireFsStream(
+                    FsFileOf(handle.Value, "fs_get_length"), "fs_get_length");
+                WriteFsI64Le(outSpan, stream.Length);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or NotSupportedException or ArgumentException
+                or OutOfMemoryException or ObjectDisposedException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // fs_set_length：缩短截断/增长补零，成功后游标保持不变——即使已
+        // 在新末尾之后（§4.5.6 明文契约）。增长部分显式写零：不假定宿主
+        // SetLength 保证扩展区域内容（.NET 依赖 NTFS 语义，FAT 不保证）
+        internal VmValue FsSetLength(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 2 || args[0] is not VmI64 handle
+                || args[1] is not VmI64 length)
+            {
+                throw new VmException("fs_set_length 需要 (i64, i64)");
+            }
+            if (length.Value < 0)
+            {
+                return new VmI32(-22); // 负长度：Rigi 层先行拦截的防御
+            }
+            try
+            {
+                var stream = RequireFsStream(
+                    FsFileOf(handle.Value, "fs_set_length"), "fs_set_length");
+                var pos = stream.Position;
+                var oldLen = stream.Length;
+                if (length.Value > oldLen)
+                {
+                    stream.Seek(oldLen, SeekOrigin.Begin);
+                    var zeros = new byte[4096];
+                    var remain = length.Value - oldLen;
+                    while (remain > 0)
+                    {
+                        var chunk = (int)Math.Min(zeros.Length, remain);
+                        stream.Write(zeros, 0, chunk);
+                        remain -= chunk;
+                    }
+                }
+                stream.SetLength(length.Value);
+                stream.Seek(pos, SeekOrigin.Begin);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or NotSupportedException or ArgumentException
+                or OutOfMemoryException or ObjectDisposedException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // DateTime → (epoch 毫秒 i64, 纳秒余量 i32) 小端写入（Ticks 为
+        // 0 = Windows 零 FILETIME「不可得」→ 哨兵；1970 前的负值按向下
+        // 取整分解保证纳秒余量恒非负——TimeStamp 的 0..999999 约束）
+        private static void WriteFsTimeLe(VmSpan span, int offset, DateTime t)
+        {
+            long ms;
+            int ns;
+            if (t.Ticks == 0)
+            {
+                ms = long.MinValue;
+                ns = 0;
+            }
+            else
+            {
+                var epoch100 = t.Ticks - 621355968000000000L;
+                ms = Math.DivRem(epoch100, 10000, out var rem);
+                if (rem < 0)
+                {
+                    ms -= 1;
+                    rem += 10000;
+                }
+                ns = (int)(rem * 100);
+            }
+            WriteFsI64LeAt(span, offset, ms);
+            WriteFsI32Le(span, offset + 8, ns);
+        }
+
+        // 定点 i64 小端写入（与 WriteFsI64Le 同布局，offset 变体）
+        private static void WriteFsI64LeAt(VmSpan span, int offset, long value)
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                span.Elements[offset + i] = new VmU8((byte)(value >> (i * 8)));
+            }
+        }
+
+        // stat 结构 48 字节小端（布局 = rigi_rt fs.c RIGI_FS_STAT_SIZE：
+        // kind i32 / length i64 / 三组 (毫秒 i64 + 纳秒 i32)）
+        private static void WriteFsStatLe(VmSpan span, int kind, long length,
+            DateTime mtime, DateTime atime, DateTime birth)
+        {
+            WriteFsI32Le(span, 0, kind);
+            WriteFsI64LeAt(span, 4, length);
+            WriteFsTimeLe(span, 12, mtime);
+            WriteFsTimeLe(span, 24, atime);
+            WriteFsTimeLe(span, 36, birth);
+        }
+
+        // POSIX 秒/纳秒保持原始精度，负 epoch 也采用向下取整。
+        private static void WriteFsPosixTimeLe(VmSpan span, int offset,
+            long seconds, long nanos)
+        {
+            var ms = checked(seconds * 1000 + nanos / 1_000_000);
+            WriteFsI64LeAt(span, offset, ms);
+            WriteFsI32Le(span, offset + 8, (int)(nanos % 1_000_000));
+        }
+
+        // Linux x64 主体必须是同一次 stat/lstat 快照：类型、时间与身份
+        // 来自同一结构。statx 只是辅助 birth 查询；二次路径查询若换了
+        // inode/设备或无 BTIME mask，不覆盖成功主体，也绝不借 ctime 代替。
+        private static int FsLinuxStat(string path, bool follow, VmSpan output)
+        {
+            if (path.Length == 0 || path.Contains('\0')) { return -22; }
+            // 两次查询共用调用时的 cwd 基准；不规范化 ..，以免穿越链接。
+            var absolute = Path.IsPathFullyQualified(path) ? path
+                : Path.Combine(Environment.CurrentDirectory, path);
+            try
+            {
+                var rc = follow ? FsLibcStat(absolute, out var body)
+                    : FsLibcLstat(absolute, out body);
+                if (rc != 0)
+                {
+                    return -MapFsErrno(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                var mode = body.Mode & 0xF000U;
+                var kind = mode == 0xA000 ? 2 : mode == 0x4000 ? 1
+                    : mode == 0x8000 ? 0 : 3;
+                WriteFsI32Le(output, 0, kind);
+                WriteFsI64LeAt(output, 4, kind == 0 ? (long)body.Size : -1);
+                WriteFsPosixTimeLe(output, 12, (long)body.MtimSec,
+                    (long)body.MtimNsec);
+                WriteFsPosixTimeLe(output, 24, (long)body.AtimSec,
+                    (long)body.AtimNsec);
+                WriteFsI64LeAt(output, 36, long.MinValue);
+                WriteFsI32Le(output, 44, 0);
+                try
+                {
+                    // libc statx(2)；不可用/失败只表示 birth 不可得。
+                    if (FsLibcStatx(-100, absolute, follow ? 0 : 0x100,
+                            0x800, out var extra) == 0
+                        && (extra.Mask & 0x800) != 0
+                        && extra.DevMajor == FsLinuxDevMajor(body.Dev)
+                        && extra.DevMinor == FsLinuxDevMinor(body.Dev)
+                        && extra.Ino == body.Ino
+                        && extra.BirthNsec < 1_000_000_000)
+                    {
+                        WriteFsPosixTimeLe(output, 36, extra.BirthSec,
+                            extra.BirthNsec);
+                    }
+                }
+                catch (DllNotFoundException) { /* 无 statx：仅 birth 不可得 */ }
+                catch (EntryPointNotFoundException) { /* 旧 libc：同上 */ }
+                return 0;
+            }
+            catch (DllNotFoundException) { return -38; }
+            catch (EntryPointNotFoundException) { return -38; }
+        }
+
+        // Linux dev_t 的 glibc major/minor 位展开（sys/sysmacros.h）。
+        private static uint FsLinuxDevMajor(ulong dev) =>
+            (uint)(((dev >> 8) & 0xfff) | ((dev >> 32) & ~0xfffUL));
+        private static uint FsLinuxDevMinor(ulong dev) =>
+            (uint)((dev & 0xff) | ((dev >> 12) & ~0xffUL));
+
+        // Linux 内核 struct statx：固定 256 字节，不能用字段前缀 out
+        // 参数接收（内核会写满完整结构）。偏移由 C sizeof/offsetof 探针
+        // 实测：mask@0、ino@32、btime.tv_sec@80、tv_nsec@88、
+        // dev_major@136、dev_minor@140；仅用于已核实的 Linux x64。
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Explicit, Size = 256)]
+        internal struct FsLinuxX64Statx
+        {
+            [System.Runtime.InteropServices.FieldOffset(0)] public uint Mask;
+            [System.Runtime.InteropServices.FieldOffset(32)] public ulong Ino;
+            [System.Runtime.InteropServices.FieldOffset(80)] public long BirthSec;
+            [System.Runtime.InteropServices.FieldOffset(88)] public uint BirthNsec;
+            [System.Runtime.InteropServices.FieldOffset(136)] public uint DevMajor;
+            [System.Runtime.InteropServices.FieldOffset(140)] public uint DevMinor;
+        }
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "stat", SetLastError = true)]
+        private static extern int FsLibcStat(
+            [System.Runtime.InteropServices.MarshalAs(
+                System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)]
+            string path, out FsLinuxX64Stat stat);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "lstat", SetLastError = true)]
+        private static extern int FsLibcLstat(
+            [System.Runtime.InteropServices.MarshalAs(
+                System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)]
+            string path, out FsLinuxX64Stat stat);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "statx", SetLastError = true)]
+        private static extern int FsLibcStatx(int dirfd,
+            [System.Runtime.InteropServices.MarshalAs(
+                System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)]
+            string path, int flags, uint mask, out FsLinuxX64Statx statx);
+
+        // fs_stat（跟随末段链接）/ fs_lstat（只查询末段链接本身）：File
+        // .GetAttributes 不跟随末段（Win32 GetFileAttributesW 语义；Unix
+        // .NET 6+ lstat 语义，symlink 报 ReparsePoint 位）——lstat 直接
+        // 采用；stat 遇末段链接经 ResolveLinkTarget(final) 解析（断链 →
+        // NotFound）。时间/长度经 FileSystemInfo（同为不跟随末段语义）。
+        // Windows 侧 reparse tag 不细分（junction/symlink/未知统一 Link
+        // 提示）；native 侧细分（junction/symlink → Link、未知 → Other）
+        // ——语料不构造未知 reparse 对象，公共契约不受影响
+        private VmValue FsStatImpl(IReadOnlyList<VmValue> args, bool follow,
+            string hook)
+        {
+            var path = RequireFsString(hook, args, 0).Value;
+            var outSpan = RequireFsSpan(hook, args, 1);
+            try
+            {
+                if (OperatingSystem.IsLinux()
+                    && System.Runtime.InteropServices.RuntimeInformation
+                        .ProcessArchitecture == System.Runtime.InteropServices
+                            .Architecture.X64)
+                {
+                    return new VmI32(FsLinuxStat(path, follow, outSpan));
+                }
+                var attrs = File.GetAttributes(path);
+                var current = path;
+                if (follow && (attrs & FileAttributes.ReparsePoint) != 0)
+                {
+                    FileSystemInfo link = Directory.Exists(path)
+                        ? new DirectoryInfo(path)
+                        : new FileInfo(path);
+                    var final = link.ResolveLinkTarget(
+                        returnFinalTarget: true);
+                    if (final == null)
+                    {
+                        return new VmI32(-2); // 断链：跟随目标不可达
+                    }
+                    current = final.FullName;
+                    attrs = File.GetAttributes(current);
+                }
+                var isReparse = (attrs & FileAttributes.ReparsePoint) != 0;
+                var isDir = (attrs & FileAttributes.Directory) != 0;
+                var kind = isReparse ? 2 : isDir ? 1 : 0;
+                FileSystemInfo fsi = isDir
+                    ? new DirectoryInfo(current)
+                    : new FileInfo(current);
+                fsi.Refresh();
+                var length = kind == 0 && fsi is FileInfo fi ? fi.Length : -1;
+                WriteFsStatLe(outSpan, kind, length, fsi.LastWriteTimeUtc,
+                    fsi.LastAccessTimeUtc, OperatingSystem.IsWindows()
+                        ? fsi.CreationTimeUtc : DateTime.MinValue);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        internal VmValue FsStat(IReadOnlyList<VmValue> args)
+        {
+            return FsStatImpl(args, follow: true, "fs_stat");
+        }
+
+        internal VmValue FsLstat(IReadOnlyList<VmValue> args)
+        {
+            return FsStatImpl(args, follow: false, "fs_lstat");
+        }
+
+        // fs_realpath：FullName/GetFullPath 仅词法绝对化，不能解析中间
+        // 目录链接，也可能错误地在链接之前消解「..」。先以一次 cwd 固定
+        // 相对路径的调用基准（只组合、不整理分量），再交给系统解析完整
+        // 路径：Windows 已打开句柄最终路径 / Linux libc realpath。
+        // 成功时 out 为严格 UTF-8，meta[0..4) 为所需字节数；容量不足仍
+        // 返回正哨兵 2，错误用负归一码，不能将循环/权限伪装 NotFound。
+        internal VmValue FsRealpath(IReadOnlyList<VmValue> args)
+        {
+            var path = RequireFsString("fs_realpath", args, 0).Value;
+            var outSpan = RequireFsSpan("fs_realpath", args, 1);
+            var metaSpan = RequireFsSpan("fs_realpath", args, 2);
+            try
+            {
+                if (path.Length == 0 || path.Contains('\0'))
+                {
+                    return new VmI32(-22);
+                }
+                var absolute = Path.IsPathFullyQualified(path)
+                    ? path : Path.Combine(Environment.CurrentDirectory, path);
+                var rc = FsResolveRealpath(absolute, out var resolved);
+                if (rc != 0) { return new VmI32(rc); }
+                byte[] bytes;
+                try
+                {
+                    bytes = new System.Text.UTF8Encoding(false, true)
+                        .GetBytes(resolved!);
+                }
+                catch (System.Text.EncoderFallbackException)
+                {
+                    return new VmI32(-1001); // 无法无损表达的名称
+                }
+                if (bytes.Length > outSpan.Length)
+                {
+                    WriteFsI32Le(metaSpan, 0, bytes.Length);
+                    return new VmI32(2);
+                }
+                for (var i = 0; i < bytes.Length; i++)
+                {
+                    outSpan.Elements[i] = new VmU8(bytes[i]);
+                }
+                WriteFsI32Le(metaSpan, 0, bytes.Length);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException or NotSupportedException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // 返回 0/负归一码；系统调用期间由 SafeFileHandle 编组保活句柄。
+        // GetFinalPathNameByHandle 的 DOS 卷名结果携内部 \\?\ 前缀，
+        // 还原为用户可表达的本地盘符/UNC 路径（与 native fs.c 同形态）。
+        private static int FsResolveRealpath(string absolute,
+            out string? resolved)
+        {
+            resolved = null;
+            if (OperatingSystem.IsWindows())
+            {
+                // 与 native fs.c 一致：长的完整盘符/UNC 路径在内部加
+                // Win32 扩展前缀，绝不把该前缀作为结果路径返回。
+                var openPath = absolute;
+                if (absolute.Length >= 248)
+                {
+                    var normalized = absolute.Replace('/', '\\');
+                    openPath = normalized.StartsWith(@"\\", StringComparison.Ordinal)
+                        ? @"\\?\UNC\" + normalized.Substring(2)
+                        : @"\\?\" + normalized;
+                }
+                using var handle = CreateFileW(openPath,
+                    FsWinFileReadAttributes, FsWinShareReadWriteDelete,
+                    IntPtr.Zero, 3 /* OPEN_EXISTING */,
+                    0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS：目录 */,
+                    IntPtr.Zero);
+                if (handle.IsInvalid)
+                {
+                    return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                // 返回值是所需字符数（不足时含 NUL）；句柄始终保持打开。
+                var count = GetFinalPathNameByHandleW(handle, IntPtr.Zero, 0, 0);
+                if (count == 0)
+                {
+                    return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                if (count >= 32768) { return -36; }
+                while (true)
+                {
+                    var buffer = new char[checked((int)count + 1)];
+                    var written = GetFinalPathNameByHandleW(handle, buffer,
+                        (uint)buffer.Length, 0);
+                    if (written == 0)
+                    {
+                        return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                            .GetLastWin32Error());
+                    }
+                    if (written >= buffer.Length)
+                    {
+                        if (written >= 32768) { return -36; }
+                        count = written;
+                        continue;
+                    }
+                    var result = new string(buffer, 0, (int)written);
+                    if (result.StartsWith(@"\\?\UNC\",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolved = @"\\" + result.Substring(8);
+                    }
+                    else if (result.StartsWith(@"\\?\",
+                        StringComparison.Ordinal))
+                    {
+                        resolved = result.Substring(4);
+                    }
+                    else
+                    {
+                        resolved = result;
+                    }
+                    return 0;
+                }
+            }
+            if (!OperatingSystem.IsLinux()) { return -38; }
+            try
+            {
+                // libc 分配的 realpath(path,NULL) 只能由 libc free 释放，
+                // 绝不交给 VM/native 的追踪分配器；不使用 PtrToStringUTF8
+                // 的替换解码，非法 UTF-8 必须归名称编码错误。
+                var input = new System.Text.UTF8Encoding(false, true)
+                    .GetBytes(absolute + "\0");
+                var result = FsLibcRealpath(input, IntPtr.Zero);
+                if (result == IntPtr.Zero)
+                {
+                    return -MapFsErrno(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                }
+                try
+                {
+                    var length = FsLibcStrlen(result);
+                    if (length > int.MaxValue - 1) { return -36; }
+                    var bytes = new byte[(int)length];
+                    System.Runtime.InteropServices.Marshal.Copy(result, bytes,
+                        0, bytes.Length);
+                    try
+                    {
+                        resolved = new System.Text.UTF8Encoding(false, true)
+                            .GetString(bytes);
+                        return 0;
+                    }
+                    catch (System.Text.DecoderFallbackException)
+                    {
+                        return -1001;
+                    }
+                }
+                finally { FsLibcFree(result); }
+            }
+            catch (System.Text.EncoderFallbackException) { return -1001; }
+            catch (DllNotFoundException) { return -38; }
+            catch (EntryPointNotFoundException) { return -38; }
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode,
+            EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+            IntPtr buffer, uint length, uint flags);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode,
+            EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+            [System.Runtime.InteropServices.Out] char[] buffer,
+            uint length, uint flags);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "realpath", SetLastError = true)]
+        private static extern IntPtr FsLibcRealpath(byte[] path, IntPtr resolved);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "strlen")]
+        private static extern UIntPtr FsLibcStrlen(IntPtr value);
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "free")]
+        private static extern void FsLibcFree(IntPtr value);
+
+        // fs_mkdir：只创建末级，父级须存在，已存在报错（§4.5.5）；权限
+        // 位 Windows 忽略（正常继承的安全描述符），Unix 走 .NET 默认
+        //（0777 & umask，与 native mkdir(mode & 0777) 同宿主规则）
+        internal VmValue FsMkdir(IReadOnlyList<VmValue> args)
+        {
+            var path = RequireFsString("fs_mkdir", args, 0).Value;
+            try
+            {
+                Directory.CreateDirectory(path);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // fs_rmdir：只删真实空目录，不跟随末段链接删目标（§4.5.5）
+        internal VmValue FsRmdir(IReadOnlyList<VmValue> args)
+        {
+            var path = RequireFsString("fs_rmdir", args, 0).Value;
+            try
+            {
+                Directory.Delete(path, recursive: false);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // Windows 目录链接须由 RemoveDirectoryW 删除条目，DeleteFileW
+        // 只适于文件（含文件符号链接）。属性与 tag 只用于选择非递归调用，
+        // 不把未知 reparse 标签擅自归 Link；系统删除调用负责最终成败。
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode,
+            EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+        private static extern bool FsGetFileAttributeTag(
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+            int infoClass, out FsFileAttributeTagInfo info, uint size);
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode,
+            EntryPoint = "RemoveDirectoryW", SetLastError = true)]
+        private static extern bool FsRemoveDirectory(string path);
+
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct FsFileAttributeTagInfo
+        {
+            public uint FileAttributes;
+            public uint ReparseTag;
+        }
+
+        // fs_unlink：文件/链接删除（§4.5.5），真实目录报 IsDirectory。
+        internal VmValue FsUnlink(IReadOnlyList<VmValue> args)
+        {
+            var path = RequireFsString("fs_unlink", args, 0).Value;
+            try
+            {
+                var attrs = File.GetAttributes(path);
+                if ((attrs & FileAttributes.Directory) != 0)
+                {
+                    if ((attrs & FileAttributes.ReparsePoint) == 0)
+                        return new VmI32(-21);
+                    if (OperatingSystem.IsWindows())
+                    {
+                        using var handle = CreateFileW(path,
+                            FsWinFileReadAttributes, FsWinShareReadWriteDelete,
+                            IntPtr.Zero, 3 /* OPEN_EXISTING */,
+                            0x02000000 | 0x00200000 /* BACKUP_SEMANTICS | OPEN_REPARSE_POINT */,
+                            IntPtr.Zero);
+                        if (handle.IsInvalid)
+                            return new VmI32(-MapFsWin32(System.Runtime.InteropServices
+                                .Marshal.GetLastWin32Error()));
+                        if (!FsGetFileAttributeTag(handle, 9 /* FileAttributeTagInfo */,
+                            out var tag, 8))
+                            return new VmI32(-MapFsWin32(System.Runtime.InteropServices
+                                .Marshal.GetLastWin32Error()));
+                        // MOUNT_POINT=junction，SYMLINK=目录符号链接。
+                        if (tag.ReparseTag != 0xA0000003
+                            && tag.ReparseTag != 0xA000000C)
+                            return new VmI32(-21);
+                        // 查询句柄先关闭以免影响按路径删除；删除调用不跟随末段。
+                        handle.Dispose();
+                        if (!FsRemoveDirectory(path))
+                            return new VmI32(-MapFsWin32(System.Runtime.InteropServices
+                                .Marshal.GetLastWin32Error()));
+                        return new VmI32(0);
+                    }
+                }
+                File.Delete(path);
+                return new VmI32(0);
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            EntryPoint = "SetFileInformationByHandle", SetLastError = true)]
+        private static extern bool FsSetFileRenameInfoEx(
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+            int infoClass, byte[] info, uint size);
+
+        // 只为 Windows 普通文件源 Replace→末段 MOUNT_POINT 分流：路径探测
+        // 不锁定目标；最终仍由一次系统 rename 裁决，不能预删后再移动。
+        private static int? FsTryReplaceWindowsJunction(string src, string dst)
+        {
+            static string NativePath(string path)
+            {
+                // 与 native fs.c 一致：仅绝对长盘符/UNC 路径加内部前缀。
+                if (path.Length < 248 || !Path.IsPathFullyQualified(path))
+                    return path;
+                var normalized = path.Replace('/', '\\');
+                return normalized.StartsWith(@"\\?\", StringComparison.Ordinal)
+                    ? normalized
+                    : normalized.StartsWith(@"\\", StringComparison.Ordinal)
+                        ? @"\\?\UNC\" + normalized.Substring(2)
+                        : @"\\?\" + normalized;
+            }
+
+            var targetPath = NativePath(dst);
+            using (var target = CreateFileW(targetPath, FsWinFileReadAttributes,
+                FsWinShareReadWriteDelete, IntPtr.Zero, 3 /* OPEN_EXISTING */,
+                0x02000000 | 0x00200000 /* BACKUP_SEMANTICS | OPEN_REPARSE_POINT */,
+                IntPtr.Zero))
+            {
+                if (target.IsInvalid)
+                    return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                if (!FsGetFileAttributeTag(target, 9 /* FileAttributeTagInfo */,
+                    out var targetTag, 8))
+                    return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                        .GetLastWin32Error());
+                if ((targetTag.FileAttributes & 0x410 /* DIRECTORY|REPARSE */)
+                    != 0x410)
+                    return -38; // 查询后换型/标签不确定，不能借该分支覆盖。
+                if (targetTag.ReparseTag == 0xA000000C /* SYMLINK */)
+                    return null; // 原文件链接路径保持原有 File.Move 行为。
+                if (targetTag.ReparseTag != 0xA0000003 /* MOUNT_POINT */)
+                    return -38; // 未知目录 reparse 标签不可猜为 Link。
+            }
+
+            using var source = CreateFileW(NativePath(src),
+                0x00010000 | FsWinFileReadAttributes /* DELETE|READ_ATTRIBUTES */,
+                FsWinShareReadWriteDelete, IntPtr.Zero, 3 /* OPEN_EXISTING */,
+                0x00200000 /* OPEN_REPARSE_POINT */, IntPtr.Zero);
+            if (source.IsInvalid)
+                return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                    .GetLastWin32Error());
+            if (!FsGetFileAttributeTag(source, 9 /* FileAttributeTagInfo */,
+                out var sourceTag, 8))
+                return -MapFsWin32(System.Runtime.InteropServices.Marshal
+                    .GetLastWin32Error());
+            if ((sourceTag.FileAttributes & 0x410 /* DIRECTORY|REPARSE */) != 0)
+                return null; // 链接源/目录源仍由旧入口按原类型处理。
+
+            byte[] name;
+            try
+            {
+                name = new System.Text.UnicodeEncoding(false, false, true)
+                    .GetBytes(NativePath(dst));
+            }
+            catch (System.Text.EncoderFallbackException)
+            {
+                return -1001; // 名称编码不可无损表达。
+            }
+            // FILE_RENAME_INFO_EX：x64 字段偏移 0/8/16/20，x86 为
+            // 0/4/8/12；尾部含 NUL，FileNameLength 只记有效 UTF-16 字节。
+            var fileNameOffset = IntPtr.Size == 8 ? 20 : 12;
+            if (name.Length > int.MaxValue - fileNameOffset - sizeof(char))
+                return -36;
+            var info = new byte[fileNameOffset + name.Length + sizeof(char)];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                info.AsSpan(0, 4), 3 /* REPLACE_IF_EXISTS|POSIX_SEMANTICS */);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                info.AsSpan(fileNameOffset - 4, 4), name.Length);
+            name.CopyTo(info, fileNameOffset);
+            bool moved;
+            int err;
+            try
+            {
+                moved = FsSetFileRenameInfoEx(source, 22 /* FileRenameInfoEx */,
+                    info, (uint)info.Length);
+                err = moved ? 0 : System.Runtime.InteropServices.Marshal
+                    .GetLastWin32Error(); // 必须在关闭句柄/任何补查之前捕获。
+            }
+            catch (DllNotFoundException) { return -38; }
+            catch (EntryPointNotFoundException) { return -38; }
+            if (moved) return 0;
+            if (err is 1 or 50 or 87 /* INVALID_FUNCTION / NOT_SUPPORTED / INVALID_PARAMETER */)
+                return -38;
+            if (err == FsWinErrorAccessDenied)
+            {
+                try
+                {
+                    var attrs = File.GetAttributes(dst);
+                    if ((attrs & FileAttributes.Directory) != 0
+                        && (attrs & FileAttributes.ReparsePoint) == 0)
+                        return -21; // 竞态换成真实目录：系统拒绝，仍归 IsDirectory。
+                }
+                catch (FileNotFoundException) { /* 保留原系统错误。 */ }
+                catch (DirectoryNotFoundException) { /* 保留原系统错误。 */ }
+            }
+            return -MapFsWin32(err);
+        }
+
+        // fs_rename：replace = 0 → NoReplace（Windows MoveFileEx 不带
+        // REPLACE_EXISTING = 系统不替换保证；Unix/Linux 在路径捕获后、
+        // 按源类型分支之前统一走 renameat2(RENAME_NOREPLACE) 系统保证
+        //——文件、真实目录、符号链接/断链条目（末段不跟随）一视同仁，
+        // 不用 exists + rename 模拟（§4.5.7）；.NET File.Move/
+        // Directory.Move 的 Unix 实现是 lstat 前检 + rename（BCL 源码
+        // 自注 checks are not atomic），不能当保证）；1 → Replace（覆
+        // 盖仅限文件/链接条目，目录目标报错，§4.5.7）。目录移动两模式
+        // 都要求目标不存在（不允许目录覆盖或合并）
+        internal VmValue FsRename(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 3 || args[2] is not VmI32 replace)
+            {
+                throw new VmException("fs_rename 需要 (String, String, i32)");
+            }
+            var src = RequireFsString("fs_rename", args, 0).Value;
+            var dst = RequireFsString("fs_rename", args, 1).Value;
+            try
+            {
+                // Unix NoReplace：不查询源类型，直接交系统原子裁决——
+                // 不 lstat/exists 锁定目标。两路径单次系统调用同一
+                // AT_FDCWD 基准解析（相对路径同 cwd，与 native 同口径）。
+                // 非 Linux Unix（macOS 等）无统一不替换原语：受控
+                // Unsupported，不以近似模拟承担契约（缺库/缺入口/内核
+                // 或文件系统不支持由 RenameNoReplaceLinux 同口径归一）
+                if (replace.Value == 0 && !OperatingSystem.IsWindows())
+                {
+                    if (!OperatingSystem.IsLinux())
+                    {
+                        return new VmI32(-FsErrnoEnosys);
+                    }
+                    return new VmI32(RenameNoReplaceLinux(src, dst));
+                }
+                var srcAttrs = File.GetAttributes(src);
+                var sourceIsDirectory = (srcAttrs & FileAttributes.Directory) != 0
+                    && (srcAttrs & FileAttributes.ReparsePoint) == 0;
+                if (replace.Value != 0 && !OperatingSystem.IsWindows())
+                {
+                    if (!OperatingSystem.IsLinux())
+                    {
+                        return new VmI32(-FsErrnoEnosys);
+                    }
+                    if (sourceIsDirectory)
+                    {
+                        // 目录源 Replace 仍须原子阻止目标替换：Directory.Move
+                        // 在 Unix 先检查再 rename，不能提供系统保证。
+                        var rc = RenameNoReplaceLinux(src, dst);
+                        if (rc == -17 && Directory.Exists(dst))
+                        {
+                            return new VmI32(-21);
+                        }
+                        return new VmI32(rc);
+                    }
+                    return new VmI32(RenameReplaceFileLinux(src, dst));
+                }
+                if (sourceIsDirectory)
+                {
+                    Directory.Move(src, dst); // Windows 既有路径
+                    return new VmI32(0);
+                }
+                if (replace.Value != 0 && OperatingSystem.IsWindows())
+                {
+                    // 不存在目标沿用 File.Move；只检查末段目录 reparse
+                    // 候选，避免改变普通文件、文件链接与 NoReplace 行为。
+                    FileAttributes dstAttrs;
+                    try { dstAttrs = File.GetAttributes(dst); }
+                    catch (FileNotFoundException) { dstAttrs = 0; }
+                    catch (DirectoryNotFoundException) { dstAttrs = 0; }
+                    if ((dstAttrs & (FileAttributes.Directory
+                        | FileAttributes.ReparsePoint))
+                        == (FileAttributes.Directory | FileAttributes.ReparsePoint))
+                    {
+                        var special = FsTryReplaceWindowsJunction(src, dst);
+                        if (special.HasValue) return new VmI32(special.Value);
+                    }
+                }
+                File.Move(src, dst, overwrite: replace.Value != 0);
+                return new VmI32(0);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Windows Replace 遇目录目标（MoveFileEx 失败形态）：
+                // 失败路径补查归 IsDirectory（native 同口径）
+                if (replace.Value != 0 && Directory.Exists(dst))
+                {
+                    return new VmI32(-21);
+                }
+                return new VmI32(-13);
+            }
+            catch (Exception ex) when (ex is IOException
+                or ArgumentException or OutOfMemoryException)
+            {
+                return new VmI32(-MapFsError(ex));
+            }
+        }
+
+        // fs_diropen：打开即验证（native FindFirstFileW 同口径；空目录
+        // 合法，不存在/非目录在打开面报错）。OS 打开目录的时机是 BCL
+        // 实现细节：可发生在 DirectoryInfo/GetEnumerator 建立期（.NET 10
+        // 实证双平台缺失/非目录多在 GetEnumerator 抛出，Unix 构造期即
+        // openat），也可推迟到首次 MoveNext——三段同属一次「打开」的生
+        // 命周期，共用同一受控异常边界（边界不变量，不按平台特判）。
+        // 失败收尾：未建枚举器不释放（不空解引用），已建就地释放；只
+        // 有打开+预热全部成功才分配 token 并登记，登记中途失败回滚登
+        // 计并释放，绝不发布半开句柄
+        internal VmValue FsDirOpen(IReadOnlyList<VmValue> args)
+        {
+            var path = RequireFsString("fs_diropen", args, 0).Value;
+            var outSpan = RequireFsSpan("fs_diropen", args, 1);
+            FileSystemInfo? first = null;
+            IEnumerator<FileSystemInfo>? enumerator = null;
+            try
+            {
+                enumerator = new DirectoryInfo(path)
+                    .EnumerateFileSystemInfos().GetEnumerator();
+                if (enumerator.MoveNext())
+                {
+                    first = enumerator.Current;
+                }
+            }
+            catch (Exception ex) when (ex is IOException
+                or UnauthorizedAccessException or ArgumentException
+                or OutOfMemoryException)
+            {
+                // 枚举器 Dispose 是纯句柄关闭不上抛（BCL 单异常模型），
+                // 不遮盖主错误
+                enumerator?.Dispose();
+                // 路径是文件：.NET 对文件路径枚举的异常形态不固定（与
+                // native ERROR_DIRECTORY→20 不一致），失败路径补查归
+                // NotDirectory（open 同口径，仅错误路径补查）
+                if (!Directory.Exists(path) && File.Exists(path))
+                {
+                    return new VmI32(-20);
+                }
+                return new VmI32(-MapFsError(ex));
+            }
+            long token = 0;
+            try
+            {
+                lock (_nativeRcGate)
+                {
+                    token = NewHandle();
+                    _nativeRcStrong[token] = 1;
+                    lock (_fsGate)
+                    {
+                        _fsFiles[token] = new VmFsFile
+                        {
+                            Resource = new DirState
+                            {
+                                Enumerator = enumerator,
+                                Pending = first,
+                                Finished = first == null,
+                            },
+                        };
+                    }
+                }
+            }
+            catch
+            {
+                // 登记中途失败（仅 OOM 类）：回滚半登记与强引用计数并
+                // 释放枚举器，异常原样上抛，不发布无主 token
+                lock (_nativeRcGate)
+                {
+                    _nativeRcStrong.Remove(token);
+                }
+                lock (_fsGate)
+                {
+                    _fsFiles.Remove(token);
+                }
+                enumerator.Dispose();
+                throw;
+            }
+            WriteFsI64Le(outSpan, token);
+            return new VmI32(0);
+        }
+
+        // fs_dirread：每次交付一个条目（跳过 "."/".."——.NET 枚举器本就
+        // 不产 "."/".."；不排序不递归，含隐藏项）。meta[0..4) 名称字节
+        // 数、[4..8) kind 提示、[8..12) 提示有效标志；返回 0 条目 / 1
+        // 结束（此后持续 1）/ 2 out 不足 / < 0 -归一码。后续条目的
+        // MoveNext 是同步元数据操作（与 native readdir 同口径），在闸内
+        // 完成
+        internal VmValue FsDirRead(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 3 || args[0] is not VmI64 handle)
+            {
+                throw new VmException("fs_dirread 需要 (i64, Span, Span)");
+            }
+            var outSpan = RequireFsSpan("fs_dirread", args, 1);
+            var metaSpan = RequireFsSpan("fs_dirread", args, 2);
+            DirState state;
+            lock (_fsGate)
+            {
+                if (!_fsFiles.TryGetValue(handle.Value, out var file))
+                {
+                    throw new VmException("fs_dirread 无效句柄");
+                }
+                state = RequireFsDir(file, "fs_dirread");
+                if (state.Finished && state.Pending == null)
+                {
+                    return new VmI32(1);
+                }
+                FileSystemInfo cur;
+                if (state.Pending != null)
+                {
+                    cur = state.Pending;
+                    state.Pending = null;
+                }
+                else
+                {
+                    try
+                    {
+                        if (!state.Enumerator.MoveNext())
+                        {
+                            state.Finished = true;
+                            return new VmI32(1);
+                        }
+                        cur = state.Enumerator.Current!;
+                    }
+                    catch (Exception ex) when (ex is IOException
+                        or UnauthorizedAccessException or ArgumentException
+                        or OutOfMemoryException)
+                    {
+                        return new VmI32(-MapFsError(ex));
+                    }
+                }
+                var attrs = cur.Attributes;
+                var kind = (attrs & FileAttributes.ReparsePoint) != 0 ? 2
+                    : (attrs & FileAttributes.Directory) != 0 ? 1 : 0;
+                var bytes = System.Text.Encoding.UTF8.GetBytes(cur.Name);
+                if (bytes.Length > outSpan.Length)
+                {
+                    WriteFsI32Le(metaSpan, 0, bytes.Length);
+                    return new VmI32(2);
+                }
+                for (var i = 0; i < bytes.Length; i++)
+                {
+                    outSpan.Elements[i] = new VmU8(bytes[i]);
+                }
+                WriteFsI32Le(metaSpan, 0, bytes.Length);
+                WriteFsI32Le(metaSpan, 4, kind);
+                WriteFsI32Le(metaSpan, 8, 1);
+                return new VmI32(0);
+            }
+        }
+
+        // ===== fs_same_file（施工块 7-6）：系统文件身份比较 =====
+        // 与 rigi_rt fs.c rigi_fs_same_file 双宿主同语义：按已打开句柄
+        // 的系统文件身份（Windows 卷序列号 + 64 位文件索引；
+        // Linux st_dev + st_ino）判定两句柄是否同一文件——自复制拒绝
+        // 的判定面（§4.5.7），比较不涉及路径文本。out[0] 写 1/0；返回
+        // 0；< 0 = -归一码（身份查询失败按 MapFsError 映射；Linux 仅
+        // x64 开放 fstat 身份读取，未验证架构/入口缺失——如旧 glibc 无
+        // fstat 导出——/libc 缺失一律归 -38 Unsupported：身份不可取得
+        // 时上层必须收到错误而不是「不同」，否则自复制检查形同虚设）
+        internal VmValue FsSameFile(IReadOnlyList<VmValue> args)
+        {
+            if (args.Count != 3 || args[0] is not VmI64 ha
+                || args[1] is not VmI64 hb)
+            {
+                throw new VmException("fs_same_file 需要 (i64, i64, Span<u8>)");
+            }
+            var outSpan = RequireFsSpan("fs_same_file", args, 2);
+            var streamA = RequireFsStream(FsFileOf(ha.Value, "fs_same_file"),
+                "fs_same_file");
+            var streamB = RequireFsStream(FsFileOf(hb.Value, "fs_same_file"),
+                "fs_same_file");
+            bool same;
+            // SafeFileHandle 租借（AppendWriteCore 同口径）：Windows 侧
+            // P/Invoke 直接收 SafeFileHandle（marshaler 调用期间自动保
+            // 活）；Linux 侧取原始 fd 前显式 DangerousAddRef，finally
+            // 归还——两次 fstat 与全部错误/Unsupported 返回分支都被覆盖，
+            // 查询失败绝不放行截断（§4.5.7）
+            var safeA = streamA.SafeFileHandle;
+            var safeB = streamB.SafeFileHandle;
+            var keepA = false;
+            var keepB = false;
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    if (!GetFileInformationByHandle(safeA, out var ia)
+                        || !GetFileInformationByHandle(safeB, out var ib))
+                    {
+                        return new VmI32(-MapFsWin32(
+                            System.Runtime.InteropServices.Marshal
+                                .GetLastWin32Error()));
+                    }
+                    same = ia.VolumeSerialNumber == ib.VolumeSerialNumber
+                        && ia.FileIndexHigh == ib.FileIndexHigh
+                        && ia.FileIndexLow == ib.FileIndexLow;
+                }
+                else if (OperatingSystem.IsLinux()
+                    && System.Runtime.InteropServices.RuntimeInformation
+                        .ProcessArchitecture == System.Runtime.InteropServices
+                            .Architecture.X64)
+                {
+                    // 仅 Linux x64 开放 fstat 身份读取（ABI 实证限定的
+                    // 生产平台，见 FsLinuxX64Stat 注释）；其余宿主（非
+                    // Linux、非 x64）身份不可取得 → Unsupported，绝不猜
+                    // 测身份、更不按「不同」继续截断（§4.5.7）
+                    safeA.DangerousAddRef(ref keepA);
+                    safeB.DangerousAddRef(ref keepB);
+                    var fdA = (int)safeA.DangerousGetHandle().ToInt64();
+                    var fdB = (int)safeB.DangerousGetHandle().ToInt64();
+                    if (fstat(fdA, out var statA) != 0)
+                    {
+                        return new VmI32(-MapFsErrno(
+                            System.Runtime.InteropServices.Marshal
+                                .GetLastWin32Error()));
+                    }
+                    if (fstat(fdB, out var statB) != 0)
+                    {
+                        return new VmI32(-MapFsErrno(
+                            System.Runtime.InteropServices.Marshal
+                                .GetLastWin32Error()));
+                    }
+                    // 只读身份字段（st_dev@0、st_ino@8，完整 144 字节镜像
+                    // 的身份前缀），其余字段不参与判定
+                    same = statA.Dev == statB.Dev && statA.Ino == statB.Ino;
+                }
+                else
+                {
+                    return new VmI32(-38);
+                }
+            }
+            catch (System.EntryPointNotFoundException)
+            {
+                // 宿主无身份查询入口（如 glibc < 2.33 无 fstat 导出）：
+                // 不能判定 → Unsupported（不猜测身份，§4.5.7 不模拟）
+                return new VmI32(-38);
+            }
+            catch (System.DllNotFoundException)
+            {
+                // 宿主无 libc.so.6（musl 等）：身份入口缺失同 Unsupported，
+                // 不漏宿主异常出流契约（OpenAppendStream 同口径）
+                return new VmI32(-38);
+            }
+            finally
+            {
+                // 租借归还：条件化（未 AddRef 的平台分支/失败路径不受影响）
+                if (keepA) { safeA.DangerousRelease(); }
+                if (keepB) { safeB.DangerousRelease(); }
+            }
+            outSpan.Elements[0] = new VmU8(same ? (byte)1 : (byte)0);
+            return new VmI32(0);
+        }
+
+        // Win32 FILETIME 官方形态：两个 32 位 DWORD、4 字节对齐——不能
+        // 用 long 充当：托管 Sequential 默认按自然对齐把 long 放 8 的
+        // 倍数偏移，会把整个后段字段错位（本结构曾因此把
+        // VolumeSerialNumber 放到 32、FileIndexHigh/Low 压到 48/52，
+        // 而 native 只写 52 字节——FileIndexLow 读到未初始化尾隙，身份
+        // 判定不可信且不保证复现）。internal 供测试断言布局
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct FsFileTime
+        {
+            public uint LowDateTime;   // dwLowDateTime @0
+            public uint HighDateTime;  // dwHighDateTime @4
+        } // 8 字节，对齐 4
+
+        // Win32 BY_HANDLE_FILE_INFORMATION 托管镜像。ABI 真值（Windows
+        // SDK 10.0.26100.0 头经 clang -target x86_64-pc-windows-msvc
+        // 探针实测，playground/fs_copy_identity/win_abi_truth.log）：
+        // sizeof=52、align=4；dwFileAttributes@0、三个 FILETIME@4/12/20、
+        // dwVolumeSerialNumber@28、nFileSizeHigh/Low@32/36、
+        // nNumberOfLinks@40、nFileIndexHigh/Low@44/48。全字段 4 对齐无
+        // 隐式填充，Marshal.SizeOf/OffsetOf 由 VmFsIdentityTests 机械
+        // 锁定（源头与 rigi_rt fs.c 同一 Win32 定义，双宿主一致）
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct FsByHandleInfo
+        {
+            public uint FileAttributes;       // @0
+            public FsFileTime CreationTime;   // @4
+            public FsFileTime LastAccessTime; // @12
+            public FsFileTime LastWriteTime;  // @20
+            public uint VolumeSerialNumber;   // @28（身份：卷序列号）
+            public uint FileSizeHigh;         // @32
+            public uint FileSizeLow;          // @36
+            public uint NumberOfLinks;        // @40
+            public uint FileIndexHigh;        // @44（身份：64 位文件索引高半）
+            public uint FileIndexLow;         // @48（身份：低半）
+        } // 52 字节，对齐 4
+
+        // 直接收 SafeFileHandle：marshaler 在调用期间自动保活句柄，
+        // 不经 DangerousGetHandle 裸指针（租借口径见 FsSameFile）
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            Microsoft.Win32.SafeHandles.SafeFileHandle hFile,
+            out FsByHandleInfo info);
+
+        // POSIX glibc x86_64 struct stat 完整镜像（fstat 唯一合法接收
+        // 面）。ABI 真值（WSL Ubuntu glibc 2.39 + gcc 13.3 -m64 实测
+        // #include <sys/stat.h>，playground/fs_copy_identity/
+        // linux_stat_truth.log）：sizeof=144、align=8；st_dev@0、
+        // st_ino@8、st_nlink@16、st_mode@24、st_uid@28、st_gid@32、
+        // __pad0@36、st_rdev@40、st_size@48、st_blksize@56、
+        // st_blocks@64、st_atim@72、st_mtim@88、st_ctim@104、glibc
+        // 保留@120..136。历史教训：只声明 16 字节前缀吃 144 字节写入 =
+        // 栈越界破坏（身份读垃圾 → 同文件误判「不同」→ 自复制未拒 →
+        // 源截断归零，probe_fstat_wsl.log）；只放大缓冲不声明字段仍是
+        // ABI 猜测，均不可接受。本镜像全字段/保留字段逐字节对应、无
+        // 隐式填充，Marshal.SizeOf/OffsetOf 由 VmFsIdentityTests 机械
+        // 锁定；仅在已核实的 Linux x64 生产平台传入 fstat（native 面
+        // rigi_rt 用真 C struct stat，无此层）
+        [System.Runtime.InteropServices.StructLayout(
+            System.Runtime.InteropServices.LayoutKind.Sequential)]
+        internal struct FsLinuxX64Stat
+        {
+            public ulong Dev;        // st_dev @0（设备号——身份）
+            public ulong Ino;        // st_ino @8（inode——身份）
+            public ulong Nlink;      // st_nlink @16
+            public uint Mode;        // st_mode @24
+            public uint Uid;         // st_uid @28
+            public uint Gid;         // st_gid @32
+            public uint Pad0;        // __pad0 @36（原结构对齐保留）
+            public ulong Rdev;       // st_rdev @40
+            public ulong Size;       // st_size @48
+            public ulong Blksize;    // st_blksize @56
+            public ulong Blocks;     // st_blocks @64
+            public ulong AtimSec;    // st_atim.tv_sec @72
+            public ulong AtimNsec;   // st_atim.tv_nsec @80
+            public ulong MtimSec;    // st_mtim.tv_sec @88
+            public ulong MtimNsec;   // st_mtim.tv_nsec @96
+            public ulong CtimSec;    // st_ctim.tv_sec @104
+            public ulong CtimNsec;   // st_ctim.tv_nsec @112
+            public ulong Reserved0;  // __glibc_reserved[0] @120
+            public ulong Reserved1;  // __glibc_reserved[1] @128
+            public ulong Reserved2;  // __glibc_reserved[2] @136
+        } // 144 字节，对齐 8（36→40 的空隙与原 __pad0 一致）
+
+        [System.Runtime.InteropServices.DllImport("libc.so.6",
+            EntryPoint = "fstat", SetLastError = true)]
+        private static extern int fstat(int fd, out FsLinuxX64Stat stat);
 
         private static long RequireI64(string hook, IReadOnlyList<VmValue> args, int index)
         {

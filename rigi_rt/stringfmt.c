@@ -251,12 +251,14 @@ void rigi_bool_to_string(rigi_string *out, int8_t value)
     }
 }
 
-/* char 是 UTF-16 码元（与 VM 的 C# char / LLVM i16 对齐）；BMP 内编 UTF-8 */
-void rigi_char_to_string(rigi_string *out, int16_t value)
+/* char 是 32 位 Unicode 标量（U+0000–U+10FFFF，与 VM 的 uint 标量 /
+ * LLVM i32 对齐）；按标量编 UTF-8（1–4 字节，含补充平面 3/4 字节序列）。
+ * 值域由上游保证（字面量解码/转换范围检查），此处不复检。 */
+void rigi_char_to_string(rigi_string *out, int32_t value)
 {
-    char buf[3];
+    char buf[4];
     int64_t len;
-    uint16_t cu = (uint16_t)value;
+    uint32_t cu = (uint32_t)value;
     if (cu < 0x80u)
     {
         buf[0] = (char)cu;
@@ -268,12 +270,20 @@ void rigi_char_to_string(rigi_string *out, int16_t value)
         buf[1] = (char)(0x80u | (cu & 0x3Fu));
         len = 2;
     }
-    else
+    else if (cu < 0x10000u)
     {
         buf[0] = (char)(0xE0u | (cu >> 12));
         buf[1] = (char)(0x80u | ((cu >> 6) & 0x3Fu));
         buf[2] = (char)(0x80u | (cu & 0x3Fu));
         len = 3;
+    }
+    else
+    {
+        buf[0] = (char)(0xF0u | (cu >> 18));
+        buf[1] = (char)(0x80u | ((cu >> 12) & 0x3Fu));
+        buf[2] = (char)(0x80u | ((cu >> 6) & 0x3Fu));
+        buf[3] = (char)(0x80u | (cu & 0x3Fu));
+        len = 4;
     }
     rigi_set_string(out, buf, len);
 }
@@ -436,7 +446,8 @@ static int rigi_scalar_to_string(rigi_string *out, const RigiTypeSheet *sheet,
     }
     if (RIGI_SHEET_IS(sheet, "core::char"))
     {
-        rigi_char_to_string(out, (int16_t)payload);
+        /* char 内联载荷 4 字节（32 位标量） */
+        rigi_char_to_string(out, (int32_t)(uint32_t)payload);
         return 1;
     }
     return 0;

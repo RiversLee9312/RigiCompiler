@@ -32,6 +32,7 @@ namespace RigiCompiler.Tests
             TestHarness.Reset();
             TestLiterals();
             TestLocalDeclarations();
+            TestDeclInitFailurePoisonSilence();
             TestValueReferences();
             TestGlobalFieldInitializerBan();
             TestBinaryOperators();

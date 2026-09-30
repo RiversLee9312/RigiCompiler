@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
+using RigiCompiler.Middleware.Cli;
 
 namespace RigiCompiler
 {
@@ -312,7 +315,7 @@ namespace RigiCompiler
         }
 
         // 词法 + 语法解析；词法/语法错误原样抛出，由 Execute 逐文件捕获
-        private static RootASTNode ParseFile(string path)
+        internal static RootASTNode ParseFile(string path)
         {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
             using var reader = new StreamReader(stream);
@@ -323,26 +326,69 @@ namespace RigiCompiler
             return (RootASTNode)parser.Parse(tokens);
         }
 
-        // 语义管线（S6）：stdlib（在前）+ 用户源组 CompilationUnit → P1 → P2 → P3，
-        // 诊断统一经 Logger 输出后有 Error 即停（返回 1）；--sema-only 到此结束；
-        // --explain-dispatch 打印派发链报告到 stdout 后结束（S11f / RUNTIME §15）；
-        // --emit-bil 继续 P4（Lowerer → BilEmitter）→ BilVerifier 验证（M58，
-        // 非法即报错不落盘）→ BilWriter 把 BIL 文本写文件，
-        // moduleName 取第一个源文件的去扩展名文件名
-        private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots,
-            bool semaOnly, bool explainDispatch, string? emitBilPath)
+        // 语义管线的编译单元组装（compile 与 run 共用）：stdlib（在前）+ 用户源
+        internal static CompilationUnit BuildUnit(List<RootASTNode> userRoots)
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
             roots.AddRange(userRoots);
-            var unit = new CompilationUnit(roots.ToArray());
-            // P1–P3 为累积式设计：pass 间尽量继续以最大化报错（ARCHITECTURE §8），
-            // 三段跑完后统一输出诊断再判 HasErrors（与 BilEmitterTests 的全管线同序）
+            return new CompilationUnit(roots.ToArray());
+        }
+
+        // P1–P3 语义 pass + 诊断输出门槛（compile 与 run 共用；S6 同序）：
+        // 诊断统一经 Logger 输出后有 Error 即停。失败返回 null，exitCode=1。
+        internal static IReadOnlyList<BoundFunctionBody>? RunSemaPasses(
+            CompilationUnit unit, out int exitCode)
+        {
+            exitCode = 1;
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
             var bodies = Binder.Bind(unit, declarations);
             EmitDiagnostics(unit.Diagnostics, 0);
-            if (unit.Diagnostics.HasErrors) return 1;
+            if (unit.Diagnostics.HasErrors) return null;
+            exitCode = 0;
+            return bodies;
+        }
+
+        // P4 发射（Lowerer → BilEmitter，moduleName 取第一个源文件的去扩展名
+        // 文件名）+ 新增诊断门槛 + BilVerifier 验证（M58，§21：产出非法即
+        // 编译器 bug——响亮失败逐条输出验证错误）。验证对象是 merged 模块
+        // （切片仅作写盘打包——跨切片引用合并后才可解析，§17）。
+        // compile --emit-bil 与 run 共用；失败返回 null，exitCode 为 1。
+        internal static BilEmitResult? LowerAndVerify(CompilationUnit unit,
+            IReadOnlyList<BoundFunctionBody> bodies, string moduleName, out int exitCode)
+        {
+            exitCode = 1;
+            // P4 也会产生诊断（如未覆盖节点）：发射后只输出新增部分，有 Error 不推进
+            int emitted = unit.Diagnostics.Diagnostics.Count;
+            var lowered = Lowerer.Lower(unit, bodies);
+            var emitResult = BilEmitter.EmitWithSlices(unit, lowered, moduleName);
+            EmitDiagnostics(unit.Diagnostics, emitted);
+            if (unit.Diagnostics.HasErrors) return null;
+            var verificationErrors = BilVerifier.Verify(emitResult.Merged);
+            if (verificationErrors.Count > 0)
+            {
+                foreach (var error in verificationErrors)
+                {
+                    Logger.Error("BilVerifier", error.ToString());
+                }
+                return null;
+            }
+            exitCode = 0;
+            return emitResult;
+        }
+
+        // 语义管线（S6）的 compile 特有分支：--explain-dispatch / --sema-only /
+        // §17 切片写盘；管线本体见 BuildUnit / RunSemaPasses / LowerAndVerify
+        // （与 run 命令共用，避免两处漂移）
+        private static int RunSemanticPipeline(string firstFile, List<RootASTNode> userRoots,
+            bool semaOnly, bool explainDispatch, string? emitBilPath)
+        {
+            var unit = BuildUnit(userRoots);
+            // P1–P3 为累积式设计：pass 间尽量继续以最大化报错（ARCHITECTURE §8），
+            // 三段跑完后统一输出诊断再判 HasErrors（与 BilEmitterTests 的全管线同序）
+            var bodies = RunSemaPasses(unit, out int exitCode);
+            if (bodies == null) return exitCode;
             if (explainDispatch)
             {
                 // 报告走 stdout 数据流（日志/诊断已走 stderr）
@@ -352,25 +398,10 @@ namespace RigiCompiler
             if (semaOnly) return 0;
             if (emitBilPath != null)
             {
-                // P4 也会产生诊断（如未覆盖节点）：发射后只输出新增部分，有 Error 不落盘
-                int emitted = unit.Diagnostics.Diagnostics.Count;
-                var lowered = Lowerer.Lower(unit, bodies);
-                var emitResult = BilEmitter.EmitWithSlices(unit, lowered,
-                    Path.GetFileNameWithoutExtension(firstFile));
-                EmitDiagnostics(unit.Diagnostics, emitted);
-                if (unit.Diagnostics.HasErrors) return 1;
-                // BIL 验证器（M58，§21）：产出非法即编译器 bug——响亮失败，
-                // 逐条输出验证错误，不落盘。验证对象是 merged 模块（切片仅
-                // 作写盘打包——跨切片引用合并后才可解析，§17）
-                var verificationErrors = BilVerifier.Verify(emitResult.Merged);
-                if (verificationErrors.Count > 0)
-                {
-                    foreach (var error in verificationErrors)
-                    {
-                        Logger.Error("BilVerifier", error.ToString());
-                    }
-                    return 1;
-                }
+                // P4 + BilVerifier（与 run 共用）；有 Error/验证错误不落盘
+                var emitResult = LowerAndVerify(unit, bodies,
+                    Path.GetFileNameWithoutExtension(firstFile), out exitCode);
+                if (emitResult == null) return exitCode;
                 // §17 命名空间切分写盘：全局命名空间切片写 --emit-bil 指定
                 // 路径；其余切片同目录追加 .<命名空间> 后缀。空切片（无声明
                 // 无 fn）不写。BIL 输出路径不可写（目录不存在/权限不足等）
@@ -403,7 +434,7 @@ namespace RigiCompiler
         // 诊断经 Logger 输出（Severity Error→错误级、Warning→警告级，控制台走 stderr）。
         // 格式 {sourceName}:{行}:{列} [{Phase}] {Message}（行/列 1 起始）；
         // Span 为 null 的编译单元级诊断省略位置段。skip 跳过此前已输出的条数。
-        private static void EmitDiagnostics(DiagnosticBag diagnostics, int skip)
+        internal static void EmitDiagnostics(DiagnosticBag diagnostics, int skip)
         {
             for (int i = skip; i < diagnostics.Diagnostics.Count; i++)
             {
@@ -625,44 +656,10 @@ namespace RigiCompiler
                 return 1;
             }
 
-            // entrypoint 解析（§17）：--entry-point 显式指定时须在候选内；
-            // 缺省恰一个自动选中，零个/多个报错（多个时列出候选并提示
-            // --entry-point）——模块形状/用法错误归退出码 2
-            string? entryPoint = result.Get("--entry-point")?[0];
-            var entrypoints = new List<BilSimpleMemberDeclaration>();
-            foreach (var entry in module.LocalSymbols)
+            // entrypoint 解析（§17）——vm 与 run 共用 TryResolveEntryPoint
+            string? entryPointArg = result.Get("--entry-point")?[0];
+            if (!TryResolveEntryPoint(module, entryPointArg, out string? entryPoint))
             {
-                if (entry is BilSimpleMemberDeclaration member
-                    && HasKeyword(member, BilKeyword.Entrypoint))
-                {
-                    entrypoints.Add(member);
-                }
-            }
-            if (entryPoint != null)
-            {
-                if (!entrypoints.Exists(m => m.Symbol == entryPoint))
-                {
-                    Console.Error.WriteLine("--entry-point 指定的符号不是 entrypoint 方法: "
-                        + entryPoint);
-                    foreach (var entry in entrypoints)
-                    {
-                        Console.Error.WriteLine("  " + entry.Symbol);
-                    }
-                    return 2;
-                }
-            }
-            else if (entrypoints.Count == 0)
-            {
-                Console.Error.WriteLine("找不到入口：模块没有 entrypoint fn");
-                return 2;
-            }
-            else if (entrypoints.Count > 1)
-            {
-                Console.Error.WriteLine("模块存在多个 entrypoint fn（用 --entry-point <符号> 显式指定）：");
-                foreach (var entry in entrypoints)
-                {
-                    Console.Error.WriteLine("  " + entry.Symbol);
-                }
                 return 2;
             }
 
@@ -687,6 +684,54 @@ namespace RigiCompiler
             return 0;
         }
 
+        // entrypoint 解析（§17，vm 与 run 共用）：--entry-point 显式指定时须在候选内；
+        // 缺省恰一个自动选中（out entryPoint 保持 null = 自动选中，与历史行为一致），
+        // 零个/多个报错（多个时列出候选并提示 --entry-point）——模块形状/用法错误
+        // 归退出码 2（调用方收 false 后返回 2）。失败逐条输出到 stderr。
+        internal static bool TryResolveEntryPoint(BilModule module,
+            string? explicitEntryPoint, out string? entryPoint)
+        {
+            entryPoint = explicitEntryPoint;
+            var entrypoints = new List<BilSimpleMemberDeclaration>();
+            foreach (var entry in module.LocalSymbols)
+            {
+                if (entry is BilSimpleMemberDeclaration member
+                    && HasKeyword(member, BilKeyword.Entrypoint))
+                {
+                    entrypoints.Add(member);
+                }
+            }
+            if (explicitEntryPoint != null)
+            {
+                if (!entrypoints.Exists(m => m.Symbol == explicitEntryPoint))
+                {
+                    Console.Error.WriteLine("--entry-point 指定的符号不是 entrypoint 方法: "
+                        + explicitEntryPoint);
+                    foreach (var entry in entrypoints)
+                    {
+                        Console.Error.WriteLine("  " + entry.Symbol);
+                    }
+                    return false;
+                }
+                return true;
+            }
+            if (entrypoints.Count == 0)
+            {
+                Console.Error.WriteLine("找不到入口：模块没有 entrypoint fn");
+                return false;
+            }
+            if (entrypoints.Count > 1)
+            {
+                Console.Error.WriteLine("模块存在多个 entrypoint fn（用 --entry-point <符号> 显式指定）：");
+                foreach (var entry in entrypoints)
+                {
+                    Console.Error.WriteLine("  " + entry.Symbol);
+                }
+                return false;
+            }
+            return true;
+        }
+
         private static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)
         {
             foreach (var modifier in member.Modifiers)
@@ -698,6 +743,274 @@ namespace RigiCompiler
                 }
             }
             return false;
+        }
+    }
+
+    /// <summary>run --target：执行目标（vm = BIL VM 直接执行，缺省；native = 经 LLVM 管线产临时可执行后运行）。</summary>
+    public class RunTargetOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--target",
+            Description = "执行目标：vm（默认，BIL VM 直接执行）或 native（经 LLVM 管线产临时可执行后运行）",
+            ArgsHint = "<vm|native>",
+            MinArgs = 1,
+            MaxArgs = 1,
+        };
+    }
+
+    /// <summary>
+    /// run：一键编译并运行 Rigi 源文件——与 compile 相同的完整管线（P1–P4 +
+    /// BilVerifier）到 BIL 后直接执行，BIL 切片不落用户目录（vm 目标全内存；
+    /// native 目标仅临时目录承载临时 exe，无论成败用完即删）。
+    /// --target vm（默认）直接进 VM 执行（entry-point 自动选择、--max-steps
+    /// 与 vm 命令同语义；一键运行语义下 main 的 i32 返回值即 rigic 退出码，
+    /// VM 异常仍为 1）；--target native 经 native 管线产临时可执行，产物
+    /// stdout/stderr 透传、退出码透传、stdin 继承用户终端（交互式程序可用）。
+    /// </summary>
+    public class RunCommand : ICommandLineCommand
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "run",
+            Description = "一键编译并运行 Rigi 源文件（--target vm 默认；native 经 LLVM 管线产临时可执行）",
+        };
+
+        public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
+        {
+            new FileOption(),
+            new RunTargetOption(),
+            new EntryPointOption(),
+            new MaxStepsOption(),
+            new VerboseOption(),
+            new LogToOption(),
+        };
+
+        // 产物执行器：默认 RunProductInherited（真实终端语义：stdin 继承、
+        // stdout/stderr 透传）；测试注入捕获式 runner 以断言透传内容与清理
+        // （参数 = 产物路径，返回产物退出码，经 Execute 原样透传）
+        internal Func<string, int> ProductRunner { get; set; } = RunProductInherited;
+
+        public int Execute(CommandLineParseResult result)
+        {
+            // --verbose / --log-to 在主体之前应用
+            if (LoggerOptions.Apply(result) is { } loggerError)
+            {
+                Console.Error.WriteLine(loggerError);
+                return 2;
+            }
+
+            // --target：缺省 vm（BIL VM 直接执行）；非法值属用法错误
+            // （退出码 2 + 提示，参照 vm --max-steps 的参数错误口径）
+            string target = "vm";
+            if (result.Get("--target") is { } targetArgs)
+            {
+                if (!string.Equals(targetArgs[0], "vm", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(targetArgs[0], "native", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Error.WriteLine("--target 需要 vm 或 native，收到：" + targetArgs[0]);
+                    return 2;
+                }
+                target = targetArgs[0].ToLowerInvariant();
+            }
+
+            // --max-steps：与 vm 命令同口径（正整数；缺省 CLI 高预算）
+            long maxSteps = 1_000_000_000;
+            if (result.Has("--max-steps"))
+            {
+                string raw = result.Get("--max-steps")![0];
+                if (!long.TryParse(raw, out maxSteps) || maxSteps < 1)
+                {
+                    Console.Error.WriteLine("--max-steps 需要正整数，收到：" + raw);
+                    return 2;
+                }
+            }
+
+            // 目标相关选项的适用性：native 产物不受 VM 步数约束；entry-point
+            // 选择暂只接进 VM（native 管线要求恰一个 entrypoint）——
+            // 明确报错，不静默忽略
+            if (target == "native")
+            {
+                if (result.Has("--max-steps"))
+                {
+                    Console.Error.WriteLine("--max-steps 仅 --target vm 支持（native 产物不受 VM 步数约束）");
+                    return 2;
+                }
+                if (result.Has("--entry-point"))
+                {
+                    Console.Error.WriteLine("--entry-point 暂仅 --target vm 支持（native 目标要求恰一个 entrypoint）");
+                    return 2;
+                }
+            }
+
+            var files = result.Get("--file");
+            if (files == null)
+            {
+                Console.Error.WriteLine("run 需要 --file <路径...> 指定源文件");
+                return 2;
+            }
+
+            // 解析（与 compile 同形态：内部编译器错误与用户语法错误严格区分）；
+            // 成功不打「解析成功」噪声——run 的 stdout 只属于被运行程序的输出
+            var userRoots = new List<RootASTNode>();
+            foreach (var file in files)
+            {
+                try
+                {
+                    userRoots.Add(CompileCommand.ParseFile(file));
+                }
+                catch (CompilerInternalException ex)
+                {
+                    Console.Error.WriteLine($"内部编译器错误 {file}: {ex.Message}");
+                    return 1;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"编译失败 {file}: {ex.Message}");
+                    return 1;
+                }
+            }
+
+            // 完整语义管线（compile 共用件，诊断同 compile 形态）：
+            // P1–P3 诊断门槛 → P4 发射 + BilVerifier。任一失败即非零退出码、不产生执行。
+            var unit = CompileCommand.BuildUnit(userRoots);
+            var bodies = CompileCommand.RunSemaPasses(unit, out int semaExit);
+            if (bodies == null) return semaExit;
+            var emitResult = CompileCommand.LowerAndVerify(unit, bodies,
+                Path.GetFileNameWithoutExtension(files[0]), out int lowerExit);
+            if (emitResult == null) return lowerExit;
+
+            if (target == "vm")
+            {
+                return RunVmTarget(emitResult.Merged, maxSteps,
+                    result.Get("--entry-point")?[0]);
+            }
+            return RunNativeTarget(emitResult.Merged);
+        }
+
+        // --target vm：与 vm 命令同执行语义（entry-point 自动选择规则、
+        // --max-steps）；差异仅在退出码——一键运行语义下 main 的 i32 返回值
+        // 即 rigic 退出码（与 native 目标一致；vm 命令本身恒 0；VM 异常仍为 1）
+        private static int RunVmTarget(BilModule module, long maxSteps, string? explicitEntryPoint)
+        {
+            if (!VmCommand.TryResolveEntryPoint(module, explicitEntryPoint, out string? entryPoint))
+            {
+                return 2;
+            }
+            BilVmResult run;
+            try
+            {
+                run = BilVm.Run(module, maxSteps, entryPoint);
+            }
+            catch (VmException ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 1;
+            }
+            Console.Out.Write(run.Stdout);
+            Console.Error.Write(run.Stderr);
+            if (run.Exception != null)
+            {
+                Console.Error.WriteLine(run.Exception.Message);
+                return 1;
+            }
+            return run.ReturnValue is VmI32 value ? value.Value : 0;
+        }
+
+        // --target native：与 native --out 同一 EmitAndLink 管线（恰一个
+        // entrypoint 门槛 + 工具链/libuv/mimalloc 解析，错误形态同 native 命令）。
+        // 临时目录只承载临时 exe——BIL 切片全内存（merged 模块直接进管线），
+        // 产物执行后无论成败在 finally 清理临时目录
+        private int RunNativeTarget(BilModule module)
+        {
+            var dir = Path.Combine(Path.GetTempPath(),
+                "rigi_run_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var exePath = Path.Combine(dir,
+                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "app.exe" : "app");
+                int code = NativeCommand.EmitAndLink(module, exePath,
+                    emitObjPath: null, emitLlPath: null, toolchainDir: null,
+                    libuvDir: null, mimallocDir: null, linkInputs: null,
+                    outKind: "run --target native");
+                if (code != 0) return code;
+                // 退出码透传：rigi_rt main 的 i32 返回值即产物进程退出码
+                return ProductRunner(exePath);
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { /* 临时目录清理失败不致命（native 临时 .o 同口径） */ }
+            }
+        }
+
+        // 真实运行产物：stdin/stdout/stderr 透传到 rigic 自己的对应流——run 是
+        // 真实运行场景，交互式程序应能读到用户终端的 stdin，进程的 stdout/stderr
+        // 也原样进同一终端（含 rigic 被重定向到管道/文件的场景）。
+        // 实现为显式接力泵而非裸继承：Windows 上 CreateProcess 不置
+        // STARTF_USESTDHANDLES 时子进程拿到的是控制台默认句柄，拿不到 rigic
+        // 的管道/文件重定向目标（裸继承实测丢 stdout）；子进程三流显式重定向 +
+        // CopyToAsync 泵送才保证逐字节透传。与 ExternalProcess.closeStdin 的
+        // 确定性 EOF（测试/工具链场景）刻意相反：stdin 泵把用户终端输入原样
+        // 转发，rigic stdin EOF 时关闭子进程写端（交互程序读到真实 EOF）。
+        // 无超时：长驻程序（服务器等）合法，用户经 Ctrl+C 信号同时终止同
+        // 控制台进程组
+        private static int RunProductInherited(string exePath)
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            Process process;
+            try
+            {
+                process = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Process.Start 返回 null");
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
+                or FileNotFoundException)
+            {
+                Console.Error.WriteLine($"无法启动产物进程 {exePath}: {ex.Message}");
+                return 2;
+            }
+            using (process)
+            {
+                var stdinPump = PumpStdinAsync(process);
+                var stdoutPump = process.StandardOutput.BaseStream
+                    .CopyToAsync(Console.OpenStandardOutput());
+                var stderrPump = process.StandardError.BaseStream
+                    .CopyToAsync(Console.OpenStandardError());
+                process.WaitForExit();
+                // 子进程已退出：关闭其 stdin 写端解开 stdin 泵，再宽限等
+                // stdout/stderr 泵排空（ExitCode 之后的末尾数据不丢）
+                try { process.StandardInput.Close(); } catch (IOException) { }
+                Task.WaitAll(new[] { stdoutPump, stderrPump }, millisecondsTimeout: 30_000);
+                return process.ExitCode;
+            }
+        }
+
+        // stdin 接力泵：rigic 的标准输入 → 产物进程（交互输入原样转发；
+        // rigic stdin EOF → 关闭子进程写端，子进程读到确定性 EOF）。
+        // 泵的任何异常（子进程先退出/ObjectDisposed 等）只结束泵本身
+        private static async System.Threading.Tasks.Task PumpStdinAsync(Process process)
+        {
+            try
+            {
+                await Console.OpenStandardInput()
+                    .CopyToAsync(process.StandardInput.BaseStream).ConfigureAwait(false);
+                try { process.StandardInput.Close(); } catch (IOException) { }
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException
+                or InvalidOperationException)
+            {
+            }
         }
     }
 

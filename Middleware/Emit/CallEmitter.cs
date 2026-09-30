@@ -248,9 +248,11 @@ namespace RigiCompiler.Middleware.Emit
             if (BoxEmitter.NeedsUnbox(session, returnType, actual))
             {
                 // 拆箱不符守卫（MW9b-G 抛 CastException）：fromType 用
-                // 静态返回类型名（泛型占位 canonical）
+                // 静态返回类型名（泛型占位 canonical）。allowNullSource：
+                // VM 侧返回值赋槽无 cast 检查（null 直传），String 闭合
+                // 接收点对齐放行（for-in 零槽元素语义）
                 BoxEmitter.UnboxToLocal(session, builder, slots, callResult, actual, result,
-                    returnType, excTarget);
+                    returnType, excTarget, allowNullSource: true);
                 ArcEmitter.EmitReleaseFatValue(session, builder, callResult);
                 return;
             }
@@ -674,6 +676,8 @@ namespace RigiCompiler.Middleware.Emit
                 RuntimeFaces.RefAcquire => DeclareHelperFace(session, symbol, LLVMTypeRef.Int64,
                     new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
                 RuntimeFaces.RefRelease => DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
+                    new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
+                RuntimeFaces.RefCheck => DeclareHelperFace(session, symbol, LLVMTypeRef.Void,
                     new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }),
                 RuntimeFaces.ValueAcquire or RuntimeFaces.ValueRelease =>
                     DeclareHelperFace(session, symbol, LLVMTypeRef.Void,

@@ -235,20 +235,75 @@ namespace RigiCompiler.Middleware.Emit
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef srcAddr,
             LLVMValueRef sheet, int size)
         {
+            // 序 = copy 语义正确序（paramfix）：release(dst) 先清旧值 →
+            // memcpy → acquire(dst)。acquire 必须作用于 dst：tag1 盒槽
+            // acquire 有深拷回写副作用（arc.c rigi_value_walk），旧序
+            // acquire(src) 会把 src 槽改指向克隆——src 原块泄漏、dst 与
+            // src 共持克隆（双侧 release 即双释放）。tag2/STRING 两序等价。
+            if (dstAddr.Equals(srcAddr))
+            {
+                return;
+            }
             CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
-            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, srcAddr, sheet);
             CallValueFace(session, builder, RuntimeFaces.ValueRelease, dstAddr, sheet);
             session.EmitMemCopy(builder, dstAddr, srcAddr, size);
+            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, dstAddr, sheet);
             CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
+        // EmitCopyRichValue 的运行时尺寸变体：泛型占位数组路径的元素
+        // size 来自 elemSheet 运行时读数（.generic.T / 数组头 elemSheet），
+        // 编译期拿不到常量。调用方须已确认源是按值内联字节（FlagInlineValue
+        // 且非 String 特化槽）；sheet 为运行时 sheet 值（safeSheet）。
+        // 序 = copy 语义正确序（paramfix）：release(dst) 先清旧值 →
+        // memcpy → acquire(dst)。acquire 必须作用于 dst：tag1 盒槽的
+        // rigi_ref_acquire 有深拷回写副作用（arc.c rigi_value_walk 回写
+        // 被 walk 的槽），旧序 acquire(src) 会把 src 槽改指向克隆——src
+        // 原块泄漏、dst 与 src 共持克隆（双侧 release 即双释放）。
+        internal static void EmitCopyRichValueRuntimeSize(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef srcAddr,
+            LLVMValueRef sheet, LLVMValueRef size)
+        {
+            if (dstAddr.Equals(srcAddr))
+            {
+                return;
+            }
+            CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
+            CallValueFace(session, builder, RuntimeFaces.ValueRelease, dstAddr, sheet);
+            session.EmitMemCopyN(builder, dstAddr, srcAddr, size);
+            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, dstAddr, sheet);
+            CallRegionFace(session, builder, RuntimeFaces.RegionExit);
+        }
+
+        // 运行时 sheet 值的 value_acquire（读侧槽→盒重打包用）：
+        // BoxEmitter.BoxFromSlot 的运行时 sheet 镜像（refMapSize=0 时
+        // rigi_value_walk 为空转，无害）。
+        internal static void EmitValueAcquireSheet(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef addr, LLVMValueRef sheet)
+        {
+            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, addr, sheet);
+        }
+
+        // init 语义（paramfix 契约）：dst 为空/死槽（调用点须保证，无需
+        // release 旧值），序 = memcpy → acquire(dst)——dst 拿到独立持有
+        // 的副本，src 槽不被回写不被动。禁止改回「acquire(src) → memcpy」
+        // 旧序：tag1 盒槽（Nullable 装箱）acquire 有深拷回写副作用
+        // （arc.c rigi_value_walk 回写被 walk 的槽），会把 src 槽改指向
+        // 克隆——src 原块泄漏、src 与 dst 共持克隆（双侧 release 即双
+        // 释放；按值传参 UAF 即此，回归语料 rich_return_nullable 传参
+        // 形态）。tag1 是唯一有回写副作用的引用槽种类；tag2/STRING 的
+        // acquire 对 src/dst 均为纯 +1，两序等价。
         internal static void EmitInitRichValue(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef dstAddr, LLVMValueRef srcAddr,
             LLVMValueRef sheet, int size)
         {
+            if (dstAddr.Equals(srcAddr))
+            {
+                return;
+            }
             CallRegionFace(session, builder, RuntimeFaces.RegionEnter);
-            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, srcAddr, sheet);
             session.EmitMemCopy(builder, dstAddr, srcAddr, size);
+            CallValueFace(session, builder, RuntimeFaces.ValueAcquire, dstAddr, sheet);
             CallRegionFace(session, builder, RuntimeFaces.RegionExit);
         }
 
@@ -290,6 +345,12 @@ namespace RigiCompiler.Middleware.Emit
             }
         }
 
+        // ⚠ 交付即移动契约（richretrfix）：返回值交付（TerminatorEmitter
+        // MirRet 值类型分支）对 $mw.ret 只做纯 memcpy，本入口不得用于
+        // 「交付后的 $mw.ret」——tag1 盒槽（Nullable 装箱）acquire 有深
+        // 拷回写副作用（arc.c rigi_value_walk 回写槽 payload），对交付
+        // 后的 $mw.ret 再 release 会 free 掉 out 已接管的块（UAF）。
+        // 局部临时槽/调用 out 临时槽的生命周期终值清理不受此限。
         internal static void EmitDestroyRichValue(ModuleBuilder.Session session,
             LLVMBuilderRef builder, LLVMValueRef addr, LLVMValueRef sheet)
         {
@@ -382,6 +443,18 @@ namespace RigiCompiler.Middleware.Emit
             var payload = builder.BuildExtractValue(fat, 1, prefix + ".pl");
             var (newTypeId, newPayload) = EmitProduceFatRef(session, builder, typeId, payload);
             return PackFat(session, builder, fat, newTypeId, newPayload, prefix);
+        }
+
+        // 泛型胖引用形态守卫（数组元素 ABI 归一防御，RUNTIME §5）：
+        // Reference ABI 槽/泛型局部只允许 null{0,0} / tag1 盒 / tag2 对象，
+        // tag0 且 payload 非零即发射层 ABI 错配 → rigi_check_fat_ref abort
+        internal static void EmitCheckFatRef(ModuleBuilder.Session session,
+            LLVMBuilderRef builder, LLVMValueRef fat)
+        {
+            var typeId = builder.BuildExtractValue(fat, 0, "chk.tid");
+            var payload = builder.BuildExtractValue(fat, 1, "chk.pl");
+            var (fn, fnType) = CallEmitter.DeclareArcFace(session, RuntimeFaces.RefCheck);
+            builder.BuildCall2(fnType, fn, new[] { typeId, payload }, "");
         }
 
         internal static LLVMValueRef ProduceStringValue(ModuleBuilder.Session session,

@@ -12,6 +12,12 @@ namespace RigiCompiler.Middleware.Mir
         protected override void VisitCore(LoadInstruction inst, FlowBuilder flow)
         {
             flow.EnsureOpen();
+            // null 常量物化登记：BinaryIntrinsicLowering 识别「x ==/!= null」
+            // nullness-only 形态用（位比即语义，不走 Nullable 判等展开）
+            if (inst.Resource is BilNullResource)
+            {
+                flow.MarkNullConstant(inst.Target.Name);
+            }
             flow.Add(new MirLoadResource(inst.Resource, inst.Target.Name));
         }
     }
@@ -44,6 +50,26 @@ namespace RigiCompiler.Middleware.Mir
         {
             flow.EnsureOpen();
             var leftType = flow.TypeOf(inst.Left.Name);
+            // 同型 Nullable<T> 判等只以 nullness 短路；双非空必须解包
+            // 内层调用原有判等（包含开放占位的动态 typeid operator）。
+            // 胖值身份即便相同也不能提前宣判相等：用户 equals 可返回 false。
+            // 异内层类型不经此特判，仍走既有语言类型规则。
+            // 「x ==/!= null」nullness-only 形态（一侧是 null 常量物化局部）
+            // 不展开：位比即语义（ImplBinder Nullable 位比规则正只服务该
+            // 形态）；且展开的双非空臂对 wrapper bake 特化体有害——特化
+            //（ProxyBakeSupport.BuildSpecializedBody）只替换局部槽类型、
+            // 不重写指令内嵌类型，模板期按占位生成的 MirGenericBinaryOp
+            // 会配上具化标量槽（如 Temporary<TField> 的 i32），发射期
+            // BuildExtractValue 对非聚合直接 SIGSEGV（编译器进程崩）
+            if (inst.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe
+                && Layout.TypeLayout.TryGetNullableInner(leftType, out var nullableInner)
+                && flow.TypeOf(inst.Right.Name).Canonical == leftType.Canonical
+                && !flow.IsNullConstant(inst.Left.Name)
+                && !flow.IsNullConstant(inst.Right.Name))
+            {
+                NullableEqualityLowering.Lower(flow, inst, leftType, nullableInner);
+                return;
+            }
             if (ImplBinder.IsBuiltinBinaryOperand(leftType.Canonical))
             {
                 flow.Add(new MirBinaryIntrinsic(inst.Op,
@@ -72,6 +98,126 @@ namespace RigiCompiler.Middleware.Mir
             }
             UserOperatorLowering.LowerUnary(flow, inst, operandType);
         }
+    }
+
+    // 同型可空判等：分别检查两侧 nullness，双空 true、单空 false；
+    // 双非空无论胖值位形是否相同，都解包两侧并按 T 既有判等派发。
+    // 占位内层 unwrap 写入 16B 胖槽，MirGenericBinaryOp 按实际 typeid
+    // 依次检查标量/String、用户 operator 与 Any 默认 equals；不可将
+    // 8B 标量/TypeId 擦除槽直接传给其 BuildExtractValue（旧 406）。
+    // != 只在合并块对判等结果取反；可达边与该展开同构。
+    internal static class NullableEqualityLowering
+    {
+        internal static void Lower(FlowBuilder flow, BinaryIntrinsicInstruction inst,
+            MirType nullableType, MirType inner)
+        {
+            var boolType = MirType.Of(".bool");
+            var excTarget = flow.Tries.CurrentExcTarget();
+            // 判等结果先落合成槽，合并块按 ==/!= 落目标或取反
+            var eqName = flow.RegisterSyntheticLocal(SynthName(flow, "nulleq"),
+                boolType).Name;
+            var bothNullId = flow.SyntheticId("nulleq.both");
+            var singleNullId = flow.SyntheticId("nulleq.single");
+            var innerId = flow.SyntheticId("nulleq.inner");
+            var doneId = flow.SyntheticId("nulleq.done");
+            // Nullable 的位比仅与 null 常量比较；不可比较左右位形
+            // 后因同盒/同对象直接断言相等，用户 equals 有最终裁决权。
+            var nullConst = flow.RegisterSyntheticLocal(SynthName(flow, "nullres"),
+                nullableType).Name;
+            flow.Add(new MirLoadResource(
+                new BilNullResource(SynthName(flow, "null"), nullableType.Canonical),
+                nullConst));
+            var leftNull = flow.RegisterSyntheticLocal(SynthName(flow, "lnull"),
+                boolType).Name;
+            flow.Add(new MirBinaryIntrinsic(BilBinaryOp.CmpEq,
+                flow.Local(inst.Left), new MirLocalOperand(nullConst),
+                nullableType, nullableType, boolType, leftNull, excTarget));
+            var rightNull = flow.RegisterSyntheticLocal(SynthName(flow, "rnull"),
+                boolType).Name;
+            flow.Add(new MirBinaryIntrinsic(BilBinaryOp.CmpEq,
+                flow.Local(inst.Right), new MirLocalOperand(nullConst),
+                nullableType, nullableType, boolType, rightNull, excTarget));
+            var bothNull = flow.RegisterSyntheticLocal(SynthName(flow, "bnull"),
+                boolType).Name;
+            flow.Add(new MirBinaryIntrinsic(BilBinaryOp.And,
+                new MirLocalOperand(leftNull), new MirLocalOperand(rightNull),
+                boolType, boolType, boolType, bothNull, excTarget));
+            flow.Terminate(new MirCondBranch(new MirLocalOperand(bothNull),
+                bothNullId, singleNullId));
+            SealConstBranch(flow, bothNullId, eqName, constText: "true", doneId);
+
+            flow.SealAndStart(singleNullId);
+            var eitherNull = flow.RegisterSyntheticLocal(SynthName(flow, "enull"),
+                boolType).Name;
+            flow.Add(new MirBinaryIntrinsic(BilBinaryOp.Or,
+                new MirLocalOperand(leftNull), new MirLocalOperand(rightNull),
+                boolType, boolType, boolType, eitherNull, excTarget));
+            var singleNullArmId = flow.SyntheticId("nulleq.single.arm");
+            flow.Terminate(new MirCondBranch(new MirLocalOperand(eitherNull),
+                singleNullArmId, innerId));
+            SealConstBranch(flow, singleNullArmId, eqName, constText: "false", doneId);
+
+            // 双非空臂：解包两侧，递归内层判等 lowering（恒按 == 求值——
+            // 合成槽是「判等」语义，!= 的取反只在合并块做一次，避免双取反）
+            flow.SealAndStart(innerId);
+            var unwrappedLeft = flow.RegisterSyntheticLocal(SynthName(flow, "ul"),
+                inner).Name;
+            flow.Add(new MirUnwrapNullable(flow.Local(inst.Left), inner,
+                unwrappedLeft, excTarget));
+            var unwrappedRight = flow.RegisterSyntheticLocal(SynthName(flow, "ur"),
+                inner).Name;
+            flow.Add(new MirUnwrapNullable(flow.Local(inst.Right), inner,
+                unwrappedRight, excTarget));
+            LowerInnerEquality(flow, BilBinaryOp.CmpEq, unwrappedLeft,
+                unwrappedRight, inner, eqName);
+            flow.Terminate(new MirBranch(doneId));
+
+            // 合并块：== 直落，!= 取反
+            flow.SealAndStart(doneId);
+            if (inst.Op == BilBinaryOp.CmpEq)
+            {
+                flow.Add(new MirCopyLocal(new MirLocalOperand(eqName),
+                    inst.Target.Name));
+                return;
+            }
+            flow.Add(new MirUnaryIntrinsic(BilUnaryOp.Not,
+                new MirLocalOperand(eqName), boolType, boolType, inst.Target.Name));
+        }
+
+        // 内层判等递归：与 BinaryIntrinsicLowering 的非可空二分同口径
+        // （内建族 → MirBinaryIntrinsic；否则用户 operator lowering）
+        private static void LowerInnerEquality(FlowBuilder flow, BilBinaryOp op,
+            string leftName, string rightName, MirType inner, string target)
+        {
+            var excTarget = flow.Tries.CurrentExcTarget();
+            if (ImplBinder.IsBuiltinBinaryOperand(inner.Canonical))
+            {
+                flow.Add(new MirBinaryIntrinsic(op, new MirLocalOperand(leftName),
+                    new MirLocalOperand(rightName), inner, inner,
+                    MirType.Of(".bool"), target, excTarget));
+                return;
+            }
+            var innerInst = new BinaryIntrinsicInstruction(op,
+                new BilVariableOperand(leftName), new BilVariableOperand(rightName),
+                new BilVariableOperand(target));
+            UserOperatorLowering.LowerBinary(flow, innerInst, inner);
+        }
+
+        // 常量布尔臂：物化 true/false 资源 → 判等合成槽 → 跳合并块
+        private static void SealConstBranch(FlowBuilder flow, string id,
+            string eqName, string constText, string doneId)
+        {
+            flow.SealAndStart(id);
+            var constLocal = flow.RegisterSyntheticLocal(SynthName(flow, "c"),
+                MirType.Of(".bool")).Name;
+            flow.Add(new MirLoadResource(new BilScalarResource(
+                SynthName(flow, "bool"), BilScalarType.Bool, constText), constLocal));
+            flow.Add(new MirCopyLocal(new MirLocalOperand(constLocal), eqName));
+            flow.Terminate(new MirBranch(doneId));
+        }
+
+        private static string SynthName(FlowBuilder flow, string kind) =>
+            "mw.nulleq." + kind + "." + flow.NextSynthetic();
     }
 
     // 遗1 用户运算符分派（VM DispatchUserBinary/ExecuteUnary 口径）：

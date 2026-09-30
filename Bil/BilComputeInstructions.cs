@@ -464,6 +464,19 @@ namespace RigiCompiler.Bil
         {
             var left = coroutine.ReadVar(instruction.Left.Name);
             var right = coroutine.ReadVar(instruction.Right.Name);
+            // nullablefix：判等运算的可空操作数先解包（SYNTAX §3.4 裁决：
+            // nullness 短路 + 解包内层判等）。双空/单空在解包后由
+            // IsNullLike 短路按 nullness 回答；双非空以内层值走既有判等
+            // （内建内容判等 / 用户 operator equals）。不解包会把可空盒子
+            // 递给 Any 默认 equals——hash 派发链对 VmNullable 接收者崩
+            // （「字段访问目标不是对象」），无 hash override 的值类型落
+            // 身份哈希误判等值内容不等。排序/算术不适用此解包（native
+            // 编译期拒绝可空排序比较，VM 保持「没有用户 operator」口径）。
+            if (instruction.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe)
+            {
+                left = UnwrapNullable(left);
+                right = UnwrapNullable(right);
+            }
             if (instruction.Op is BilBinaryOp.CmpEq or BilBinaryOp.CmpNe
                 && (IsNullLike(left) || IsNullLike(right)))
             {
@@ -494,6 +507,14 @@ namespace RigiCompiler.Bil
         {
             return value is VmNull || value is VmNullable { HasValue: false };
         }
+
+        // 可空解包（判等专用，ExecuteBinary CmpEq/CmpNe 前置）：有值取
+        // 内层值，无值归一为 VmNull 交 IsNullLike 短路回答
+        // （nullablefix，SYNTAX §3.4 nullness 短路 + 解包内层判等）
+        private static VmValue UnwrapNullable(VmValue value) =>
+            value is VmNullable nullable
+                ? nullable.HasValue ? nullable.Value! : VmNull.Instance
+                : value;
 
         internal static void ExecuteUnary(UnaryIntrinsicInstruction instruction,
             VmContext context, VmCoroutine coroutine)
@@ -801,7 +822,8 @@ namespace RigiCompiler.Bil
             };
         }
 
-        private static VmValue EvalCharBinary(BilBinaryOp op, char left, char right)
+        // char 比较按 32 位 Unicode 标量值的无符号数值序（STDLIB §4.3.1）
+        private static VmValue EvalCharBinary(BilBinaryOp op, uint left, uint right)
         {
             return op switch
             {

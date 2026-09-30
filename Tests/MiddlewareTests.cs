@@ -229,7 +229,98 @@ namespace RigiCompiler.Tests
             ("TestDynamicNew", TestDynamicNew),
             ("TestCapabilityConstructedCalls", () => TestCapabilityConstructedCalls()),
             ("TestExternalProcessDeadline", TestExternalProcessDeadline),
+            ("TestRuntimeFeatureMacroPreamble", TestRuntimeFeatureMacroPreamble),
+            ("TestRuntimeTargetIdentity", TestRuntimeTargetIdentity),
         };
+
+        private static void TestRuntimeFeatureMacroPreamble()
+        {
+            var sources = new (string FileName, string Text)[]
+            {
+                ("arc.c", ""), ("arc.h", ""), ("fs.c", ""),
+            };
+            var macros = new[] { "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE" };
+            var actual = RigiRtBuilder.BuildUnitySource(sources, macros);
+            TestHarness.Check("特性宏先于 include 且宏体与 -D 一致", actual,
+                "#define _POSIX_C_SOURCE 200809L\n#define _DEFAULT_SOURCE 1\n" +
+                "#include \"arc.c\"\n#include \"fs.c\"\n");
+            TestHarness.Check("有值宏只移除第一个等号", RigiRtBuilder.BuildUnitySource(
+                Array.Empty<(string FileName, string Text)>(), new[] { "-DCONDITION=a==b" }),
+                "#define CONDITION a==b\n");
+            TestHarness.Check("显式空宏保持空宏体", RigiRtBuilder.BuildUnitySource(
+                Array.Empty<(string FileName, string Text)>(), new[] { "-DEMPTY=" }),
+                "#define EMPTY \n");
+            TestHarness.Check("无特性宏仍只包含 C 编译单元", RigiRtBuilder.BuildUnitySource(
+                sources, Array.Empty<string>()), "#include \"arc.c\"\n#include \"fs.c\"\n");
+            TestHarness.CheckTrue("有值宏前导不得包含分隔等号",
+                !actual.Contains("#define _POSIX_C_SOURCE =", StringComparison.Ordinal));
+        }
+
+        private static void TestRuntimeTargetIdentity()
+        {
+            var sources = new (string FileName, string Text)[] { ("probe.c", "int probe(void) { return 1; }") };
+            var unity = RigiRtBuilder.BuildUnitySource(sources, Array.Empty<string>());
+            var host = LlvmHost.HostTriple;
+            Console.WriteLine("  LLVM 宿主目标: " + host);
+            Console.WriteLine("  LLVM TargetMachine layout: " + LlvmHost.HostDataLayout);
+            var other = host.Replace("-pc-", "-unknown-", StringComparison.Ordinal);
+            TestHarness.CheckTrue("宿主目标与对照目标不同", host != other);
+            var hostArgs = RigiRtBuilder.BuildCompileArgs(host, null, "unity.c", "rigi_rt.bc");
+            var otherArgs = RigiRtBuilder.BuildCompileArgs(other, null, "unity.c", "rigi_rt.bc");
+            TestHarness.Check("clang 参数明确指定 LLVM 目标", hostArgs[0], "--target=" + host);
+            var hostKey = RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", hostArgs);
+            var otherKey = RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", otherArgs);
+            TestHarness.CheckTrue("相同源码不同目标不可复用缓存", hostKey != otherKey);
+            var changedArgs = new List<string>(hostArgs) { "-fno-builtin" };
+            TestHarness.CheckTrue("编译参数改变不可复用缓存", hostKey !=
+                RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", changedArgs));
+            TestHarness.CheckTrue("clang 内容改变不可复用缓存", hostKey !=
+                RigiRtBuilder.ComputeCacheIdentity(sources, unity, "other-sha", hostArgs));
+
+            var clang = RigiCompiler.Middleware.Toolchain.ToolchainResolver.ResolveClang(null);
+            if (clang == null)
+            {
+                Console.WriteLine("  SKIP 运行时目标实编探针：未找到 clang");
+                return;
+            }
+            var root = Path.Combine(Path.GetTempPath(), "rigi-target-probe-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var source = Path.Combine(root, "probe.c");
+                var bitcode = Path.Combine(root, "probe.bc");
+                File.WriteAllText(source, sources[0].Text);
+                var args = RigiRtBuilder.BuildCompileArgs(host, null, source, bitcode);
+                var exit = RigiCompiler.Middleware.Toolchain.ExternalProcess.Run(clang, args,
+                    out _, out var stderr, workingDirectory: root);
+                TestHarness.CheckTrue("clang 实编宿主目标 bitcode", exit == 0);
+                if (exit == 0)
+                {
+                    LlvmBitcode.ValidateRuntimeTarget(bitcode, host);
+                    TestHarness.CheckTrue("真实 bitcode triple/layout 等于宿主 TargetMachine", true);
+                    var libuv = RigiCompiler.Middleware.Toolchain.LibuvResolver.Resolve(null);
+                    if (libuv != null)
+                    {
+                        var cached = RigiRtBuilder.EnsureBitcode(clang, host, out var rebuilt, libuv);
+                        Console.WriteLine("  rigi_rt 实际缓存: " + cached + " rebuilt=" + rebuilt);
+                        LlvmBitcode.ValidateRuntimeTarget(cached, host);
+                        TestHarness.CheckTrue("真实运行时缓存 bitcode 目标相容", true);
+                        var hit = RigiRtBuilder.EnsureBitcode(clang, host, out var rebuiltAgain, libuv);
+                        TestHarness.Check("相同目标与参数命中同一缓存", hit, cached);
+                        TestHarness.CheckTrue("命中无需再次编译", !rebuiltAgain);
+                    }
+                    var rejected = false;
+                    try { LlvmBitcode.ValidateRuntimeTarget(bitcode, other); }
+                    catch (InvalidOperationException) { rejected = true; }
+                    TestHarness.CheckTrue("真实目标不符在链接之前拒绝", rejected);
+                }
+                else Console.WriteLine("  clang stderr: " + stderr);
+            }
+            finally
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
 
         private static void TestExternalProcessDeadline()
         {
@@ -2154,6 +2245,10 @@ namespace RigiCompiler.Tests
             var context = new MwContext(gate.Module!);
             var mir = MirBuilder.Build(context);
             using var module = ModuleBuilder.Build(context, mir);
+            TestHarness.Check("生成模块与运行时的宿主目标一致", module.Target,
+                LlvmHost.HostTriple);
+            TestHarness.Check("生成模块与 TargetMachine 的布局一致", module.DataLayout,
+                LlvmHost.HostDataLayout);
             var ll = module.PrintToString();
 
             // 黄金快照的 MW1 形态：锚定关键行（全文黄金比对随 .ll 快照基建落地）

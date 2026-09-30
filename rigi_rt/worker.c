@@ -92,6 +92,159 @@ int64_t rigi_time_now(void)
 #endif
 }
 
+/* DateTime.now 专用墙钟：一次系统采样写 12 字节 Span<u8>，不经旧
+ * i64 毫秒 time_now 拼两次采样。Span<u8> ABI 同 fs.c：payload +24
+ * 为 i32 长度、+32 为元素基址；越界属编译器/包装层 bug。 */
+void rigi_time_now_parts(const RigiFatRef *out)
+{
+    if (out == NULL || out->payload == 0)
+    {
+        fprintf(stderr, "rigi_rt: time_now_parts 收到空 Span（编译器 bug）\n");
+        abort();
+    }
+    uint8_t *payload = (uint8_t *)(uintptr_t)out->payload;
+    int32_t length;
+    memcpy(&length, payload + 24, sizeof(length));
+    if (length < 12)
+    {
+        fprintf(stderr, "rigi_rt: time_now_parts Span 小于 12（编译器 bug）\n");
+        abort();
+    }
+    int64_t ms;
+    int32_t ns;
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32)
+        | (uint64_t)ft.dwLowDateTime;
+    /* 1601→1970 偏置有符号运算；负时刻用 floor 商与非负余数。
+     * FILETIME 100ns 粒度，乘 100 得真实纳秒余量，不声称 1ns 精度。 */
+    int64_t unix100 = (int64_t)ticks - INT64_C(116444736000000000);
+    ms = unix100 / INT64_C(10000);
+    int64_t rem100 = unix100 % INT64_C(10000);
+    if (rem100 < 0)
+    {
+        ms -= 1;
+        rem100 += INT64_C(10000);
+    }
+    ns = (int32_t)(rem100 * INT64_C(100));
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+    {
+        fprintf(stderr, "rigi_rt: time_now_parts clock_gettime 失败\n");
+        abort();
+    }
+    if (ts.tv_nsec < 0 || ts.tv_nsec >= INT64_C(1000000000)
+        || (int64_t)ts.tv_sec < INT64_MIN / INT64_C(1000) + 1
+        || (int64_t)ts.tv_sec > INT64_MAX / INT64_C(1000) - 1)
+    {
+        fprintf(stderr, "rigi_rt: time_now_parts 宿主时间范围异常\n");
+        abort();
+    }
+    ms = (int64_t)ts.tv_sec * INT64_C(1000)
+        + (int64_t)ts.tv_nsec / INT64_C(1000000);
+    ns = (int32_t)((int64_t)ts.tv_nsec % INT64_C(1000000));
+#endif
+    uint8_t *dst = payload + 32;
+    for (int i = 0; i < 8; i++)
+    {
+        dst[i] = (uint8_t)((uint64_t)ms >> (i * 8));
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        dst[8 + i] = (uint8_t)((uint32_t)ns >> (i * 8));
+    }
+}
+
+/* ================================================================== */
+/* 单调时钟底座（施工块 6-3，§4.9.4；VM VmDispatch.MonotonicNow 同语义） */
+/* ================================================================== */
+
+#ifdef _WIN32
+/* QueryUnbiasedInterruptTimePrecise 实际驻留 kernelbase.dll（kernel32
+ * 不导出 Precise 变体）；经 GetProcAddress 缓存解析。解析失败退回
+ * QueryUnbiasedInterruptTime（kernel32，Windows 7+，0.5ms 更新批处理，
+ * 单调性、100ns 单位与排除睡眠语义不变）。 */
+static int64_t rigi_win_monotonic_now_ns(void)
+{
+    typedef void (WINAPI *RigiQubitPreciseFn)(ULONGLONG *);
+    static RigiQubitPreciseFn precise_fn = NULL;
+    static int lookup_done = 0;
+    ULONGLONG unbiased_time = 0;
+    if (!lookup_done)
+    {
+        HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
+        if (kernelbase != NULL)
+        {
+            precise_fn = (RigiQubitPreciseFn)(void *)GetProcAddress(
+                kernelbase, "QueryUnbiasedInterruptTimePrecise");
+        }
+        lookup_done = 1;
+    }
+    if (precise_fn != NULL)
+    {
+        precise_fn(&unbiased_time);
+    }
+    else
+    {
+        QueryUnbiasedInterruptTime(&unbiased_time);
+    }
+    return (int64_t)(unbiased_time * UINT64_C(100));
+}
+#endif
+
+/* 单调读数（纳秒）：计入协程等待与进程未调度的时间，排除整机睡眠/休眠
+ * （§4.9.4）。与 rigi_time_now（墙上 UTC 毫秒，可因校时跳变）语义不
+ * 同源，两者不可互替。
+ *   - Windows：QueryUnbiasedInterruptTimePrecise——自系统启动的
+ *     「无偏」中断时间，100ns 单位、排除睡眠（休眠期间不推进；Precise
+ *     变体绕开 0.5ms 更新批处理，读真实当前值；驻留 kernelbase.dll，
+ *     运行时经 GetProcAddress 解析，缺失退回 QueryUnbiasedInterrupt
+ *     Time——语义不变仅分辨率批处理）。要求 Windows 10 1607 /
+ *     Server 2016+（回退路径 Windows 7+）。100ns → ns 乘 100：i64
+ *     纳秒可表 ~292 年自启动时长，实际不可能触达，不设额外溢出分支。
+ *   - Linux：clock_gettime(CLOCK_MONOTONIC)。man7 clock_gettime 原文
+ *     「This clock does not count time that the system is
+ *     suspended.」——即排除整机挂起/睡眠，恰与契约语义匹配
+ *     （CLOCK_BOOTTIME 才计入挂起，不选用；挂起时间是否另计不是
+ *     CLOCK_MONOTONIC 的语义）。秒 ×1e9 + 纳秒，同 ~292 年量级。
+ * 实际分辨率平台相关（Windows 无偏中断时间非逐纳秒步进），契约不
+ * 要求每次读取增加一纳秒（§4.9.4）。 */
+int64_t rigi_monotonic_now_ns(void)
+{
+#ifdef _WIN32
+    return rigi_win_monotonic_now_ns();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+    {
+        fprintf(stderr, "rigi_rt: clock_gettime(CLOCK_MONOTONIC) 失败（环境异常）\n");
+        abort();
+    }
+    return (int64_t)ts.tv_sec * INT64_C(1000000000)
+        + (int64_t)ts.tv_nsec;
+#endif
+}
+
+/* ================================================================== */
+/* 宿主平台判定原语（施工块 7-1，STDLIB §4.5.2/§4.5.9 私有原语）        */
+/* ================================================================== */
+
+/* 宿主平台判定：非 0 = Windows。core.fs Path 的平台路径词法校验内部
+ * 使用（编译目标平台 == 宿主平台：native 经 _WIN32 编译期判定；VM 同
+ * 进程宿主判定，VmHooks host_is_windows 镜像，两形态同语义）。
+ * 公共平台信息/环境查询 API 按 D5 继续后置——本原语不构成对外平台
+ * 查询入口，只是 Path 语法规则的内部实施依赖。 */
+uint8_t rigi_host_is_windows(void)
+{
+#ifdef _WIN32
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /* ================================================================== */
 /* 调度统计计数器（棒5a 死锁看门狗依据；双形态真实现，零 uv 依赖）      */
 /* ================================================================== */

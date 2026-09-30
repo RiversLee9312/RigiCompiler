@@ -717,7 +717,14 @@ namespace RigiCompiler.Middleware.Passes
                         // 历史），纯 copy。调用方按 B1 知情，无义务建立。
                         // 借用出口混 owned 出口的 fn 不进借用返回集合，本
                         // 分支不被触达，借用值照旧经三段式 acquire 提升为
-                        // 拥有
+                        // 拥有。
+                        // owned 分支的 acquire 不可省：它让 $mw.ret 独立持
+                        // 有返回值（源槽随后被 EffectiveReleaseOrder 出口
+                        // release）。Emit 层交付即移动（TerminatorEmitter
+                        // 纯 memcpy 给 out 首参，不再 release $mw.ret）——
+                        // tag1 盒槽（Nullable 装箱）的 acquire 有深拷回写
+                        // 副作用（arc.c rigi_value_walk 回写槽 payload），
+                        // 此处 acquire 是交付块的唯一生产点，删除即 UAF。
                         if (!isBorrowedReturn)
                         {
                             rewritten.Add(new MirReleaseSlot(RetLocalName));

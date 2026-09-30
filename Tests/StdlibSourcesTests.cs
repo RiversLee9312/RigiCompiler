@@ -20,6 +20,26 @@ namespace RigiCompiler.Tests
     ///    native 双注解）；collections（namespace core.collections +
     ///    2 interface + 2 class + alloc_array/arrayOf/arrayOfElements +
     ///    span_alloc/spanOf/shared_span_alloc/sharedSpanOf）；
+    ///    set（namespace core.collections + class Set + priv class
+    ///    SetEnumerator，类头无序列化注解）；queue（namespace core.collections
+    ///    + class Queue + priv class QueueEnumerator，类头无序列化注解）；
+    ///    io/stream（施工块 2-1：namespace core.io + EndOfStreamException +
+    ///    StreamWrapperOwnership + ISeekableStream + InputStream/OutputStream
+    ///    双抽象基类，§4.4 流核心抽象；2-2 增 readAll 双重载）；
+    ///    io/autobuffer（施工块 2-2：namespace core.io + AutoBuffer +
+    ///    priv 输入/输出视图类，§4.4 动态扩容缓冲）；io/memory（施工块
+    ///    2-2：namespace core.io + MemoryInputStream/MemoryOutputStream，
+    ///    §4.4 普通内存流）；io/buffered（施工块 2-3：namespace core.io +
+    ///    BufferedInputStream/BufferedOutputStream，§4.4 缓冲流包装器）；
+    ///    io/stdstreams（施工块 2-4b1 标准输出/错误 + 2-4b2 标准输入：
+    ///    namespace core.io + StandardStreams 三工厂 +
+    ///    StdOutputStream/StdErrorStream + StdinWake + StdInputStream，
+    ///    §4.4 标准流与控制台契约，借用包装对象可独立关闭）；
+    ///    adapters（namespace core.collections + 2 个 pub func asEnumerable
+    ///    重载 + 3 个 priv 借用枚举/可枚举类，类头无序列化注解）；
+    ///    algorithms（namespace core.collections + 26 个顶层 func：原 10 通用
+    ///    算法 + sorted/sortInPlace + compare 十一型重载（十标量 + String
+    ///    标量字典序，块 3-3b）+ 3 个 priv 归并助手，无类型声明）；
     ///    coroutine（namespace core.coroutine + 15 类型 +
     ///    laneOfExecutor + 34 native 原语 + sleep 包装）；disposable（namespace core +
     ///    IDisposable 接口）；exceptions（namespace core + 5 异常子类）
@@ -38,10 +58,19 @@ namespace RigiCompiler.Tests
             TestCoroutineStructure();
             TestDisposableStructure();
             TestExceptionsStructure();
+            TestFsPathStructure();
+            TestFsPrimitivesStructure();
             TestGlobalExceptionsStructure();
             TestTimeStructure();
+            TestMathStructure();
             TestSerializationStructure();
             TestMessagingStructure();
+            TestSetStructure();
+            TestQueueStructure();
+            TestIoStreamStructure();
+            TestIoStdStreamsStructure();
+            TestAdaptersStructure();
+            TestAlgorithmsStructure();
             TestConsoleDescribe();
 
             return TestHarness.Summary("StdlibSources");
@@ -54,42 +83,140 @@ namespace RigiCompiler.Tests
 
             var roots = StdlibSources.ParseAll();
             TestHarness.CheckTrue("ParseAll 包含独立的内建声明源码",
-                roots.Count == 15, $"实际 {roots.Count} 棵");
+                roots.Count == 38, $"实际 {roots.Count} 棵");
             var intrinsics = roots.Single(r => r.Span?.sourceName == "<stdlib>/.intrinsics.rg");
             TestHarness.CheckTrue("内建声明仅由受信任的载入器标记",
                 intrinsics.IsCompilerLibrary && intrinsics.IsIntrinsicDeclarations);
             // 本节还核对其余资源的稳定排序；结构测试按资源名定位。
             roots = roots.Where(r => !r.IsIntrinsicDeclarations).ToArray();
-            if (roots.Count < 14) { TestHarness.Blank(); return; }
+            if (roots.Count < 24) { TestHarness.Blank(); return; }
 
-            // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'c'(0x63)；
-            // collections < coroutine（'l' < 'r'）；d < e < g < m < s < t
+            // 逻辑名 Ordinal 排序：'.'(0x2E) < 'c'；'C'(0x43) < 'a'(0x61) <
+            // 'c'；adapters < algorithms（'d' < 'l'）< atomic（'d' < 't'）；
+            // collections < coroutine（'l' < 'r'）；d < e < g < i（施工块
+            // 2-1 core/io/stream.rg；2-2 增 core/io/ 内多文件排序：
+            // autobuffer.rg < memory.rg < stream.rg，'a' < 'm' < 's'；
+            // 2-3 增 core/io/buffered.rg：'a' < 'b' < 'm'；2-4b1 增
+            // core/io/stdstreams.rg：'std' < 'str'（'d' < 'r'），故
+            // autobuffer < buffered < memory < stdstreams < stream；
+            // 3-6 增 core/io/text.rg：'t' > 's'，排 stream 后，故
+            // autobuffer < buffered < memory < stdstreams < stream <
+            // text）<
+            // m < n < p < q < s < t；
+            // serialization < set（'r' < 't'）< text（施工块 3-4 增
+            // core/text/ 三文件：builder < case_data < text < utf8——
+            // 'b' < 'c' < 't' < 'u'，施工块 3-2 增 core/text/text.rg、
+            // 3-3a 增 core/text/case_data.rg、3-4 增 core/text/builder.rg
+            // 与 core/text/utf8.rg；3-5a 增 core/text/parse.rg：'p' 在
+            // 'c' 与 't' 之间，故 builder < case_data < parse < text <
+            // utf8）< time；
+            // 4-4 增 core/serialization/serializer.rg：与
+            // core/serialization.rg 的公共前缀 "core/serialization" 之后
+            // '.'(0x2E) < '/'(0x2F)，故 serializer.rg 紧随 serialization.rg
+            // （index 22），其后 set/text/time 各顺延一位；
+            // 5-2a 增 core/serialization/json.rg：'j'(0x6A) < 's'(0x73)，
+            // 故 json.rg 排 serializer.rg 之前（index 22），serializer.rg
+            // 顺延至 23，set/text/time 各顺延至 24..30；
+            // 6-4 增 core/math.rg：'m'——在 io/（'i' < 'm'）之后、messaging
+            // 之前（'a' < 'e'），故 math.rg 为 index 17，messaging/
+            // native_rc/place/queue/serialization 族/set/text/time 各顺延
+            // 一位（time 由 30 至 31）；
+            // 7-1 增 core/fs/path.rg：'f'——在 exceptions（'e' < 'f'）之后、
+            // global_exceptions 之前（'f' < 'g'），故 path.rg 为 index 10，
+            // global_exceptions/io 族/math/messaging/native_rc/place/
+            // queue/serialization 族/set/text 族/time 各顺延一位
+            // （time 由 31 至 32）；
+            // 7-2 增 core/fs/primitives.rg：'f'——与 core/fs/path.rg 同目录，
+            // "path.rg" < "primitives.rg"（'a' < 'r'），故 primitives.rg
+            // 紧随 path.rg（index 11），global_exceptions 及之后各顺延一位
+            // （time 由 32 至 33）；
+            // 7-3 增 core/fs/file.rg：'f'——同目录 "file.rg" < "path.rg"
+            //（'f' < 'p'），故 file.rg 为 index 10、path.rg/primitives.rg
+            // 各顺延至 11/12，global_exceptions 及之后各再顺延一位
+            // （time 由 33 至 34）；
+            // 7-4 增 core/fs/info.rg：'i'——同目录 "file.rg" < "info.rg"
+            // < "path.rg"（'f' < 'i' < 'p'）< "primitives.rg"（'a' < 'r'），
+            // 故 info.rg 为 index 11，path.rg/primitives.rg 各顺延至
+            // 12/13，global_exceptions 及之后各再顺延一位（time 由 34
+            // 至 35）；
+            // 7-5 增 core/fs/directory.rg：'d'——同目录 "directory.rg" <
+            // "file.rg"（'d' < 'f'），故 directory.rg 为 index 10，
+            // file/info/path/primitives 各顺延至 11..14，global_exceptions
+            // 及之后各再顺延一位（time 由 35 至 36）
             TestHarness.Check("sourceName[0]（点开头文件名反推）",
                 roots[0].Span?.sourceName ?? "<null>", "<stdlib>/.bootstrap.rg");
             TestHarness.Check("sourceName[1]",
                 roots[1].Span?.sourceName ?? "<null>", "<stdlib>/core/Console.rg");
-            TestHarness.Check("sourceName[2]（Atomic）",
-                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic.rg");
-            TestHarness.Check("sourceName[3]（安全 Atomic 容器）",
-                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic_collections.rg");
-            TestHarness.Check("sourceName[10]（Place/Handle）",
-                roots[11].Span?.sourceName ?? "<null>", "<stdlib>/core/place.rg");
-            TestHarness.Check("sourceName[4]",
-                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
-            TestHarness.Check("sourceName[5]",
-                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.rg");
+            TestHarness.Check("sourceName[2]（施工块 1-6 借用适配器）",
+                roots[2].Span?.sourceName ?? "<null>", "<stdlib>/core/adapters.rg");
+            TestHarness.Check("sourceName[3]（施工块 1-7 通用集合算法）",
+                roots[3].Span?.sourceName ?? "<null>", "<stdlib>/core/algorithms.rg");
+            TestHarness.Check("sourceName[4]（Atomic）",
+                roots[4].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic.rg");
+            TestHarness.Check("sourceName[5]（安全 Atomic 容器）",
+                roots[5].Span?.sourceName ?? "<null>", "<stdlib>/core/atomic_collections.rg");
+            TestHarness.Check("sourceName[24]（MW11d native_rc）",
+                roots[24].Span?.sourceName ?? "<null>", "<stdlib>/core/native_rc.rg");
+            TestHarness.Check("sourceName[25]（Place/Handle）",
+                roots[25].Span?.sourceName ?? "<null>", "<stdlib>/core/place.rg");
             TestHarness.Check("sourceName[6]",
-                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
+                roots[6].Span?.sourceName ?? "<null>", "<stdlib>/core/collections.rg");
             TestHarness.Check("sourceName[7]",
-                roots[7].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
-            TestHarness.Check("sourceName[8]（MW12b 全局异常通道）",
-                roots[8].Span?.sourceName ?? "<null>", "<stdlib>/core/global_exceptions.rg");
-            TestHarness.Check("sourceName[9]（MW11d-C core.messaging）",
-                roots[9].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
-            TestHarness.Check("sourceName[11]（MW11d core.serialization）",
-                roots[12].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
-            TestHarness.Check("sourceName[12]（MW11c core.time）",
-                roots[13].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
+                roots[7].Span?.sourceName ?? "<null>", "<stdlib>/core/coroutine.rg");
+            TestHarness.Check("sourceName[8]",
+                roots[8].Span?.sourceName ?? "<null>", "<stdlib>/core/disposable.rg");
+            TestHarness.Check("sourceName[9]",
+                roots[9].Span?.sourceName ?? "<null>", "<stdlib>/core/exceptions.rg");
+            TestHarness.Check("sourceName[10]（施工块 7-5 core.fs 目录读取+创建删除）",
+                roots[10].Span?.sourceName ?? "<null>", "<stdlib>/core/fs/directory.rg");
+            TestHarness.Check("sourceName[11]（施工块 7-3 core.fs 文件流）",
+                roots[11].Span?.sourceName ?? "<null>", "<stdlib>/core/fs/file.rg");
+            TestHarness.Check("sourceName[12]（施工块 7-4 core.fs 信息查询与链接）",
+                roots[12].Span?.sourceName ?? "<null>", "<stdlib>/core/fs/info.rg");
+            TestHarness.Check("sourceName[13]（施工块 7-1 core.fs Path 与错误骨架）",
+                roots[13].Span?.sourceName ?? "<null>", "<stdlib>/core/fs/path.rg");
+            TestHarness.Check("sourceName[14]（施工块 7-2 core.fs native 原语层）",
+                roots[14].Span?.sourceName ?? "<null>", "<stdlib>/core/fs/primitives.rg");
+            TestHarness.Check("sourceName[15]（MW12b 全局异常通道）",
+                roots[15].Span?.sourceName ?? "<null>", "<stdlib>/core/global_exceptions.rg");
+            TestHarness.Check("sourceName[16]（施工块 2-2 core.io AutoBuffer）",
+                roots[16].Span?.sourceName ?? "<null>", "<stdlib>/core/io/autobuffer.rg");
+            TestHarness.Check("sourceName[17]（施工块 2-3 core.io 缓冲流包装器）",
+                roots[17].Span?.sourceName ?? "<null>", "<stdlib>/core/io/buffered.rg");
+            TestHarness.Check("sourceName[18]（施工块 2-2 core.io 内存流）",
+                roots[18].Span?.sourceName ?? "<null>", "<stdlib>/core/io/memory.rg");
+            TestHarness.Check("sourceName[19]（施工块 2-4b1 core.io 标准流）",
+                roots[19].Span?.sourceName ?? "<null>", "<stdlib>/core/io/stdstreams.rg");
+            TestHarness.Check("sourceName[20]（施工块 2-1 core.io 流核心抽象）",
+                roots[20].Span?.sourceName ?? "<null>", "<stdlib>/core/io/stream.rg");
+            TestHarness.Check("sourceName[21]（施工块 3-6 core.io 文本流适配器）",
+                roots[21].Span?.sourceName ?? "<null>", "<stdlib>/core/io/text.rg");
+            TestHarness.Check("sourceName[22]（施工块 6-4 core.math）",
+                roots[22].Span?.sourceName ?? "<null>", "<stdlib>/core/math.rg");
+            TestHarness.Check("sourceName[23]（MW11d-C core.messaging）",
+                roots[23].Span?.sourceName ?? "<null>", "<stdlib>/core/messaging.rg");
+            TestHarness.Check("sourceName[26]（施工块 1-5 core.collections Queue）",
+                roots[26].Span?.sourceName ?? "<null>", "<stdlib>/core/queue.rg");
+            TestHarness.Check("sourceName[27]（MW11d core.serialization）",
+                roots[27].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization.rg");
+            TestHarness.Check("sourceName[28]（施工块 5-2a core.serialization.json JsonSerializer 写侧）",
+                roots[28].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization/json.rg");
+            TestHarness.Check("sourceName[29]（施工块 4-4 core.serialization Serializer 基类）",
+                roots[29].Span?.sourceName ?? "<null>", "<stdlib>/core/serialization/serializer.rg");
+            TestHarness.Check("sourceName[30]（施工块 1-4 core.collections Set）",
+                roots[30].Span?.sourceName ?? "<null>", "<stdlib>/core/set.rg");
+            TestHarness.Check("sourceName[31]（施工块 3-4 core.text StringBuilder）",
+                roots[31].Span?.sourceName ?? "<null>", "<stdlib>/core/text/builder.rg");
+            TestHarness.Check("sourceName[32]（施工块 3-3a core.text 大小写映射数据表）",
+                roots[32].Span?.sourceName ?? "<null>", "<stdlib>/core/text/case_data.rg");
+            TestHarness.Check("sourceName[33]（施工块 3-5a/3-5b core.text 整数+浮点解析）",
+                roots[33].Span?.sourceName ?? "<null>", "<stdlib>/core/text/parse.rg");
+            TestHarness.Check("sourceName[34]（施工块 3-2 core.text）",
+                roots[34].Span?.sourceName ?? "<null>", "<stdlib>/core/text/text.rg");
+            TestHarness.Check("sourceName[35]（施工块 3-4 core.text UTF-8 编解码）",
+                roots[35].Span?.sourceName ?? "<null>", "<stdlib>/core/text/utf8.rg");
+            TestHarness.Check("sourceName[36]（MW11c core.time）",
+                roots[36].Span?.sourceName ?? "<null>", "<stdlib>/core/time.rg");
 
             TestHarness.Blank();
         }
@@ -684,12 +811,13 @@ namespace RigiCompiler.Tests
 
             // 顶层：namespace + RuntimeException/IOException/CastException/
             // NoSuchMethodException/DividedByZeroException/OutOfBoundException/
-            // IllegalStateException/NoSuchElementException 8 个 open class
-            // （共 10 个声明；MW9b 增 OutOfBoundException，MW11c 增
-            // IllegalStateException，MW11d-B1 增 NoSuchElementException）
-            TestHarness.CheckTrue("顶层恰好 11 个声明（namespace + Exception + 9 class）",
-                root.Declarations.Count == 11, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 11) { TestHarness.Blank(); return; }
+            // IllegalStateException/NoSuchElementException/IllegalArgumentException
+            // 9 个 open class（共 12 个声明；MW9b 增 OutOfBoundException，
+            // MW11c 增 IllegalStateException，MW11d-B1 增 NoSuchElementException，
+            // b4-1 增 IllegalArgumentException——Parcel 字段键契约 §4.6.3/D3）
+            TestHarness.CheckTrue("顶层恰好 12 个声明（namespace + Exception + 10 class）",
+                root.Declarations.Count == 12, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 12) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core",
@@ -697,7 +825,7 @@ namespace RigiCompiler.Tests
 
             string[] expected = { "Exception", "RuntimeException", "ImmutablePlaceException", "IOException", "CastException",
                 "NoSuchMethodException", "DividedByZeroException", "OutOfBoundException",
-                "IllegalStateException", "NoSuchElementException" };
+                "IllegalStateException", "NoSuchElementException", "IllegalArgumentException" };
             for (int i = 0; i < expected.Length; i++)
             {
                 var index = i + 1;
@@ -739,13 +867,275 @@ namespace RigiCompiler.Tests
             TestHarness.Blank();
         }
 
-        // ===== 2g. time 结构（MW11c：namespace core.time + 3 struct + native）=====
-        // ===== 2g. global_exceptions 结构（MW12b：namespace core +
+        // ===== 2g-1. fs 结构（施工块 7-1：namespace core.fs +
+        // FileSystemErrorKind + FileSystemException + Serializable Path +
+        // rigi_host_is_windows 私有原语，STDLIB §4.5.1/§4.5.2/§4.5.9）=====
+        private static void TestFsPathStructure()
+        {
+            TestHarness.Section("Structure: namespace core.fs");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 14)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 14 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/fs/path.rg");
+
+            // 顶层：namespace + 错误分类枚举 + 消息助手 + 异常类 + 平台
+            // 判定原语 + 6 个词法助手（fsIsWindows/fsSep/fsByteAt/
+            // fsIsSepByte/FsParsedPath/fsSplitSegments/fsParse/fsBuildPrefix/
+            // fsBuildAll/fsCheckNameWindows/fsIsReservedWindows/
+            // fsValidateWindows/fsValidate）+ Path struct + fsAppendAll
+            // （共 20 个声明，STDLIB §4.5.1/§4.5.2/§4.5.9 + D5）
+            TestHarness.CheckTrue("顶层恰好 20 个声明（namespace + enum + 异常 + native + 14 助手/类 + Path）",
+                root.Declarations.Count == 20, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.fs",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.fs");
+
+            // 声明[1]：FileSystemErrorKind 17 case（§4.5.9 逐字清单）
+            TestHarness.CheckTrue("声明[1] 是 enum struct FileSystemErrorKind（§4.5.9 十七类逐字）",
+                root.Declarations[1] is EnumStructDeclarationASTNode errKind
+                && errKind.EnumName == "FileSystemErrorKind"
+                && errKind.Cases.Select(c => c.CaseName).SequenceEqual(
+                    new[] { "InvalidPath", "InvalidNameEncoding", "NotFound",
+                        "AlreadyExists", "PermissionDenied", "NotDirectory",
+                        "IsDirectory", "WrongType", "DirectoryNotEmpty",
+                        "ReadOnlyFileSystem", "NoSpace", "CrossDevice",
+                        "TooManyLinks", "PathTooLong", "SharingViolation",
+                        "Unsupported", "Other" }));
+
+            // 声明[3]：FileSystemException（open，五字段 + 双 init +
+            // getMessage 覆写）
+            TestHarness.CheckTrue("声明[3] 是 open class FileSystemException : core.IOException（kind/operation/path/path2/nativeError + 双 init + getMessage 覆写）",
+                root.Declarations[3] is ClassDeclarationASTNode fsEx
+                && fsEx.ClassName == "FileSystemException"
+                && fsEx.Modifiers.Contains(Keywords.OPEN)
+                && fsEx.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "kind")
+                && fsEx.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "operation")
+                && fsEx.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "path")
+                && fsEx.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "path2")
+                && fsEx.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "nativeError")
+                && fsEx.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Kind == CallableKind.Init) == 2
+                && fsEx.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getMessage"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE)));
+
+            // 声明[4]：rigi_host_is_windows priv native（返回 bool；
+            // @NativeSymbol 键 host_is_windows → C 导出 rigi_host_is_windows）
+            var hostWin = root.Declarations[4] as CallableDeclarationASTNode;
+            TestHarness.CheckTrue("声明[4] 是 rigi_host_is_windows priv native（返回 bool）",
+                hostWin != null
+                && hostWin.Name == "rigi_host_is_windows"
+                && hostWin.Modifiers.Contains(Keywords.NATIVE)
+                && hostWin.Modifiers.Contains(Keywords.PRIV)
+                && hostWin.Body == null
+                && hostWin.ReturnType != null);
+            TestHarness.CheckTrue("声明[4] 带 @NativeLibrary/@NativeSymbol 双注解",
+                hostWin != null && hostWin.Annotations.Count == 2
+                && AstDescribe.Symbol(hostWin.Annotations[0].Name.symbol) == "NativeLibrary"
+                && AstDescribe.Symbol(hostWin.Annotations[1].Name.symbol) == "NativeSymbol",
+                hostWin == null ? "<none>" : $"注解数 {hostWin.Annotations.Count}");
+            TestHarness.CheckTrue("声明[4] NativeSymbol 实参是 host_is_windows",
+                hostWin != null && hostWin.Annotations.Count == 2
+                && hostWin.Annotations[1].Arguments.Count == 1
+                && AstDescribe.Expr(hostWin.Annotations[1].Arguments[0].Value.Expression)
+                    == "Str(\"host_is_windows\")",
+                hostWin == null || hostWin.Annotations.Count < 1
+                    ? "<none>"
+                    : AstDescribe.Expr(hostWin.Annotations[1].Arguments[0].Value.Expression));
+
+            // 声明[18]：Path struct（@Serializable；text 访问器 + of +
+            // 词法操作族 + equals/hash/toString 覆写）——分条断言定位
+            TestHarness.CheckTrue("声明[18] 是 struct Path",
+                root.Declarations[18] is StructDeclarationASTNode path
+                && path.StructName == "Path");
+            if (root.Declarations[18] is StructDeclarationASTNode path2)
+            {
+                TestHarness.CheckTrue("Path 带 @core.serialization.Serializable 注解",
+                    path2.Annotations.Any(a =>
+                        AstDescribe.Symbol(a.Name.symbol)
+                            == "core.serialization.Serializable"));
+                TestHarness.CheckTrue("Path 含 text 访问器字段（get+set）",
+                    path2.Members.OfType<VariableDeclarationASTNode>()
+                        .Any(f => f.Name == "text" && f.Getter != null
+                            && f.Setter != null));
+                TestHarness.CheckTrue("Path 含 static of",
+                    path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "of"
+                            && m.Modifiers.Contains(Keywords.STATIC)));
+                TestHarness.CheckTrue("Path 含词法操作族",
+                    path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "normalizeLexically")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "join")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "joinAll")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "toAbsolute")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "relativeTo")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "root")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "parent")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "name")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "extension")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "nameWithoutExtension")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "isAbsolute"));
+                TestHarness.CheckTrue("Path 含 equals/hash/toString",
+                    path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "equals")
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "hash"
+                            && m.Modifiers.Contains(Keywords.OVERRIDE))
+                    && path2.Members.OfType<CallableDeclarationASTNode>()
+                        .Any(m => m.Name == "toString"
+                            && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            }
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2g-1b. fs/primitives 结构（施工块 7-2：namespace core.fs +
+        // open 标志位常量族 + 错误映射/二进制助手 + FileHandle/FileCarriage
+        // 句柄模型 + FsWake + native 原语面 + fsOpen/fsRead 包装）=====
+        private static void TestFsPrimitivesStructure()
+        {
+            TestHarness.Section("Structure: namespace core.fs 原语层");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 15)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 15 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/fs/primitives.rg");
+
+            // 顶层：namespace + 6 个 open 标志位 const + fsErrKind/
+            // fsMakeException/fsByteAt/fsReadI64Le 4 助手 + FileHandle/
+            // FileCarriage/FsWake 3 类 + retainFile + 5 个 priv native
+            //（native_rc_retain/release + fs_open/fs_read_start/
+            // fs_read_take）+ fsOpen/fsRead 2 包装（阶段 1 共 22 个声明）
+            // + 阶段 2 原语族追加（kind/seek 基准/权限 const 7 + 原语族
+            // priv native 17 + fsReadI32Le/fsDecodeName/fsParseStat 3
+            // 助手 + FsStatInfo/FsDirEntry 2 struct + DirHandle/
+            // DirCarriage 2 类 + retainDir + 挂起写/flush/定位/长度/
+            // 信息查询/创建删除/移动/目录枚举包装 15）——阶段 2 共 73
+            // 个声明 + 7-6 追加（rigi_fs_same_file priv native +
+            // fsSameIdentity 包装，系统文件身份比较，§4.5.7 自复制拒绝
+            // 判定面）2 个——共 75 个声明
+            //（STDLIB §4.5.6/§4.5.7/§4.5.9 + §3.2/§3.3）
+            TestHarness.CheckTrue("顶层恰好 75 个声明（阶段 1 的 22 + 阶段 2 原语族 51 + 7-6 身份比较 2）",
+                root.Declarations.Count == 75, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.fs",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.fs");
+
+            // 声明[1..6]：open 标志位 const（FS_F_READ..FS_F_CREATE_NEW，
+            // 与 rigi_rt fs.c RIGI_FS_F_* 逐位一致）
+            TestHarness.CheckTrue("声明[1..6] 是 FS_F_* open 标志位 const",
+                root.Declarations[1] is VariableDeclarationASTNode f1
+                    && f1.Name == "FS_F_READ"
+                && root.Declarations[6] is VariableDeclarationASTNode f6
+                    && f6.Name == "FS_F_CREATE_NEW");
+
+            // 声明[7]：fsErrKind（归一码 → FileSystemErrorKind 唯一映射落点）
+            TestHarness.CheckTrue("声明[7] 是 fsErrKind 错误映射助手",
+                root.Declarations[7] is CallableDeclarationASTNode kindFn
+                && kindFn.Name == "fsErrKind");
+
+            // 声明[11]：FileHandle（internal class : NativeRcHandle<FileCarriage>，
+            // token/pathText 字段 + carry/dispose 覆写）
+            TestHarness.CheckTrue("声明[11] 是 internal class FileHandle（NativeRcHandle 模型）",
+                root.Declarations[11] is ClassDeclarationASTNode fh
+                && fh.ClassName == "FileHandle"
+                && fh.Modifiers.Contains(Keywords.INTERNAL)
+                && fh.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "carry"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE))
+                && fh.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "dispose"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE)));
+
+            // 声明[14]：FsWake（internal shared class : core.coroutine.
+            // EventAlarm，一次性粘滞事件身份）
+            TestHarness.CheckTrue("声明[14] 是 internal shared class FsWake : EventAlarm",
+                root.Declarations[14] is ClassDeclarationASTNode wake
+                && wake.ClassName == "FsWake"
+                && wake.Modifiers.Contains(Keywords.INTERNAL)
+                && wake.Modifiers.Contains(Keywords.SHARED));
+
+            // 声明[15..19]：priv native 原语面（native_rc_retain/release +
+            // fs_open/fs_read_start/fs_read_take；@NativeLibrary("rigi_rt")
+            // + @NativeSymbol 双注解）
+            TestHarness.CheckTrue("声明[15..19] 是 priv native 原语面",
+                root.Declarations[15] is CallableDeclarationASTNode n1
+                    && n1.Name == "rigi_native_rc_retain"
+                    && n1.Modifiers.Contains(Keywords.NATIVE)
+                    && n1.Modifiers.Contains(Keywords.PRIV)
+                && root.Declarations[17] is CallableDeclarationASTNode n3
+                    && n3.Name == "rigi_fs_open"
+                    && n3.Modifiers.Contains(Keywords.NATIVE)
+                    && n3.Modifiers.Contains(Keywords.PRIV)
+                && root.Declarations[19] is CallableDeclarationASTNode n5
+                    && n5.Name == "rigi_fs_read_take"
+                    && n5.Modifiers.Contains(Keywords.NATIVE)
+                    && n5.Modifiers.Contains(Keywords.PRIV));
+
+            // 声明[20..21]：fsOpen/fsRead internal 包装（挂起读是普通
+            // func 内 yield，§3.1）
+            TestHarness.CheckTrue("声明[20..21] 是 fsOpen/fsRead internal 包装",
+                root.Declarations[20] is CallableDeclarationASTNode o1
+                    && o1.Name == "fsOpen"
+                    && o1.Modifiers.Contains(Keywords.INTERNAL)
+                && root.Declarations[21] is CallableDeclarationASTNode o2
+                    && o2.Name == "fsRead"
+                    && o2.Modifiers.Contains(Keywords.INTERNAL));
+
+            // 阶段 2 首批：声明[22..23] 是 FS_KIND_* kind 常量；末声明
+            // 是 fsDirRead 目录枚举包装（阶段 2 原语族追加在尾部，前段
+            // 序号不受影响）
+            TestHarness.CheckTrue("声明[22..23] 是 FS_KIND_FILE/FS_KIND_DIRECTORY const（阶段 2 首批）",
+                root.Declarations[22] is VariableDeclarationASTNode k1
+                    && k1.Name == "FS_KIND_FILE"
+                && root.Declarations[23] is VariableDeclarationASTNode k2
+                    && k2.Name == "FS_KIND_DIRECTORY");
+            // 末声明：7-6 追加的 fsSameIdentity 身份比较包装（其 priv
+            // native rigi_fs_same_file 紧随其前；阶段 2 尾 fsDirRead 为
+            // 倒数第三）
+            TestHarness.CheckTrue("末声明是 fsSameIdentity internal 包装（7-6 尾）",
+                root.Declarations[^1] is CallableDeclarationASTNode si
+                    && si.Name == "fsSameIdentity"
+                    && si.Modifiers.Contains(Keywords.INTERNAL));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2g-2. global_exceptions 结构（MW12b：namespace core +
         // UndisposedResourceException + GlobalExceptionHandler）=====
         private static void TestGlobalExceptionsStructure()
         {
             TestHarness.Section("Structure: namespace core + 全局异常通道");
-
             var roots = StdlibSources.ParseAll();
             if (roots.Count < 9)
             {
@@ -801,11 +1191,19 @@ namespace RigiCompiler.Tests
             }
             var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/time.rg");
 
-            // 顶层：namespace + TimeStamp/TimeSpan/DateTime 3 个 struct
-            // + rigi_time_now native（共 5 个声明，RUNTIME §19.7/§17.4）
-            TestHarness.CheckTrue("顶层恰好 5 个声明（namespace + 3 struct + native）",
-                root.Declarations.Count == 5, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+            // 顶层（块 6-1）：namespace + TimeStamp/TimeSpan/DateTime 3 个
+            // struct + rigi_time_now native；块 6-2 追加 TimeParseException
+            // + 11 个 priv 扫描/日历助手 + 4 个 ext 静态解析入口；块 6-3
+            // 追加 rigi_monotonic_now_ns native + MonotonicInstant/
+            // MonotonicClock/Stopwatch；UTC 六分量块追加 internal
+            // DateTimeCivil 载体；datetime-clock-precision 块把 DateTime.now
+            // 底座从毫秒 rigi_time_now 换成单次采样 rigi_time_now_parts
+            // （out Span<u8> 12 字节小端）+ tmReadI64Le/tmReadI32Le 两个
+            // priv 读取助手（共 28 个声明，RUNTIME §19.7/§17.4 +
+            // STDLIB §4.9.2/§4.9.3/§4.9.4/§4.9.5）
+            TestHarness.CheckTrue("顶层恰好 28 个声明（namespace + 3 struct + DateTimeCivil + 2 native + TimeParseException + 13 助手 + 4 ext 静态 + MonotonicInstant/MonotonicClock/Stopwatch）",
+                root.Declarations.Count == 28, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.time",
@@ -828,8 +1226,19 @@ namespace RigiCompiler.Tests
                     .Any(m => m.Name == "compareTo")
                 && timeSpan.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "equals"));
-            TestHarness.CheckTrue("声明[3] 是 DateTime struct（now minus compareTo equals）",
-                root.Declarations[3] is StructDeclarationASTNode dateTime
+            // UTC 六分量块追加的 civil-from-days 单一算法载体（internal，
+            // 不对外承诺布局），挤在 DateTime 之前。
+            TestHarness.CheckTrue("声明[3] 是 internal struct DateTimeCivil（year..millisecond 七分量）",
+                root.Declarations[3] is StructDeclarationASTNode civil
+                && civil.StructName == "DateTimeCivil"
+                && civil.Modifiers.Contains(Keywords.INTERNAL)
+                && civil.Members.OfType<VariableDeclarationASTNode>()
+                    .Count(f => f.Name == "year" || f.Name == "month"
+                        || f.Name == "day" || f.Name == "hour"
+                        || f.Name == "minute" || f.Name == "second"
+                        || f.Name == "millisecond") == 7);
+            TestHarness.CheckTrue("声明[4] 是 DateTime struct（now minus compareTo equals）",
+                root.Declarations[4] is StructDeclarationASTNode dateTime
                 && dateTime.StructName == "DateTime"
                 && dateTime.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "now" && m.Modifiers.Contains(Keywords.STATIC))
@@ -839,29 +1248,266 @@ namespace RigiCompiler.Tests
                     .Any(m => m.Name == "compareTo")
                 && dateTime.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "equals"));
-            var timeNow = root.Declarations[4] as CallableDeclarationASTNode;
-            TestHarness.CheckTrue("声明[4] 是 rigi_time_now priv native（返回 i64）",
+            // datetime-clock-precision 块：DateTime.now 改走单次采样专用
+            // 原语 rigi_time_now_parts（12 字节小端 i64 ms + i32 ns 余量）；
+            // 旧毫秒 rigi_time_now 声明已撤出本文件（core.coroutine 自留
+            // 同符号声明，ABI 不动）。
+            var timeNow = root.Declarations[5] as CallableDeclarationASTNode;
+            TestHarness.CheckTrue("声明[5] 是 rigi_time_now_parts priv native（out Span<u8>）",
                 timeNow != null
-                && timeNow.Name == "rigi_time_now"
+                && timeNow.Name == "rigi_time_now_parts"
                 && timeNow.Modifiers.Contains(Keywords.NATIVE)
                 && timeNow.Modifiers.Contains(Keywords.PRIV)
                 && timeNow.Body == null
-                && timeNow.ReturnType != null);
-            // @NativeSymbol("time_now") 必带（coroutine.rg 同符号声明同
-            // 口径）：缺省符号经 rigi_rt 前缀拼接落空成 rigi_rigi_time_now
-            TestHarness.CheckTrue("声明[4] 带 @NativeLibrary/@NativeSymbol 双注解",
+                && timeNow.Parameters.Parameters.Count == 1);
+            // @NativeSymbol("time_now_parts") 必带：缺省符号经 rigi_rt
+            // 前缀拼接会落空成 rigi_rigi_time_now_parts
+            TestHarness.CheckTrue("声明[5] 带 @NativeLibrary/@NativeSymbol 双注解",
                 timeNow != null && timeNow.Annotations.Count == 2
                 && AstDescribe.Symbol(timeNow.Annotations[0].Name.symbol) == "NativeLibrary"
                 && AstDescribe.Symbol(timeNow.Annotations[1].Name.symbol) == "NativeSymbol",
                 timeNow == null ? "<none>" : $"注解数 {timeNow.Annotations.Count}");
-            TestHarness.CheckTrue("声明[4] NativeSymbol 实参是 time_now",
+            TestHarness.CheckTrue("声明[5] NativeSymbol 实参是 time_now_parts",
                 timeNow != null && timeNow.Annotations.Count == 2
                 && timeNow.Annotations[1].Arguments.Count == 1
                 && AstDescribe.Expr(timeNow.Annotations[1].Arguments[0].Value.Expression)
-                    == "Str(\"time_now\")",
+                    == "Str(\"time_now_parts\")",
                 timeNow == null || timeNow.Annotations.Count < 1
                     ? "<none>"
                     : AstDescribe.Expr(timeNow.Annotations[1].Arguments[0].Value.Expression));
+            // 12 字节小端读取助手（priv，纯 Rigi 逐字节拼装，避免依赖
+            // 宿主对齐/字节序假设）。
+            TestHarness.CheckTrue("声明[6]/[7] 是 tmReadI64Le/tmReadI32Le priv 小端读取助手",
+                root.Declarations[6] is CallableDeclarationASTNode rd64
+                && rd64.Name == "tmReadI64Le"
+                && rd64.Modifiers.Contains(Keywords.PRIV)
+                && root.Declarations[7] is CallableDeclarationASTNode rd32
+                && rd32.Name == "tmReadI32Le"
+                && rd32.Modifiers.Contains(Keywords.PRIV));
+
+            // ---- 块 6-2：文本格式层（§4.9.2 / §4.9.3 / §4.9.5，D6） ----
+            TestHarness.CheckTrue("声明[8] 是 open class TimeParseException（isOutOfRange + position + getMessage 覆写）",
+                root.Declarations[8] is ClassDeclarationASTNode timeParse
+                && timeParse.ClassName == "TimeParseException"
+                && timeParse.Modifiers.Contains(Keywords.OPEN)
+                && timeParse.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "isOutOfRange")
+                && timeParse.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "position")
+                && timeParse.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getMessage"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            // 4 个 ext 静态解析入口（ext 成员 Name 为限定名 目标.成员；
+            // 按名 + EXT/STATIC 修饰符，顺序无关）
+            TestHarness.CheckTrue("含 DateTime.parse/tryParse 与 TimeSpan.parse/tryParse 4 个 ext 静态入口",
+                root.Declarations.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "DateTime.parse" && m.Modifiers.Contains(Keywords.EXT)
+                        && m.Modifiers.Contains(Keywords.STATIC))
+                && root.Declarations.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "DateTime.tryParse" && m.Modifiers.Contains(Keywords.EXT)
+                        && m.Modifiers.Contains(Keywords.STATIC))
+                && root.Declarations.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "TimeSpan.parse" && m.Modifiers.Contains(Keywords.EXT)
+                        && m.Modifiers.Contains(Keywords.STATIC))
+                && root.Declarations.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "TimeSpan.tryParse" && m.Modifiers.Contains(Keywords.EXT)
+                        && m.Modifiers.Contains(Keywords.STATIC)));
+            // 两 struct 的 toString 文本输出（TimeSpan 覆写零参 ISO Duration；
+            // DateTime 覆写零参 + 带偏移重载）
+            TestHarness.CheckTrue("TimeSpan struct 含 toString 覆写（§4.9.3 Duration 输出）",
+                root.Declarations[2] is StructDeclarationASTNode ts2
+                && ts2.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "toString"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("DateTime struct 含 toString 覆写与带偏移重载（§4.9.2 RFC 3339 子集输出）",
+                root.Declarations[4] is StructDeclarationASTNode dt2
+                && dt2.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "toString"
+                        && m.Modifiers.Contains(Keywords.OVERRIDE))
+                && dt2.Members.OfType<CallableDeclarationASTNode>()
+                    .Count(m => m.Name == "toString") == 2);
+
+            // ---- 块 6-3：单调时钟层（§4.9.4 / §4.9.5） ----
+            // 声明[24] rigi_monotonic_now_ns priv native（返回 i64；
+            // @NativeSymbol 键 monotonic_now_ns → C 导出 rigi_monotonic_now_ns）
+            var monoNow = root.Declarations[24] as CallableDeclarationASTNode;
+            TestHarness.CheckTrue("声明[24] 是 rigi_monotonic_now_ns priv native（返回 i64）",
+                monoNow != null
+                && monoNow.Name == "rigi_monotonic_now_ns"
+                && monoNow.Modifiers.Contains(Keywords.NATIVE)
+                && monoNow.Modifiers.Contains(Keywords.PRIV)
+                && monoNow.Body == null
+                && monoNow.ReturnType != null);
+            TestHarness.CheckTrue("声明[24] 带 @NativeLibrary/@NativeSymbol 双注解",
+                monoNow != null && monoNow.Annotations.Count == 2
+                && AstDescribe.Symbol(monoNow.Annotations[0].Name.symbol) == "NativeLibrary"
+                && AstDescribe.Symbol(monoNow.Annotations[1].Name.symbol) == "NativeSymbol",
+                monoNow == null ? "<none>" : $"注解数 {monoNow.Annotations.Count}");
+            TestHarness.CheckTrue("声明[24] NativeSymbol 实参是 monotonic_now_ns",
+                monoNow != null && monoNow.Annotations.Count == 2
+                && monoNow.Annotations[1].Arguments.Count == 1
+                && AstDescribe.Expr(monoNow.Annotations[1].Arguments[0].Value.Expression)
+                    == "Str(\"monotonic_now_ns\")",
+                monoNow == null || monoNow.Annotations.Count < 1
+                    ? "<none>"
+                    : AstDescribe.Expr(monoNow.Annotations[1].Arguments[0].Value.Expression));
+            // 声明[25] MonotonicInstant struct（compareTo/equals/minus；无
+            // Serializable——§4.9.5 不持久化序列化）
+            TestHarness.CheckTrue("声明[25] 是 MonotonicInstant struct（compareTo + equals + minus，无 Serializable 注解）",
+                root.Declarations[25] is StructDeclarationASTNode monoInstant
+                && monoInstant.StructName == "MonotonicInstant"
+                && !monoInstant.Annotations.Any(a =>
+                    AstDescribe.Symbol(a.Name.symbol) == "Serializable")
+                && monoInstant.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "compareTo")
+                && monoInstant.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "equals")
+                && monoInstant.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "minus"));
+            // 声明[26] MonotonicClock class（static now）
+            TestHarness.CheckTrue("声明[26] 是 MonotonicClock class（static now）",
+                root.Declarations[26] is ClassDeclarationASTNode monoClock
+                && monoClock.ClassName == "MonotonicClock"
+                && monoClock.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "now" && m.Modifiers.Contains(Keywords.STATIC)));
+            // 声明[27] Stopwatch class（start/stop/reset/restart + 只读
+            // elapsed/isRunning）
+            TestHarness.CheckTrue("声明[27] 是 Stopwatch class（start/stop/reset/restart + elapsed/isRunning）",
+                root.Declarations[27] is ClassDeclarationASTNode stopwatch
+                && stopwatch.ClassName == "Stopwatch"
+                && stopwatch.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "start")
+                && stopwatch.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "stop")
+                && stopwatch.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "reset")
+                && stopwatch.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "restart")
+                && stopwatch.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "elapsed" && f.Getter != null && f.Setter == null)
+                && stopwatch.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(f => f.Name == "isRunning" && f.Getter != null && f.Setter == null));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2g-2. math 结构（施工块 6-4：namespace core.math + 常量 +
+        // RoundingMode + 84 个 pub func + 36 个 priv native 原语；
+        // 施工块 6-5 追加 Random local 类 + sys_random_u64 原语）=====
+        private static void TestMathStructure()
+        {
+            TestHarness.Section("Structure: namespace core.math");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 18)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 18 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/math.rg");
+
+            // 顶层（块 6-4 阶段 1）：namespace + pi/e/tau 3 常量 +
+            // RoundingMode enum struct + abs/min/max/clamp 全宽度重载
+            //（各 10：8 整数 + float/double）+ isNaN/isInfinite/isFinite
+            // 各 2 重载（共 50 个声明）；阶段 2 增 floor/ceil/trunc 各 2 +
+            // round 4（+10）；阶段 3 增 sqrt/pow/exp/ln/log2/log10/sin/
+            // cos/tan/asin/acos/atan/atan2 各 2（+26）+ 取整原语 10 +
+            // 超越函数原语 26（123 个声明）；块 6-5 阶段 1 增
+            // sys_random_u64 原语 + Random local 类（+2，共 125，
+            // STDLIB §4.11.1–§4.11.5 / D7）
+            TestHarness.CheckTrue("顶层恰好 125 个声明（namespace + 3 const + " +
+                "RoundingMode + 82 func + 37 native + Random 类）",
+                root.Declarations.Count == 125, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 5) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.math",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.math");
+
+            // 常量：pub const pi/e/tau（double 类型标注）
+            for (int i = 0; i < 3; i++)
+            {
+                var name = new[] { "pi", "e", "tau" }[i];
+                TestHarness.CheckTrue($"声明[{i + 1}] 是 pub const {name}（double）",
+                    root.Declarations[i + 1] is VariableDeclarationASTNode c
+                    && c.Name == name
+                    && c.Modifiers.Contains(Keywords.PUB));
+            }
+
+            TestHarness.CheckTrue("声明[4] 是 RoundingMode enum struct（ToEven/AwayFromZero）",
+                root.Declarations[4] is EnumStructDeclarationASTNode mode
+                && mode.EnumName == "RoundingMode"
+                && mode.Cases.Count == 2
+                && mode.Cases.Select(c => c.CaseName).SequenceEqual(
+                    new[] { "ToEven", "AwayFromZero" }));
+
+            // pub func：82 个有体非 native（abs/min/max/clamp 各 10 +
+            // 分类×6 + 取整×10 + 超越×26）
+            var funcs = root.Declarations.OfType<CallableDeclarationASTNode>()
+                .Where(f => !f.Modifiers.Contains(Keywords.NATIVE)).ToList();
+            TestHarness.CheckTrue("恰好 82 个 pub/priv 非 native 函数（有体）",
+                funcs.Count == 82 && funcs.All(f => f.Body != null),
+                $"实际 {funcs.Count}");
+            // 关键重载按名 + 形态存在（顺序无关）
+            TestHarness.CheckTrue("abs/min/max/clamp 全宽度重载齐（各 10）",
+                funcs.Count(f => f.Name == "abs") == 10
+                && funcs.Count(f => f.Name == "min") == 10
+                && funcs.Count(f => f.Name == "max") == 10
+                && funcs.Count(f => f.Name == "clamp") == 10);
+            TestHarness.CheckTrue("取整族与 RoundingMode round 重载齐",
+                funcs.Count(f => f.Name == "floor") == 2
+                && funcs.Count(f => f.Name == "ceil") == 2
+                && funcs.Count(f => f.Name == "trunc") == 2
+                && funcs.Count(f => f.Name == "round") == 4);
+            TestHarness.CheckTrue("超越函数重载齐（sqrt/pow/exp/ln/log2/log10/" +
+                "sin/cos/tan/asin/acos/atan/atan2 各 2）",
+                funcs.Count(f => f.Name == "sqrt") == 2
+                && funcs.Count(f => f.Name == "pow") == 2
+                && funcs.Count(f => f.Name == "exp") == 2
+                && funcs.Count(f => f.Name == "ln") == 2
+                && funcs.Count(f => f.Name == "log2") == 2
+                && funcs.Count(f => f.Name == "log10") == 2
+                && funcs.Count(f => f.Name == "sin") == 2
+                && funcs.Count(f => f.Name == "cos") == 2
+                && funcs.Count(f => f.Name == "tan") == 2
+                && funcs.Count(f => f.Name == "asin") == 2
+                && funcs.Count(f => f.Name == "acos") == 2
+                && funcs.Count(f => f.Name == "atan") == 2
+                && funcs.Count(f => f.Name == "atan2") == 2);
+            TestHarness.CheckTrue("分类函数 isNaN/isInfinite/isFinite 各 2",
+                funcs.Count(f => f.Name == "isNaN") == 2
+                && funcs.Count(f => f.Name == "isInfinite") == 2
+                && funcs.Count(f => f.Name == "isFinite") == 2);
+
+            // priv native 原语：37 个（取整 10 + 超越 26 + 6-5 系统随机
+            // 材料 1），无体、@NativeLibrary/@NativeSymbol 双注解
+            var natives = root.Declarations.OfType<CallableDeclarationASTNode>()
+                .Where(f => f.Modifiers.Contains(Keywords.NATIVE)).ToList();
+            TestHarness.CheckTrue("恰好 37 个 priv native 原语（无体、双注解）",
+                natives.Count == 37
+                && natives.All(f => f.Modifiers.Contains(Keywords.PRIV)
+                    && f.Body == null
+                    && f.Annotations.Count == 2
+                    && AstDescribe.Symbol(f.Annotations[0].Name.symbol) == "NativeLibrary"
+                    && AstDescribe.Symbol(f.Annotations[1].Name.symbol) == "NativeSymbol"),
+                $"实际 {natives.Count}");
+            TestHarness.CheckTrue("pow 首版仅浮点重载（无整数 pow）",
+                !funcs.Any(f => f.Name == "pow"
+                    && f.Parameters.Parameters.Any(p =>
+                        p.Type != null && AstDescribe.Type(p.Type).Contains("i32"))));
+
+            // 施工块 6-5：Random local 类（末尾声明；成员方法为类内声明，
+            // 不计入顶层 funcs/natives 数）
+            var randomClass = root.Declarations.OfType<ClassDeclarationASTNode>()
+                .SingleOrDefault(c => c.ClassName == "Random");
+            TestHarness.CheckTrue("Random local 类存在（core.math，无 " +
+                "shared/Serializable 标注）",
+                randomClass != null
+                && !randomClass.Modifiers.Contains(Keywords.SHARED)
+                && !randomClass.Annotations.Any(a =>
+                    AstDescribe.Symbol(a.Name.symbol) == "Serializable"));
 
             TestHarness.Blank();
         }
@@ -881,9 +1527,9 @@ namespace RigiCompiler.Tests
             }
             var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/serialization.rg");
 
-            TestHarness.CheckTrue("serialization 不再声明 SerializationBase",
-                root.Declarations.Count == 8, $"实际 {root.Declarations.Count}");
-            if (root.Declarations.Count < 8) { TestHarness.Blank(); return; }
+            TestHarness.CheckTrue("serialization 声明计数（固定 BMP 分类四表 + 查表函数）",
+                root.Declarations.Count == 42, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 42) { TestHarness.Blank(); return; }
 
             var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
             TestHarness.CheckTrue("首声明是 namespace core.serialization",
@@ -917,6 +1563,12 @@ namespace RigiCompiler.Tests
                 && parcel.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "setElement")
                 && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getDynamic")
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "setDynamic")
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "contains")
+                && parcel.Members.OfType<CallableDeclarationASTNode>()
                     .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
             TestHarness.CheckTrue("声明[6] 是 fromParcel",
                 root.Declarations[6] is CallableDeclarationASTNode fromP
@@ -924,6 +1576,107 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("声明[7] 是 deepCopy",
                 root.Declarations[7] is CallableDeclarationASTNode deep
                 && deep.Name == "deepCopy");
+
+            // b4-2 动态访问面：Parcel 动态三面（类内成员，非顶层）+ 文件末尾
+            // 的 SB 表示校验解析器（§4.6.1 / D3，顶层声明序锁定）。
+            TestHarness.CheckTrue("声明[8..11] 是字段名 BMP 分类四表",
+                root.Declarations.Skip(8).Take(4)
+                    .OfType<VariableDeclarationASTNode>().Select(d => d.Name)
+                    .SequenceEqual(new[] {
+                        "identifierLetterStarts", "identifierLetterEnds",
+                        "identifierDigitStarts", "identifierDigitEnds" }));
+            TestHarness.CheckTrue("声明[12] 是 isLegalParcelFieldKey",
+                root.Declarations[12] is CallableDeclarationASTNode legal
+                && legal.Name == "isLegalParcelFieldKey"
+                && legal.Modifiers.Contains(Keywords.PRIV));
+            TestHarness.CheckTrue("声明[13] 是固定 BMP 查表函数",
+                root.Declarations[13] is CallableDeclarationASTNode ranges
+                && ranges.Name == "identifierInRanges"
+                && ranges.Modifiers.Contains(Keywords.PRIV));
+            TestHarness.CheckTrue("声明[14] 是 isSbRepresentable",
+                root.Declarations[14] is CallableDeclarationASTNode sbRep
+                && sbRep.Name == "isSbRepresentable"
+                && sbRep.Modifiers.Contains(Keywords.PRIV));
+            var former = root.Declarations.Skip(5).ToArray();
+            TestHarness.CheckTrue("声明[15..19] 是 SB 名解析器助手",
+                former[10] is CallableDeclarationASTNode b10
+                && b10.Name == "sbNameByte"
+                && former[11] is CallableDeclarationASTNode b11
+                && b11.Name == "sbTokenEquals"
+                && former[12] is CallableDeclarationASTNode b12
+                && b12.Name == "isSbScalarToken"
+                && former[13] is CallableDeclarationASTNode b13
+                && b13.Name == "parseSbType"
+                && former[14] is CallableDeclarationASTNode b14
+                && b14.Name == "parseSbWrapped");
+            // b4-2 B 面：格式层最小动态面（擦除 SB 视图）声明序锁定
+            //（实现由序列化合成器填充，仿 decodeAnyValue 先例）。
+            TestHarness.CheckTrue("声明[15..23] 是 sb 视图函数",
+                former[15] is CallableDeclarationASTNode v15
+                && v15.Name == "sbKind"
+                && former[16] is CallableDeclarationASTNode v16
+                && v16.Name == "sbLength"
+                && former[17] is CallableDeclarationASTNode v17
+                && v17.Name == "sbElementAt"
+                && former[18] is CallableDeclarationASTNode v18
+                && v18.Name == "sbKeyAt"
+                && former[19] is CallableDeclarationASTNode v19
+                && v19.Name == "sbValueAt"
+                && former[20] is CallableDeclarationASTNode v20
+                && v20.Name == "sbTypeName"
+                && former[21] is CallableDeclarationASTNode v21
+                && v21.Name == "sbBuildArray"
+                && former[22] is CallableDeclarationASTNode v22
+                && v22.Name == "sbBuildList"
+                && former[23] is CallableDeclarationASTNode v23
+                && v23.Name == "sbBuildMap");
+
+            // b4-3 严格恢复契约（§4.6.3 / D3）：类型/字段集合不匹配的统一
+            // 异常，追加在文件末尾（既有顶层声明序不变）。
+            TestHarness.CheckTrue("声明[24] 是 SerializationException",
+                former[24] is ClassDeclarationASTNode strictEx
+                && strictEx.ClassName == "SerializationException");
+
+            // b5-1a 通用字段反射（§4.6.3「反射与实现边界」）：FieldInfo /
+            // EnumCaseInfo 元信息 DTO + typeNameOf / isSerializable /
+            // fieldsOf / casesOf 查询面（体由序列化合成器填充，追加在
+            // 文件末尾，既有顶层声明序不变）；b5-1b 追加 typeNameOf\<T>()
+            // 无参重载（与 Type\<T> 值形态同一数据源）。
+            TestHarness.CheckTrue("声明[25] 是 struct FieldInfo",
+                former[25] is StructDeclarationASTNode fieldInfo
+                && fieldInfo.StructName == "FieldInfo"
+                && fieldInfo.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init));
+            TestHarness.CheckTrue("声明[26] 是 class EnumCaseInfo",
+                former[26] is ClassDeclarationASTNode caseInfo
+                && caseInfo.ClassName == "EnumCaseInfo"
+                && caseInfo.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init));
+            TestHarness.CheckTrue("声明[27..33] 是反射查询函数",
+                former[27] is CallableDeclarationASTNode r27
+                && r27.Name == "typeNameOf"
+                && former[28] is CallableDeclarationASTNode r28
+                && r28.Name == "typeNameOf"
+                && former[29] is CallableDeclarationASTNode r29
+                && r29.Name == "isSerializable"
+                && former[30] is CallableDeclarationASTNode r30
+                && r30.Name == "fieldsOf"
+                && former[31] is CallableDeclarationASTNode r31
+                && r31.Name == "fieldsOf"
+                && former[32] is CallableDeclarationASTNode r32
+                && r32.Name == "casesOf"
+                && former[33] is CallableDeclarationASTNode r33
+                && r33.Name == "casesOf");
+            // b5-2c 按名反射重载（§4.7.1 递归契约）：fieldsOf/casesOf/
+            // isSerializable 的 String 形态，与泛型/Type\<T> 值形态同一
+            // 候选集（体由序列化合成器经同一分发路径填充）。
+            TestHarness.CheckTrue("声明[34..36] 是按名反射重载",
+                former[34] is CallableDeclarationASTNode r34
+                && r34.Name == "fieldsOf"
+                && former[35] is CallableDeclarationASTNode r35
+                && r35.Name == "casesOf"
+                && former[36] is CallableDeclarationASTNode r36
+                && r36.Name == "isSerializable");
 
             TestHarness.Blank();
         }
@@ -959,6 +1712,530 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MQ 消息泛型显式声明 shared",
                 classes.Where(c => c.GenericParameters?.Parameters.Count > 0)
                     .All(c => c.GenericParameters!.Parameters.All(p => p.RequiresSharedSafe)));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2j. set 结构（施工块 1-4：namespace core.collections +
+        // class Set + priv class SetEnumerator，§4.2.2/§4.2.4/§4.2.5）=====
+        private static void TestSetStructure()
+        {
+            TestHarness.Section("Structure: namespace core.collections Set");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 16)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 16 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/set.rg");
+
+            // 顶层：namespace + class Set + priv class SetEnumerator（共 3 个声明）
+            TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + class Set + class SetEnumerator）",
+                root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 3) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.collections",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.collections");
+
+            TestHarness.CheckTrue("声明[1] 是 class Set（一个泛型参数，含 init/add/remove/" +
+                "contains/clear/count/iterate override）",
+                root.Declarations[1] is ClassDeclarationASTNode setCls
+                && setCls.ClassName == "Set"
+                && setCls.GenericParameters?.Parameters.Count == 1
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init)
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "add")
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "remove")
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "contains")
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "clear")
+                && setCls.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(v => v.Name == "count" && v.Getter != null && v.Setter == null)
+                && setCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            // §4.2.5：Set 不属于 SB、也不直接提供 Serializable——类头不得带注解
+            TestHarness.CheckTrue("Set 类头无任何注解（§4.2.5 非 SB/Serializable）",
+                root.Declarations[1] is ClassDeclarationASTNode setAnno
+                && setAnno.Annotations.Count == 0,
+                root.Declarations[1] is ClassDeclarationASTNode annoOf
+                    ? $"实际 {annoOf.Annotations.Count} 个注解" : "<非类>");
+
+            TestHarness.CheckTrue("声明[2] 是 priv class SetEnumerator（一个泛型参数）",
+                root.Declarations[2] is ClassDeclarationASTNode setEnum
+                && setEnum.ClassName == "SetEnumerator"
+                && setEnum.GenericParameters?.Parameters.Count == 1
+                && setEnum.Modifiers.Contains(Keywords.PRIV));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2k. queue 结构（施工块 1-5：namespace core.collections +
+        // class Queue + priv class QueueEnumerator，§4.2.2/§4.2.4/§4.2.5）=====
+        private static void TestQueueStructure()
+        {
+            TestHarness.Section("Structure: namespace core.collections Queue");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 17)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 17 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/queue.rg");
+
+            // 顶层：namespace + class Queue + priv class QueueEnumerator（共 3 个声明）
+            TestHarness.CheckTrue("顶层恰好 3 个声明（namespace + class Queue + class QueueEnumerator）",
+                root.Declarations.Count == 3, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 3) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.collections",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.collections");
+
+            TestHarness.CheckTrue("声明[1] 是 class Queue（一个泛型参数，含 init/enqueue/dequeue/" +
+                "peek/tryDequeue/tryPeek/clear/count/iterate override）",
+                root.Declarations[1] is ClassDeclarationASTNode queueCls
+                && queueCls.ClassName == "Queue"
+                && queueCls.GenericParameters?.Parameters.Count == 1
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init)
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "enqueue")
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "dequeue")
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "peek")
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "tryDequeue")
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "tryPeek")
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "clear")
+                && queueCls.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(v => v.Name == "count" && v.Getter != null && v.Setter == null)
+                && queueCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            // §4.2.5：Queue 不属于 SB、也不直接提供 Serializable——类头不得带注解
+            TestHarness.CheckTrue("Queue 类头无任何注解（§4.2.5 非 SB/Serializable）",
+                root.Declarations[1] is ClassDeclarationASTNode queueAnno
+                && queueAnno.Annotations.Count == 0,
+                root.Declarations[1] is ClassDeclarationASTNode annoOfQ
+                    ? $"实际 {annoOfQ.Annotations.Count} 个注解" : "<非类>");
+
+            TestHarness.CheckTrue("声明[2] 是 priv class QueueEnumerator（一个泛型参数）",
+                root.Declarations[2] is ClassDeclarationASTNode queueEnum
+                && queueEnum.ClassName == "QueueEnumerator"
+                && queueEnum.GenericParameters?.Parameters.Count == 1
+                && queueEnum.Modifiers.Contains(Keywords.PRIV));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2m. io/stream 结构（施工块 2-1：namespace core.io 流核心
+        // 抽象，§4.4/D1：EndOfStreamException + StreamWrapperOwnership +
+        // ISeekableStream + InputStream/OutputStream 双抽象基类）=====
+        private static void TestIoStreamStructure()
+        {
+            TestHarness.Section("Structure: namespace core.io Stream");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 20)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 20 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/io/stream.rg");
+
+            // 顶层：namespace + EndOfStreamException + StreamWrapperOwnership
+            // + ISeekableStream + InputStream + OutputStream（共 6 个声明）
+            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 异常 + 枚举 + 接口 + 2 抽象类）",
+                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.io",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.io");
+
+            // 声明[1]：EndOfStreamException : core.IOException——携带请求/
+            // 实际已读字节数（requested/actual 字段）与单 init
+            TestHarness.CheckTrue("声明[1] 是 class EndOfStreamException（继承 IOException，" +
+                "requested/actual 字段 + init）",
+                root.Declarations[1] is ClassDeclarationASTNode eos
+                && eos.ClassName == "EndOfStreamException"
+                && eos.BaseClass != null
+                && AstDescribe.Type(eos.BaseClass).Contains("IOException")
+                && eos.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(v => v.Name == "requested")
+                && eos.Members.OfType<VariableDeclarationASTNode>()
+                    .Any(v => v.Name == "actual")
+                && eos.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Kind == CallableKind.Init));
+
+            // 声明[2]：StreamWrapperOwnership 无载荷 enum struct（Borrowed/Owned）
+            TestHarness.CheckTrue("声明[2] 是 enum struct StreamWrapperOwnership（两 case）",
+                root.Declarations[2] is EnumStructDeclarationASTNode ownership
+                && ownership.EnumName == "StreamWrapperOwnership"
+                && ownership.Cases.Select(c => c.CaseName).SequenceEqual(
+                    new[] { "Borrowed", "Owned" }));
+
+            // 声明[3]：ISeekableStream 仅 seek/getPosition 双成员（无体）
+            TestHarness.CheckTrue("声明[3] 是 interface ISeekableStream（seek/getPosition 无体）",
+                root.Declarations[3] is InterfaceDeclarationASTNode seekable
+                && seekable.InterfaceName == "ISeekableStream"
+                && seekable.Members.Count == 2
+                && seekable.Members.All(m => m is CallableDeclarationASTNode { Body: null })
+                && seekable.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "seek")
+                && seekable.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "getPosition"));
+
+            // 声明[4]：abstract class InputStream implements core.IDisposable——
+            // 抽象面 read/disposeCore；dispose 幂等支架非抽象有体；便利面
+            // readExactly（两重载）/readByte/pipe
+            var inputCls = root.Declarations[4] as ClassDeclarationASTNode;
+            TestHarness.CheckTrue("声明[4] 是 abstract class InputStream（实现 core.IDisposable）",
+                inputCls != null && inputCls.ClassName == "InputStream"
+                && inputCls.Modifiers.Contains(Keywords.ABSTRACT)
+                && inputCls.Interfaces.Any(t => AstDescribe.Type(t).Contains("IDisposable")));
+            if (inputCls != null)
+            {
+                var inputCallables = inputCls.Members.OfType<CallableDeclarationASTNode>().ToList();
+                TestHarness.CheckTrue("InputStream 抽象面：三参 read 与 disposeCore 均 abstract",
+                    inputCallables.Any(m => m.Name == "read"
+                        && m.Modifiers.Contains(Keywords.ABSTRACT)
+                        && m.Parameters.Parameters.Count == 3)
+                    && inputCallables.Any(m => m.Name == "disposeCore"
+                        && m.Modifiers.Contains(Keywords.ABSTRACT)));
+                TestHarness.CheckTrue("InputStream dispose 幂等支架（非抽象、有体）",
+                    inputCallables.Any(m => m.Name == "dispose"
+                        && !m.Modifiers.Contains(Keywords.ABSTRACT)
+                        && m.Body != null));
+                TestHarness.CheckTrue("InputStream 便利面：readExactly 双重载 + readByte + pipe + " +
+                    "readAll 双重载（施工块 2-2）",
+                    inputCallables.Count(m => m.Name == "readExactly") == 2
+                    && inputCallables.Any(m => m.Name == "readByte")
+                    && inputCallables.Any(m => m.Name == "pipe")
+                    && inputCallables.Count(m => m.Name == "readAll") == 2);
+            }
+
+            // 声明[5]：abstract class OutputStream implements core.IDisposable——
+            // 抽象面 write/flush/disposeCore；dispose 支架非抽象；便利面
+            // write 重载/writeByte
+            var outputCls = root.Declarations[5] as ClassDeclarationASTNode;
+            TestHarness.CheckTrue("声明[5] 是 abstract class OutputStream（实现 core.IDisposable）",
+                outputCls != null && outputCls.ClassName == "OutputStream"
+                && outputCls.Modifiers.Contains(Keywords.ABSTRACT)
+                && outputCls.Interfaces.Any(t => AstDescribe.Type(t).Contains("IDisposable")));
+            if (outputCls != null)
+            {
+                var outputCallables = outputCls.Members.OfType<CallableDeclarationASTNode>().ToList();
+                TestHarness.CheckTrue("OutputStream 抽象面：write/flush/disposeCore 均 abstract",
+                    outputCallables.Any(m => m.Name == "write"
+                        && m.Modifiers.Contains(Keywords.ABSTRACT)
+                        && m.Parameters.Parameters.Count == 3)
+                    && outputCallables.Any(m => m.Name == "flush"
+                        && m.Modifiers.Contains(Keywords.ABSTRACT))
+                    && outputCallables.Any(m => m.Name == "disposeCore"
+                        && m.Modifiers.Contains(Keywords.ABSTRACT)));
+                TestHarness.CheckTrue("OutputStream dispose 支架（非抽象有体）+ 便利面 write 重载/writeByte",
+                    outputCallables.Any(m => m.Name == "dispose"
+                        && !m.Modifiers.Contains(Keywords.ABSTRACT)
+                        && m.Body != null)
+                    && outputCallables.Count(m => m.Name == "write") == 2
+                    && outputCallables.Any(m => m.Name == "writeByte"));
+            }
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2o. io/stdstreams 结构（施工块 2-4b1 标准输出/错误 + 2-4b2
+        // 标准输入：namespace core.io 标准流，§4.4 标准流与控制台契约：
+        // StandardStreams 三 static 工厂 + StdOutputStream/StdErrorStream
+        // priv 借用包装对象 + StdinWake 一次性唤醒事件（priv shared，
+        // 继承 EventAlarm）+ StdInputStream priv 借用包装对象，均不实现
+        // ISeekableStream——标准流不可定位）=====
+        private static void TestIoStdStreamsStructure()
+        {
+            TestHarness.Section("Structure: namespace core.io StandardStreams");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 15)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 15 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/io/stdstreams.rg");
+
+            // 顶层：namespace + StandardStreams + StdOutputStream +
+            // StdErrorStream + StdinWake + StdInputStream（共 6 个声明）
+            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 工厂 + 2 输出包装类" +
+                " + 唤醒事件 + 输入包装类）",
+                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.io",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.io");
+
+            // 声明[1]：StandardStreams 工厂——standardOutput/standardError/
+            // standardInput 三 pub static 有体工厂（非 native）
+            TestHarness.CheckTrue("声明[1] 是 class StandardStreams（三 pub static 工厂）",
+                root.Declarations[1] is ClassDeclarationASTNode factory
+                && factory.ClassName == "StandardStreams"
+                && factory.Modifiers.Contains(Keywords.PUB)
+                && factory.Members.OfType<CallableDeclarationASTNode>().Count(m =>
+                    (m.Name == "standardOutput" || m.Name == "standardError"
+                        || m.Name == "standardInput")
+                    && m.Modifiers.Contains(Keywords.STATIC)
+                    && !m.Modifiers.Contains(Keywords.NATIVE)
+                    && m.Body != null) == 3);
+
+            // 声明[2]/[3]：StdOutputStream/StdErrorStream priv 包装类
+            CheckStdStreamClass(root.Declarations[2], "StdOutputStream",
+                "stdoutWrite", "stdoutFlush");
+            CheckStdStreamClass(root.Declarations[3], "StdErrorStream",
+                "stderrWrite", "stderrFlush");
+
+            // 声明[4]（2-4b2）：StdinWake 一次性唤醒事件——priv shared、
+            // 继承 core.coroutine.EventAlarm、无成员（signal 即终态，
+            // 触发来自宿主后台读线程，本类只承担可 yield 的事件身份）
+            var wakeOk = root.Declarations[4] is ClassDeclarationASTNode wake
+                && wake.ClassName == "StdinWake"
+                && wake.Modifiers.Contains(Keywords.PRIV)
+                && wake.Modifiers.Contains(Keywords.SHARED)
+                && wake.BaseClass != null
+                && AstDescribe.Type(wake.BaseClass).Contains("EventAlarm")
+                && wake.Members.Count == 0;
+            TestHarness.CheckTrue("声明[4] 是 priv shared class StdinWake（继承 EventAlarm，无成员）",
+                wakeOk,
+                root.Declarations[4] is ClassDeclarationASTNode w
+                    ? $"成员 {w.Members.Count}" : "形状不符");
+
+            // 声明[5]（2-4b2）：StdInputStream priv 包装类——形状见
+            // CheckStdInputStreamClass
+            CheckStdInputStreamClass(root.Declarations[5]);
+
+            TestHarness.Blank();
+        }
+
+        // 标准流包装类形状：priv、继承 OutputStream、恰好 5 个 callable
+        //（write/flush/disposeCore 三 override + 写/刷双 native 面——
+        // static、无体、@NativeLibrary/@NativeSymbol 双注解）
+        private static void CheckStdStreamClass(ASTNode node, string className,
+            string writeNative, string flushNative)
+        {
+            TestHarness.CheckTrue($"声明是 priv class {className}（继承 OutputStream）",
+                node is ClassDeclarationASTNode cls
+                && cls.ClassName == className
+                && cls.Modifiers.Contains(Keywords.PRIV)
+                && cls.BaseClass != null
+                && AstDescribe.Type(cls.BaseClass).Contains("OutputStream"));
+            if (node is not ClassDeclarationASTNode stream) { return; }
+
+            var callables = stream.Members.OfType<CallableDeclarationASTNode>().ToList();
+            TestHarness.CheckTrue($"{className} 恰好 5 个 callable 成员",
+                stream.Members.Count == 5 && callables.Count == 5,
+                $"实际 {stream.Members.Count}");
+            TestHarness.CheckTrue($"{className} write/flush/disposeCore 均 override",
+                callables.Any(m => m.Name == "write"
+                    && m.Modifiers.Contains(Keywords.OVERRIDE))
+                && callables.Any(m => m.Name == "flush"
+                    && m.Modifiers.Contains(Keywords.OVERRIDE))
+                && callables.Any(m => m.Name == "disposeCore"
+                    && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue($"{className} native 面是 {writeNative}/{flushNative}" +
+                "（static、无体、双注解）",
+                callables.Count(m => (m.Name == writeNative || m.Name == flushNative)
+                    && m.Modifiers.Contains(Keywords.NATIVE)
+                    && m.Modifiers.Contains(Keywords.STATIC)
+                    && m.Body == null
+                    && m.Annotations.Count == 2) == 2);
+        }
+
+        // 标准输入包装类形状（2-4b2）：priv、继承 InputStream、恰好 4 个
+        // callable（read/disposeCore 两 override + 启动即返双 native 面
+        // stdinReadStart/stdinReadTake——static、无体、@NativeLibrary/
+        // @NativeSymbol 双注解）
+        private static void CheckStdInputStreamClass(ASTNode node)
+        {
+            TestHarness.CheckTrue("声明是 priv class StdInputStream（继承 InputStream）",
+                node is ClassDeclarationASTNode cls
+                && cls.ClassName == "StdInputStream"
+                && cls.Modifiers.Contains(Keywords.PRIV)
+                && cls.BaseClass != null
+                && AstDescribe.Type(cls.BaseClass).Contains("InputStream"));
+            if (node is not ClassDeclarationASTNode stream) { return; }
+
+            var callables = stream.Members.OfType<CallableDeclarationASTNode>().ToList();
+            TestHarness.CheckTrue("StdInputStream 恰好 4 个 callable 成员",
+                stream.Members.Count == 4 && callables.Count == 4,
+                $"实际 {stream.Members.Count}");
+            TestHarness.CheckTrue("StdInputStream read/disposeCore 均 override",
+                callables.Any(m => m.Name == "read"
+                    && m.Modifiers.Contains(Keywords.OVERRIDE))
+                && callables.Any(m => m.Name == "disposeCore"
+                    && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("StdInputStream native 面是 stdinReadStart/" +
+                "stdinReadTake（static、无体、双注解）",
+                callables.Count(m => (m.Name == "stdinReadStart" || m.Name == "stdinReadTake")
+                    && m.Modifiers.Contains(Keywords.NATIVE)
+                    && m.Modifiers.Contains(Keywords.STATIC)
+                    && m.Body == null
+                    && m.Annotations.Count == 2) == 2);
+        }
+
+        // ===== 2l. adapters 结构（施工块 1-6：namespace core.collections +
+        // 2 个 pub func asEnumerable 重载 + 3 个 priv 借用枚举/可枚举类，
+        // §4.2.1 第二段/§4.2.4 末段）=====
+        private static void TestAdaptersStructure()
+        {
+            TestHarness.Section("Structure: namespace core.collections Adapters");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 18)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 18 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/adapters.rg");
+
+            // 顶层：namespace + 2 个 asEnumerable 重载（Array/Span 形参）+
+            // ArrayEnumerable/SpanEnumerable/SpanEnumerator（共 6 个声明）
+            TestHarness.CheckTrue("顶层恰好 6 个声明（namespace + 2 个 asEnumerable 重载 + " +
+                "3 个 priv 类）",
+                root.Declarations.Count == 6, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 6) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.collections",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.collections");
+
+            // 声明[1]/[2] 是同名重载 asEnumerable（各 1 个泛型参数、有体）；
+            // Span 版（声明[2]）泛型参数带 ValueType 约束（§4.2.1）
+            TestHarness.CheckTrue("声明[1] 是 pub func asEnumerable（Array 形参，1 泛型参数）",
+                root.Declarations[1] is CallableDeclarationASTNode arrFn
+                && arrFn.Name == "asEnumerable"
+                && arrFn.GenericParameters?.Parameters.Count == 1
+                && arrFn.Body != null
+                && arrFn.Modifiers.Contains(Keywords.PUB));
+            TestHarness.CheckTrue("声明[2] 是 pub func asEnumerable 重载（Span 形参，" +
+                "1 泛型参数带 ValueType 约束）",
+                root.Declarations[2] is CallableDeclarationASTNode spanFn
+                && spanFn.Name == "asEnumerable"
+                && spanFn.GenericParameters?.Parameters.Count == 1
+                && AstDescribe.Generics(spanFn.GenericParameters) == "\\<T, T extends ValueType>"
+                && spanFn.Body != null
+                && spanFn.Modifiers.Contains(Keywords.PUB));
+
+            // 声明[3]/[4]/[5] 是 priv 借用类（各 1 个泛型参数；类头无序列化
+            // 注解——适配器是借用视图，§4.2.4 末段不加修改计数）
+            TestHarness.CheckTrue("声明[3] 是 priv class ArrayEnumerable（1 泛型参数，" +
+                "类头无注解，含 iterate override）",
+                root.Declarations[3] is ClassDeclarationASTNode arrCls
+                && arrCls.ClassName == "ArrayEnumerable"
+                && arrCls.GenericParameters?.Parameters.Count == 1
+                && arrCls.Modifiers.Contains(Keywords.PRIV)
+                && arrCls.Annotations.Count == 0
+                && arrCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("声明[4] 是 priv class SpanEnumerable（1 泛型参数带 " +
+                "ValueType 约束，类头无注解，含 iterate override）",
+                root.Declarations[4] is ClassDeclarationASTNode spanCls
+                && spanCls.ClassName == "SpanEnumerable"
+                && spanCls.GenericParameters?.Parameters.Count == 1
+                && AstDescribe.Generics(spanCls.GenericParameters) == "\\<T, T extends ValueType>"
+                && spanCls.Modifiers.Contains(Keywords.PRIV)
+                && spanCls.Annotations.Count == 0
+                && spanCls.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "iterate" && m.Modifiers.Contains(Keywords.OVERRIDE)));
+            TestHarness.CheckTrue("声明[5] 是 priv class SpanEnumerator（1 泛型参数带 " +
+                "ValueType 约束，类头无注解，含 moveNext/current）",
+                root.Declarations[5] is ClassDeclarationASTNode spanEnum
+                && spanEnum.ClassName == "SpanEnumerator"
+                && spanEnum.GenericParameters?.Parameters.Count == 1
+                && AstDescribe.Generics(spanEnum.GenericParameters) == "\\<T, T extends ValueType>"
+                && spanEnum.Modifiers.Contains(Keywords.PRIV)
+                && spanEnum.Annotations.Count == 0
+                && spanEnum.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "moveNext")
+                && spanEnum.Members.OfType<CallableDeclarationASTNode>()
+                    .Any(m => m.Name == "current"));
+
+            TestHarness.Blank();
+        }
+
+        // ===== 2n. algorithms 结构：namespace core.collections 顶层算法函数 =====
+        private static void TestAlgorithmsStructure()
+        {
+            TestHarness.Section("Structure: namespace core.collections Algorithms");
+
+            var roots = StdlibSources.ParseAll();
+            if (roots.Count < 19)
+            {
+                TestHarness.CheckTrue("ParseAll 至少 19 棵（结构断言前置）", false,
+                    $"实际 {roots.Count} 棵");
+                TestHarness.Blank();
+                return;
+            }
+            var root = roots.Single(r => r.Span?.sourceName == "<stdlib>/core/algorithms.rg");
+
+            // 顶层：namespace + 26 个 func（原 10 通用算法 + 2 排序 + 11
+            // compare 重载（十标量 + String）+ 3 priv 归并助手，共 27 个
+            // 声明；§4.2.1 第一段：通用算法是顶层泛型函数，不注入扩展成员
+            // ——无任何类/接口声明；String 重载为 §4.3.2 标量字典序实现）
+            TestHarness.CheckTrue("顶层恰好 27 个声明（namespace + 26 个算法/比较函数）",
+                root.Declarations.Count == 27, $"实际 {root.Declarations.Count}");
+            if (root.Declarations.Count < 27) { TestHarness.Blank(); return; }
+
+            var ns = root.Declarations[0] as NamespaceDeclarationASTNode;
+            TestHarness.CheckTrue("首声明是 namespace core.collections",
+                ns != null && AstDescribe.Symbol(ns.Name.symbol) == "core.collections");
+
+            // 声明[1..26] 按文件序：原 10 通用算法（map/filter/fold/any/all/
+            // contains/find/findIndex/toArray/toList）、排序两函数（sorted/
+            // sortInPlace，各 1 个泛型参数）、compare 十一型重载（i8..u64/
+            // float/double/String，非泛型：泛型参数 0 个）、3 个 priv 归并
+            // 助手（各 1 个泛型参数）。既有/排序/比较函数 pub、有体（立即
+            // 求值实现）；助手 priv。Func 首参是返回类型。
+            var expected = new[]
+            {
+                ("map", 2, true), ("filter", 1, true), ("fold", 2, true),
+                ("any", 1, true), ("all", 1, true), ("contains", 1, true),
+                ("find", 1, true), ("findIndex", 1, true), ("toArray", 1, true),
+                ("toList", 1, true),
+                ("sorted", 1, true), ("sortInPlace", 1, true),
+                ("compare", 0, true), ("compare", 0, true), ("compare", 0, true),
+                ("compare", 0, true), ("compare", 0, true), ("compare", 0, true),
+                ("compare", 0, true), ("compare", 0, true), ("compare", 0, true),
+                ("compare", 0, true), ("compare", 0, true),
+                ("mergeRun", 1, false), ("mergeSortBuffer", 1, false),
+                ("notAfter", 1, false)
+            };
+            var funcs = root.Declarations.Skip(1)
+                .OfType<CallableDeclarationASTNode>().ToList();
+            TestHarness.CheckTrue("声明[1..26] 按序是原 10 算法 + sorted/sortInPlace + " +
+                "compare×11 + 归并助手×3（pub/priv、有体、泛型参数个数吻合）",
+                funcs.Count == expected.Length
+                && funcs.Zip(expected, (f, e) => (f, e)).All(p =>
+                    p.f.Name == p.e.Item1
+                    && (p.f.GenericParameters?.Parameters.Count ?? 0) == p.e.Item2
+                    && p.f.Body != null
+                    && p.f.Modifiers.Contains(Keywords.PUB) == p.e.Item3));
 
             TestHarness.Blank();
         }
