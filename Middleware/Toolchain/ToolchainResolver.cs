@@ -95,6 +95,29 @@ namespace RigiCompiler.Middleware.Toolchain
             return null;
         }
 
+        internal static string? ResolveArchiver(string? toolchainDir)
+        {
+            var explicitPath = Environment.GetEnvironmentVariable("RIGI_AR");
+            if (!string.IsNullOrWhiteSpace(explicitPath))
+                return File.Exists(explicitPath) ? Path.GetFullPath(explicitPath) : null;
+            var names = OperatingSystem.IsWindows() ? new[] { "llvm-lib.exe", "lib.exe", "llvm-ar.exe", "ar.exe" }
+                : new[] { "llvm-ar", "ar" };
+            var directories = new System.Collections.Generic.List<string>();
+            foreach (var root in new[] { toolchainDir, Environment.GetEnvironmentVariable("RIGI_LLVM") })
+                if (!string.IsNullOrEmpty(root)) directories.Add(Path.Combine(root, "bin"));
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            for (var depth = 0; depth <= 6 && dir != null; depth++, dir = dir.Parent)
+                directories.Add(Path.Combine(dir.FullName, "tools", ".llvm", Rid, "bin"));
+            directories.AddRange((Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Where(d => !string.IsNullOrWhiteSpace(d)));
+            foreach (var directory in directories)
+                foreach (var name in names)
+                {
+                    var path = Path.Combine(directory, name);
+                    if (File.Exists(path)) return Path.GetFullPath(path);
+                }
+            return null;
+        }
+
         /// <summary>
         /// 返回人类可读的解析顺序说明（供错误消息）。
         /// </summary>

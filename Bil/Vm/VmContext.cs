@@ -386,6 +386,8 @@ namespace RigiCompiler.Bil.Vm
         // 微调，前缀锁定「宿主$方法名(」）
         public BilFunction? FindRuntimeFunction(string symbolPrefix)
         {
+            var canonical = BilCompilerSymbols.ResolvePrefix(Module, symbolPrefix);
+            if (canonical != null) return _functions.GetValueOrDefault(canonical);
             foreach (var function in _functions.Values)
             {
                 if (function.Symbol.StartsWith(symbolPrefix, StringComparison.Ordinal))
@@ -395,6 +397,9 @@ namespace RigiCompiler.Bil.Vm
             }
             return null;
         }
+
+        internal string RuntimeSymbol(string logical) => BilCompilerSymbols.Resolve(Module, logical);
+        internal string RuntimeField(string logical) => BilCompilerSymbols.ResolveField(Module, logical);
 
         public bool TryResolveNative(string methodSymbol, out string library, out string nativeSymbol)
         {
@@ -1016,10 +1021,16 @@ namespace RigiCompiler.Bil.Vm
             for (var resourceType = FindType(typeRef); resourceType != null;
                 resourceType = resourceType.ExtendsType == null ? null : FindType(resourceType.ExtendsType))
             {
-                if (resourceType.Symbol is "core.coroutine::Mutex" or "core.coroutine::Dispatcher"
-                    or "core.coroutine::Task" or "core.coroutine::Task<TReturn>")
+                var logicalOwner = new[] { "core.coroutine::Mutex", "core.coroutine::Dispatcher",
+                    "core.coroutine::Task", "core.coroutine::Task<TReturn>" }
+                    .SingleOrDefault(name => RuntimeSymbol(name) == resourceType.Symbol);
+                if (logicalOwner != null)
                 {
                     instance.NativeResourceRelease = Dispatch.ReleaseOwnedResources;
+                    var gate = RuntimeField(logicalOwner + "#gate@.i64");
+                    instance.NativeGateFieldSuffix = gate[gate.LastIndexOf('#')..];
+                    var handle = RuntimeField(logicalOwner + "#handle@.i64");
+                    instance.NativeCoroutineFieldSuffix = handle[handle.LastIndexOf('#')..];
                     break;
                 }
             }
@@ -1177,12 +1188,9 @@ namespace RigiCompiler.Bil.Vm
         // 时机归 VM 启动序列；多模块合并时逐 fn 各跑一次）
         public void InvokeGlobalInitializers()
         {
-            foreach (var function in _functions.Values)
+            foreach (var symbol in BilModuleInitialization.Order(Module))
             {
-                if (MethodNameOf(function.Symbol) != BilSpellings.GlobalsInitFunctionName)
-                {
-                    continue;
-                }
+                var function = _functions[symbol];
                 var coroutine = new VmCoroutine(Dispatch);
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running);
                 coroutine.PushFrame(function, Array.Empty<VmValue>(), null, this);
@@ -1405,7 +1413,7 @@ namespace RigiCompiler.Bil.Vm
                     if (coroutine.CallStack.Count == depth
                         && coroutine.State == VmCoroutineState.Running
                         && !coroutine.HasAbruptCompletion
-                        && instance.TryReadField("core::Exception#message@.string",
+                        && instance.TryReadField(RuntimeField("core::Exception#message@.string"),
                             out var messageValue)
                         && messageValue is VmString messageText)
                     {
@@ -1417,7 +1425,7 @@ namespace RigiCompiler.Bil.Vm
                     // 回落旧直写字段路径（见上注释：stdlib init 不会失败）
                 }
             }
-            instance.WriteField("core::Exception#message@.string",
+            instance.WriteField(RuntimeField("core::Exception#message@.string"),
                 new VmString(fallbackMessage));
             return new VmException(fallbackMessage, instance);
         }
@@ -1425,7 +1433,7 @@ namespace RigiCompiler.Bil.Vm
         public VmException LanguageException(string typeRef, string message)
         {
             var instance = AllocateObject(typeRef);
-            instance.WriteField("core::Exception#message@.string", new VmString(message));
+            instance.WriteField(RuntimeField("core::Exception#message@.string"), new VmString(message));
             return new VmException(message, instance);
         }
 
@@ -2424,35 +2432,7 @@ namespace RigiCompiler.Bil.Vm
             return count;
         }
 
-        internal static string MethodNameOf(string symbol)
-        {
-            var dollar = symbol.IndexOf('$');
-            if (dollar < 0)
-            {
-                return "";
-            }
-            var rest = symbol.Substring(dollar + 1);
-            if (rest.StartsWith("$"))
-            {
-                rest = rest.Substring(1);
-            }
-            if (rest.StartsWith(".static."))
-            {
-                rest = rest.Substring(".static.".Length);
-            }
-            var end = rest.Length;
-            var paren = rest.IndexOf('(');
-            if (paren >= 0 && paren < end)
-            {
-                end = paren;
-            }
-            var at = rest.IndexOf('@');
-            if (at >= 0 && at < end)
-            {
-                end = at;
-            }
-            return rest.Substring(0, end);
-        }
+        internal static string MethodNameOf(string symbol) => BilLogicalName.Method(symbol);
 
         internal static bool HasKeyword(BilSimpleMemberDeclaration member, BilKeyword keyword)
         {

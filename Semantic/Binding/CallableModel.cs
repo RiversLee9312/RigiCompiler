@@ -38,8 +38,8 @@ namespace RigiCompiler
             var definition = FindCoreType(unit, "Cell", 1);
             if (definition != null)
             {
-                definition.BilStandardConstructor = ".cell";
-                definition.DerivesSharedSafetyFromTypeArgument = true;
+                if (definition.BilStandardConstructor == null) definition.BilStandardConstructor = ".cell";
+                if (!definition.DerivesSharedSafetyFromTypeArgument) definition.DerivesSharedSafetyFromTypeArgument = true;
             }
             return definition;
         }
@@ -49,8 +49,8 @@ namespace RigiCompiler
             var definition = FindCoreType(unit, "ReadonlyCell", 1);
             if (definition != null)
             {
-                definition.BilStandardConstructor = ".readonly_cell";
-                definition.DerivesSharedSafetyFromTypeArgument = true;
+                if (definition.BilStandardConstructor == null) definition.BilStandardConstructor = ".readonly_cell";
+                if (!definition.DerivesSharedSafetyFromTypeArgument) definition.DerivesSharedSafetyFromTypeArgument = true;
             }
             return definition;
         }

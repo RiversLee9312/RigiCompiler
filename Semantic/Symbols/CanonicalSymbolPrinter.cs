@@ -89,7 +89,7 @@ namespace RigiCompiler
             var fieldType = field.CellStorage is { } storage
                 ? PrintType(storage.CellType, compact: true)
                 : PrintTypeReference(field.FieldType, compact: true);
-            return $"{prefix}#{staticMark}{field.Name}@{fieldType}";
+            return $"{prefix}#{staticMark}{ModuleOrigin.LinkedName(field)}@{fieldType}";
         }
 
         // 方法（§5.2）：普通/init 走 $名 形态；operator 用 $$；getter/setter
@@ -97,18 +97,19 @@ namespace RigiCompiler
         public static string PrintMethod(MethodSymbol method)
         {
             var prefix = OwnerPrefix(method.Owner, method.Namespace);
+            var name = ModuleOrigin.LinkedName(method);
             switch (method.Kind)
             {
                 case MethodKind.Getter:
-                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.get.{method.Name}@{PrintTypeReference(method.ReturnType, compact: true)}";
+                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.get.{name}@{PrintTypeReference(method.ReturnType, compact: true)}";
                 case MethodKind.Setter:
                     var valueType = method.Parameters.Count > 0 ? method.Parameters[0].Type : null;
-                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.set.{method.Name}@{PrintTypeReference(valueType, compact: true)}";
+                    return $"{prefix}${(method.IsStatic ? ".static" : "")}.set.{name}@{PrintTypeReference(valueType, compact: true)}";
                 case MethodKind.Operator:
-                    return $"{prefix}$${method.Name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType, compact: true)}";
+                    return $"{prefix}$${name}({PrintParameters(method)})@{PrintTypeReference(method.ReturnType, compact: true)}";
                 default:
                     var staticMark = method.IsStatic ? ".static." : "";
-                    return $"{prefix}${staticMark}{method.Name}({PrintParameters(method, includeNativeGenericHidden: method.IsNative)})@{PrintTypeReference(method.ReturnType, compact: true)}";
+                    return $"{prefix}${staticMark}{name}({PrintParameters(method, includeNativeGenericHidden: method.IsNative)})@{PrintTypeReference(method.ReturnType, compact: true)}";
             }
         }
 
@@ -219,7 +220,7 @@ namespace RigiCompiler
             var root = type;
             for (var t = type; t != null; t = t.DeclaringType)
             {
-                segments.Insert(0, t.Name);
+                segments.Insert(0, ModuleOrigin.LinkedName(t));
                 root = t;
             }
             var ns = root.Namespace?.FullName;

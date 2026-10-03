@@ -16,9 +16,11 @@ jobs:
           - os: windows-latest   # amd64 Windows 最新镜像（自带 VS C++ 工具链，AOT 前置满足）
             rid: win-x64
             exe: rigic.exe
+            test-exe: RigiCompiler.Tests.exe
           - os: ubuntu-latest    # amd64 Ubuntu LTS 最新镜像
             rid: linux-x64
             exe: rigic
+            test-exe: RigiCompiler.Tests
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -53,6 +55,22 @@ jobs:
       - name: Publish NativeAOT (${{ matrix.rid }})
         run: dotnet publish RigiCompiler.csproj -c Release -r ${{ matrix.rid }} -o publish
 
-      # 用 AOT 发布产物跑全量测试；E2e 语料路径由编译期 CallerFilePath 反推，CI 工作区内有效
+      # 用 AOT 发布产物跑既有全量门禁；语料随 publish 分发，与 checkout/CWD 无关
       - name: Run all tests (AOT binary)
+        env:
+          RIGI_TEST_RIGIC: ${{ github.workspace }}/publish/${{ matrix.exe }}
+          RIGI_TEST_CORPUS_ONLY_OUTPUT: '1'
         run: ./publish/${{ matrix.exe }} test --all
+
+      # 与 legacy 全量串行，避免两个不共享预算的测试宿主叠加。
+      - name: Run TUnit pilot, budget and scheduling contracts
+        env:
+          RIGI_TEST_RIGIC: ${{ github.workspace }}/publish/${{ matrix.exe }}
+          RIGI_TEST_CORPUS_ONLY_OUTPUT: '1'
+        run: dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --minimum-expected-tests 37 --report-trx --results-directory TestResults --report-trx-filename pilot.trx
+
+      - name: Publish TUnit NativeAOT (${{ matrix.rid }})
+        run: dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r ${{ matrix.rid }} -o publish-tests
+
+      - name: Run closed generic discovery (AOT test host)
+        run: ./publish-tests/${{ matrix.test-exe }} --treenode-filter '/*/*/*/*[Category=Generic]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename generic-aot.trx

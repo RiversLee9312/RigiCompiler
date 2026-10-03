@@ -43,8 +43,9 @@ namespace RigiCompiler.Middleware.Layout
             foreach (var fn in context.Module.Functions)
             {
                 var member = context.Symbols.FindMember(fn.Symbol);
-                if (member?.HasKeyword(BilKeyword.Entrypoint) == true
-                    || fn.Symbol.StartsWith("$..globals.init(", StringComparison.Ordinal)
+                if ((!context.NativeBuild.IsLibrary && member?.HasKeyword(BilKeyword.Entrypoint) == true)
+                    || context.NativeBuild.IsExport(fn.Symbol)
+                    || BilLogicalName.IsGlobalInitializer(fn.Symbol)
                     || (member?.Owner is { } owner && SingletonPlanner.IsSingleton(owner)
                         && member.HasKeyword(BilKeyword.Init)))
                     collector.Enqueue(fn, new(), new());
@@ -362,15 +363,14 @@ namespace RigiCompiler.Middleware.Layout
         // 分析；不能枚举所有 callable，也不能把未启动 Task 的全部成员当作可达。
         private void CollectColdTaskBody(Frame frame)
         {
-            if (frame.Function.Symbol is not ("core.coroutine::Task$bindColdBody()@.void"
-                or "core.coroutine::Task<TReturn>$bindColdBody()@.void")
+            var logicalOwner = new[] { "core.coroutine::Task", "core.coroutine::Task<TReturn>" }
+                .SingleOrDefault(owner => frame.Function.Symbol == BilCompilerSymbols.Resolve(context.Module,
+                    owner + "$bindColdBody()@.void"));
+            if (logicalOwner == null
                 || !frame.Arguments.TryGetValue(".this", out var receiver)) return;
-            var owner = context.Symbols.FindMember(frame.Function.Symbol)?.Owner;
             // 成员符号保留声明参数（Task<TReturn>），类型 Canonical 则为
             // 裸名；不能用裸名拼字段，否则只追踪到非泛型 Task 的 body。
-            var memberOwner = frame.Function.Symbol[..frame.Function.Symbol.IndexOf('$')];
-            var body = owner?.Members.FirstOrDefault(m =>
-                m.Canonical.StartsWith(memberOwner + "#body@", StringComparison.Ordinal));
+            var body = context.CompilerMember(logicalOwner + "#body@");
             if (body == null || !fields.TryGetValue(receiver + "|" + body.Canonical, out var values)) return;
             foreach (var value in values.ToArray())
             {

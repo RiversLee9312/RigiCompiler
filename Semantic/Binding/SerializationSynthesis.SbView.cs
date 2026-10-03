@@ -47,7 +47,7 @@ namespace RigiCompiler
                 "sbTypeName", "sbBuildArray", "sbBuildList", "sbBuildMap",
             };
             var methods = names
-                .Select(name => ns.Methods.FirstOrDefault(m => m.Name == name))
+                .Select(name => Modules.ModuleLateHelpers.Select(env, name).SingleOrDefault())
                 .Where(m => m != null)
                 .Cast<MethodSymbol>()
                 .ToArray();
@@ -575,7 +575,9 @@ namespace RigiCompiler
             var root = symbol;
             for (var t = symbol; t != null; t = t.DeclaringType)
             {
-                segments.Insert(0, t.Name);
+                // wire/TypeInfo 使用链接身份；源名仍由语义 lookup 保留。
+                // 私有 provider 宿主也必须能按真实模块投影恢复，不能退回裸源名。
+                segments.Insert(0, ModuleOrigin.LinkedName(t));
                 root = t;
             }
             var ns = root.Namespace?.FullName;

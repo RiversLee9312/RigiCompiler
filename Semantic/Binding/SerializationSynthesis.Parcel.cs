@@ -10,7 +10,8 @@ namespace RigiCompiler
             var token = ns?.Types.FirstOrDefault(t => t.Name == Bil.BilSpellings.SerializableTokenName);
             if (ns == null || parcel == null || iface == null || token == null) return;
             env.Unit.Symbols.MaterializeGenericUseTypes(message => env.Error(null, message));
-            var method = ns.Methods.First(m => m.Name == "decodeAnyValue");
+            var method = Modules.ModuleLateHelpers.Select(env, "decodeAnyValue").SingleOrDefault();
+            if (method == null) return;
             env.SyntheticCellBodies.RemoveAll(b => ReferenceEquals(b.Method, method));
             FillAnyDecoder(env, ns, parcel, iface, token, FallbackSyntax(env));
             // 块 4-2 B 面：擦除 SB 视图按终态 ConstructedTypeSnapshot 重填
@@ -91,7 +92,8 @@ namespace RigiCompiler
         private static void FillAnyDecoder(BindEnvironment env, NamespaceSymbol ns, TypeSymbol parcel,
             TypeSymbol iface, TypeSymbol token, ASTNode syntax)
         {
-            var method = ns.Methods.First(m => m.Name == "decodeAnyValue");
+            var method = Modules.ModuleLateHelpers.Select(env, "decodeAnyValue").SingleOrDefault();
+            if (method == null) return;
             var ctx = PublicContext(env, syntax, iface, parcel, token);
             ctx.Runtime = new BoundValueReferenceExpression(syntax, method.Parameters[1], ctx.RuntimeType);
             ctx.PendingId = new BoundValueReferenceExpression(syntax, method.Parameters[2], env.B.Int64);
@@ -101,7 +103,11 @@ namespace RigiCompiler
             var name = Save(ctx, new BoundFieldAccessExpression(syntax, record,
                 parcel.Fields.First(f => f.Name == "typeName"), env.B.String), locals, statements, "dynamicType");
             BoundBlock choices = UnknownWireType(ctx, name);
-            var candidates = ctx.SerializableHosts.Concat(env.Unit.Symbols.ConstructedTypeSnapshot())
+            // 固定 SB 基元与 Parcel 不靠用户 AST/闭合泛型使用登记；artifact-only
+            // 应用仍须恢复 Map 的 String 键等基元，不能扩大为全部标准库类型。
+            var fixedBases = env.B.SourceTypes.Values.Where(t => t.GenericParameters.Count == 0
+                && SerializationFacts.HasBaseCodec(t, env.Unit.Symbols)).Append(parcel);
+            var candidates = ctx.SerializableHosts.Concat(fixedBases).Concat(env.Unit.Symbols.ConstructedTypeSnapshot())
                 .Where(t => !t.IsAbstract && IsClosedWireType(t) && SerializationFacts.HasWrapper(t, ctx.Serializable))
                 .Distinct().ToArray();
             foreach (var type in candidates.Reverse())
@@ -227,7 +233,8 @@ namespace RigiCompiler
                 ctx.Env.B.Any.Methods.First(m => m.Name == "toString"), Array.Empty<BoundExpression>(), ctx.Env.B.String);
         }
 
-        private static TypeSymbol NullMarkerType(SynthContext ctx) => ctx.Parcel.NestedTypes.First(t => t.Name == "NullSentinel");
+        private static TypeSymbol NullMarkerType(SynthContext ctx) => ctx.Parcel.NestedTypes.FirstOrDefault(t => t.Name == "NullSentinel")
+            ?? Modules.ModuleLateHelpers.Infrastructure(ctx.Env.Unit.Symbols, "NullSentinel", ctx.Parcel);
 
         private static BoundExpression EncodeOptionalElement(SynthContext ctx, BoundExpression raw,
             SemanticSymbol type, List<LocalSymbol> locals, List<BoundStatement> statements)

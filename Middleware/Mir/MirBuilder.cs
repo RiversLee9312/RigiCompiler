@@ -294,21 +294,7 @@ namespace RigiCompiler.Middleware.Mir
         // 无匹配返回 null
         internal static MwMemberSymbol? FindInitWrapper(MwSymbolTable symbols,
             MwTypeSymbol type, int arity)
-        {
-            var prefix = type.Canonical + "$" + BilSpellings.InitWrapperMethodName + "(";
-            foreach (var member in type.Members)
-            {
-                if (!member.Canonical.StartsWith(prefix, System.StringComparison.Ordinal))
-                {
-                    continue;
-                }
-                if (CanonicalSignature.Parse(member.Canonical).Parameters.Count == arity)
-                {
-                    return member;
-                }
-            }
-            return null;
-        }
+            => symbols.FindInitWrapper(type, arity);
 
         private static MwTypeSymbol? BaseOf(MwSymbolTable symbols, MwTypeSymbol type) =>
             type.Declaration.ExtendsType is { } baseRef ? symbols.FindTypeByRef(baseRef) : null;

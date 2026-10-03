@@ -18,20 +18,22 @@ namespace RigiCompiler.Middleware.Emit
     /// LlvmEmitDispatchers 唯一 switch 分到 CRTP visitor；终结符归
     /// TerminatorEmitter。共享状态经 Session（Env + Ctx）传递。
     /// </summary>
-    public static class ModuleBuilder
+    public static partial class ModuleBuilder
     {
         // entrypoint fn 的对外 C 符号（rigi_rt 的 main 调用它）
         public const string EntrySymbol = "rigi_entry";
 
         public static LLVMModuleRef Build(MwContext context, MirModule mir)
         {
+            // public helper 同样要求调用方负责 Build 到 Dispose 的完整生命期。
+            LlvmHost.RequireOwnership();
             var module = LLVMModuleRef.CreateWithName(ModuleNameOf(context));
             try
             {
                 module.Target = LlvmHost.HostTriple;
                 module.DataLayout = LlvmHost.HostDataLayout;
                 new Session(module, mir, context.Layout, context.Symbols, context.Module,
-                    context.Singletons, context.BorrowedReturnSymbols).EmitAll();
+                    context.Singletons, context.BorrowedReturnSymbols, context.NativeBuild).EmitAll();
                 return module;
             }
             catch
@@ -58,13 +60,14 @@ namespace RigiCompiler.Middleware.Emit
         // 发射会话：组合根（对照 BindContext）。模块级登记在 Env，函数级
         // 游标在 Ctx；各 *Emitter 暂仍收 Session，经转发访问，避免一次改
         // 二十个签名。后续 CRTP visitor 直接拿 (env, ctx)。
-        internal sealed class Session
+        internal sealed partial class Session
         {
             internal Session(LLVMModuleRef module, MirModule mir,
                 Layout.LayoutPlanTable? layout, Symbols.MwSymbolTable symbols,
                 BilModule? bilModule = null,
                 System.Collections.Generic.IReadOnlyList<Binding.SingletonEntry>? singletons = null,
-                System.Collections.Generic.HashSet<string>? borrowedReturnSymbols = null)
+                System.Collections.Generic.HashSet<string>? borrowedReturnSymbols = null,
+                NativeBuildOptions? nativeBuild = null)
             {
                 Env = new LlvmEmitEnvironment(module, mir, layout, symbols, bilModule);
                 Ctx = new LlvmEmitContext();
@@ -73,9 +76,11 @@ namespace RigiCompiler.Middleware.Emit
                 // 3b-δ1：RcInjection 挂载的借用返回集合（null = 无借用标记）；
                 // EmitBody 按当前 fn 重算借用槽缓存
                 BorrowedReturnSymbols = borrowedReturnSymbols;
+                NativeBuild = nativeBuild ?? NativeBuildOptions.Executable;
             }
 
             internal LlvmEmitEnvironment Env { get; }
+            internal NativeBuildOptions NativeBuild { get; }
             internal LlvmEmitContext Ctx { get; }
 
             // MW10 刀5：singleton 三态/缓存合成槽与急切初始化调用表
@@ -268,7 +273,8 @@ namespace RigiCompiler.Middleware.Emit
                 }
                 DynamicNewEmitter.EmitAll(this, builder);
                 FatValueSlotAbi.EmitAll(this, builder);
-                if (entrypoint != null)
+                if (NativeBuild.IsLibrary) EmitLibrary(builder);
+                else if (entrypoint != null)
                 {
                     EmitEntryStub(builder, entrypoint);
                 }
@@ -294,6 +300,9 @@ namespace RigiCompiler.Middleware.Emit
             private const string DispatcherPublishCanonical =
                 "core.coroutine::Dispatcher$publishNative(token:.i64)@.void";
 
+            private string CompilerSymbol(string logical) => Env.BilModule == null ? logical
+                : BilCompilerSymbols.Resolve(Env.BilModule, logical);
+
             private void EmitDispatchWrappers(LLVMBuilderRef builder)
             {
                 // rigi_dispatcher_entry: void(void)；rigi_dispatch_publish:
@@ -308,9 +317,9 @@ namespace RigiCompiler.Middleware.Emit
                 var publishBlock = publish.AppendBasicBlock("entry");
 
                 if (TryGetFunction(Binding.SingletonPlanner.GetFnCanonicalOf(
-                        DispatcherTypeCanonical), out var getFn)
-                    && TryGetFunction(DispatcherWorkerLoopCanonical, out var loopFn)
-                    && TryGetFunction(DispatcherPublishCanonical, out var publishFn))
+                        CompilerSymbol(DispatcherTypeCanonical)), out var getFn)
+                    && TryGetFunction(CompilerSymbol(DispatcherWorkerLoopCanonical), out var loopFn)
+                    && TryGetFunction(CompilerSymbol(DispatcherPublishCanonical), out var publishFn))
                 {
                     builder.PositionAtEnd(entryBlock);
                     var disp = builder.BuildCall2(getFn.Type, getFn.Value,
@@ -362,11 +371,12 @@ namespace RigiCompiler.Middleware.Emit
                 string name;
                 if (fn.IsEntrypoint)
                 {
-                    // 入口约束（MW1 定稿保持）：无参数、返回 .i32/.void；
+                    // 入口参数为空或 Array<String>；真实 OS argv 在 entry stub 里构造。
                     // fn 以 canonical 名发射，rigi_entry 为合成 stub
-                    if (fn.Parameters.Count != 0)
+                    if (fn.Parameters.Count != 0 && (fn.Parameters.Count != 1
+                        || !TypeLayout.TryGetArrayElement(fn.Parameters[0].Type, out var element) || !element.IsString))
                     {
-                        throw new MwNotSupportedException($"入口函数不得有参数: {fn.Symbol.Canonical}");
+                        throw new MwNotSupportedException($"入口参数仅支持 Array<String>: {fn.Symbol.Canonical}");
                     }
                     // B-1：tainted main 已 split 为 spawn stub（ret 热
                     // Task；IsAsync 标记），返回类型约束由 EmitEntryStub
@@ -463,7 +473,7 @@ namespace RigiCompiler.Middleware.Emit
             private void EmitEntryStub(LLVMBuilderRef builder, EmittedFunction entrypoint)
             {
                 var stubType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32,
-                    System.Array.Empty<LLVMTypeRef>(), false);
+                    new[] { LLVMTypeRef.Int32, LLVMTypeRef.CreatePointer(BytePointer(), 0) }, false);
                 var stub = Module.AddFunction(EntrySymbol, stubType);
                 builder.PositionAtEnd(stub.AppendBasicBlock("entry"));
                 SetCurrentFunction(stub);
@@ -471,6 +481,19 @@ namespace RigiCompiler.Middleware.Emit
                 var reporterAvailable = reporterTarget != null;
                 // B-1：tainted main 的 spawn stub 标记（ret 热 Task）
                 var mainIsCoroutine = entrypoint.Mir.IsAsync;
+                // stub 本身不经过 RcInjection：桥接数组的 initial +1 保留到 drain，所有出口归还。
+                LLVMValueRef argvSlot = default;
+                if (entrypoint.Mir.Parameters.Count != 0)
+                {
+                    argvSlot = builder.BuildAlloca(TypeLayout.FatReferenceType(Context), "entry.argv");
+                    builder.BuildStore(LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(Context)), argvSlot);
+                }
+                void ReleaseArguments()
+                {
+                    if (argvSlot.Handle == IntPtr.Zero) return;
+                    ArcEmitter.EmitReleaseFatValue(this, builder, builder.BuildLoad2(TypeLayout.FatReferenceType(Context), argvSlot, "argv.held"));
+                    builder.BuildStore(LLVMValueRef.CreateConstNull(TypeLayout.FatReferenceType(Context)), argvSlot);
+                }
 
                 // 合成槽（entry 块 alloca）：entry.exc = 已 take 的异常
                 // 对象裸指针（+1 持有）；entry.fat = 未观察失败 out 槽；
@@ -502,11 +525,25 @@ namespace RigiCompiler.Middleware.Emit
                     ArcEmitter.EmitReleaseFatValue(this, builder, got);
                     EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
                 }
-                if (TryGetFunction("$..globals.init()@.void", out var globalsInit))
+                foreach (var initSymbol in Env.GlobalInitializers)
+                if (TryGetFunction(initSymbol, out var globalsInit))
                 {
                     builder.BuildCall2(globalsInit.Type, globalsInit.Value,
                         System.Array.Empty<LLVMValueRef>(), "");
                     EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
+                }
+                var mainArguments = System.Array.Empty<LLVMValueRef>();
+                if (argvSlot.Handle != IntPtr.Zero)
+                {
+                    var arrayType = entrypoint.Mir.Parameters[0].Type;
+                    if (!TryGetTypeSheet(arrayType.Canonical, out var arraySheet))
+                        throw new CompilerInternalException("入口缺闭合 Array<String> sheet：" + arrayType.Canonical);
+                    var stringSheet = ArrayEmitter.TypeSheetPointer(this, builder, MirType.Of(".string"));
+                    var (argvBuilder, argvType) = CallEmitter.DeclareHelperFace(this, "rigi_argv_build", BytePointer(),
+                        new[] { LLVMTypeRef.Int32, BytePointer(), BytePointer(), BytePointer() });
+                    var obj = builder.BuildCall2(argvType, argvBuilder, new[] { stub.GetParam(0), stub.GetParam(1), arraySheet, stringSheet }, "argv.object");
+                    var fat = CallEmitter.BuildFatReference(this, builder, arraySheet, obj);
+                    builder.BuildStore(fat, argvSlot); mainArguments = [fat];
                 }
                 if (mainIsCoroutine)
                 {
@@ -514,7 +551,7 @@ namespace RigiCompiler.Middleware.Emit
                     // cohandle 并 noteSpawn+publish 进 Dispatcher（结果
                     // 待 drain 后 settle 取回，此处先落 0 占位）
                     var mainTask = builder.BuildCall2(entrypoint.Type, entrypoint.Value,
-                        System.Array.Empty<LLVMValueRef>(), "main.task");
+                        mainArguments, "main.task");
                     mainTaskSlot = builder.BuildAlloca(
                         TypeLayout.FatReferenceType(Context), "entry.task");
                     builder.BuildStore(mainTask, mainTaskSlot);
@@ -524,14 +561,14 @@ namespace RigiCompiler.Middleware.Emit
                 else if (entrypoint.Mir.ReturnType.IsVoid)
                 {
                     builder.BuildCall2(entrypoint.Type, entrypoint.Value,
-                        System.Array.Empty<LLVMValueRef>(), "");
+                        mainArguments, "");
                     builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false),
                         resultSlot);
                 }
                 else
                 {
                     var result = builder.BuildCall2(entrypoint.Type, entrypoint.Value,
-                        System.Array.Empty<LLVMValueRef>(), "main.result");
+                        mainArguments, "main.result");
                     builder.BuildStore(result, resultSlot);
                 }
 
@@ -567,8 +604,8 @@ namespace RigiCompiler.Middleware.Emit
                 // 协程运行时段时）→ 主 Worker 收尾；随后失败汇总
                 builder.PositionAtEnd(drain);
                 if (TryGetFunction(Binding.SingletonPlanner.GetFnCanonicalOf(
-                        DispatcherTypeCanonical), out var entryGetFn)
-                    && TryGetFunction(DispatcherWorkerLoopCanonical, out var entryLoopFn))
+                        CompilerSymbol(DispatcherTypeCanonical)), out var entryGetFn)
+                    && TryGetFunction(CompilerSymbol(DispatcherWorkerLoopCanonical), out var entryLoopFn))
                 {
                     var disp = builder.BuildCall2(entryGetFn.Type, entryGetFn.Value,
                         System.Array.Empty<LLVMValueRef>(), "entry.disp");
@@ -609,6 +646,7 @@ namespace RigiCompiler.Middleware.Emit
                     EmitEntryPendingCheck(builder, stub, reporterAvailable, takeEntry);
                 }
 
+                ReleaseArguments();
                 if (reporterAvailable)
                 {
                     // 失败汇总：main 失败优先，其次未观察失败，都无 ret
@@ -653,6 +691,7 @@ namespace RigiCompiler.Middleware.Emit
                     builder.BuildBr(reporter);
 
                     builder.PositionAtEnd(reporter);
+                    ReleaseArguments();
                     EmitUncaughtReporterBody(builder, reporterTarget!, exceptionSheet, excSlot);
                 }
                 else
@@ -1071,8 +1110,7 @@ namespace RigiCompiler.Middleware.Emit
                 {
                     return;
                 }
-                var wrapper = Symbols.FindMember(
-                    excType.Canonical + "$..init.wrapper()@.void");
+                var wrapper = Symbols.FindInitWrapper(excType, 0);
 
                 var nameSlot = builder.BuildAlloca(StringAbi.ValueType(Context), "gexc.name");
                 var loop = stub.AppendBasicBlock("gexc.loop");

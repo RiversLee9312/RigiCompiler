@@ -45,6 +45,12 @@ fn(com.example::Owner$method(value:.i32)@.void) {
 
 Metadata 不得被普通 BIL 指令读取。需要在程序执行中使用的数据必须放入 `Resources`。
 
+独立模块的全局初始化函数名为 `..globals.init.<ModuleId 的 SHA256>`。
+`module.init.<摘要>` 的 string metadata 保存其完整 canonical 符号；链接器按
+依赖先于宿主的稳定 DAG 顺序保留这些条目。VM 与 Middleware 在所有 singleton
+初始化之后、入口之前，按协议顺序各调用一次。低级编译与手写 BIL 仍兼容
+原 `..globals.init` 名称。该表属于链接与装载协议，普通指令不能读取。
+
 ### 4.2 `Resources`
 
 BIL 指令中不得直接出现用户字面量。所有字面值和静态表必须在 `Resources` 中声明，再通过 `load`、结构化指令或 `hint` 引用。
@@ -109,6 +115,11 @@ setter：
 ```
 
 `.static.` 只出现在真正的 static 成员上。Singleton 实例成员不因此获得 `.static.`。
+
+独立模块对非公开声明的类型名段和成员名段追加 `__m_<ModuleId 的 SHA256>`，
+从而在相同源命名空间中隔离实现身份。源符号名字与命名空间不改写；公开契约的
+canonical 保持上述形式。保留方法的逻辑名由统一解析器去除该身份后缀后判定，
+完整 canonical 始终用于链接。低级 `compile` 保持原单编译单元投影。
 
 canonical symbol 中的参数名称、泛型 hidden argument 和可变参数 hidden argument 必须遵循第 7 节以及 `SYNTAX.md` / `RUNTIME.md` 的规定。符号的类型部分使用 BIL 类型引用，因此可以出现闭合泛型、`.generic<...>` 等形式。
 

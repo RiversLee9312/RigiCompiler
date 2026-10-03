@@ -250,11 +250,14 @@ namespace RigiCompiler
             }
             try
             {
-                foreach (var file in files)
+                var parsed = Frontend.ParseFiles(files);
+                for (var fileIndex = 0; fileIndex < files.Count; fileIndex++)
                 {
+                    var file = files[fileIndex];
+                    parsed[fileIndex].Logs.Replay();
                     try
                     {
-                        var ast = ParseFile(file);
+                        var ast = parsed[fileIndex].GetRoot();
                         if (!parseOnly) userRoots.Add(ast);
                         // AST 输出：--dump-ast 写文件；否则 --parse-only 输出到 stdout。
                         // 多文件时先输出一行 {"file":...} 元记录分隔（M31）：
@@ -317,20 +320,14 @@ namespace RigiCompiler
         // 词法 + 语法解析；词法/语法错误原样抛出，由 Execute 逐文件捕获
         internal static RootASTNode ParseFile(string path)
         {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
-            using var reader = new StreamReader(stream);
-            var lexer = new Lexer();
-            // GetAwaiter().GetResult() 不包 AggregateException：词法错误原样抛出
-            var tokens = lexer.Tokenize(reader, path).GetAwaiter().GetResult();
-            var parser = new Parser();
-            return (RootASTNode)parser.Parse(tokens);
+            return Frontend.Parse(new SourceInput(File.ReadAllText(path), path));
         }
 
         // 语义管线的编译单元组装（compile 与 run 共用）：stdlib（在前）+ 用户源
         internal static CompilationUnit BuildUnit(List<RootASTNode> userRoots)
         {
             var roots = new List<RootASTNode>();
-            roots.AddRange(StdlibSources.ParseAll());
+            roots.AddRange(PerformanceMetrics.Measure("frontend.stdlib", StdlibSources.ParseAll));
             roots.AddRange(userRoots);
             return new CompilationUnit(roots.ToArray());
         }
@@ -341,9 +338,9 @@ namespace RigiCompiler
             CompilationUnit unit, out int exitCode)
         {
             exitCode = 1;
-            var declarations = DeclarationCollector.Collect(unit);
-            DeclarationResolver.Resolve(unit, declarations);
-            var bodies = Binder.Bind(unit, declarations);
+            var declarations = PerformanceMetrics.Measure("semantic.P1", () => DeclarationCollector.Collect(unit), hasErrors: () => unit.Diagnostics.HasErrors);
+            PerformanceMetrics.Measure("semantic.P2", () => DeclarationResolver.Resolve(unit, declarations), hasErrors: () => unit.Diagnostics.HasErrors);
+            var bodies = PerformanceMetrics.Measure("semantic.P3", () => Binder.Bind(unit, declarations), hasErrors: () => unit.Diagnostics.HasErrors);
             EmitDiagnostics(unit.Diagnostics, 0);
             if (unit.Diagnostics.HasErrors) return null;
             exitCode = 0;
@@ -361,11 +358,11 @@ namespace RigiCompiler
             exitCode = 1;
             // P4 也会产生诊断（如未覆盖节点）：发射后只输出新增部分，有 Error 不推进
             int emitted = unit.Diagnostics.Diagnostics.Count;
-            var lowered = Lowerer.Lower(unit, bodies);
-            var emitResult = BilEmitter.EmitWithSlices(unit, lowered, moduleName);
+            var lowered = PerformanceMetrics.Measure("lowering.P4a", () => Lowerer.Lower(unit, bodies), hasErrors: () => unit.Diagnostics.HasErrors);
+            var emitResult = PerformanceMetrics.Measure("lowering.P4b", () => BilEmitter.EmitWithSlices(unit, lowered, moduleName), hasErrors: () => unit.Diagnostics.HasErrors);
             EmitDiagnostics(unit.Diagnostics, emitted);
             if (unit.Diagnostics.HasErrors) return null;
-            var verificationErrors = BilVerifier.Verify(emitResult.Merged);
+            var verificationErrors = PerformanceMetrics.Measure("bil.verifier", () => BilVerifier.Verify(emitResult.Merged), isFailure: errors => errors.Count > 0);
             if (verificationErrors.Count > 0)
             {
                 foreach (var error in verificationErrors)
@@ -455,6 +452,27 @@ namespace RigiCompiler
     }
 
     /// <summary>test：运行测试套件（裸用或 --run 不带编号时打印套件菜单）。</summary>
+    /// <summary>稳定 JSON 清单：只枚举套件、用例和门控，不执行测试。</summary>
+    public class InventoryOption : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = "--inventory",
+            Description = "输出测试覆盖清单 JSON（不执行测试）",
+            MutuallyExclusive = { "--run", "--all", "--suite-args", "--spawned" },
+        };
+    }
+
+    // worker 仅执行一个稳定 ID；不与旧 suite 调度混用。
+    public sealed class TestWorkerOption(string name, int arguments) : ICommandLineOption
+    {
+        public CommandLineMask Mask { get; } = new()
+        {
+            Name = name, Description = "隔离测试 worker 协议", MinArgs = arguments, MaxArgs = arguments,
+            MutuallyExclusive = { "--run", "--all", "--inventory", "--suite-args" },
+        };
+    }
+
     public class TestCommand : ICommandLineCommand
     {
         public CommandLineMask Mask { get; } = new()
@@ -465,6 +483,10 @@ namespace RigiCompiler
 
         public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
         {
+            new InventoryOption(),
+            new TestWorkerOption("--worker", 0),
+            new TestWorkerOption("--case-id", 1),
+            new TestWorkerOption("--result-file", 1),
             new AllOption(),
             new RunOption(),
             new SuiteArgsOption(),
@@ -479,6 +501,38 @@ namespace RigiCompiler
             {
                 Console.Error.WriteLine(loggerError);
                 return 2;
+            }
+
+            if (result.Has("--worker"))
+            {
+                var id = result.Get("--case-id")?.SingleOrDefault();
+                var path = result.Get("--result-file")?.SingleOrDefault();
+                if (id == null || path == null || !result.Has("--spawned"))
+                {
+                    Console.Error.WriteLine("worker 需要 --case-id、--result-file 与 --spawned");
+                    return 2;
+                }
+                Tests.TestRunner.IsSpawned = true;
+                var outcome = Tests.CaseCatalog.Run(id);
+                outcome.Write(path);
+                if (Tests.CaseCatalog.Find(id) == null) return 2;
+                return outcome.Status switch
+                {
+                    Tests.CaseStatus.Pass or Tests.CaseStatus.Skip => 0,
+                    Tests.CaseStatus.Cancel => 130,
+                    _ => 1,
+                };
+            }
+            if (result.Has("--case-id") || result.Has("--result-file"))
+            {
+                Console.Error.WriteLine("--case-id 与 --result-file 仅适用于 --worker");
+                return 2;
+            }
+
+            if (result.Has("--inventory"))
+            {
+                Tests.TestInventory.Write(Console.OpenStandardOutput());
+                return 0;
             }
 
             IReadOnlyList<string>? suiteArgs = result.Get("--suite-args");
@@ -743,274 +797,6 @@ namespace RigiCompiler
                 }
             }
             return false;
-        }
-    }
-
-    /// <summary>run --target：执行目标（vm = BIL VM 直接执行，缺省；native = 经 LLVM 管线产临时可执行后运行）。</summary>
-    public class RunTargetOption : ICommandLineOption
-    {
-        public CommandLineMask Mask { get; } = new()
-        {
-            Name = "--target",
-            Description = "执行目标：vm（默认，BIL VM 直接执行）或 native（经 LLVM 管线产临时可执行后运行）",
-            ArgsHint = "<vm|native>",
-            MinArgs = 1,
-            MaxArgs = 1,
-        };
-    }
-
-    /// <summary>
-    /// run：一键编译并运行 Rigi 源文件——与 compile 相同的完整管线（P1–P4 +
-    /// BilVerifier）到 BIL 后直接执行，BIL 切片不落用户目录（vm 目标全内存；
-    /// native 目标仅临时目录承载临时 exe，无论成败用完即删）。
-    /// --target vm（默认）直接进 VM 执行（entry-point 自动选择、--max-steps
-    /// 与 vm 命令同语义；一键运行语义下 main 的 i32 返回值即 rigic 退出码，
-    /// VM 异常仍为 1）；--target native 经 native 管线产临时可执行，产物
-    /// stdout/stderr 透传、退出码透传、stdin 继承用户终端（交互式程序可用）。
-    /// </summary>
-    public class RunCommand : ICommandLineCommand
-    {
-        public CommandLineMask Mask { get; } = new()
-        {
-            Name = "run",
-            Description = "一键编译并运行 Rigi 源文件（--target vm 默认；native 经 LLVM 管线产临时可执行）",
-        };
-
-        public IReadOnlyList<ICommandLineOption> SubCommands { get; } = new ICommandLineOption[]
-        {
-            new FileOption(),
-            new RunTargetOption(),
-            new EntryPointOption(),
-            new MaxStepsOption(),
-            new VerboseOption(),
-            new LogToOption(),
-        };
-
-        // 产物执行器：默认 RunProductInherited（真实终端语义：stdin 继承、
-        // stdout/stderr 透传）；测试注入捕获式 runner 以断言透传内容与清理
-        // （参数 = 产物路径，返回产物退出码，经 Execute 原样透传）
-        internal Func<string, int> ProductRunner { get; set; } = RunProductInherited;
-
-        public int Execute(CommandLineParseResult result)
-        {
-            // --verbose / --log-to 在主体之前应用
-            if (LoggerOptions.Apply(result) is { } loggerError)
-            {
-                Console.Error.WriteLine(loggerError);
-                return 2;
-            }
-
-            // --target：缺省 vm（BIL VM 直接执行）；非法值属用法错误
-            // （退出码 2 + 提示，参照 vm --max-steps 的参数错误口径）
-            string target = "vm";
-            if (result.Get("--target") is { } targetArgs)
-            {
-                if (!string.Equals(targetArgs[0], "vm", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(targetArgs[0], "native", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.Error.WriteLine("--target 需要 vm 或 native，收到：" + targetArgs[0]);
-                    return 2;
-                }
-                target = targetArgs[0].ToLowerInvariant();
-            }
-
-            // --max-steps：与 vm 命令同口径（正整数；缺省 CLI 高预算）
-            long maxSteps = 1_000_000_000;
-            if (result.Has("--max-steps"))
-            {
-                string raw = result.Get("--max-steps")![0];
-                if (!long.TryParse(raw, out maxSteps) || maxSteps < 1)
-                {
-                    Console.Error.WriteLine("--max-steps 需要正整数，收到：" + raw);
-                    return 2;
-                }
-            }
-
-            // 目标相关选项的适用性：native 产物不受 VM 步数约束；entry-point
-            // 选择暂只接进 VM（native 管线要求恰一个 entrypoint）——
-            // 明确报错，不静默忽略
-            if (target == "native")
-            {
-                if (result.Has("--max-steps"))
-                {
-                    Console.Error.WriteLine("--max-steps 仅 --target vm 支持（native 产物不受 VM 步数约束）");
-                    return 2;
-                }
-                if (result.Has("--entry-point"))
-                {
-                    Console.Error.WriteLine("--entry-point 暂仅 --target vm 支持（native 目标要求恰一个 entrypoint）");
-                    return 2;
-                }
-            }
-
-            var files = result.Get("--file");
-            if (files == null)
-            {
-                Console.Error.WriteLine("run 需要 --file <路径...> 指定源文件");
-                return 2;
-            }
-
-            // 解析（与 compile 同形态：内部编译器错误与用户语法错误严格区分）；
-            // 成功不打「解析成功」噪声——run 的 stdout 只属于被运行程序的输出
-            var userRoots = new List<RootASTNode>();
-            foreach (var file in files)
-            {
-                try
-                {
-                    userRoots.Add(CompileCommand.ParseFile(file));
-                }
-                catch (CompilerInternalException ex)
-                {
-                    Console.Error.WriteLine($"内部编译器错误 {file}: {ex.Message}");
-                    return 1;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"编译失败 {file}: {ex.Message}");
-                    return 1;
-                }
-            }
-
-            // 完整语义管线（compile 共用件，诊断同 compile 形态）：
-            // P1–P3 诊断门槛 → P4 发射 + BilVerifier。任一失败即非零退出码、不产生执行。
-            var unit = CompileCommand.BuildUnit(userRoots);
-            var bodies = CompileCommand.RunSemaPasses(unit, out int semaExit);
-            if (bodies == null) return semaExit;
-            var emitResult = CompileCommand.LowerAndVerify(unit, bodies,
-                Path.GetFileNameWithoutExtension(files[0]), out int lowerExit);
-            if (emitResult == null) return lowerExit;
-
-            if (target == "vm")
-            {
-                return RunVmTarget(emitResult.Merged, maxSteps,
-                    result.Get("--entry-point")?[0]);
-            }
-            return RunNativeTarget(emitResult.Merged);
-        }
-
-        // --target vm：与 vm 命令同执行语义（entry-point 自动选择规则、
-        // --max-steps）；差异仅在退出码——一键运行语义下 main 的 i32 返回值
-        // 即 rigic 退出码（与 native 目标一致；vm 命令本身恒 0；VM 异常仍为 1）
-        private static int RunVmTarget(BilModule module, long maxSteps, string? explicitEntryPoint)
-        {
-            if (!VmCommand.TryResolveEntryPoint(module, explicitEntryPoint, out string? entryPoint))
-            {
-                return 2;
-            }
-            BilVmResult run;
-            try
-            {
-                run = BilVm.Run(module, maxSteps, entryPoint);
-            }
-            catch (VmException ex)
-            {
-                Console.Error.WriteLine(ex.Message);
-                return 1;
-            }
-            Console.Out.Write(run.Stdout);
-            Console.Error.Write(run.Stderr);
-            if (run.Exception != null)
-            {
-                Console.Error.WriteLine(run.Exception.Message);
-                return 1;
-            }
-            return run.ReturnValue is VmI32 value ? value.Value : 0;
-        }
-
-        // --target native：与 native --out 同一 EmitAndLink 管线（恰一个
-        // entrypoint 门槛 + 工具链/libuv/mimalloc 解析，错误形态同 native 命令）。
-        // 临时目录只承载临时 exe——BIL 切片全内存（merged 模块直接进管线），
-        // 产物执行后无论成败在 finally 清理临时目录
-        private int RunNativeTarget(BilModule module)
-        {
-            var dir = Path.Combine(Path.GetTempPath(),
-                "rigi_run_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(dir);
-            try
-            {
-                var exePath = Path.Combine(dir,
-                    RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "app.exe" : "app");
-                int code = NativeCommand.EmitAndLink(module, exePath,
-                    emitObjPath: null, emitLlPath: null, toolchainDir: null,
-                    libuvDir: null, mimallocDir: null, linkInputs: null,
-                    outKind: "run --target native");
-                if (code != 0) return code;
-                // 退出码透传：rigi_rt main 的 i32 返回值即产物进程退出码
-                return ProductRunner(exePath);
-            }
-            finally
-            {
-                try { Directory.Delete(dir, recursive: true); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                { /* 临时目录清理失败不致命（native 临时 .o 同口径） */ }
-            }
-        }
-
-        // 真实运行产物：stdin/stdout/stderr 透传到 rigic 自己的对应流——run 是
-        // 真实运行场景，交互式程序应能读到用户终端的 stdin，进程的 stdout/stderr
-        // 也原样进同一终端（含 rigic 被重定向到管道/文件的场景）。
-        // 实现为显式接力泵而非裸继承：Windows 上 CreateProcess 不置
-        // STARTF_USESTDHANDLES 时子进程拿到的是控制台默认句柄，拿不到 rigic
-        // 的管道/文件重定向目标（裸继承实测丢 stdout）；子进程三流显式重定向 +
-        // CopyToAsync 泵送才保证逐字节透传。与 ExternalProcess.closeStdin 的
-        // 确定性 EOF（测试/工具链场景）刻意相反：stdin 泵把用户终端输入原样
-        // 转发，rigic stdin EOF 时关闭子进程写端（交互程序读到真实 EOF）。
-        // 无超时：长驻程序（服务器等）合法，用户经 Ctrl+C 信号同时终止同
-        // 控制台进程组
-        private static int RunProductInherited(string exePath)
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            Process process;
-            try
-            {
-                process = Process.Start(startInfo)
-                    ?? throw new InvalidOperationException("Process.Start 返回 null");
-            }
-            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception
-                or FileNotFoundException)
-            {
-                Console.Error.WriteLine($"无法启动产物进程 {exePath}: {ex.Message}");
-                return 2;
-            }
-            using (process)
-            {
-                var stdinPump = PumpStdinAsync(process);
-                var stdoutPump = process.StandardOutput.BaseStream
-                    .CopyToAsync(Console.OpenStandardOutput());
-                var stderrPump = process.StandardError.BaseStream
-                    .CopyToAsync(Console.OpenStandardError());
-                process.WaitForExit();
-                // 子进程已退出：关闭其 stdin 写端解开 stdin 泵，再宽限等
-                // stdout/stderr 泵排空（ExitCode 之后的末尾数据不丢）
-                try { process.StandardInput.Close(); } catch (IOException) { }
-                Task.WaitAll(new[] { stdoutPump, stderrPump }, millisecondsTimeout: 30_000);
-                return process.ExitCode;
-            }
-        }
-
-        // stdin 接力泵：rigic 的标准输入 → 产物进程（交互输入原样转发；
-        // rigic stdin EOF → 关闭子进程写端，子进程读到确定性 EOF）。
-        // 泵的任何异常（子进程先退出/ObjectDisposed 等）只结束泵本身
-        private static async System.Threading.Tasks.Task PumpStdinAsync(Process process)
-        {
-            try
-            {
-                await Console.OpenStandardInput()
-                    .CopyToAsync(process.StandardInput.BaseStream).ConfigureAwait(false);
-                try { process.StandardInput.Close(); } catch (IOException) { }
-            }
-            catch (Exception ex) when (ex is IOException or ObjectDisposedException
-                or InvalidOperationException)
-            {
-            }
         }
     }
 

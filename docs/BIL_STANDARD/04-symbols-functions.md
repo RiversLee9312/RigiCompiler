@@ -452,7 +452,7 @@ fn(com.example::Service$..init.wrapper(level:.string)@.void) {
 - **闭包缝合（新 init 原则）**：类型级 `..init.wrapper` 的体内依次是 ① 继承闭包（基→本）全部 wrapper 安装（本类与基类的 Entity/Field/Method 应用；同 wrapper 定义的 Entity 应用按派生覆盖去重）② 闭包全部 `..init.field.<名>` 的调用（基→本、声明序；同名字段一族只调基类最早声明符号，虚派发选中最高派生实现）。**不生成对基类 `init` 的 super 调用**——基类字段初值与 wrapper 由本缝合覆盖，基类用户 init 体的链式调用仍由用户/合成 init 体内的 `super(...)` 决定（`SYNTAX.md` §9.3）；
 - **调用时机（规范注记）**：本方法在实体 **init 之前**由 Middleware/VM **自动调用**，且只调用**实际类型**（分配类型）的 `..init.wrapper`（不沿继承重找、不重复调用基类的）；frontend **无法介入**调用时机，也不得在普通用户方法中显式 `invoke` 本方法（验证器可对非合成调用点给出诊断，Middleware 以自动调用为准）。有参时，调用方通过 §14.4 `new.wrapped` 把前缀实参传入构造路径，由运行时转交给本方法。
 
-`..init.field.<名>`（字段初始化器方法，新 init 原则）：编译器为每个**带声明初始值的实例字段**（class/struct/enum-struct 同规则）在其声明类型上合成一个保留名族方法——子类字段 `override`（`SYNTAX.md` §9.2.1 字段覆写）时子类生成同族同名方法（写同一基类槽），与基类版本构成 BIL 虚派发族：
+`..init.field.<名>`（字段初始化器方法，新 init 原则）：编译器为每个**带声明初始值的实例字段**（class/struct/enum-struct/wrapper 同规则）在其声明类型上合成一个保留名族方法——子类字段 `override`（`SYNTAX.md` §9.2.1 字段覆写）时子类生成同族同名方法（写同一基类槽），与基类版本构成 BIL 虚派发族：
 
 ```text
 ..init.field.<字段名>

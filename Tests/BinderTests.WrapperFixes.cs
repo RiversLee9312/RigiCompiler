@@ -7,6 +7,176 @@ namespace RigiCompiler.Tests
     // specific `.proxy.call` 形状全等。
     public static partial class BinderTests
     {
+        // WRAP-001：wrapper 自身初值必须走真实初始化器，DA 与普通实体一致。
+        public static int RunWithArgs(System.Collections.Generic.IReadOnlyList<string> args)
+        {
+            if (args.Count == 0) return RunAll();
+            if (args.Count != 1 || !(string.Equals(args[0], "WRAP-001", System.StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args[0], "WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)))
+            {
+                System.Console.WriteLine("支持的定向测试参数：WRAP-001、WRAP-001-review");
+                return 2;
+            }
+            TestHarness.Reset();
+            TestGenericParameterFieldInitializers();
+            TestForwardDefaultConstructionDa();
+            if (args[0].Equals("WRAP-001-review", System.StringComparison.OrdinalIgnoreCase))
+                return TestHarness.Summary("Binder WRAP-001 review");
+            TestWrapperFieldInitializers();
+            TestWrapperDefaultConstructionDa();
+            return TestHarness.Summary("Binder WRAP-001");
+        }
+
+        private static void TestForwardDefaultConstructionDa()
+        {
+            TestHarness.Section("P3 前向默认构造 DA（WRAP-001 review）");
+            var contexts = new[]
+            {
+                "@WrapperTarget(.Entity)\nrich wrapper W { pub var payload: Payload = new Payload() }\n@W\nclass Host { }\n",
+                "class Early { pub var payload: Payload = new Payload() }\n",
+                "rich struct Early { pub var payload: Payload = new Payload() }\n",
+                "class Early { pub static var payload: Payload = new Payload() }\n",
+                "var payload: Payload = new Payload()\n",
+                "func use(payload: Payload = new Payload()) { }\n",
+                "rich enum struct Early { pub var payload: Payload\n pub init(_ -> payload) }[One(new Payload())]\n",
+            };
+            foreach (var context in contexts)
+            {
+                var (ok, _) = BindUnit(context + "shared class Payload { pub var n: i64 = 7L }\n");
+                CheckNoErrors("后声明类型真实初值满足默认构造：" + context.Split('\n')[0], ok);
+                var (missing, _) = BindUnit(context + "shared class Payload { pub var n: i64 }\n");
+                TestHarness.CheckSemanticError("后声明类型无初值仍拒绝", missing.Diagnostics,
+                    "has no constructor that assigns non-nullable field 'n'");
+                var (bad, _) = BindUnit(context + "shared class Payload { pub var n: i64 = \"bad\" }\n");
+                TestHarness.CheckSemanticError("后声明类型错误初值仍拒绝", bad.Diagnostics,
+                    "initializer must be of type");
+            }
+            var (derived, bodies) = BindUnit(
+                "class Early { pub var payload: Derived = new Derived() }\n" +
+                "class Derived : Base { }\n" +
+                "open class Base { pub var n: i64\n pub init() { n = 7L } }\n");
+            CheckNoErrors("前向 Derived 默认构造由 super 担保基类字段", derived);
+            TestHarness.CheckTrue("Derived 默认构造真实委托基类 init",
+                bodies.Any(b => b.Method.Owner?.Name == "Derived" && b.Method.Kind == MethodKind.Init
+                    && b.Body.Statements.Single() is BoundExpressionStatement
+                        { Expression: BoundSuperCallExpression }));
+            var (boundOk, _) = BindUnit(
+                "func make\\<T extends Payload>(value: Payload = T()) { }\n" +
+                "open class Payload { pub var n: i64 = 7L }\n");
+            CheckNoErrors("泛型界 T() 默认值也等真实初值方法就位", boundOk);
+            var (boundBad, _) = BindUnit(
+                "func make\\<T extends Payload>(value: Payload = T()) { }\n" +
+                "open class Payload { pub var n: i64 }\n");
+            TestHarness.CheckSemanticError("泛型界 T() 缺初值仍拒绝", boundBad.Diagnostics,
+                "has no init assigning non-nullable field 'n'");
+            var tokenOnly = BindUnitWithStdlib(
+                "import core.serialization.*\n" +
+                "class Early { pub var payload: Payload = new Payload() }\n" +
+                "@Serializable\nclass Payload { pub var n: i64 }\n");
+            TestHarness.CheckSemanticError("token-only init 不担保普通零参构造", tokenOnly.Unit.Diagnostics,
+                "has no constructor that assigns non-nullable field 'n'");
+            var (enumOk, _) = BindUnit("enum struct E { pub var n: i64 = 7L }[One]\n");
+            CheckNoErrors("enum 默认 case 初值检查延后到真实方法合成", enumOk);
+            var (enumBad, _) = BindUnit("enum struct E { pub var n: i64 }[One]\n");
+            TestHarness.CheckSemanticError("enum 默认 case 缺初值仍拒绝", enumBad.Diagnostics,
+                "cannot assign non-nullable field 'n'");
+        }
+
+        private static void TestGenericParameterFieldInitializers()
+        {
+            TestHarness.Section("P3 泛型参数字段初值（WRAP-001 review）");
+            foreach (var init in new[] { "", "pub init(value: TTarget) { reads = value }" })
+            {
+                var (unit, bodies) = BindUnit(
+                    "func seed(): i64 { return 7L }\n" +
+                    "@WrapperTarget(.Entity)\nrich wrapper W\\<TTarget> {\n" +
+                    "pub var reads: TTarget = seed() as TTarget\n" + init + "\n}\n" +
+                    "@W\\<i64>" + (init.Length == 0 ? "" : "(9L)") + "\nclass Host { }\n");
+                CheckNoErrors("泛型参数字段初值合法：" + init, unit);
+                TestHarness.CheckTrue("泛型字段真实初值保留函数调用与类型转换",
+                    bodies.Any(b => b.Method.Name == "..init.field.reads"
+                        && b.Body.Statements.Single() is BoundAssignmentStatement
+                            { Value: BoundCastExpression { Source: BoundCallExpression } }));
+            }
+            var (bad, _) = BindUnit(
+                "@WrapperTarget(.Entity)\nrich wrapper W\\<TTarget> { pub var reads: TTarget = 7L }\n");
+            TestHarness.CheckSemanticError("不兼容泛型初值仍拒绝", bad.Diagnostics,
+                "initializer must be of type");
+            var (staticBad, _) = BindUnit(
+                "class C\\<T> { pub static var value: T = 7L as T }\n");
+            TestHarness.CheckSemanticError("静态字段仍禁宿主泛型参数", staticBad.Diagnostics,
+                "static");
+            var (thisBad, _) = BindUnit(
+                "class C { pub var n: i64 = 7L\n pub var copy: i64 = this.n }\n");
+            TestHarness.CheckSemanticError("实例字段初值仍禁 this", thisBad.Diagnostics, "this");
+        }
+
+        private static void TestWrapperFieldInitializers()
+        {
+            TestHarness.Section("P3 Wrapper Field Initializers (WRAP-001)");
+            foreach (var init in new[] { "", "pub init()", "pub init() { }", "pub init(v: i64) { reads = v }" })
+            {
+                var (unit, bodies) = BindUnit(
+                    "@WrapperTarget(.Entity)\n" +
+                    "wrapper W { pub var reads: i64 = 7L\n" + init + "\n}\n");
+                CheckNoErrors("wrapper 初值与 init 形态：" + init, unit);
+                var wrapper = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "W");
+                TestHarness.CheckTrue("wrapper 字段初始化方法真实写字段",
+                    bodies.Any(b => ReferenceEquals(b.Method.Owner, wrapper)
+                        && b.Method.Name == "..init.field.reads"
+                        && b.Body.Statements.Single() is BoundAssignmentStatement
+                            { Target: BoundFieldAccessExpression { Field.Name: "reads" } }));
+                TestHarness.CheckTrue("wrapper 安装阶段调用字段初始化方法",
+                    bodies.Any(b => ReferenceEquals(b.Method.Owner, wrapper)
+                        && b.Method.Name == "..init.wrapper"
+                        && b.Body.Statements.Single() is BoundCallStatement
+                            { Method.Name: "..init.field.reads" }));
+                TestHarness.CheckTrue("wrapper 零参默认 init 只在省略 init 时合成",
+                    wrapper.Methods.Count(m => m.Kind == MethodKind.Init && m.IsSynthetic)
+                        == (init.Length == 0 ? 1 : 0));
+            }
+        }
+
+        private static void TestWrapperDefaultConstructionDa()
+        {
+            TestHarness.Section("P3 Wrapper Construction DA (WRAP-001)");
+            foreach (var target in new[] { "Entity", "Method", "Value" })
+            {
+                var application = target switch
+                {
+                    "Entity" => "@W\nclass Host { }\n",
+                    "Method" => "class Host { @W\n pub func read(): i64 { return 0L } }\n",
+                    _ => "class Host { @W\n pub const value: i64 = 0L }\n",
+                };
+                foreach (var init in new[] { "", "pub init()", "pub init() { }", "pub init(v: i64) { }" })
+                {
+                    var (bad, _) = BindUnit(
+                        application + "@WrapperTarget(." + target + ")\n" +
+                        "wrapper W { pub var reads: i64\n" + init + "\n}\n");
+                    TestHarness.CheckSemanticError("无初值非空字段拒绝：" + target + "/" + init,
+                        bad.Diagnostics, init.Length == 0
+                            ? "has no constructor that assigns non-nullable field 'reads'"
+                            : "is not definitely assigned");
+                }
+                // 应用先于定义：初值方法与默认 init 合成完成前不得误判。
+                var (ok, _) = BindUnit(
+                    application + "@WrapperTarget(." + target + ")\n" +
+                    "wrapper W { pub var reads: i64 = 7L }\n");
+                CheckNoErrors("前向 wrapper 默认构造初值合法：" + target, ok);
+                var (nullable, _) = BindUnit(
+                    application + "@WrapperTarget(." + target + ")\n" +
+                    "rich wrapper W { pub var reads: i64? }\n");
+                CheckNoErrors("无 init Nullable wrapper 字段合法：" + target, nullable);
+            }
+            var (unused, _) = BindUnit("@WrapperTarget(.Entity)\nwrapper W { pub var reads: i64 }\n");
+            CheckNoErrors("无 init wrapper 仅声明不构造仍合法", unused);
+            var (generic, _) = BindUnit(
+                "@W\\<i64>\nclass Host { }\n" +
+                "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { pub var reads: TTarget }\n");
+            TestHarness.CheckSemanticError("泛型 wrapper 非空字段仍拒绝", generic.Diagnostics,
+                "has no constructor that assigns non-nullable field 'reads'");
+        }
+
         private static void TestWrapperPlaceVoidStatement()
         {
             TestHarness.Section("P3 Wrapper Place Void Statement (§14.5)");

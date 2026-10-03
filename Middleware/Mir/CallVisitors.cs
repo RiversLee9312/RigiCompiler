@@ -149,8 +149,7 @@ namespace RigiCompiler.Middleware.Mir
             MwMemberSymbol? initWrapper;
             if (wrapperArguments == null)
             {
-                initWrapper = flow.Context.Symbols.FindMember(
-                    template.Canonical + "$..init.wrapper()@.void");
+                initWrapper = flow.Context.Symbols.FindInitWrapper(template, 0);
             }
             else
             {

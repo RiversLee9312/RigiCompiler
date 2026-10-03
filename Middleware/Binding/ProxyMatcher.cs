@@ -61,7 +61,7 @@ namespace RigiCompiler.Middleware.Binding
         public static MwProxyMatchKind MatchFieldAccess(MwTypeSymbol wrapper, string fieldName,
             bool isSet)
         {
-            var specificName = (isSet ? ".proxy.set." : ".proxy.get.") + fieldName;
+            var specificName = (isSet ? ".proxy.set." : ".proxy.get.") + BilLogicalName.Of(fieldName);
             if (FindProxy(wrapper, specificName, BilProxyKind.Specific) != null)
             {
                 return MwProxyMatchKind.Specific;
@@ -97,7 +97,7 @@ namespace RigiCompiler.Middleware.Binding
         {
             isWildcard = false;
             var specific = FindProxy(wrapper,
-                (isSet ? ".proxy.set." : ".proxy.get.") + fieldName, BilProxyKind.Specific);
+                (isSet ? ".proxy.set." : ".proxy.get.") + BilLogicalName.Of(fieldName), BilProxyKind.Specific);
             if (specific != null)
             {
                 return specific;
@@ -149,7 +149,8 @@ namespace RigiCompiler.Middleware.Binding
             {
                 return "";
             }
-            return canonical.Substring(marker + 2, open - marker - 2);
+            // 私有代理的模块后缀属于链接身份；匹配仍只在该 wrapper 的成员中进行。
+            return BilLogicalName.Of(canonical.Substring(marker + 2, open - marker - 2));
         }
 
         private static bool ShapeMatches(MwMemberSymbol proxy, MwMemberSymbol member)
@@ -179,7 +180,7 @@ namespace RigiCompiler.Middleware.Binding
             {
                 name = name.Substring(".static.".Length);
             }
-            return name.StartsWith('$') ? name.Substring(1) : name;
+            return BilLogicalName.Of(name.StartsWith('$') ? name.Substring(1) : name);
         }
 
         private static bool IsOperator(MwMemberSymbol member)
@@ -192,7 +193,7 @@ namespace RigiCompiler.Middleware.Binding
                 }
             }
             return member.Canonical.Contains("$$", System.StringComparison.Ordinal)
-                && !member.Canonical.Contains("$$call(", System.StringComparison.Ordinal);
+                && BilLogicalName.Method(member.Canonical) != "call";
         }
 
         private static bool IsGenericMember(MwMemberSymbol member) =>

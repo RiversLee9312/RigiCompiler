@@ -6,7 +6,6 @@ using System.Text;
 using RigiCompiler.Bil;
 using RigiCompiler.Bil.Vm;
 using RigiCompiler.Middleware.Toolchain;
-using System.Diagnostics;
 
 namespace RigiCompiler.Tests
 {
@@ -17,7 +16,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsDanglingDelete", Cases, sectionTitle: "VmFsDanglingDelete");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -34,31 +36,7 @@ namespace RigiCompiler.Tests
             Directory.CreateDirectory(root);
             try
             {
-                if (OperatingSystem.IsLinux())
-                {
-                    var psi = new ProcessStartInfo("findmnt")
-                    {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                    };
-                    psi.ArgumentList.Add("-no");
-                    psi.ArgumentList.Add("FSTYPE");
-                    psi.ArgumentList.Add("-T");
-                    psi.ArgumentList.Add(root);
-                    using var probe = Process.Start(psi)
-                        ?? throw new InvalidOperationException("无法探测 fixture 文件系统");
-                    var fsType = probe.StandardOutput.ReadToEnd().Trim();
-                    var error = probe.StandardError.ReadToEnd();
-                    if (!probe.WaitForExit(10_000) || probe.ExitCode != 0)
-                        throw new InvalidOperationException("fixture FS 探测失败：" + error);
-                    if (fsType != "ext4")
-                    {
-                        Console.WriteLine("  UNSUPPORTED Linux fixture FS=" + fsType
-                            + "（要求 ext4，不将 DrvFs 判为通过）");
-                        return false;
-                    }
-                    Console.WriteLine("  fixture 文件系统：" + fsType);
-                }
+                if (!IsFixtureSupported(root)) return false;
                 var missing = Path.Combine(root, "missing.txt");
                 foreach (var name in new[] { "primitive", "delete", "ifexists", "remove" })
                 {
@@ -73,7 +51,7 @@ namespace RigiCompiler.Tests
                             || ex is IOException io
                                 && (io.HResult & 0xffff) == 1314))
                     {
-                        Console.WriteLine("  UNSUPPORTED Windows 文件符号链接创建权限："
+                        TestHarness.RecordSkip("  UNSUPPORTED Windows 文件符号链接创建权限："
                             + ex.GetType().Name + " (非 PASS；VM/native 删除未测)");
                         return false;
                     }
@@ -94,42 +72,33 @@ namespace RigiCompiler.Tests
             }
         }
 
-        // CreateNew 探针只使用本任务独占目录；每次调用独立文件断链，
-        // 原目标从未存在。Linux 要求工作树位于 ext4，不能以 DrvFs 冒充。
+        private static bool IsFixtureSupported(string root)
+        {
+            if (!OperatingSystem.IsLinux()) return true;
+            var exit = ExternalProcess.Run("findmnt", ["-no", "FSTYPE", "-T", root],
+                out var output, out var error, timeoutMilliseconds: 10_000, closeStdin: true);
+            if (exit != 0) throw new InvalidOperationException("fixture FS 探测失败：" + error);
+            var fsType = output.Trim();
+            if (fsType != "ext4")
+            {
+                TestHarness.RecordSkip("  UNSUPPORTED Linux fixture FS=" + fsType
+                    + "（要求 ext4，不将 DrvFs 判为通过）");
+                return false;
+            }
+            Console.WriteLine("  fixture 文件系统：" + fsType);
+            return true;
+        }
+
+        // 每次调用自建独占文件断链，不依赖 checkout/CWD 中预先存在的目录。
+        // 原目标从未存在；Linux 仍要求实际 fixture 位于 ext4。
         internal static bool WithCreateNewFixture(Action<string, string> run)
         {
-            var parent = Path.Combine(Environment.CurrentDirectory, "playground",
-                "fs_createnew_dangling_20260927");
-            if (!Directory.Exists(parent))
-                throw new InvalidOperationException("须先创建独占 playground fixture：" + parent);
-            if (OperatingSystem.IsLinux())
-            {
-                var psi = new ProcessStartInfo("findmnt")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                psi.ArgumentList.Add("-no");
-                psi.ArgumentList.Add("FSTYPE");
-                psi.ArgumentList.Add("-T");
-                psi.ArgumentList.Add(parent);
-                using var probe = Process.Start(psi)
-                    ?? throw new InvalidOperationException("无法探测 fixture 文件系统");
-                var fsType = probe.StandardOutput.ReadToEnd().Trim();
-                var error = probe.StandardError.ReadToEnd();
-                if (!probe.WaitForExit(10_000) || probe.ExitCode != 0)
-                    throw new InvalidOperationException("fixture FS 探测失败：" + error);
-                if (fsType != "ext4")
-                {
-                    Console.WriteLine("  UNSUPPORTED Linux fixture FS=" + fsType);
-                    return false;
-                }
-                Console.WriteLine("  fixture 文件系统：" + fsType);
-            }
-            var root = Path.Combine(parent, Guid.NewGuid().ToString("N"));
+            var root = Path.Combine(Path.GetTempPath(),
+                "rigi_fs_createnew_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             try
             {
+                if (!IsFixtureSupported(root)) return false;
                 var target = Path.Combine(root, "never-created.txt");
                 var link = Path.Combine(root, "dangling.txt");
                 try
@@ -141,7 +110,7 @@ namespace RigiCompiler.Tests
                         || ex is PlatformNotSupportedException
                         || ex is IOException io && (io.HResult & 0xffff) == 1314))
                 {
-                    Console.WriteLine("  UNSUPPORTED Windows 文件符号链接权限："
+                    TestHarness.RecordSkip("  UNSUPPORTED Windows 文件符号链接权限："
                         + ex.GetType().Name + "（非 PASS）");
                     return false;
                 }
@@ -158,7 +127,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                // 仅删除本次自建 GUID 目录，保留独占父目录及全部日志。
+                // 仅删除本次自建 GUID 目录，不依赖或清理共享 playground。
                 Directory.Delete(root, recursive: true);
             }
         }

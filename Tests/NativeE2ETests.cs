@@ -142,7 +142,28 @@ namespace RigiCompiler.Tests
             return TestHarness.Summary("NativeE2E");
         }
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Cases.Concat(SlowCases).Select((entry, index) => new TestInventory.Case(index, entry.Label,
+                SlowCases.Any(c => c.Label == entry.Label), "RIGI_NATIVE_E2E_SLOW", RequiresConcurrentCompute(entry.Label) ? 4 : 1));
+
+        private static readonly HashSet<string> ConcurrentSourceLabels = new(StringComparer.Ordinal);
+        private static (string Label, Action Run) RegisterCase(string label, string source, Action run)
+        {
+            // 注册时直接检查实际 Rigi/BIL source；英文名或无提示标签也保留真实 Compute 并发。
+            if (source.Contains("ComputeExecutor", StringComparison.Ordinal) || source.Contains("rigi_worker", StringComparison.Ordinal))
+                ConcurrentSourceLabels.Add(label);
+            return (label, run);
+        }
+
+        // 将既有真实标签映射成执行元数据；覆盖 MQ/生产者/跨执行器等非“并发”命名。
+        internal static bool RequiresConcurrentCompute(string label) => ConcurrentSourceLabels.Contains(label) || new[] {
+            "并发", "concurrent", "coroutine", "async", "Worker", "Compute", "唤醒", "MQ", "消息", "生产者", "跨执行器", "广播", "协程", "Executor", "Atomic", "多线程"
+        }.Any(marker => label.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+        internal static ParallelSuiteRunner.SuiteSpec ExecutionSpec => new("NativeE2E", Cases.Concat(SlowCases).ToArray(),
+            sectionTitle: "native 对拍（VM vs 原生可执行）");
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "NativeE2E",
             DefaultCases,
             sectionTitle: "native 对拍（VM vs 原生可执行）",
@@ -155,17 +176,57 @@ namespace RigiCompiler.Tests
             {
                 // 与 NativeCommand 同一 libuv 解析（预热同一份内容哈希缓存，
                 // 否则并行用例会各自重建带 RIGI_HAS_LIBUV 的 bitcode）
-                RigiRtBuilder.EnsureBitcode(clang, LlvmHost.HostTriple,
+                using var prepared = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple,
                     out _, LibuvResolver.Resolve(null));
             }
         }
 
         private static (string Label, Action Run) Case(string label, string source,
             long maxSteps = 20_000_000) =>
-            (label, () => RunCase(label, source, maxSteps: maxSteps));
+            RegisterCase(label, source, () => RunCase(label, source, maxSteps: maxSteps));
+
+        internal static string? PilotSkipReason => ToolchainResolver.ResolveClang(null) == null
+            ? "未找到 clang 工具链" : null;
+
+        internal static void RunPilotHelloBil()
+        {
+            // 只编译一个小 BIL；沿用 VM/native 单 case 对拍驱动，默认 O2。
+            const string bil = """
+                BIL "1.1"
+                Metadata {
+                    module = string "pilot"
+                }
+                Resources {
+                    hello = string "Hello, world!\n",
+                    zero = i32 0
+                }
+                LocalSymbols {
+                    .method $main()@.i32 pub entrypoint
+                }
+                ExternalSymbols {
+                    .method $print(text:.string)@.void pub native symbol("print") lib("rigi_rt")
+                }
+                fn($main()@.i32) {
+                    .args {
+                        .return = .i32
+                    }
+                    .vars {
+                        .string text,
+                        .i32 result
+                    }
+                    .block entry entrypoint {
+                        load res(hello) $text
+                        invoke.noret fn($print(text:.string)@.void) [$text]
+                        load res(zero) $result
+                        ret $result
+                    }
+                }
+                """;
+            RunBilCase("hello world 小 BIL", bil);
+        }
 
         private static (string Label, Action Run) BilCase(string label, string bil) =>
-            (label, () => RunBilCase(label, bil));
+            RegisterCase(label, bil, () => RunBilCase(label, bil));
 
         // L6：非 rigi_rt 库 FFI 的 native-only 用例（VM 无对应 hook，§22.5
         // 表外拒绝是定稿行为，不做 VM 对拍）——cSource 现场 clang -c 出
@@ -174,11 +235,11 @@ namespace RigiCompiler.Tests
             string source, string cSource, string expectedStdout, int expectedExit,
             IReadOnlyDictionary<string, string>? env = null,
             bool useFixtureRoot = false) =>
-            (label, () =>
+            RegisterCase(label, source, () =>
             {
                 if (useFixtureRoot && !OperatingSystem.IsLinux())
                 {
-                    Console.WriteLine("  SKIP " + label + "：仅 Linux 原生文件系统机制探针");
+                    TestHarness.RecordSkip("  SKIP " + label + "：仅 Linux 原生文件系统机制探针");
                     return;
                 }
                 RunNativeOnlyCase(label, source, cSource,
@@ -186,20 +247,20 @@ namespace RigiCompiler.Tests
             });
 
         private static (string Label, Action Run) FailCase(string label, string source, string needle) =>
-            (label, () => RunFailCase(label, source, needle, null));
+            RegisterCase(label, source, () => RunFailCase(label, source, needle, null));
 
         // MW9b-G：native stderr 关键字可与 VM 消息关键字不同（reporter
         // 新格式「{类型全名}: {message}」全名前缀 VM 消息没有）
         private static (string Label, Action Run) FailCase(string label, string source,
             string needle, string nativeNeedle) =>
-            (label, () => RunFailCase(label, source, needle, nativeNeedle));
+            RegisterCase(label, source, () => RunFailCase(label, source, needle, nativeNeedle));
 
         // MW12b §25.2：native stderr 断言形态——VM 参照对拍 stdout + 退出
         // 码一致（VM 侧暂无 undisposed 事件通道，stdout 不受影响），额外
         // 断言 native stderr 含/不含 needle
         private static (string Label, Action Run) NativeErrCase(string label, string source,
             string needle, bool needlePresent = true) =>
-            (label, () => RunNativeErrCase(label, source, needle, needlePresent));
+            RegisterCase(label, source, () => RunNativeErrCase(label, source, needle, needlePresent));
 
         // MW12c：per-case env——env 与 MemtrackEnv 合并（MEMTRACK 恒在，
         // 泄漏即 exit 1 的判定口径不可关），per-case 同名键覆盖。
@@ -212,7 +273,7 @@ namespace RigiCompiler.Tests
             {
                 merged[pair.Key] = pair.Value;
             }
-            return (label, () => RunCase(label, source, merged, maxSteps));
+            return RegisterCase(label, source, () => RunCase(label, source, merged, maxSteps));
         }
 
         // 注：声明须在 Cases 之前（静态初始化按文本序，EnvCase 合并要用）
@@ -9332,6 +9393,13 @@ namespace RigiCompiler.Tests
             // 件组走 RunCaseFiles），MEMTRACK 零泄漏口径同全局
             MultiFileCase("rich struct 返回 Nullable 字段对拍",
                 CorpusGroup("rich_return_nullable")),
+            // WRAP-001：复用永久语料，三目标×四 init 形态对拍真实初始化路径。
+            Case("WRAP-001 Value 字段初始化矩阵", SerializationGraphCorpus("wrap001_value_initializers")),
+            Case("WRAP-001 Method 字段初始化矩阵", SerializationGraphCorpus("wrap001_method_initializers")),
+            Case("WRAP-001 Entity 字段初始化矩阵", SerializationGraphCorpus("wrap001_entity_initializers")),
+            Case("WRAP-001 wrapper 嵌套初始化顺序", SerializationGraphCorpus("wrap001_nested_initializers")),
+            Case("WRAP-001 class struct 初值保持", SerializationGraphCorpus("wrap001_class_struct_initializers")),
+            Case("WRAP-001 泛型参数字段与前向构造", SerializationGraphCorpus("wrap001_review_generic_forward")),
             // 以下完整覆盖说明对应 SlowCases 的「fs 文件流对拍（完整慢例）」；
             // 核心与完整语料均已慢门控；默认仅留独立字节预期的小烟测。
             // 施工块 7-3（STDLIB §4.5.6 + §4.4，D5）：core.fs 文件流对拍
@@ -9743,8 +9811,7 @@ namespace RigiCompiler.Tests
 
         private static IReadOnlyList<string> CorpusGroup(string name,
             [System.Runtime.CompilerServices.CallerFilePath] string path = "") =>
-            Directory.GetFiles(Path.Combine(Path.GetDirectoryName(path)!,
-                    "e2e", "rigi", name), "*.rg")
+            Directory.GetFiles(TestCorpusPaths.Resolve("Tests/e2e/rigi/" + name, path), "*.rg")
                 .OrderBy(f => f, StringComparer.Ordinal).ToArray();
 
         private static void RunCaseFiles(string label, IReadOnlyList<string> files)
@@ -9753,11 +9820,8 @@ namespace RigiCompiler.Tests
             // RunCase 同一管线序
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            foreach (var file in files)
-            {
-                roots.Add(TestHarness.ParseRoot(File.ReadAllText(file),
-                    Path.GetFileName(file)));
-            }
+            roots.AddRange(Frontend.ParseRoots(files.Select(file =>
+                new SourceInput(File.ReadAllText(file), Path.GetFileName(file))).ToArray()));
             var unit = new CompilationUnit(roots.ToArray());
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
@@ -9781,7 +9845,7 @@ namespace RigiCompiler.Tests
             const string label = "Linux getRealPath 链接前点点独立预期";
             if (!OperatingSystem.IsLinux())
             {
-                Console.WriteLine("  SKIP " + label + "：仅 Linux 实盘链接解析，当前平台未验证");
+                TestHarness.RecordSkip("  SKIP " + label + "：仅 Linux 实盘链接解析，当前平台未验证");
                 return;
             }
             var root = Path.Combine(Path.GetTempPath(), $"rigi_realpath_dotdot_{Guid.NewGuid():N}");

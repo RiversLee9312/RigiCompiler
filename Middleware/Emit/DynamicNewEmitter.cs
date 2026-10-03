@@ -670,8 +670,7 @@ namespace RigiCompiler.Middleware.Emit
             var entry = thunk.Fn.AppendBasicBlock("entry");
             builder.PositionAtEnd(entry);
             // wrapper 取法照 CollectInits：声明形符号 ..init.wrapper()@.void
-            var wrapper = session.Symbols.FindMember(
-                plan.Symbol.Declaration.Symbol + "$..init.wrapper()@.void");
+            var wrapper = session.Symbols.FindInitWrapper(plan.Symbol, 0);
             var emptySlots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(
                 System.StringComparer.Ordinal);
             if (plan.Kind == TypeLayoutKind.Struct)
@@ -788,8 +787,7 @@ namespace RigiCompiler.Middleware.Emit
             var list = new List<InitOverload>();
             var subst = ConstructedTypeCollector.BuildSubstitution(
                 plan.Symbol.Canonical, plan.Symbol.Declaration);
-            MwMemberSymbol? wrapper = session.Symbols.FindMember(
-                plan.Symbol.Declaration.Symbol + "$..init.wrapper()@.void");
+            MwMemberSymbol? wrapper = session.Symbols.FindInitWrapper(plan.Symbol, 0);
             foreach (var member in plan.Symbol.Members)
             {
                 if (!member.HasKeyword(BilKeyword.Init))

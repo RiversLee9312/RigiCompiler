@@ -14,14 +14,22 @@ namespace RigiCompiler.Middleware.Emit
     {
         // undef 常量（MW9a MirRetThrow 值返回出口：异常路径返回值无定义；
         // 安全封装只暴露值句柄，指针编组收敛于本类）
-        public static LLVMValueRef UndefOf(LLVMTypeRef type) => LLVM.GetUndef(type);
+        public static LLVMValueRef UndefOf(LLVMTypeRef type)
+        {
+            LlvmHost.RequireOwnership();
+            return LLVM.GetUndef(type);
+        }
 
         // opaque pointer 下函数的真实类型不能从 Value.TypeOf 反推。
-        public static LLVMTypeRef FunctionTypeOf(LLVMValueRef function) =>
-            LLVM.GlobalGetValueType(function);
+        public static LLVMTypeRef FunctionTypeOf(LLVMValueRef function)
+        {
+            LlvmHost.RequireOwnership();
+            return LLVM.GlobalGetValueType(function);
+        }
 
         internal static string HostDataLayout()
         {
+            using var lease = LlvmHost.Enter();
             var data = LLVM.CreateTargetDataLayout(LlvmHost.SharedHostMachine);
             try
             {
@@ -32,11 +40,24 @@ namespace RigiCompiler.Middleware.Emit
             finally { LLVM.DisposeTargetData(data); }
         }
 
+        internal static void AddEnumAttribute(LLVMValueRef function, uint index, string name)
+        {
+            LlvmHost.RequireOwnership();
+            var bytes = System.Text.Encoding.UTF8.GetBytes(name);
+            fixed (byte* pointer = bytes)
+            {
+                var kind = LLVM.GetEnumAttributeKindForName((sbyte*)pointer, (nuint)bytes.Length);
+                if (kind == 0) throw new CompilerInternalException("LLVM 不认识 ABI 属性：" + name);
+                function.AddAttributeAtIndex((LLVMAttributeIndex)index, LLVM.CreateEnumAttribute(function.TypeOf.Context, kind, 0));
+            }
+        }
+
         // 命中与新产物均解析真实 bitcode，而不信任缓存目录名或 manifest。
         // 宿主 TargetMachine 的布局由 libLLVM 计算，拒绝相同 triple 下的
         // ABI 布局漂移；拒绝发生在 LinkModules2 输出 warning 之前。
         internal static void ValidateRuntimeTarget(string bitcodePath, string targetTriple)
         {
+            using var lease = LlvmHost.Enter();
             var pathBytes = Utf8(bitcodePath);
             fixed (byte* pathPtr = pathBytes)
             {
@@ -83,6 +104,7 @@ namespace RigiCompiler.Middleware.Emit
         //（rigi_rt 编译产物损坏属环境/工具链问题，非编译器 bug）
         public static void MergeBitcodeFileInto(LLVMModuleRef module, string bitcodePath)
         {
+            using var lease = LlvmHost.Enter();
             var pathBytes = Utf8(bitcodePath);
             fixed (byte* pathPtr = pathBytes)
             {
@@ -124,6 +146,7 @@ namespace RigiCompiler.Middleware.Emit
         // 只遍历函数句柄计数，避免 PrintToString 巨型 IR 的分配/序列化开销。
         internal static int CountFunctions(LLVMModuleRef module)
         {
+            using var lease = LlvmHost.Enter();
             var count = 0;
             for (var fn = LLVM.GetFirstFunction(module); fn != null;
                 fn = LLVM.GetNextFunction(fn))
@@ -135,6 +158,7 @@ namespace RigiCompiler.Middleware.Emit
         // 内联在 default<O2> 内发生）。失败抛 CompilerInternalException
         public static void RunDefaultOptimization(LLVMModuleRef module)
         {
+            using var lease = LlvmHost.Enter();
             var passes = Utf8("default<O2>");
             fixed (byte* passesPtr = passes)
             {

@@ -1,4 +1,5 @@
 using RigiCompiler.Middleware.Layout;
+using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Pipeline;
 
@@ -13,17 +14,15 @@ namespace RigiCompiler.Middleware.Passes
     public sealed class BuiltinToStringDispatchPass : IMwStage
     {
         public string Name => "BuiltinToStringDispatch";
-        private const string ToStringNative = "core::$any_to_string(value:.any)@.string";
         internal const string DispatchCanonical = "$mw.any.toString(value:.any)@.string";
-        private const string HashNative = "core::$any_hash(value:.any)@.i64";
         internal const string HashDispatchCanonical = "$mw.any.hash(value:.any)@.i64";
 
         public void Run(MwContext context)
         {
-            SynthesizeDispatch(context, ToStringNative, "$toString()@.string",
-                DispatchCanonical, ".string");
-            SynthesizeDispatch(context, HashNative, "$hash()@.i64",
-                HashDispatchCanonical, ".i64");
+            if (BilCompilerHelpers.Resolve(context.Module, "any_to_string") is { } toString)
+                SynthesizeDispatch(context, toString, "$toString()@.string", DispatchCanonical, ".string");
+            if (BilCompilerHelpers.Resolve(context.Module, "any_hash") is { } hash)
+                SynthesizeDispatch(context, hash, "$hash()@.i64", HashDispatchCanonical, ".i64");
         }
 
         // 单通道合成：扫 helper 调用点 + override 候选，按继承深度降序组

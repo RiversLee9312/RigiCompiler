@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
     /// → CheckBilValid（BilVerifier 零错误）→ CheckFnShape/CheckResShape
     /// 形状黄金（指令序列/操作数/.tN 编号/block id 逐字节锁定；资源名按
     /// 首次出现顺序重编号 res(#k)/#k，消除 stdlib 基线资源偏移脆弱点）。
-    /// 覆盖：全管线无诊断、hello world 模块结构断言（Metadata 恰一条 /
+    /// 覆盖：全管线无诊断、hello world 模块结构断言（唯一源模块名与可信 helper 绑定 /
     /// Resources 计数与标量资源 / LocalSymbols 含 core.io::Console 类型与
     /// println 静态方法声明 / main 与 println 两个 fn 定义 / main 恰一个
     /// entrypoint block）、Origin 调试链
@@ -130,6 +130,11 @@ namespace RigiCompiler.Tests
             TestCrossFunctionCatchTablePrivate();
             TestSafeAccessVoidCallEmission();
             TestEnumCaseEmission();
+            TestWrapperFieldInitializerEmission();
+            TestGenericParameterFieldInitializers();
+            TestForwardDefaultConstructionEmission();
+            TestSerializableImplicitDefaultConstruction();
+            TestGenericWrapperFieldInitializerEmission();
             TestWrapperEntityReadEmission();
             TestWrapperEntityWriteEmission();
             TestWrapperEntityCallEmission();

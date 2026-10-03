@@ -17,7 +17,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "BilReader", Cases, sectionTitle: "BilReader");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -76,16 +79,7 @@ namespace RigiCompiler.Tests
         // ===== 基础：字面量/cast/invoke/new/字段访问/struct 值拷贝 =====
         private static void TestRoundTripBasics()
         {
-            RoundTrip("基础字面量与运算",
-                "pub func main(): i32 {\n" +
-                "    var x: i32 = 1 + 2\n" +
-                "    x = (x * 3)\n" +
-                "    var b: bool = true\n" +
-                "    var d: double = 0.5\n" +
-                "    var c: char = 'A'\n" +
-                "    var n: i64 = (x as i64)\n" +
-                "    return ((x + (b as i32)) + (n as i32))\n" +
-                "}\n");
+            RoundTripScalar();
 
             RoundTrip("类与 init",
                 "pub class Box {\n" +
@@ -125,6 +119,20 @@ namespace RigiCompiler.Tests
                 "    var b = new Bag()\n" +
                 "    b[0] = 21\n" +
                 "    return (((a[0] if? 0) + (b[0] if? 0)))\n" +
+                "}\n");
+        }
+
+        internal static void RoundTripScalar()
+        {
+            RoundTrip("基础字面量与运算",
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 1 + 2\n" +
+                "    x = (x * 3)\n" +
+                "    var b: bool = true\n" +
+                "    var d: double = 0.5\n" +
+                "    var c: char = 'A'\n" +
+                "    var n: i64 = (x as i64)\n" +
+                "    return ((x + (b as i32)) + (n as i32))\n" +
                 "}\n");
         }
 

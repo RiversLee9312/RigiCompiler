@@ -486,7 +486,9 @@ _Noreturn void rigi_abort_arithmetic_overflow(void)
 }
 
 /* 由编译器发射（BIL entrypoint fn） */
-extern int32_t rigi_entry(void);
+#ifndef RIGI_LIBRARY
+extern int32_t rigi_entry(int32_t argc, char **argv);
+#endif
 extern void rigi_globals_cleanup(void);
 
 /* macrogc.c（MW12）：GC 协程承载线程 + fence 平台事件。init 在
@@ -513,7 +515,7 @@ static int rigi_stdio_binary_stream(FILE *stream)
 }
 #endif
 
-int main(void)
+static void rigi_process_init(void)
 {
 #if defined(_WIN32)
     if (!rigi_stdio_binary_stream(stdin)
@@ -521,7 +523,7 @@ int main(void)
         || !rigi_stdio_binary_stream(stderr))
     {
         fputs("rigi_rt: 无法设置标准流二进制模式\n", stderr);
-        return 1;
+        exit(1);
     }
 #endif
     atexit(rigi_mem_report);          /* 先注册后执行：报告最后跑 */
@@ -529,5 +531,84 @@ int main(void)
     atexit(rigi_gc_shutdown);
     atexit(rigi_globals_cleanup);
     rigi_gc_init();
-    return rigi_entry();
 }
+
+#ifdef RIGI_LIBRARY
+/* 唯一 RT owner、同宿主线程同步 ABI；库保持加载直到进程退出。 */
+extern void rigi_library_init(void);
+static uv_once_t rigi_library_once = UV_ONCE_INIT;
+static uv_thread_t rigi_library_owner;
+static void rigi_library_start(void)
+{
+    rigi_library_owner = uv_thread_self();
+    rigi_process_init();
+    rigi_library_init();
+}
+void rigi_library_ensure(void)
+{
+    uv_once(&rigi_library_once, rigi_library_start);
+    uv_thread_t caller = uv_thread_self();
+    if (!uv_thread_equal(&caller, &rigi_library_owner))
+    {
+        fputs("rigi_rt: C 导出仅允许初始化它的同一宿主线程调用\n", stderr);
+        exit(1);
+    }
+}
+_Noreturn void rigi_library_halt(void)
+{
+    fputs("rigi_rt: 未捕获的 Rigi 异常\n", stderr);
+    exit(1);
+}
+#else
+/* 由入口传入真实闭合 Array<String>/String sheet；每个字符串 +1 移交数组槽。 */
+void *rigi_argv_build(int32_t argc, char **argv, const RigiTypeSheet *array_sheet,
+    const RigiTypeSheet *string_sheet)
+{
+    int32_t count = argc > 0 ? argc - 1 : 0;
+    /* 先完整验证，再分配；无效 POSIX 字节不会产生半构造的托管参数图。 */
+    for (int32_t i = 0; i < count; i++)
+    {
+        size_t length = strlen(argv[i + 1]);
+        if (length > INT32_MAX || !rigi_utf8_validate((const uint8_t *)argv[i + 1], (int32_t)length))
+        {
+            fputs("rigi_rt: 程序参数不是合法 UTF-8\n", stderr);
+            exit(1);
+        }
+    }
+    void *object = rigi_alloc_contiguous(array_sheet, string_sheet, count);
+    rigi_string *elements = (rigi_string *)((char *)object + 32);
+    for (int32_t i = 0; i < count; i++)
+    {
+        size_t length = strlen(argv[i + 1]);
+        char *data = rigi_string_new((int64_t)length);
+        memcpy(data, argv[i + 1], length);
+        elements[i].data = data; elements[i].len = (int64_t)length;
+    }
+    return object;
+}
+#if defined(_WIN32)
+int wmain(int argc, wchar_t **wide_argv)
+{
+    rigi_process_init();
+    char **argv = (char **)calloc((size_t)argc, sizeof(char *));
+    if (argv == NULL) abort();
+    for (int i = 1; i < argc; i++)
+    {
+        int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, NULL, 0, NULL, NULL);
+        if (length <= 0) { fputs("rigi_rt: 程序参数不是合法 Unicode\n", stderr); exit(1); }
+        argv[i] = (char *)malloc((size_t)length);
+        if (argv[i] == NULL) abort();
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, argv[i], length, NULL, NULL) != length) abort();
+    }
+    int code = rigi_entry(argc, argv);
+    for (int i = 1; i < argc; i++) free(argv[i]);
+    free(argv); return code;
+}
+#else
+int main(int argc, char **argv)
+{
+    rigi_process_init();
+    return rigi_entry(argc, argv);
+}
+#endif
+#endif

@@ -1,3 +1,4 @@
+using System.Linq;
 using System;
 using System.Collections.Generic;
 
@@ -38,7 +39,7 @@ namespace RigiCompiler.Tests
             ("LexerFuzz", LexerFuzzTests.RunAll, null),
             ("Logger", LoggerTests.RunAll, null),
             ("AstJsonlSerializer", AstJsonlSerializerTests.RunAll, null),
-            ("CommandLineParser", CommandLineParserTests.RunAll, null),
+            ("CommandLineParser", CommandLineParserTests.RunAll, CommandLineParserTests.RunWithArgs),
             ("Path", PathParserLayerTests.RunAll, null),
             ("ArgumentList", ArgumentListParserLayerTests.RunAll, null),
             ("MultilineString", MultilineStringTests.RunAll, null),
@@ -49,9 +50,9 @@ namespace RigiCompiler.Tests
             ("BilVerifier", BilVerifierTests.RunAll, null),
             ("DeclarationCollector", DeclarationCollectorTests.RunAll, null),
             ("DeclarationResolver", DeclarationResolverTests.RunAll, null),
-            ("Binder", BinderTests.RunAll, null),
+            ("Binder", BinderTests.RunAll, BinderTests.RunWithArgs),
             ("StdlibSources", StdlibSourcesTests.RunAll, null),
-            ("BilEmitter", BilEmitterTests.RunAll, null),
+            ("BilEmitter", BilEmitterTests.RunAll, BilEmitterTests.RunWithArgs),
             ("Lowerer", LowererTests.RunAll, null),
             ("SmartCast", SmartCastTests.RunAll, null),
             ("SemanticsFuzz", SemanticsFuzzTests.RunAll, SemanticsFuzzTests.RunWithArgs),
@@ -86,7 +87,12 @@ namespace RigiCompiler.Tests
                 VmFsDirOpenTests.RunWithArgs),
             ("VmFsRealpath", VmFsRealpathTests.RunAll,
                 VmFsRealpathTests.RunWithArgs),
+            ("PerformanceMetrics", PerformanceMetricsTests.RunAll, null),
+            ("CompilerParallel", CompilerParallelTests.RunAll, null),
+            ("Module", ModuleTests.RunAll, ModuleTests.RunWithArgs),
         };
+
+        internal static IEnumerable<string> SuiteNames => Suites.Select(s => s.Name);
 
         // 套件数量（对外编号 1..SuiteCount，即注册表顺序）
         public static int SuiteCount => Suites.Length;
@@ -119,19 +125,55 @@ namespace RigiCompiler.Tests
 
         // 按编号（1 起）运行单个套件，返回失败用例数；编号越界由调用方校验。
         // 带 --suite-args 时优先走 RunWithArgs；未实现则忽略参数。
-        public static int RunSuite(int number, IReadOnlyList<string>? args = null)
+        internal static int RunSuiteInProcess(int number, IReadOnlyList<string>? args = null)
         {
             var suite = Suites[number - 1];
-            if (args is { Count: > 0 } && suite.RunWithArgs != null)
-                return suite.RunWithArgs(args);
-            if (args is { Count: > 0 })
-                Console.WriteLine($"  （套件 {suite.Name} 不接受 --suite-args，已忽略）");
-            return suite.Run();
+            if (IsSpawned && args is { Count: > 0 } && TestInventory.Cases(suite.Name) is { } inventory)
+            {
+                if (args.Count == 1 && args[0] == "list")
+                { foreach (var entry in inventory) Console.WriteLine($"{entry.Index}: {entry.Label}"); return 0; }
+                IReadOnlyList<LegacyDispatcher.TaskSpec> selected;
+                try { selected = LegacyDispatcher.Select(number, args); }
+                catch (ArgumentException ex) { Console.Error.WriteLine(ex.Message); return 2; }
+                int failures = 0;
+                foreach (var task in selected)
+                {
+                    var outcome = LegacyDispatcher.RunWorker(task.Id);
+                    Console.Write(outcome.Diagnostics);
+                    if (outcome.Status == CaseStatus.Skip) Console.WriteLine("  [Skip] " + outcome.SkipReason);
+                    failures += outcome.Status == CaseStatus.Cancel ? 1 : outcome.Failures;
+                }
+                return failures;
+            }
+            using var metric = PerformanceMetrics.Begin("test.suite", suite.Name);
+            try
+            {
+                int result;
+                if (args is { Count: > 0 } && suite.RunWithArgs != null)
+                    result = suite.RunWithArgs(args);
+                else
+                {
+                    if (args is { Count: > 0 })
+                    {
+                        Console.Error.WriteLine($"套件 {suite.Name} 不接受 --suite-args");
+                        metric?.ExitCode(2);
+                        return 2;
+                    }
+                    result = suite.Run();
+                }
+                metric?.ExitCode(result);
+                return result;
+            }
+            catch (Exception exception) { metric?.Fail(exception); throw; }
         }
+
+        public static int RunSuite(int number, IReadOnlyList<string>? args = null) => IsSpawned
+            ? RunSuiteInProcess(number, args) : LegacyDispatcher.RunSuites([number], args);
 
         // 按编号依次运行多个套件，返回失败用例总数
         public static int RunSuites(IReadOnlyList<int> numbers, IReadOnlyList<string>? args = null)
         {
+            if (!IsSpawned) return LegacyDispatcher.RunSuites(numbers, args);
             int totalFail = 0;
             foreach (var n in numbers)
             {
@@ -143,13 +185,13 @@ namespace RigiCompiler.Tests
         // 运行全部套件，返回失败用例总数（0 = 全部通过）
         public static int RunAllSuites(IReadOnlyList<string>? args = null)
         {
+            if (!IsSpawned) return LegacyDispatcher.RunSuites(Enumerable.Range(1, Suites.Length).ToArray(), args);
             int totalFail = 0;
             var failedSuites = new List<string>();
-            foreach (var suite in Suites)
+            for (int i = 0; i < Suites.Length; i++)
             {
-                int fail = args is { Count: > 0 } && suite.RunWithArgs != null
-                    ? suite.RunWithArgs(args)
-                    : suite.Run();
+                var suite = Suites[i];
+                int fail = RunSuite(i + 1, args);
                 totalFail += fail;
                 if (fail > 0) failedSuites.Add($"{suite.Name}({fail})");
             }

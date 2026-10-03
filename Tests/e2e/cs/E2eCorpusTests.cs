@@ -51,6 +51,13 @@ namespace RigiCompiler.Tests
             public bool SlowGate { get; set; }
         }
 
+        internal static void RunExactCase(string name)
+        {
+            var kase = Discover().SingleOrDefault(c => c.Name == name)
+                ?? throw new ArgumentException($"未知语料: {name}");
+            RunCase(kase);
+        }
+
         // 慢速门控开关：环境变量 RIGI_E2E_SLOW=1 启用默认跑
         private static bool SlowGateEnabled =>
             string.Equals(Environment.GetEnvironmentVariable("RIGI_E2E_SLOW"), "1",
@@ -79,7 +86,13 @@ namespace RigiCompiler.Tests
             return RunNameFilter(args);
         }
 
-        private static ParallelSuiteRunner.SuiteSpec Spec
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Discover().Select((entry, index) => new TestInventory.Case(index, entry.Name, entry.SlowGate, "RIGI_E2E_SLOW"));
+
+        internal static ParallelSuiteRunner.SuiteSpec ExecutionSpec => new("E2e", Discover()
+            .Select(kase => (kase.Name, (Action)(() => RunCase(kase)))).ToArray(), sectionTitle: "E2e");
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec
         {
             get
             {
@@ -145,13 +158,9 @@ namespace RigiCompiler.Tests
             return TestHarness.Summary("E2e");
         }
 
-        // 语料根目录：由本文件编译期路径反推（cs/ 的兄弟目录 rigi/），
-        // 与测试进程的工作目录无关
-        private static string CorpusRoot([CallerFilePath] string selfPath = "")
-        {
-            return Path.GetFullPath(Path.Combine(
-                Path.GetDirectoryName(selfPath)!, "..", "rigi"));
-        }
+        // 输出/发布语料优先；开发源码回退由统一定位器控制。
+        private static string CorpusRoot([CallerFilePath] string selfPath = "") =>
+            TestCorpusPaths.Resolve("Tests/e2e/rigi", selfPath);
 
         // 发现全部用例：根下散文件为单文件用例，每个子目录为一组多文件用例
         private static List<E2eCase> Discover()
@@ -249,11 +258,8 @@ namespace RigiCompiler.Tests
             {
                 var roots = new List<RootASTNode>();
                 roots.AddRange(StdlibSources.ParseAll());
-                foreach (var file in kase.Files)
-                {
-                    roots.Add(TestHarness.ParseRoot(
-                        File.ReadAllText(file), Path.GetFileName(file)));
-                }
+                roots.AddRange(Frontend.ParseRoots(kase.Files.Select(file =>
+                    new SourceInput(File.ReadAllText(file), Path.GetFileName(file))).ToArray()));
                 var unit = new CompilationUnit(roots.ToArray());
                 var declarations = DeclarationCollector.Collect(unit);
                 DeclarationResolver.Resolve(unit, declarations);

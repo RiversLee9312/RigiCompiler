@@ -33,7 +33,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsIdentity", Cases, sectionTitle: "VmFsIdentity");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -67,10 +70,12 @@ namespace RigiCompiler.Tests
             return context.Dispatch;
         }
 
-        private static string NewRoot(string tag)
+        private static string NewRoot()
         {
+            // worker 的 TMP 根已隔离请求；保留完整 GUID，但缩短二级目录，
+            // 避免 pathname socket 再叠长前缀后超过 Linux sun_path 的 108 字节。
             var dir = Path.Combine(Path.GetTempPath(),
-                "rigi_fsident_" + tag + "_" + Guid.NewGuid().ToString("N"));
+                "fi" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             return dir;
         }
@@ -128,9 +133,9 @@ namespace RigiCompiler.Tests
         private static void TestFsOpenRegularOnly()
         {
             if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture
-                != Architecture.X64) { return; }
+                != Architecture.X64) { TestHarness.RecordSkip("SKIP Linux x64-only regular fixture"); return; }
             var dispatch = NewDispatch();
-            var root = NewRoot("regular");
+            var root = NewRoot();
             try
             {
                 var fifo = Path.Combine(root, "pipe");
@@ -210,7 +215,7 @@ namespace RigiCompiler.Tests
         private static void TestSameHandleMatrix()
         {
             var dispatch = NewDispatch();
-            var root = NewRoot("same");
+            var root = NewRoot();
             try
             {
                 var a = Path.Combine(root, "a.bin");
@@ -243,7 +248,7 @@ namespace RigiCompiler.Tests
         private static void TestHardlinkAliasSameIdentity()
         {
             var dispatch = NewDispatch();
-            var root = NewRoot("hard");
+            var root = NewRoot();
             try
             {
                 var target = Path.Combine(root, "target.bin");
@@ -251,7 +256,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllBytes(target, new byte[] { 5, 6, 7, 8 });
                 if (!TryCreateHardLink(alias, target, out var fixtureError))
                 {
-                    Console.WriteLine("  SKIP TestHardlinkAliasSameIdentity"
+                    TestHarness.RecordSkip("  SKIP TestHardlinkAliasSameIdentity"
                         + "：硬链接 fixture 不可用（"
                         + (fixtureError ?? "无错误消息") + "）");
                     return;
@@ -305,7 +310,7 @@ namespace RigiCompiler.Tests
         private static void TestDifferentFilesDiffer()
         {
             var dispatch = NewDispatch();
-            var root = NewRoot("diff");
+            var root = NewRoot();
             try
             {
                 var a = Path.Combine(root, "a.bin");
@@ -338,7 +343,7 @@ namespace RigiCompiler.Tests
         private static void TestIdentityFailureNotDifferent()
         {
             var dispatch = NewDispatch();
-            var root = NewRoot("fail");
+            var root = NewRoot();
             try
             {
                 var a = Path.Combine(root, "a.bin");

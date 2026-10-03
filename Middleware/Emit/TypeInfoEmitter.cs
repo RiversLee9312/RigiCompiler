@@ -122,16 +122,25 @@ namespace RigiCompiler.Middleware.Emit
         {
             var pointer = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
             var declaration = type?.Declaration.Symbol;
-            var alarm = declaration == "core.coroutine::EventAlarm";
-            if (declaration != "core.coroutine::Mutex"
-                && declaration != "core.coroutine::Task"
-                && declaration != "core.coroutine::Task<TReturn>"
-                && declaration != "core.coroutine::Dispatcher" && !alarm)
+            string Resolve(string logical) => session.Env.BilModule == null ? logical
+                : BilCompilerSymbols.Resolve(session.Env.BilModule, logical);
+            var logicalOwner = System.Linq.Enumerable.SingleOrDefault(new[] {
+                "core.coroutine::Mutex", "core.coroutine::Task", "core.coroutine::Task<TReturn>",
+                "core.coroutine::Dispatcher", "core.coroutine::EventAlarm" }, name => Resolve(name) == declaration);
+            if (logicalOwner == null)
                 return LLVMValueRef.CreateConstPointerNull(pointer);
+            var alarm = logicalOwner == "core.coroutine::EventAlarm";
             var plan = session.Layout?.Find(key)
                 ?? throw new CompilerInternalException("原生资源所有者缺布局: " + key);
+            string FieldSuffix(string name)
+            {
+                var canonical = Resolve(logicalOwner + "#" + name + "@.i64");
+                return canonical[canonical.LastIndexOf('#')..];
+            }
+            // 构造布局可替换宿主泛型实参；字段链接名及槽类型必须取可信声明。
+            var gateSuffix = FieldSuffix(alarm ? "handle" : "gate");
             var gate = System.Linq.Enumerable.Single(plan.Fields,
-                field => field.Symbol.EndsWith(alarm ? "#handle@.i64" : "#gate@.i64", System.StringComparison.Ordinal));
+                field => field.Symbol.EndsWith(gateSuffix, System.StringComparison.Ordinal));
             var fnType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, new[] { pointer }, false);
             var fn = session.Module.AddFunction(GenericAbi.EscapeGlobalName("native.destroy.", key), fnType);
             fn.Linkage = LLVMLinkage.LLVMInternalLinkage;
@@ -144,11 +153,12 @@ namespace RigiCompiler.Middleware.Emit
             var (destroy, destroyType) = CallEmitter.DeclareHelperFace(session,
                 alarm ? "rigi_alarm_release" : "rigi_sync_mutex_destroy", LLVMTypeRef.Void, new[] { LLVMTypeRef.Int64 });
             builder.BuildCall2(destroyType, destroy, new[] { handle }, "");
-            if (declaration == "core.coroutine::Task"
-                || declaration == "core.coroutine::Task<TReturn>")
+            if (logicalOwner == "core.coroutine::Task"
+                || logicalOwner == "core.coroutine::Task<TReturn>")
             {
+                var failureSuffix = FieldSuffix("failureNodeId");
                 var failure = System.Linq.Enumerable.Single(plan.Fields,
-                    field => field.Symbol.EndsWith("#failureNodeId@.i64", System.StringComparison.Ordinal));
+                    field => field.Symbol.EndsWith(failureSuffix, System.StringComparison.Ordinal));
                 var failureSlot = builder.BuildInBoundsGEP2(LLVMTypeRef.Int8, fn.GetParam(0),
                     new[] { LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, (ulong)failure.Offset) }, "failure.slot");
                 var node = builder.BuildLoad2(LLVMTypeRef.Int64, failureSlot, "failure.node");

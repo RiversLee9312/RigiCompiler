@@ -30,7 +30,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsNoReplace", Cases, sectionTitle: "VmFsNoReplace");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -102,7 +105,7 @@ namespace RigiCompiler.Tests
             catch (Exception ex) when (ex is UnauthorizedAccessException
                 or IOException or PlatformNotSupportedException)
             {
-                Console.WriteLine("  （符号链接不可用，受控跳过："
+                TestHarness.RecordSkip("  （符号链接不可用，受控跳过："
                     + ex.GetType().Name + "）");
                 return false;
             }
@@ -432,14 +435,14 @@ namespace RigiCompiler.Tests
         {
             if (!IsLinux)
             {
-                Console.WriteLine("  SKIP TestCrossDeviceNoFallback：非 "
+                TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：非 "
                     + "Linux 宿主（Windows 跨卷形态无独立定向，本用例不覆盖）");
                 return;
             }
             const string shm = "/dev/shm";
             if (!Directory.Exists(shm))
             {
-                Console.WriteLine("  SKIP TestCrossDeviceNoFallback：宿主无 "
+                TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：宿主无 "
                     + "/dev/shm，跨FS fixture 不可用，EXDEV 未测");
                 return;
             }
@@ -460,7 +463,7 @@ namespace RigiCompiler.Tests
                     && TryGetDeviceId(root, out devDst, out errDst);
                 if (!probedSrc || !probedDst)
                 {
-                    Console.WriteLine("  SKIP TestCrossDeviceNoFallback：设"
+                    TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：设"
                         + "备号探测不可用（" + (errSrc ?? errDst)
                         + "），EXDEV 未测");
                     return;
@@ -471,7 +474,7 @@ namespace RigiCompiler.Tests
                 {
                     // 确为同设备：EXDEV 语义本环境不可构造——明确 SKIP，
                     // 不造通过断言（也不给「成功当同设备」留口子）
-                    Console.WriteLine("  SKIP TestCrossDeviceNoFallback：两"
+                    TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：两"
                         + "测试根确为同设备（st_dev=" + devSrc
                         + "），EXDEV 不可构造未测");
                     return;

@@ -146,16 +146,26 @@ namespace RigiCompiler.Middleware.Emit
                 var field = FieldEmitter.Resolve(session, symbol);
                 var pointer = FieldEmitter.FieldPointer(session, builder, slots, inst.Host,
                     field.Offset);
+                // 与普通 new 共用实际 init 形参 ABI：闭合实参传给 GP 胖值
+                // 形参时必须装箱；隐藏宿主 typeid 由后续调用拼装单独插入。
+                var expected = inst.Init != null
+                    ? CallEmitter.ExpectedCallParams(session.Symbols,
+                        session.FunctionOf(inst.Init.Canonical).Mir)
+                    : null;
                 var temps = new List<ArcEmitter.RichTemp>();
+                var boxed = new List<ArcEmitter.FatTemp>();
                 var userArgs = new LLVMValueRef[inst.Args.Count];
                 for (var i = 0; i < inst.Args.Count; i++)
                 {
-                    userArgs[i] = CallEmitter.MarshalArg(session, builder, slots, inst.Args[i],
-                        aliasThis: false, temps);
+                    var expectType = expected != null && i + 1 < expected.Count
+                        ? expected[i + 1].Type
+                        : null;
+                    userArgs[i] = CallEmitter.CoerceArg(session, builder, slots, inst.Args[i],
+                        expectType, aliasThis: false, temps, boxed);
                 }
                 NewEmitter.EmitInitValueOnSlot(session, builder, slots, pointer, inst.WrapperType,
                     inst.InitWrapper, inst.Init, userArgs);
-                ArcEmitter.DestroyTemps(session, builder, temps);
+                ArcEmitter.DestroyTemps(session, builder, temps, boxed);
             }
         }
 

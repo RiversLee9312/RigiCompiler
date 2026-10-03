@@ -1,5 +1,4 @@
 using System;
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -15,6 +14,7 @@ using RigiCompiler.Middleware.Gate;
 using RigiCompiler.Middleware.Mir;
 using RigiCompiler.Middleware.Passes;
 using RigiCompiler.Middleware.Runtime;
+using RigiCompiler.Middleware.Toolchain;
 using RigiCompiler.Middleware.Symbols;
 
 namespace RigiCompiler.Tests
@@ -145,9 +145,14 @@ namespace RigiCompiler.Tests
         public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
         public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+            ParallelSuiteRunner.RunWithArgs(Spec, args.Count == 1 && args[0] == "COMP-003"
+                ? new[] { "label" }.Concat(Cases.Where(c => c.Label.StartsWith("TestComp003", StringComparison.Ordinal)).Select(c => c.Label)).ToArray()
+                : args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "Middleware", Cases, sectionTitle: "Middleware");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -231,7 +236,294 @@ namespace RigiCompiler.Tests
             ("TestExternalProcessDeadline", TestExternalProcessDeadline),
             ("TestRuntimeFeatureMacroPreamble", TestRuntimeFeatureMacroPreamble),
             ("TestRuntimeTargetIdentity", TestRuntimeTargetIdentity),
+            ("TestWrapperGenericInitArgumentAbi", TestWrapperGenericInitArgumentAbi),
+            ("TestComp003ArtifactCache", TestComp003ArtifactCache),
+            ("TestComp003RuntimeSnapshot", TestComp003RuntimeSnapshot),
+            ("TestComp003ObjectIdentity", TestComp003ObjectIdentity),
+            ("TestComp003NativeCache", TestComp003NativeCache),
         };
+
+        private static void TestComp003NativeCache()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rigi-comp003-native-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var bil = Path.Combine(root, "hello.bil");
+                var text = HelloConcatBil.Replace("R_Zero = i32 0", "R_Zero = i32 17", StringComparison.Ordinal);
+                File.WriteAllText(bil, text);
+                var vm = BilVm.Run(BilReader.Read(text), maxSteps: 10000);
+                TestHarness.CheckTrue("最小完整 BIL 的 VM 参考行为", vm.Exception == null
+                    && vm.ReturnValue is Bil.Vm.VmI32 { Value: 17 } && vm.Stdout == "Hello, world!\n");
+                var executable = Environment.ProcessPath!;
+                var prefix = Path.GetFileNameWithoutExtension(executable) == "dotnet"
+                    ? new[] { Environment.GetCommandLineArgs()[0] } : Array.Empty<string>();
+                var cache = Path.Combine(root, "cache");
+                var suffix = OperatingSystem.IsWindows() ? ".exe" : "";
+                (int Exit, System.Text.Json.JsonElement[] Rows) Compile(string name, string[] extra, string? overrideCache = null)
+                {
+                    var profile = Path.Combine(root, name + "-metrics");
+                    var args = prefix.Concat(new[] { "native", "--file", bil, "--out", Path.Combine(root, name + suffix) }).Concat(extra).ToArray();
+                    var result = ExternalProcess.Run(executable, args, out _, out var stderr, environment: new Dictionary<string, string>
+                    { ["RIGI_PROFILE_DIR"] = profile, ["RIGI_CACHE_ROOT"] = overrideCache ?? cache }, closeStdin: true, timeoutMilliseconds: 120000);
+                    if (result != 0 && name != "link-failure" && name != "invalid") Console.WriteLine(stderr);
+                    var rows = Directory.Exists(profile) ? Directory.EnumerateFiles(profile, "*.jsonl").SelectMany(File.ReadLines).Select(line =>
+                    { using var doc = System.Text.Json.JsonDocument.Parse(line); return doc.RootElement.Clone(); }).ToArray() : [];
+                    return (result, rows);
+                }
+                bool Event(System.Text.Json.JsonElement[] rows, string phase, string status) => rows.Any(r =>
+                    r.GetProperty("phase").GetString() == phase && r.GetProperty("status").GetString() == status);
+                bool O2(System.Text.Json.JsonElement[] rows) => Event(rows, "llvm.optimize.O2", "completed");
+                var cold = Compile("cold", []);
+                TestHarness.CheckTrue("真实 whole-program 冷编仍走 O2", cold.Exit == 0 && O2(cold.Rows));
+                if (!OperatingSystem.IsLinux())
+                {
+                    TestHarness.CheckTrue("未验证的平台正常编译并安全绕缓存", Event(cold.Rows, "native-object", "bypass"));
+                    return;
+                }
+                var unavailable = cold.Rows.Any(r => r.GetProperty("phase").GetString() == "native-object"
+                    && r.GetProperty("status").GetString() == "bypass"
+                    && r.GetProperty("detail").GetString() is "runtime-identity-unavailable" or "backend-identity-unavailable");
+                if (unavailable)
+                {
+                    Console.WriteLine("  [SKIP] runtime/backend 真实身份无法确认：fresh compile 已通过，缓存命中用例不适用");
+                    return;
+                }
+                TestHarness.CheckTrue("冷编明确对象 miss", Event(cold.Rows, "native-object", "miss"));
+                var objectPath = Directory.EnumerateFiles(Path.Combine(cache, "object-cache"), "program.o", SearchOption.AllDirectories).Single();
+                var objectDigest = Middleware.Cache.ArtifactCache.HashFile(objectPath);
+                var hot = Compile("hot", []);
+                TestHarness.CheckTrue("不同 outpath 真实对象 hit 跳过 O2", hot.Exit == 0 && Event(hot.Rows, "native-object", "hit") && !O2(hot.Rows)
+                    && !hot.Rows.Any(r => r.GetProperty("phase").GetString()!.StartsWith("middleware.", StringComparison.Ordinal)));
+                TestHarness.CheckTrue("命中仍执行当前 final link", Event(hot.Rows, "native.final-link", "completed"));
+                TestHarness.CheckTrue("真实 linker/CRT/link 库内容仅记录", hot.Rows.Any(r => r.GetProperty("phase").GetString() == "native.link-file"
+                    && r.GetProperty("detail").GetString()!.Contains("ld.lld", StringComparison.Ordinal))
+                    && hot.Rows.Any(r => r.GetProperty("phase").GetString() == "native.link-file"
+                    && r.GetProperty("detail").GetString()!.Contains("crt", StringComparison.OrdinalIgnoreCase)));
+                var linkSource = Path.Combine(root, "extra.c");
+                var linkObject = Path.Combine(root, "extra.o");
+                var clang = ToolchainResolver.ResolveClang(null)!;
+                File.WriteAllText(linkSource, "#include <stdio.h>\n__attribute__((constructor)) static void marker(void) { puts(\"first-link\"); }\n");
+                var builtLink = ExternalProcess.Run(clang, ["-c", "-fPIC", linkSource, "-o", linkObject], out _, out _, closeStdin: true);
+                var firstLink = Compile("first-link", ["--link", linkObject]);
+                ExternalProcess.Run(Path.Combine(root, "first-link" + suffix), [], out var firstStdout, out _, closeStdin: true);
+                var firstLinkHash = Middleware.Cache.ArtifactCache.HashFile(linkObject);
+                File.WriteAllText(linkSource, "#include <stdio.h>\n__attribute__((constructor)) static void marker(void) { puts(\"second-link\"); }\n");
+                builtLink |= ExternalProcess.Run(clang, ["-c", "-fPIC", linkSource, "-o", linkObject], out _, out _, closeStdin: true);
+                var secondLink = Compile("second-link", ["--link", linkObject]);
+                ExternalProcess.Run(Path.Combine(root, "second-link" + suffix), [], out var secondStdout, out _, closeStdin: true);
+                TestHarness.CheckTrue("同路径 linkinput 换内容仍对象 hit 且本次 relink", builtLink == 0 && firstLink.Exit == 0 && secondLink.Exit == 0
+                    && Event(firstLink.Rows, "native-object", "hit") && Event(secondLink.Rows, "native-object", "hit")
+                    && firstStdout.StartsWith("first-link\n", StringComparison.Ordinal) && secondStdout.StartsWith("second-link\n", StringComparison.Ordinal)
+                    && firstLinkHash != Middleware.Cache.ArtifactCache.HashFile(linkObject));
+                var nativeExit = ExternalProcess.Run(Path.Combine(root, "hot" + suffix), [], out var stdout, out var nativeError, closeStdin: true);
+                TestHarness.CheckTrue("缓存命中 Native stdout/exit 与 VM 一致", stdout == vm.Stdout && nativeExit == 17 && nativeError == "");
+                TestHarness.Check("缓存命中对象摘要未变", Middleware.Cache.ArtifactCache.HashFile(objectPath), objectDigest);
+                var malformed = Path.Combine(root, "bad-link.o");
+                File.WriteAllText(malformed, "bad linker input");
+                var failedLink = Compile("link-failure", ["--link", malformed]);
+                TestHarness.CheckTrue("当前链接输入失败不删除合法对象", failedLink.Exit == 2 && Event(failedLink.Rows, "native-object", "hit")
+                    && Event(failedLink.Rows, "native.final-link", "failed") && Middleware.Cache.ArtifactCache.HashFile(objectPath) == objectDigest);
+                File.WriteAllText(objectPath, "bad cached object");
+                var repaired = Compile("repaired", []);
+                TestHarness.CheckTrue("真实对象坏 cache 自愈且重新 O2", repaired.Exit == 0 && Event(repaired.Rows, "native-object", "miss") && O2(repaired.Rows));
+                TestHarness.Check("对象修复内容一致", Middleware.Cache.ArtifactCache.HashFile(objectPath), objectDigest);
+                var ll = Path.Combine(root, "debug.ll");
+                var debugObject = Path.Combine(root, "debug.o");
+                var diagnostic = Compile("diagnostic", ["--emit-ll", ll, "--emit-obj", debugObject]);
+                TestHarness.CheckTrue("诊断产物请求绕对象快路且保持 O2", diagnostic.Exit == 0 && Event(diagnostic.Rows, "native-object", "bypass") && O2(diagnostic.Rows));
+                TestHarness.CheckTrue("诊断 LL 是 merge 前且 debugobj 是 opt 前", !File.ReadAllText(ll).Contains("define i32 @main", StringComparison.Ordinal)
+                    && File.Exists(debugObject) && Middleware.Cache.ArtifactCache.HashFile(debugObject) != objectDigest);
+                var standaloneProfile = Path.Combine(root, "standalone-metrics");
+                var standaloneExit = ExternalProcess.Run(executable, prefix.Concat(new[] { "native", "--file", bil,
+                    "--emit-ll", Path.Combine(root, "standalone.ll"), "--emit-obj", Path.Combine(root, "standalone.o") }).ToArray(),
+                    out _, out _, environment: new Dictionary<string, string>
+                    { ["RIGI_PROFILE_DIR"] = standaloneProfile, ["RIGI_CACHE_ROOT"] = cache }, closeStdin: true);
+                var standaloneRows = Directory.EnumerateFiles(standaloneProfile, "*.jsonl").SelectMany(File.ReadLines).Select(line =>
+                { using var doc = System.Text.Json.JsonDocument.Parse(line); return doc.RootElement.Clone(); }).ToArray();
+                TestHarness.CheckTrue("仅诊断产物无需 runtime/link/O2 且明确 bypass", standaloneExit == 0 && Event(standaloneRows, "native-object", "bypass")
+                    && !O2(standaloneRows) && !standaloneRows.Any(r => r.GetProperty("phase").GetString() == "native.final-link"));
+                var blockedRoot = Path.Combine(root, "blocked-cache");
+                File.WriteAllText(blockedRoot, "file prevents cache directory");
+                var fallback = Compile("cache-io", [], blockedRoot);
+                TestHarness.CheckTrue("缓存 I/O 故障正常 fresh compile", fallback.Exit == 0 && O2(fallback.Rows) && Event(fallback.Rows, "native-object", "bypass"));
+                File.WriteAllText(bil, UndeclaredVarBil);
+                var invalid = Compile("invalid", []);
+                TestHarness.CheckTrue("非法 BIL 不得借快路绕过 Gate", invalid.Exit == 1 && !invalid.Rows.Any(r => r.GetProperty("phase").GetString() == "native-object"));
+            }
+            finally { Directory.Delete(root, true); }
+        }
+
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("SingleFile", "IL3000", Justification = "只在存在托管映像 Location 时核对该文件；NativeAOT 核对进程映像。")]
+        private static void TestComp003ObjectIdentity()
+        {
+            var compilerAssembly = typeof(MiddlewareTests).Assembly;
+            var bindingAssembly = typeof(LLVMSharp.Interop.LLVM).Assembly;
+            var compilerIdentity = Middleware.Cache.NativeObjectIdentity.CompilerContentIdentity();
+            var bindingIdentity = Middleware.Cache.NativeObjectIdentity.BindingContentIdentity();
+            var managed = !string.IsNullOrEmpty(compilerAssembly.Location);
+            TestHarness.CheckTrue("编译器身份选择实际托管映像而非动态代码开关",
+                Middleware.Cache.NativeObjectIdentity.UsesManagedImages == managed);
+            if (OperatingSystem.IsLinux())
+            {
+                var expectedCompiler = Middleware.Cache.ArtifactCache.HashFile(managed ? compilerAssembly.Location : "/proc/self/exe");
+                var expectedBinding = managed ? Middleware.Cache.ArtifactCache.HashFile(bindingAssembly.Location) : expectedCompiler;
+                TestHarness.Check("编译器身份等于实际 compiler 映像内容", compilerIdentity ?? "unknown", expectedCompiler);
+                TestHarness.Check("绑定身份等于实际 LLVMSharp 映像内容", bindingIdentity ?? "unknown", expectedBinding);
+                if (managed)
+                    TestHarness.CheckTrue("托管 compiler 身份与 runtime 宿主不同",
+                        compilerIdentity != Middleware.Cache.ArtifactCache.HashFile(Environment.ProcessPath!));
+            }
+            Console.WriteLine("  compiler-identity: " + new System.Text.Json.Nodes.JsonObject
+            {
+                ["managedImages"] = managed, ["dynamicCodeSupported"] = System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported,
+                ["compilerPath"] = compilerAssembly.Location, ["compilerSha"] = compilerIdentity,
+                ["bindingPath"] = bindingAssembly.Location, ["bindingSha"] = bindingIdentity,
+                ["processPath"] = Environment.ProcessPath, ["processSha"] = Middleware.Cache.ArtifactCache.HashFile(Environment.ProcessPath!),
+                ["compilerMvid"] = compilerAssembly.ManifestModule.ModuleVersionId.ToString(),
+                ["effectiveOverride"] = Environment.GetEnvironmentVariable("RIGI_TEST_RIGIC")
+            }.ToJsonString());
+            string Key(string bil = "bil", string compiler = "compiler", string binding = "binding", string llvm = "llvm",
+                string target = "target", string layout = "layout", string runtime = "runtime", string kind = "whole-program-executable",
+                string optimization = "default<O2>", string cpu = "generic", string features = "", string relocation = "PIC",
+                string codeModel = "default", string abi = "host-object-v1") => Middleware.Cache.NativeObjectIdentity.Compute(
+                    bil, compiler, binding, llvm, target, layout, runtime, kind, optimization, cpu, features, relocation, codeModel, abi);
+            var original = Key();
+            var variations = new[] { Key(bil: "changed"), Key(compiler: "changed"), Key(binding: "changed"), Key(llvm: "changed"),
+                Key(target: "changed"), Key(layout: "changed"), Key(runtime: "changed"), Key(kind: "library"), Key(optimization: "O1"),
+                Key(cpu: "native"), Key(features: "+sse"), Key(relocation: "static"), Key(codeModel: "large"), Key(abi: "changed") };
+            TestHarness.CheckTrue("对象全部 codegen 边界进入 key", variations.All(k => k != original) && variations.Distinct().Count() == variations.Length);
+            TestHarness.Check("固定输入身份稳定", Key(), original);
+            string BilKey(string input) => Key(bil: BilWriter.Write(BilReader.Read(input)));
+            var bilKey = BilKey(MinimalValidBil);
+            var bilVariants = new[]
+            {
+                MinimalValidBil.Replace("symtest", "other-module", StringComparison.Ordinal),
+                MinimalValidBil.Replace("R_Zero = i32 0", "R_Zero = i32 1", StringComparison.Ordinal),
+                MinimalValidBil.Replace("Point#x@.i32 pub var", "Point#x@.i32 priv var", StringComparison.Ordinal),
+                MinimalValidBil.Replace("load res(R_Zero) $a", "load res(R_Zero) $a\n        load res(R_Zero) $a", StringComparison.Ordinal),
+            };
+            TestHarness.CheckTrue("canonical BIL 包含 metadata/resources/declarations/body", bilVariants.All(input => BilKey(input) != bilKey));
+            var loaded = LlvmHost.ContentIdentity();
+            if (loaded == null)
+                Console.WriteLine("  [SKIP] 实际 LLVM 内容身份无法确认：生产快路安全绕过");
+            else
+            {
+                TestHarness.CheckTrue("实际加载 LLVM 文件内容身份", loaded.Length == 64);
+                TestHarness.Check("LLVM immutable 身份可重复验证", LlvmHost.ContentIdentity() ?? "unknown", loaded);
+                var gate = BilGate.Accept(MinimalValidBil, "identity.bil");
+                var actualKey = Middleware.Cache.NativeObjectIdentity.TryCompute(gate.Module!, LlvmHost.HostTriple, LlvmHost.HostDataLayout, "runtime");
+                if (actualKey == null) Console.WriteLine("  [SKIP] compiler/binding 已加载映射无法确认：生产快路安全绕过");
+                else TestHarness.CheckTrue("真实 compiler/binding 与已加载映射匹配", actualKey.Length == 64);
+            }
+            using var lease = LlvmHost.Enter();
+            var guarded = false;
+            try { LlvmHost.RequireNotOwned(); } catch (InvalidOperationException) { guarded = true; }
+            TestHarness.CheckTrue("LLVM 到文件锁逆序响亮拒绝", guarded);
+            using var nested = LlvmHost.Enter();
+            TestHarness.CheckTrue("LLVM lease 可重入", true);
+        }
+
+        private static void TestComp003RuntimeSnapshot()
+        {
+            var clang = ToolchainResolver.ResolveClang(null);
+            var libuv = LibuvResolver.Resolve(null);
+            TestHarness.CheckTrue("runtime 实际工具链就绪", clang != null && libuv != null);
+            if (clang == null || libuv == null) return;
+            var root = Path.Combine(Path.GetTempPath(), "rigi-comp003-runtime-" + Guid.NewGuid().ToString("N"));
+            var previous = Environment.GetEnvironmentVariable("RIGI_CACHE_ROOT");
+            try
+            {
+                Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", root);
+                using var cold = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple, out var rebuilt, libuv);
+                TestHarness.CheckTrue("真实 runtime 冷编 snapshot", rebuilt);
+                if (!OperatingSystem.IsLinux())
+                {
+                    TestHarness.CheckTrue("未验证的平台安全绕缓存", cold.Identity == null);
+                    return;
+                }
+                if (cold.Identity == null)
+                {
+                    LlvmBitcode.ValidateRuntimeTarget(cold.Path, LlvmHost.HostTriple);
+                    Console.WriteLine("  [SKIP] runtime codegen closure 无法确认：实际 fresh compile 目标验证通过，缓存命中用例不适用");
+                    return;
+                }
+                TestHarness.CheckTrue("Linux runtime codegen closure 可确认", cold.Identity.Length == 64);
+                var digest = Middleware.Cache.ArtifactCache.HashFile(cold.Path);
+                using var hot = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple, out rebuilt, libuv);
+                TestHarness.CheckTrue("预处理随机私有路径不影响 hit", !rebuilt && hot.Identity == cold.Identity);
+                TestHarness.Check("runtime 冷热 bitcode 内容一致", Middleware.Cache.ArtifactCache.HashFile(hot.Path), digest);
+                if (cold.Identity != null)
+                {
+                    File.WriteAllText(Path.Combine(RigiRtBuilder.GetCacheRoot(), cold.Identity, "rigi_rt.bc"), "bad bitcode");
+                    using var repaired = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple, out rebuilt, libuv);
+                    TestHarness.CheckTrue("runtime 坏缓存自愈", rebuilt && repaired.Identity == cold.Identity);
+                    TestHarness.Check("runtime 修复内容一致", Middleware.Cache.ArtifactCache.HashFile(repaired.Path), digest);
+                }
+                var includes = Path.Combine(root, "include");
+                foreach (var header in Directory.EnumerateFiles(libuv.IncludeDir, "*", SearchOption.AllDirectories))
+                {
+                    var target = Path.Combine(includes, Path.GetRelativePath(libuv.IncludeDir, header));
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(header, target);
+                }
+                var copied = new LibuvLayout(includes, libuv.StaticLibPath);
+                using var beforeHeader = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple, out _, copied);
+                File.AppendAllText(Path.Combine(includes, "uv.h"), "\ntypedef int rigi_comp003_header_probe;\n");
+                using var afterHeader = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple, out rebuilt, copied);
+                TestHarness.CheckTrue("同路径真实 libuv 头变化重新编译", rebuilt && beforeHeader.Identity != afterHeader.Identity);
+                var blocked = Path.Combine(root, "blocked-root");
+                File.WriteAllText(blocked, "blocks cache directory");
+                Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", blocked);
+                var legacy = RigiRtBuilder.EnsureBitcode(clang, LlvmHost.HostTriple, out rebuilt, libuv);
+                LlvmBitcode.ValidateRuntimeTarget(legacy, LlvmHost.HostTriple);
+                TestHarness.CheckTrue("旧 path helper 缓存 I/O 退化交付已验证请求副本", rebuilt && File.Exists(legacy));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", previous);
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        private static void TestComp003ArtifactCache()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rigi-comp003-cache-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var key = Middleware.Cache.ArtifactCache.Identity("schema", "body");
+                var cache = Path.Combine(root, "cache");
+                var builds = 0;
+                Action<string> build = path => { Interlocked.Increment(ref builds); File.WriteAllText(path, "object"); };
+                var first = Path.Combine(root, "first.o");
+                TestHarness.CheckTrue("缓存首次原子发布", Middleware.Cache.ArtifactCache.TryMaterialize(
+                    cache, key, "program.o", first, build, null, out var rebuilt) && rebuilt);
+                TestHarness.CheckTrue("缓存目录采用完整身份", Directory.Exists(Path.Combine(cache, key)) && key.Length == 64);
+                var second = Path.Combine(root, "second.o");
+                TestHarness.CheckTrue("不同请求路径复用对象", Middleware.Cache.ArtifactCache.TryMaterialize(
+                    cache, key, "program.o", second, build, null, out rebuilt) && !rebuilt && builds == 1);
+                File.WriteAllText(Path.Combine(cache, key, "program.o"), "bad");
+                TestHarness.CheckTrue("损坏条目在锁内重建", Middleware.Cache.ArtifactCache.TryMaterialize(
+                    cache, key, "program.o", second, build, null, out rebuilt) && rebuilt && builds == 2);
+                TestHarness.Check("请求得到完整对象", File.ReadAllText(second), "object");
+                var parallelKey = Middleware.Cache.ArtifactCache.Identity("parallel");
+                var tasks = Enumerable.Range(0, 8).Select(i => System.Threading.Tasks.Task.Run(() =>
+                    Middleware.Cache.ArtifactCache.TryMaterialize(cache, parallelKey, "program.o",
+                        Path.Combine(root, i + ".o"), build, null, out _))).ToArray();
+                System.Threading.Tasks.Task.WaitAll(tasks);
+                TestHarness.CheckTrue("同身份 builder singleflight", tasks.All(t => t.Result) && builds == 3);
+                TestHarness.CheckTrue("稳定 sibling lock 保留", File.Exists(Path.Combine(cache, ".locks", parallelKey + ".lock")));
+                TestHarness.CheckTrue("字段边界不可碰撞", Middleware.Cache.ArtifactCache.Identity("ab", "c")
+                    != Middleware.Cache.ArtifactCache.Identity("a", "bc"));
+                var diagnostic = false;
+                try { Middleware.Cache.ArtifactCache.TryMaterialize(cache, Middleware.Cache.ArtifactCache.Identity("failure"),
+                    "program.o", second, _ => throw new InvalidOperationException("semantic"), null, out _); }
+                catch (InvalidOperationException ex) { diagnostic = ex.Message == "semantic"; }
+                TestHarness.CheckTrue("builder 语义诊断原样传播", diagnostic);
+            }
+            finally { Directory.Delete(root, true); }
+        }
 
         private static void TestRuntimeFeatureMacroPreamble()
         {
@@ -263,7 +555,10 @@ namespace RigiCompiler.Tests
             var host = LlvmHost.HostTriple;
             Console.WriteLine("  LLVM 宿主目标: " + host);
             Console.WriteLine("  LLVM TargetMachine layout: " + LlvmHost.HostDataLayout);
-            var other = host.Replace("-pc-", "-unknown-", StringComparison.Ordinal);
+            // Linux libLLVM 的 vendor 可能是 unknown；显式翻转，不能假设恒为 pc。
+            var targetParts = host.Split('-');
+            targetParts[1] = targetParts[1] == "pc" ? "unknown" : "pc";
+            var other = string.Join('-', targetParts);
             TestHarness.CheckTrue("宿主目标与对照目标不同", host != other);
             var hostArgs = RigiRtBuilder.BuildCompileArgs(host, null, "unity.c", "rigi_rt.bc");
             var otherArgs = RigiRtBuilder.BuildCompileArgs(other, null, "unity.c", "rigi_rt.bc");
@@ -301,13 +596,23 @@ namespace RigiCompiler.Tests
                     var libuv = RigiCompiler.Middleware.Toolchain.LibuvResolver.Resolve(null);
                     if (libuv != null)
                     {
-                        var cached = RigiRtBuilder.EnsureBitcode(clang, host, out var rebuilt, libuv);
+                        using var prepared = RigiRtBuilder.PrepareBitcode(clang, host, out var rebuilt, libuv);
+                        var cached = prepared.Path;
                         Console.WriteLine("  rigi_rt 实际缓存: " + cached + " rebuilt=" + rebuilt);
                         LlvmBitcode.ValidateRuntimeTarget(cached, host);
                         TestHarness.CheckTrue("真实运行时缓存 bitcode 目标相容", true);
-                        var hit = RigiRtBuilder.EnsureBitcode(clang, host, out var rebuiltAgain, libuv);
-                        TestHarness.Check("相同目标与参数命中同一缓存", hit, cached);
-                        TestHarness.CheckTrue("命中无需再次编译", !rebuiltAgain);
+                        using var hit = RigiRtBuilder.PrepareBitcode(clang, host, out var rebuiltAgain, libuv);
+                        if (prepared.Identity != null && hit.Identity != null)
+                        {
+                            TestHarness.Check("相同目标与参数命中同一缓存", hit.Identity, prepared.Identity);
+                            TestHarness.CheckTrue("命中无需再次编译", !rebuiltAgain);
+                        }
+                        else
+                        {
+                            LlvmBitcode.ValidateRuntimeTarget(hit.Path, host);
+                            TestHarness.CheckTrue("未知身份正常 fresh compile", rebuiltAgain);
+                            Console.WriteLine("  [SKIP] runtime 身份未知：不把 uncached 路径比较计为缓存命中");
+                        }
                     }
                     var rejected = false;
                     try { LlvmBitcode.ValidateRuntimeTarget(bitcode, other); }
@@ -360,6 +665,36 @@ namespace RigiCompiler.Tests
             catch (InvalidOperationException ex) { timedOut = ex.Message.Contains("150ms"); }
             TestHarness.CheckTrue("外部进程超时受控退出且不无限等待读管道",
                 timedOut && timer.ElapsedMilliseconds < 10_000);
+        }
+
+        private static void TestWrapperGenericInitArgumentAbi()
+        {
+            var (unit, bil, _) = BilTestHarness.EmitBilUnit(
+                "rich struct Data { pub var text: String = \"ok\" }\n" +
+                "@WrapperTarget(.Entity)\nrich wrapper W\\<TTarget> { pub var value: TTarget\n" +
+                "pub init(value: TTarget) { this.value = value } }\n" +
+                "@W\\<i64>(9L)\nclass NumberHost { }\n" +
+                "@W\\<String>(\"ok\")\nclass StringHost { }\n" +
+                "@W\\<Data>(new Data())\nclass RichHost { }\n" +
+                "@W\\<Array\\<i64>>(core.collections.arrayOf\\<i64>(1))\nclass ArrayHost { }\n" +
+                "pub func main(): i32 { var n = new NumberHost()\n var s = new StringHost()\n" +
+                "var r = new RichHost()\n var a = new ArrayHost()\n return 0 }\n");
+            TestHarness.CheckTrue("GP wrapper 实参语义合法", !unit.Diagnostics.HasErrors,
+                string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
+            if (unit.Diagnostics.HasErrors) return;
+            BilTestHarness.CheckBilValid("GP wrapper 四种实参 BIL 合法", bil);
+            var vm = RigiCompiler.Bil.BilVm.Run(bil);
+            TestHarness.CheckTrue("GP wrapper 四种实参 VM 合法",
+                vm.Exception == null && vm.ReturnValue is RigiCompiler.Bil.Vm.VmI32 { Value: 0 });
+            var context = new MwContext(bil);
+            RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease392 = LlvmHost.Enter();
+            using var module = ModuleBuilder.Build(context, context.Mir!);
+            var calls = module.PrintToString().Split('\n').Where(line =>
+                line.Contains("call void @\"W$init(", StringComparison.Ordinal)).ToArray();
+            TestHarness.CheckTrue("GP init 的整数/String/rich struct/数组实参均按胖值 ABI 传递",
+                calls.Length == 4 && calls.All(line => line.Contains("{ i64, i64 }", StringComparison.Ordinal)),
+                string.Join("\n", calls));
         }
 
         private static void TestCapabilityConstructedCalls(
@@ -1689,6 +2024,7 @@ namespace RigiCompiler.Tests
                 "    var t = work(41)\n" +
                 "    return 0\n" +
                 "}\n", "coro.emit1.bil");
+            using var llvmLease1727 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
 
@@ -1720,6 +2056,7 @@ namespace RigiCompiler.Tests
                 "    var t = boom()\n" +
                 "    return 0\n" +
                 "}\n", "coro.emit2.bil");
+            using var llvmLease1758 = LlvmHost.Enter();
             using var module2 = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll2 = module2.PrintToString();
             TestHarness.CheckTrue("Emit② resume 垫尾调 rigi_failure_record",
@@ -1741,6 +2078,7 @@ namespace RigiCompiler.Tests
                 "    var t = nap()\n" +
                 "    return 0\n" +
                 "}\n", "coro.emit3.bil");
+            using var llvmLease1779 = LlvmHost.Enter();
             using var module3 = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll3 = module3.PrintToString();
             TestHarness.CheckTrue("Emit③ rigi_alarm_wait 声明与调用",
@@ -2244,6 +2582,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             var mir = MirBuilder.Build(context);
+            using var llvmLease2282 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             TestHarness.Check("生成模块与运行时的宿主目标一致", module.Target,
                 LlvmHost.HostTriple);
@@ -2264,7 +2603,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("转义换行进字节常量",
                 ll.Contains("c\"world!\\0A\""), ll);
             TestHarness.CheckTrue("入口发射为 rigi_entry",
-                ll.Contains("define i32 @rigi_entry()"), ll);
+                ll.Contains("define i32 @rigi_entry(i32 %0, ptr %1)"), ll);
             TestHarness.CheckTrue("string + → rigi_string_concat 调用",
                 ll.Contains("call void @rigi_string_concat(ptr"), ll);
             TestHarness.CheckTrue("native print → rigi_print 声明",
@@ -2293,6 +2632,7 @@ namespace RigiCompiler.Tests
             // MW9a 起发射要求 ExcTarget 已解析（RcInjection 传播垫）：
             // 含 Rigi 直接调用（Console.println 包装 fn）的用例走完整管线
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease2331 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
@@ -2323,6 +2663,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease2361 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
@@ -2360,6 +2701,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease2398 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
@@ -2393,6 +2735,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", floatGate.Errors));
             var floatContext = new MwContext(floatGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(floatContext);
+            using var llvmLease2431 = LlvmHost.Enter();
             using var floatModule = ModuleBuilder.Build(floatContext, floatContext.Mir!);
             var floatLl = floatModule.PrintToString();
 
@@ -2618,6 +2961,7 @@ namespace RigiCompiler.Tests
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
             TestHarness.CheckTrue("管线挂载布局", context.Layout != null);
+            using var llvmLease2656 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
@@ -2726,6 +3070,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("纯标记不扩张宿主对象头",
                 taggedPlan?.Size == LayoutEngine.ObjectHeaderSize);
 
+            using var llvmLease2764 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("TypeInfo 全局名字符串",
@@ -2823,6 +3168,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Logged init 可达",
                 context.Mir.Functions.Any(f => f.Symbol.Canonical.Contains("Logged$init")));
 
+            using var llvmLease2861 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 模块含 Logged init",
@@ -2879,6 +3225,7 @@ namespace RigiCompiler.Tests
                     .Any()
                 && trampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>().Any());
 
+            using var llvmLease2917 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含原名 doSomething",
@@ -2991,6 +3338,7 @@ namespace RigiCompiler.Tests
 
             // .ll 形状：trampoline 体内无 wrapper 值拷贝 acquire（取址不产生
             // 值拷贝，旧形态此处必有 rigi_value_acquire）
+            using var llvmLease3029 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             var marker = ll.IndexOf("Service$fetch", System.StringComparison.Ordinal);
@@ -3124,6 +3472,7 @@ namespace RigiCompiler.Tests
                 cellTerminalSet.Blocks.SelectMany(b => b.Instructions).OfType<MirSetField>()
                     .Any(s => s.FieldSymbol.Contains("#value@.i32")));
 
+            using var llvmLease3162 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 Value 链烘焙环",
@@ -3301,6 +3650,7 @@ namespace RigiCompiler.Tests
                 mainInsts.OfType<MirSetField>().Any(s => s.FieldSymbol == "Plain#raw@.i32")
                 && mainInsts.OfType<MirGetField>().Any(g => g.FieldSymbol == "Plain#raw@.i32"));
 
+            using var llvmLease3339 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 Entity 字段链烘焙环",
@@ -3383,6 +3733,7 @@ namespace RigiCompiler.Tests
                     c.Target.Canonical.StartsWith("A$.bake.S3$.set.title@")
                     || c.Target.Canonical.StartsWith("A$.bake.S3$.get.title@")));
 
+            using var llvmLease3421 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 router 与字段环",
@@ -3476,6 +3827,7 @@ namespace RigiCompiler.Tests
                 callsOf(variant).Any(c =>
                     c.Target.Canonical.StartsWith("Entity$hp$.wrapped.set(")));
 
+            using var llvmLease3514 = LlvmHost.Enter();
             using var module2 = ModuleBuilder.Build(context, context.Mir!);
             var ll2 = module2.PrintToString();
             TestHarness.CheckTrue("LLVM 含分派辅助与变体环",
@@ -3637,6 +3989,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("router 结果装箱 .any（值类型 box）",
                 instsOf(router).OfType<MirBoxAny>().Any());
 
+            using var llvmLease3675 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 wildcard 环", ll.Contains(".bake.Service$ping"), ll);
@@ -3738,6 +4091,7 @@ namespace RigiCompiler.Tests
                     c.Target.Canonical == trampoline.Symbol.Canonical)
                 && router.Parameters.Count == 4);
 
+            using var llvmLease3776 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含泛型 wildcard 环", ll.Contains(".bake.Service$pick"),
@@ -3823,6 +4177,7 @@ namespace RigiCompiler.Tests
                 functions.Any(f => f.Symbol.Canonical.Contains("Service$.mw.router.2"))
                 && !functions.Any(f => f.Symbol.Canonical.Contains("Service$.mw.router.1")));
 
+            using var llvmLease3861 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含混合链双环",
@@ -3939,6 +4294,7 @@ namespace RigiCompiler.Tests
                 oprRouter.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical.Contains("VecB$.wrapped.$plus")));
 
+            using var llvmLease3977 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含运算符烘焙环", ll.Contains(".bake.VecB$$plus"), ll);
@@ -4279,6 +4635,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("router 预建覆盖无可烘焙成员宿主（Child 零分支亦建）",
                 functions.Any(f => f.Symbol.Canonical.Contains("Child$.mw.router.1")));
 
+            using var llvmLease4317 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 dispatch", ll.Contains(".mw.call???"), ll);
@@ -4369,6 +4726,7 @@ namespace RigiCompiler.Tests
                     c.Target.Canonical == "S$.static.mw.singleton.get()@S") == 2);
 
             // LL：合成静态槽 + get fn 发射
+            using var llvmLease4407 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("合成三态槽发射（i32 全局）",
@@ -4399,12 +4757,13 @@ namespace RigiCompiler.Tests
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease4437 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            var stubAt = ll.IndexOf("define i32 @rigi_entry()", StringComparison.Ordinal);
+            var stubAt = ll.IndexOf("define i32 @rigi_entry(i32 %0, ptr %1)", StringComparison.Ordinal);
             TestHarness.CheckTrue("rigi_entry stub 存在", stubAt >= 0, ll);
-            var stub = ll.Substring(stubAt);
+            var stub = stubAt >= 0 ? ll.Substring(stubAt) : "";
             var getAt = stub.IndexOf("S$.static.mw.singleton.get()@S", StringComparison.Ordinal);
             var globalsAt = stub.IndexOf("$..globals.init()@.void", StringComparison.Ordinal);
             var mainAt = stub.IndexOf("$main()@.i32", StringComparison.Ordinal);
@@ -4482,6 +4841,7 @@ namespace RigiCompiler.Tests
                 && ring.Parameters[0].Name == ".this"
                 && ring.Parameters[1].Name == "x");
 
+            using var llvmLease4520 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 method 环与 $.mwrapped. 体",
@@ -4624,6 +4984,7 @@ namespace RigiCompiler.Tests
                 && lookup.Blocks.Any(b => b.Terminator is MirCondBranch)
                 && lookupInsts.OfType<MirGetArray>().Any());
 
+            using var llvmLease4662 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 wildcard method 环",
@@ -4710,6 +5071,7 @@ namespace RigiCompiler.Tests
                 lookupInsts.OfType<MirLoadResource>().Any(l =>
                     l.Resource is BilNullResource nullRes && nullRes.TypeRef == ".any"));
 
+            using var llvmLease4748 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 $mw.named.lookup",
@@ -4784,6 +5146,7 @@ namespace RigiCompiler.Tests
                 functions.Any(f => f.Symbol.Canonical.Contains("$.mwrapped.")
                     && f.Symbol.Canonical.Contains("$call(x:.i32)")));
 
+            using var llvmLease4822 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含三形态烘焙环",
@@ -4853,6 +5216,7 @@ namespace RigiCompiler.Tests
                 methodRing.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical == "Service$.mwrapped.work()@core::i32"));
 
+            using var llvmLease4891 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含三层组合",
@@ -4924,6 +5288,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("router 链末 miss 抛 NoSuchMethodException",
                 router.Blocks.SelectMany(b => b.Instructions).OfType<MirThrow>().Any());
 
+            using var llvmLease4962 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 mwr router",
@@ -5014,6 +5379,7 @@ namespace RigiCompiler.Tests
                 !superTargets.Any(t => t == "BaseM$work()@.i32"
                     || t == "BaseE$ping()@.i32"));
 
+            using var llvmLease5052 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("LLVM 含 super 直调最深层原始体",
@@ -5057,6 +5423,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MIR 含 typeid 装箱 .any", allInsts.OfType<MirBoxAny>().Any());
             TestHarness.CheckTrue("MIR 含 typeid 拆箱", allInsts.OfType<MirUnboxAny>().Any());
 
+            using var llvmLease5095 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("getid.var 常量 store 路径",
@@ -5103,6 +5470,7 @@ namespace RigiCompiler.Tests
                 && i32Plan.IMap.Count == 0
                 && i32Plan.VTableSlots.Count == 0
                 && i32Plan.BasePlan == null);
+            using var llvmLease5141 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("构造 Type<i32> TypeSheet 全局",
@@ -5147,6 +5515,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue(".this 隐藏首参",
                 who.Parameters.Count == 1 && who.Parameters[0].Name == ".this");
 
+            using var llvmLease5185 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             var ll = module.PrintToString();
 
@@ -5208,6 +5577,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MIR 含 MirNewCase", allInsts.OfType<MirNewCase>().Any());
             TestHarness.CheckTrue("MIR 含 MirIsCase", allInsts.OfType<MirIsCase>().Any());
 
+            using var llvmLease5246 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             var ll = module.PrintToString();
 
@@ -5261,6 +5631,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("..globals.init 恒可达",
                 mir.Functions.Any(f => f.Symbol.Canonical == "$..globals.init()@.void"));
 
+            using var llvmLease5299 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             var ll = module.PrintToString();
 
@@ -5271,7 +5642,7 @@ namespace RigiCompiler.Tests
                 ll.Contains("@\"static.Config#.static.level@.i32\" = internal global i32 0"), ll);
             // 入口 stub：..globals.init → main 调用序
             TestHarness.CheckTrue("rigi_entry stub 锚点",
-                ll.Contains("define i32 @rigi_entry()"), ll);
+                ll.Contains("define i32 @rigi_entry(i32 %0, ptr %1)"), ll);
             TestHarness.CheckTrue("stub 先调 ..globals.init 再调 main",
                 ll.Contains("call void @\"$..globals.init()@.void\"()")
                 && ll.IndexOf("call void @\"$..globals.init()@.void\"()",
@@ -5314,6 +5685,7 @@ namespace RigiCompiler.Tests
                 allInsts.OfType<MirGetField>().Any(f =>
                     RigiCompiler.Middleware.Layout.TypeLayout.IsLengthField(f.FieldSymbol)));
 
+            using var llvmLease5352 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("alloc_array 面",
@@ -5363,6 +5735,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", rawGate.Errors));
             var rawContext = new MwContext(rawGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(rawContext);
+            using var llvmLease5401 = LlvmHost.Enter();
             using var rawModule = ModuleBuilder.Build(rawContext, rawContext.Mir!);
             var rawLl = rawModule.PrintToString();
             TestHarness.CheckTrue("raw 字节常量",
@@ -5408,6 +5781,7 @@ namespace RigiCompiler.Tests
                 && (spanPlan.TypeFlags & TypeLayoutPlan.FlagArray) != 0
                 && (spanPlan.TypeFlags & TypeLayoutPlan.FlagShared) == 0);
 
+            using var llvmLease5446 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("span_alloc 编组形状",
@@ -5502,6 +5876,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", spanGate.Errors));
             var spanContext = new MwContext(spanGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(spanContext);
+            using var llvmLease5540 = LlvmHost.Enter();
             using var spanModule = ModuleBuilder.Build(spanContext, spanContext.Mir!);
             var spanLl = spanModule.PrintToString();
             TestHarness.CheckTrue("raw→Span 字节常量",
@@ -5550,6 +5925,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", sharedGate.Errors));
             var sharedContext = new MwContext(sharedGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(sharedContext);
+            using var llvmLease5588 = LlvmHost.Enter();
             using var sharedModule = ModuleBuilder.Build(sharedContext, sharedContext.Mir!);
             var sharedLl = sharedModule.PrintToString();
             TestHarness.CheckTrue("raw→SharedSpan 字节常量",
@@ -5571,6 +5947,7 @@ namespace RigiCompiler.Tests
             {
                 var scalarContext = new MwContext(scalarGate.Module!);
                 var scalarMir = MirBuilder.Build(scalarContext);
+                using var llvmLease5609 = LlvmHost.Enter();
                 using var scalarModule = ModuleBuilder.Build(scalarContext, scalarMir);
             }
             catch (MwNotSupportedException ex)
@@ -5622,6 +5999,7 @@ namespace RigiCompiler.Tests
             {
                 var collContext = new MwContext(collGate.Module!);
                 var collMir = MirBuilder.Build(collContext);
+                using var llvmLease5660 = LlvmHost.Enter();
                 using var collModule = ModuleBuilder.Build(collContext, collMir);
             }
             catch (MwNotSupportedException ex)
@@ -5645,6 +6023,7 @@ namespace RigiCompiler.Tests
             {
                 var tableContext = new MwContext(tableGate.Module!);
                 var tableMir = MirBuilder.Build(tableContext);
+                using var llvmLease5683 = LlvmHost.Enter();
                 using var tableModule = ModuleBuilder.Build(tableContext, tableMir);
             }
             catch (MwNotSupportedException ex)
@@ -5725,6 +6104,7 @@ namespace RigiCompiler.Tests
                 binding.CallOperator.Canonical.Contains("Doubler$$call")
                 && binding.CallOperator.Canonical.Contains(".i32"));
 
+            using var llvmLease5763 = LlvmHost.Enter();
             using var userModule = ModuleBuilder.Build(userContext, userMir);
             var ll = userModule.PrintToString();
             TestHarness.CheckTrue("间接调用经 rigi_vtable_entry",
@@ -5767,6 +6147,7 @@ namespace RigiCompiler.Tests
                 genContext.Module.Functions);
             TestHarness.CheckTrue("泛型 $$call 绑定命中 Mapper$$call",
                 genBind.CallOperator.Canonical.Contains("Mapper$$call"));
+            using var llvmLease5805 = LlvmHost.Enter();
             using var genModule = ModuleBuilder.Build(genContext, genContext.Mir!);
             TestHarness.CheckTrue("泛型 $$call 发射 vtable 入口",
                 genModule.PrintToString().Contains("rigi_vtable_entry"));
@@ -5933,6 +6314,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MIR 含 MirBoxAny", allInsts.OfType<MirBoxAny>().Any());
             TestHarness.CheckTrue("MIR 含 MirUnboxAny", allInsts.OfType<MirUnboxAny>().Any());
 
+            using var llvmLease5971 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("tag0 pack：or + insertvalue",
@@ -5999,6 +6381,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease6037 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             return module.PrintToString();
         }
@@ -6021,6 +6404,7 @@ namespace RigiCompiler.Tests
             {
                 var context = new MwContext(gate.Module!);
                 RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+                using var llvmLease6059 = LlvmHost.Enter();
                 using var module = ModuleBuilder.Build(context, context.Mir!);
             }
             catch (MwNotSupportedException ex)
@@ -6167,6 +6551,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("vtable 槽=模板 fn",
                 plan.VTableSlots.Any(s => s.Contains("Box2$get(")));
 
+            using var llvmLease6205 = LlvmHost.Enter();
             using var llvm = ModuleBuilder.Build(context, context.Mir!);
             var ll = llvm.PrintToString();
             TestHarness.CheckTrue("构造 sheet 全局（转义名）",
@@ -6212,6 +6597,7 @@ namespace RigiCompiler.Tests
                 structPlan.Size == 16 && structPlan.VTableSlots.Count == 1
                 && structPlan.VTableSlots[0] == LayoutEngine.InitDispatchSlot);
 
+            using var llvmLease6250 = LlvmHost.Enter();
             using var structLlvm = ModuleBuilder.Build(structContext, structContext.Mir!);
             var structLl = structLlvm.PrintToString();
             TestHarness.CheckTrue("构造 struct sheet 全局（转义名）",
@@ -6284,6 +6670,7 @@ namespace RigiCompiler.Tests
                 enumPlan != null && enumPlan.Kind == TypeLayoutKind.Enum
                 && enumPlan.EnumCases.Count == 1
                 && enumPlan.EnumCases[0].Discriminant == 0u);
+            using var llvmLease6322 = LlvmHost.Enter();
             using var enumLlvm = ModuleBuilder.Build(enumContext, enumContext.Mir!);
             var enumLl = enumLlvm.PrintToString();
             TestHarness.CheckTrue("构造 enum sheet 全局（转义名）",
@@ -6393,6 +6780,7 @@ namespace RigiCompiler.Tests
                 string.Join("; ", genericCandidateGate.Errors));
             var genericCandidateContext = new MwContext(genericCandidateModule);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(genericCandidateContext);
+            using var llvmLease6431 = LlvmHost.Enter();
             using var genericCandidateLlvm = ModuleBuilder.Build(genericCandidateContext, genericCandidateContext.Mir!);
             TestHarness.CheckTrue("G4 未构造泛型宿主不阻断实际 operator 派发",
                 genericCandidateLlvm.PrintToString().Contains("typesheet.Num"));
@@ -6446,6 +6834,7 @@ namespace RigiCompiler.Tests
                 ifacePlan != null
                 && ifacePlan.Kind == TypeLayoutKind.Interface
                 && ifacePlan.VTableSlots.Count == 2);
+            using var llvmLease6484 = LlvmHost.Enter();
             using var ifaceLlvm = ModuleBuilder.Build(ifaceCtx, ifaceCtx.Mir!);
             var ifaceLl = ifaceLlvm.PrintToString();
             TestHarness.CheckTrue("构造接口 sheet 全局",
@@ -6487,6 +6876,7 @@ namespace RigiCompiler.Tests
                 derivedPlan != null && derivedPlan.VTableSlots.Count >= 3
                 && derivedPlan.VTableSlots[1].Contains("PairD$foo(")
                 && derivedPlan.VTableSlots[2].Contains("PairD$bar("));
+            using var llvmLease6525 = LlvmHost.Enter();
             using var virtLlvm = ModuleBuilder.Build(virtCtx, virtCtx.Mir!);
             var virtLl = virtLlvm.PrintToString();
             TestHarness.CheckTrue("VirtualSlotOf 命中槽 1 与 2",
@@ -6567,6 +6957,7 @@ namespace RigiCompiler.Tests
                 && TypeLayout.IsArray(main.FindLocal(packArg.Name).Type));
 
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
+            using var llvmLease6605 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("Any TypeSheet 供 Pair<,Any> 具化",
@@ -6598,6 +6989,7 @@ namespace RigiCompiler.Tests
                 fwdCall.Args.Count == 1
                 && fwdCall.Args[0] is MirLocalOperand { Name: ".vargs.nums" });
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(fwdCtx);
+            using var llvmLease6636 = LlvmHost.Enter();
             using var fwdLl = ModuleBuilder.Build(fwdCtx, fwdCtx.Mir!);
             TestHarness.CheckTrue("整包转发 LLVM 发射",
                 fwdLl.PrintToString().Contains("@\"$take()@.i32\""),
@@ -6678,6 +7070,7 @@ namespace RigiCompiler.Tests
             {
                 var rawContext = new MwContext(rawGate.Module!);
                 var rawMir = MirBuilder.Build(rawContext);
+                using var llvmLease6716 = LlvmHost.Enter();
                 using var rawModule = ModuleBuilder.Build(rawContext, rawMir);
             }
             catch (MwNotSupportedException ex)
@@ -6782,6 +7175,7 @@ namespace RigiCompiler.Tests
                 var gate = BilGate.Accept(MinimalValidBil, "ok.bil");
                 var context = new MwContext(gate.Module!);
                 var mir = MirBuilder.Build(context);
+                using var llvmLease6820 = LlvmHost.Enter();
                 using var module = ModuleBuilder.Build(context, mir);
                 var objPath = Path.Combine(dir, "symtest.o");
 
@@ -7141,6 +7535,7 @@ namespace RigiCompiler.Tests
                 "    return n.x\n" +
                 "}\n",
                 "rc.ll.bil");
+            using var llvmLease7179 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue(".ll 含 rigi_ref_acquire",
@@ -7188,6 +7583,7 @@ namespace RigiCompiler.Tests
                 "    return (r + (e1 + (e2 + (n.x + b.node.x))))\n" +
                 "}\n",
                 "rc.region.bil");
+            using var llvmLease7226 = LlvmHost.Enter();
             using (var regionModule = ModuleBuilder.Build(ctx, ctx.Mir!))
             {
                 var regionLl = regionModule.PrintToString();
@@ -7402,6 +7798,7 @@ namespace RigiCompiler.Tests
                 "    try { return fail() } catch (e: core.RuntimeException) { return 1 }\n" +
                 "}\n",
                 "exc.emit.bil");
+            using var llvmLease7440 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
 
@@ -7436,7 +7833,7 @@ namespace RigiCompiler.Tests
             // Dispatcher workerLoop drain → 失败汇总（main 失败 >
             // 未观察失败——native 注册表）→ ret；无协程程序同样发射
             // workerLoop 段（quiescent 先检直返，零挂起））
-            var stubStart = ll.IndexOf("define i32 @rigi_entry()", StringComparison.Ordinal);
+            var stubStart = ll.IndexOf("define i32 @rigi_entry(i32 %0, ptr %1)", StringComparison.Ordinal);
             var stubLl = stubStart >= 0 ? ll.Substring(stubStart) : "";
             var firstCall = stubLl.IndexOf("call ", StringComparison.Ordinal);
             TestHarness.CheckTrue("rigi_entry 固定序列：singleton 急切初始化最先（stub 首调用）",
@@ -7561,6 +7958,7 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("MIR 含 new.indirect",
                 allInsts.OfType<MirNewIndirect>().Any());
 
+            using var llvmLease7599 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
             TestHarness.CheckTrue("槽 0 为 init 分发器",
@@ -7614,6 +8012,7 @@ namespace RigiCompiler.Tests
                 "    return s.x\n" +
                 "}\n",
                 "dynnew-struct.bil");
+            using var llvmLease7652 = LlvmHost.Enter();
             using var structMod = ModuleBuilder.Build(structCtx, structCtx.Mir!);
             var structLl = structMod.PrintToString();
             TestHarness.CheckTrue("struct 槽 0 为 init 分发器",

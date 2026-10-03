@@ -18,7 +18,7 @@ namespace RigiCompiler
         public BindingDriver(BindEnvironment env)
         {
             this.env = env;
-            env.SetDefaultValueBinder(BindOneParameterDefault);
+            if (!env.IsWorker) env.SetDefaultValueBinder(BindOneParameterDefault);
         }
 
         public IReadOnlyList<BoundFunctionBody> Run()
@@ -56,7 +56,7 @@ namespace RigiCompiler
             // 方法 + 壳体，与静态方法 companion 同机制
             WrapperInitSynthesis.SynthesizeForGlobalFunctions(env);
             // 阶段 1.8（SYNTAX §9.3）：默认构造合成——无显式 init 的
-            // class/struct 且（含声明处初始化器的实例字段或基类需要初始化
+            // class/struct/wrapper 且（含声明处初始化器的实例字段或基类需要初始化
             // 链）时合成零参 init（基类初始化先行，再跑本类初始化器）
             SynthesizeDefaultConstructors();
             // 阶段 1.8b（MW11d-B2）：@Serializable 宿主合成 ..toParcel /
@@ -75,11 +75,88 @@ namespace RigiCompiler
             // 普通字段可能在函数体绑定中被 placeOf 提升；初始化器在提升
             // 集合落定后合成，避免同一存储既写原字段又初始化 Cell。
             // 阶段 2：逐函数体绑定（含字段访问器体 + proxy 模板态，M88）
-            WalkSkeleton((fn, symbol, fileCtx, owner) =>
+            // Cell 族声明特权在 barrier 前认领，worker/P4 只读。
+            CallableModel.FindCellDefinition(env.Unit);
+            CallableModel.FindReadonlyCellDefinition(env.Unit);
+            env.PrebuiltMethods.UnionWith(env.SyntheticCellBodies.Select(body => body.Method));
+            foreach (var symbol in env.Declarations.AllSymbols)
+                if (ResolveEnvironment.AppliedWrappersOf(symbol) is { } applications)
+                    env.DeclarationApplications.UnionWith(applications);
+            var jobs = new List<BodyJob>();
+            WalkSkeleton((fn, symbol, fileCtx, owner) => jobs.Add(new BodyJob(fn,
+                driver => driver.BindCallable(fn, symbol, fileCtx, owner))),
+                (variable, fileCtx, owner) => jobs.Add(new BodyJob(variable,
+                    driver => driver.BindAccessorBodies(variable, fileCtx, owner))));
+            var results = new BodyResult?[jobs.Count];
+            // placeOf 可能按需提升全局字段。只将真正含此语法的体放串行 lane，
+            // 先完成全部提升后发布给独立体；不猜字段，不无条件提升全部 globals。
+            for (var index = 0; index < jobs.Count; index++)
+                if (ContainsPlaceOf(jobs[index].Syntax)) results[index] = BindJob(jobs[index]);
+            var independent = Enumerable.Range(0, jobs.Count).Where(i => results[i] == null).ToArray();
+            var bound = CompilerJobs.Map(independent.Length, index => BindJob(jobs[independent[index]]), phase: "semantic.P3.bodies");
+            for (var index = 0; index < independent.Length; index++) results[independent[index]] = bound[index];
+            foreach (var result in results)
             {
+                var job = result!;
+                foreach (var diagnostic in job.Diagnostics) env.Unit.Diagnostics.Add(diagnostic);
+                job.Logs.Replay();
+                job.GenericUses.Merge();
+                bodies.AddRange(job.Driver.bodies);
+                env.MergeDelta(job.Driver.env);
+            }
+            SynthesizeGlobalFieldInitializers();
+            // 函数体中的闭合泛型使用点此时已驻留，动态解码注册不可提前截断。
+            SerializationSynthesis.FinalizeDynamicDecoder(env);
+            InitFieldDa.CheckDefaultConstructions(env);
+            WrapperInitSynthesis.CheckDefaultWrapperConstructions(env);
+            // lambda 对象模型（SYNTAX §5.2）：每个 lambda 的隐藏类 init 体与
+            // $$call 体全部汇入函数体列表（捕获与否不再有区别——闭包经
+            // init 的 Cell 参数传入，P4 降级为普通 new + invoke）
+            foreach (var lambda in env.SyntheticLambdas)
+            {
+                bodies.Add(lambda.InitBody);
+                bodies.Add(lambda.CallBody);
+            }
+            // cell 隐藏子类方法体（统一 cell 存储，SYNTAX §5.2/§14.3）：
+            // init/getValue/setValue 合成体，随函数体列表走统一 P4 管线
+            foreach (var cellBody in env.SyntheticCellBodies)
+            {
+                bodies.Add(cellBody);
+            }
+            return bodies;
+        }
+
+        private sealed record BodyJob(ASTNode Syntax, Action<BindingDriver> Bind);
+        private sealed record BodyResult(BindingDriver Driver, IReadOnlyList<Diagnostic> Diagnostics,
+            Logger.Capture Logs, SymbolGraph.GenericUseCapture GenericUses);
+
+        private BodyResult BindJob(BodyJob job)
+        {
+            using var diagnostics = env.Unit.Diagnostics.CaptureJob();
+            using var logs = Logger.CaptureJob();
+            using var uses = env.Unit.Symbols.CaptureGenericUses();
+            var driver = new BindingDriver(env.CreateWorker());
+            job.Bind(driver);
+            return new BodyResult(driver, diagnostics.Items, logs, uses);
+        }
+
+        private static bool ContainsPlaceOf(ASTNode root)
+        {
+            var stack = new Stack<ASTNode>(); stack.Push(root);
+            while (stack.TryPop(out var node))
+            {
+                if (node is PlaceOfExpressionASTNode) return true;
+                foreach (var (child, _) in AstStructureReflection.EnumerateChildren(node)) stack.Push(child);
+            }
+            return false;
+        }
+
+        private void BindCallable(CallableDeclarationASTNode fn, MethodSymbol symbol,
+            FileContext fileCtx, TypeSymbol? owner)
+        {
                 // MW11d-B2：合成体已入 SyntheticCellBodies 的源函数（fromParcel）
                 // 跳过再绑，避免 stub 体覆盖合成体
-                if (env.SyntheticCellBodies.Any(b => ReferenceEquals(b.Method, symbol)))
+                if (env.PrebuiltMethods.Contains(symbol))
                 {
                     return;
                 }
@@ -110,25 +187,6 @@ namespace RigiCompiler
                     return; // 其余抽象/接口方法无体
                 }
                 BindBody(fn, symbol, fileCtx, owner);
-            }, BindAccessorBodies);
-            SynthesizeGlobalFieldInitializers();
-            // 函数体中的闭合泛型使用点此时已驻留，动态解码注册不可提前截断。
-            SerializationSynthesis.FinalizeDynamicDecoder(env);
-            // lambda 对象模型（SYNTAX §5.2）：每个 lambda 的隐藏类 init 体与
-            // $$call 体全部汇入函数体列表（捕获与否不再有区别——闭包经
-            // init 的 Cell 参数传入，P4 降级为普通 new + invoke）
-            foreach (var lambda in env.SyntheticLambdas)
-            {
-                bodies.Add(lambda.InitBody);
-                bodies.Add(lambda.CallBody);
-            }
-            // cell 隐藏子类方法体（统一 cell 存储，SYNTAX §5.2/§14.3）：
-            // init/getValue/setValue 合成体，随函数体列表走统一 P4 管线
-            foreach (var cellBody in env.SyntheticCellBodies)
-            {
-                bodies.Add(cellBody);
-            }
-            return bodies;
         }
 
         // 声明骨架遍历（两阶段共用）：对每个可调用声明回调（符号/FileCtx/宿主齐备）；
@@ -244,6 +302,20 @@ namespace RigiCompiler
                     $"'{BoundAnalysis.TypeDisplay(expectedType)}', got " +
                     $"'{BoundAnalysis.TypeDisplay(value.Type)}'");
                 return null;
+            }
+            if (env.Unit.IsModuleCompilation)
+            {
+                var factory = new MethodSymbol("..default." + ModuleOrigin.Hash(CanonicalSymbolPrinter.PrintMethod(symbol) + "/gp/" + symbol.GenericParameters.Count)
+                    + "." + symbol.Parameters.IndexOf(parameter), MethodKind.Regular,
+                    ns: symbol.Namespace ?? symbol.Owner?.Namespace, returnType: parameter.Type)
+                { Accessibility = Accessibility.Private, IsSynthetic = true, HasBody = true,
+                    IsCompilerLibrary = symbol.IsCompilerLibrary, DeclarationSpan = parameter.DefaultValue.Span };
+                // 借用原声明 GP 单例；consumer 按声明身份代入 owner 与 method 两层实参。
+                factory.GenericParameters.AddRange((symbol.IsStatic ? [] : symbol.Owner?.GenericParameters ?? []).Concat(symbol.GenericParameters).Distinct());
+                ModuleOrigin.Assign(factory, env.Unit, parameter.DefaultValue);
+                parameter.DefaultFactory = factory;
+                env.SyntheticCellBodies.Add(new BoundFunctionBody(factory, Array.Empty<LocalSymbol>(),
+                    new BoundBlock(parameter.DefaultValue, [new BoundReturnStatement(parameter.DefaultValue, value)])));
             }
             return value;
         }
@@ -395,7 +467,7 @@ namespace RigiCompiler
 
         // ===== 阶段 1.8：默认构造合成（SYNTAX §9.3）=====
 
-        // 未声明显式 init 的 class/struct 隐含零参公有默认构造。合成条件：
+        // 未声明显式 init 的 class/struct/wrapper 隐含零参公有默认构造。合成条件：
         // 本类有声明处初始化器的实例字段，**或直接基类需要初始化链**（基类
         // 有零参 init——含基类被合成的情形；链式递归由不动点判定兜底，
         // 声明序无关）。合成体 = 仅 super()（基类有零参 init 时，§9.2.2）
@@ -485,7 +557,7 @@ namespace RigiCompiler
         {
             switch (node)
             {
-                case ClassDeclarationASTNode or StructDeclarationASTNode:
+                case ClassDeclarationASTNode or StructDeclarationASTNode or WrapperDeclarationASTNode:
                     var type = env.Declarations.SymbolOf(node) as TypeSymbol
                         ?? throw new CompilerInternalException("P1 未登记类型符号");
                     // 已声明任意显式 init 的类型默认构造不再隐含（§9.3）
@@ -499,8 +571,7 @@ namespace RigiCompiler
                         CollectDefaultConstructorType(member, fileCtx, candidates);
                     }
                     return;
-                case InterfaceDeclarationASTNode or EnumStructDeclarationASTNode
-                    or WrapperDeclarationASTNode:
+                case InterfaceDeclarationASTNode or EnumStructDeclarationASTNode:
                     foreach (var member in MembersOf(node))
                     {
                         CollectDefaultConstructorType(member, fileCtx, candidates);
@@ -677,7 +748,9 @@ namespace RigiCompiler
                 }
             }
             if (statements.Count == 0) return;
-            var method = new MethodSymbol(BilSpellings.GlobalsInitFunctionName,
+            var method = new MethodSymbol(env.Unit.IsModuleCompilation
+                ? BilSpellings.GlobalsInitFunctionName + "." + ModuleOrigin.Hash(env.Unit.ModuleIdentity)
+                : BilSpellings.GlobalsInitFunctionName,
                 MethodKind.Regular, owner: null, ns: env.Unit.Symbols.GlobalNamespace)
             {
                 Accessibility = Accessibility.Public,
@@ -757,11 +830,11 @@ namespace RigiCompiler
         // 当前类型声明处带初始化器的实例字段（声明序）——实现已迁至
         // WrapperInitSynthesis（阶段 1.7 ..init.field.* 合成共用），
         // 此处仅保留默认构造触发判定的委托。enum struct 不参与默认构造
-        // 合成（§12：值只能经 case 入口产生），此处收窄回 class/struct
+        // 合成（§12：值只能经 case 入口产生），此处收窄回 class/struct/wrapper
         private List<(FieldSymbol Field, VariableDeclarationASTNode Variable)>
             CollectInstanceFieldsWithInitializers(ASTNode typeNode, TypeSymbol type)
         {
-            return typeNode is ClassDeclarationASTNode or StructDeclarationASTNode
+            return typeNode is ClassDeclarationASTNode or StructDeclarationASTNode or WrapperDeclarationASTNode
                 ? WrapperInitSynthesis.CollectInstanceFieldsWithInitializers(typeNode, type, env)
                 : new List<(FieldSymbol, VariableDeclarationASTNode)>();
         }
@@ -998,20 +1071,14 @@ namespace RigiCompiler
                 // 与 ResolvedInit 无交集歧义）
                 if (caseNode.Arguments.Count == 0 && inits.Count == 0)
                 {
-                    // P18/S2（§9.3 DA）：默认零参构造不写字段——enum 有
-                    // DA 义务字段时该构造路径无法担保，声明点拒绝
-                    var missing = InitFieldDa.RequiredFields(enumType, env);
-                    if (missing.Count > 0)
-                    {
-                        env.Error(caseNode.Span,
-                            $"Enum case '{caseNode.CaseName}' uses the default construction " +
-                            $"of '{enumType.Name}', which cannot assign non-nullable field " +
-                            $"'{missing[0].Name}' (§9.3: declare an init that assigns it, " +
-                            "add a declaration initializer, or make the field Nullable)");
-                        return;
-                    }
+                    InitFieldDa.DeferDefaultConstruction(enumType, caseNode.Span, env,
+                        new DefaultConstructionMessage($"Enum case '{caseNode.CaseName}' uses the default construction " +
+                            $"of '{enumType.Name}', which cannot assign non-nullable field '",
+                            "' (§9.3: declare an init that assigns it, " +
+                            "add a declaration initializer, or make the field Nullable)"));
                     caseSymbol.HoleParameters = new List<EnumCaseHoleParameter>();
                     env.SetEnumCaseFixedArguments(caseSymbol, Array.Empty<BoundExpression?>());
+                    SynthesizeCaseFactory(caseSymbol, caseNode, Array.Empty<BoundExpression?>());
                     return;
                 }
                 env.Error(caseNode.Span,
@@ -1088,6 +1155,43 @@ namespace RigiCompiler
             caseSymbol.ResolvedInit = winner;
             caseSymbol.HoleParameters = holes;
             env.SetEnumCaseFixedArguments(caseSymbol, fixedArgs);
+            SynthesizeCaseFactory(caseSymbol, caseNode, fixedArgs!);
+        }
+
+        private void SynthesizeCaseFactory(EnumCaseSymbol item, ASTNode syntax, IReadOnlyList<BoundExpression?> fixedArguments)
+        {
+            if (!env.Unit.IsModuleCompilation) return;
+            var factory = new MethodSymbol("..case." + ModuleOrigin.Hash(CanonicalSymbolPrinter.PrintCase(item)), MethodKind.Regular,
+                ns: item.Owner.Namespace, returnType: item.Owner)
+            { Accessibility = Accessibility.Private, IsSynthetic = true, HasBody = true,
+                IsCompilerLibrary = item.Owner.IsCompilerLibrary, DeclarationSpan = syntax.Span };
+            ModuleOrigin.Assign(factory, env.Unit, syntax);
+            var arguments = fixedArguments.ToArray();
+            if (item.HoleParameters!.Count != 0)
+            {
+                var fixedFactories = new MethodSymbol?[arguments.Length];
+                for (int i = 0; i < arguments.Length; i++)
+                {
+                    var parameter = item.ResolvedInit!.Parameters[i];
+                    factory.Parameters.Add(new ParameterSymbol(parameter.Name, parameter.Type));
+                    if (arguments[i] is { } fixedValue)
+                    {
+                        var helper = new MethodSymbol(factory.Name + ".fixed." + i, MethodKind.Regular,
+                            ns: item.Owner.Namespace, returnType: parameter.Type)
+                        { Accessibility = Accessibility.Private, IsSynthetic = true, HasBody = true,
+                            IsCompilerLibrary = item.Owner.IsCompilerLibrary, DeclarationSpan = syntax.Span };
+                        ModuleOrigin.Assign(helper, env.Unit, syntax); fixedFactories[i] = helper;
+                        env.SyntheticCellBodies.Add(new BoundFunctionBody(helper, Array.Empty<LocalSymbol>(),
+                            new BoundBlock(syntax, [new BoundReturnStatement(syntax, fixedValue)])));
+                    }
+                    arguments[i] = new BoundValueReferenceExpression(syntax, factory.Parameters[i], parameter.Type!);
+                }
+                item.FixedArgumentFactories = fixedFactories;
+            }
+            var value = new BoundEnumCaseExpression(syntax, item, arguments.Select(a => a!).ToArray(), argumentsAreInitArguments: true);
+            item.CaseFactory = factory;
+            env.SyntheticCellBodies.Add(new BoundFunctionBody(factory, Array.Empty<LocalSymbol>(),
+                new BoundBlock(syntax, [new BoundReturnStatement(syntax, value)])));
         }
 
         // init 候选结构过滤（静默）：模板实参个数 == init 参数个数；

@@ -38,8 +38,8 @@ namespace RigiCompiler
         private static void FillReflectionFunctions(BindEnvironment env, NamespaceSymbol ns,
             TypeSymbol parcel, TypeSymbol iface, TypeSymbol token, ASTNode syntax)
         {
-            var methods = ns.Methods
-                .Where(m => m.Name is "typeNameOf" or "isSerializable" or "fieldsOf" or "casesOf")
+            var methods = new[] { "typeNameOf", "isSerializable", "fieldsOf", "casesOf" }
+                .SelectMany(name => Modules.ModuleLateHelpers.Select(env, name))
                 .ToList();
             if (methods.Count == 0) return;
             var fieldInfo = ns.Types.FirstOrDefault(t =>
@@ -113,6 +113,8 @@ namespace RigiCompiler
         // 下方 @SerializationBase 宿主快照入口（容器/Parcel 等）覆盖。
         private static void CollectHostDefinitions(BindEnvironment env, List<TypeSymbol> defs)
         {
+            defs.AddRange(env.Unit.Symbols.ImportedUserHosts.Where(t => !t.IsAbstract
+                && t.Kind is TypeKind.Class or TypeKind.Struct or TypeKind.EnumStruct));
             foreach (var file in env.Unit.SourceFiles)
             {
                 if (file.IsCompilerLibrary) continue;
@@ -513,14 +515,16 @@ namespace RigiCompiler
                 // 闭合类型（开放泛型残留）时整型跳过，由未登记异常兜底。
                 var infos = new List<(string Name, List<(string Name, string TypeName, bool Nullable)> Fields)>();
                 var viable = true;
-                foreach (var enumCase in candidate.Cases)
+                var definition = candidate.ConstructedFrom ?? candidate;
+                foreach (var enumCase in definition.Cases)
                 {
                     var payload = new List<(string Name, string TypeName, bool Nullable)>();
                     foreach (var hole in enumCase.HoleParameters
                         ?? new List<EnumCaseHoleParameter>())
                     {
+                        var type = ctx.Env.Unit.Symbols.Substitute(hole.Type, definition, candidate)!;
                         var described = ReflectionFieldOf(ctx,
-                            new FieldSymbol(hole.Name, fieldType: hole.Type), hole.Type);
+                            new FieldSymbol(hole.Name, fieldType: type), type);
                         if (described == null) { viable = false; break; }
                         payload.Add(described.Value);
                     }

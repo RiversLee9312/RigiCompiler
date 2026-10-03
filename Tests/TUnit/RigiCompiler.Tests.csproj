@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>true</IsTestProject>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <PublishAot Condition="'$(Configuration)'=='Release'">true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" Version="1.72.10" />
+    <ProjectReference Include="../../RigiCompiler.csproj" />
+    <!-- 编译器反射节点的保留约定也适用于加载编译器程序集的 AOT 测试宿主。 -->
+    <TrimmerRootDescriptor Include="../../ILLink.Roots.xml" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,50 @@
+using RigiCompiler.Tests;
+using TUnit.Core;
+
+namespace RigiCompiler.TUnitTests;
+
+public static class CaseData
+{
+    public static IEnumerable<TestDataRow<string>> All() => CaseCatalog.All.Select(c =>
+        new TestDataRow<string>(c.Id, DisplayName: c.Id,
+            Categories: [c.Id, c.Suite, "Pilot", c.Group, c.Trait]));
+}
+
+public class PilotTests
+{
+    private static readonly CaseWorkerClient Worker = new();
+
+    [Test]
+    [MethodDataSource(typeof(CaseData), nameof(CaseData.All))]
+    [Timeout(600_000)]
+    public async Task Run(string caseId, CancellationToken cancellationToken)
+    {
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // 仅用于外部验收取消的门控；正常运行使用框架传入的 token。
+        if (int.TryParse(Environment.GetEnvironmentVariable("RIGI_TEST_CANCEL_AFTER_MS"), out var milliseconds))
+            cancellation.CancelAfter(milliseconds);
+        var outcome = await Worker.RunAsync(caseId, cancellation.Token);
+        switch (outcome.Status)
+        {
+            case CaseStatus.Pass: return;
+            case CaseStatus.Skip: Skip.Test(outcome.SkipReason!); return;
+            case CaseStatus.Cancel:
+                // 先等 worker 灭树/排空完成，再通知框架取消当前测试。
+                var execution = TestContext.Current!.Execution;
+                execution.Cancel();
+                throw new OperationCanceledException(outcome.Diagnostics, execution.CancellationToken);
+            default: throw new InvalidOperationException($"{caseId}: {outcome.Failures}/{outcome.Assertions} 条断言失败\n{outcome.Diagnostics}");
+        }
+    }
+}
+
+public class GenericDiscoveryTests
+{
+    [Test]
+    [Category("Generic")]
+    [GenerateGenericTest(typeof(int))]
+    public void ClosedGeneric<T>()
+    {
+        if (typeof(T) != typeof(int)) throw new InvalidOperationException("闭合泛型发现错误");
+    }
+}

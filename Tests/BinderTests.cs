@@ -118,6 +118,10 @@ namespace RigiCompiler.Tests
             TestInnerCallGenericPackForwarding();
             TestGenericParamWithWrapperPlace();
             TestDowngradeBinding();
+            TestWrapperFieldInitializers();
+            TestGenericParameterFieldInitializers();
+            TestForwardDefaultConstructionDa();
+            TestWrapperDefaultConstructionDa();
             TestWrapperPlaceVoidStatement();
             TestGetProxyInnerForbidden();
             TestSubclassWrapperInheritedShape();

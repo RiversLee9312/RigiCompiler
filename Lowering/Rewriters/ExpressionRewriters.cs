@@ -975,6 +975,24 @@ namespace RigiCompiler
             LowerEnvironment env)
         {
             var enumCase = (BoundEnumCaseExpression)node;
+            if (enumCase.Case.IsImported && !enumCase.ArgumentsAreInitArguments)
+            {
+                var factory = enumCase.Case.CaseFactory ?? throw new CompilerInternalException("导入 enum case 缺 provider factory");
+                IReadOnlyList<BoundExpression> factoryArguments = enumCase.Arguments;
+                if (enumCase.Case.HoleParameters!.Count != 0)
+                {
+                    var values = new List<BoundExpression>();
+                    for (int i = 0; i < factory.Parameters.Count; i++)
+                    {
+                        var hole = enumCase.Case.HoleParameters.FindIndex(h => h.InitParameterIndex == i);
+                        values.Add(hole >= 0 ? enumCase.Arguments[hole]
+                            : new BoundCallExpression(enumCase.Syntax, enumCase.Case.FixedArgumentFactories![i]!, [], factory.Parameters[i].Type!));
+                    }
+                    factoryArguments = values;
+                }
+                return LowerExpressionDispatcher.Visit(new BoundCallExpression(enumCase.Syntax, factory,
+                    factoryArguments, enumCase.Type), ctx, env);
+            }
             if (enumCase.ArgumentsAreInitArguments)
                 return LowerHoleArgumentsOnly(enumCase, null, ctx, env);
             var holes = enumCase.Case.HoleParameters;

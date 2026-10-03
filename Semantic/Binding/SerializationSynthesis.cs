@@ -36,18 +36,23 @@ namespace RigiCompiler
             CollectSerializableHosts(env, serializable, hosts);
             foreach (var (type, hostSyntax) in hosts)
             {
-                // 无载荷 enum 原有隐式零参 case 构造必须保留；加入 token
-                // 构造后不能使它消失，也不能让验证器忽略不匹配的构造实参。
-                if (type.Kind == TypeKind.EnumStruct && !type.Fields.Any(f => !f.IsStatic)
-                    && !type.Methods.Any(m => m.Kind == MethodKind.Init))
+                // 无 DA 义务宿主的隐含零参构造必须保留；加入 token 后
+                // 仍需实际普通入口，不能只靠前端检查放行不匹配的实参。
+                if (type.Kind is TypeKind.Class or TypeKind.Struct or TypeKind.EnumStruct
+                    && !type.Methods.Any(m => m.Kind == MethodKind.Init)
+                    && InitFieldDa.RequiredFields(type, env).Count == 0)
                 {
                     var defaultInit = new MethodSymbol("init", MethodKind.Init, owner: type)
                     { Accessibility = Accessibility.Public, HasBody = true, IsSynthetic = true };
                     type.Methods.Add(defaultInit);
+                    // token 通道不能遮蔽原本合法的隐含零参构造；Nullable/无字段
+                    // 宿主也需要实际入口，T() 与普通 new 在 VM/native 同口径解析。
+                    var body = new BoundBlock(hostSyntax, Array.Empty<BoundStatement>());
+                    InitFieldDa.CheckInitBody(defaultInit, body, hostSyntax.Span, env);
                     env.SyntheticCellBodies.Add(new BoundFunctionBody(defaultInit,
-                        Array.Empty<LocalSymbol>(), new BoundBlock(hostSyntax, Array.Empty<BoundStatement>())));
+                        Array.Empty<LocalSymbol>(), body));
                 }
-                EnsureHostMethods(type, iface, token, parcel, hostSyntax);
+                EnsureHostMethods(type, iface, token, parcel, hostSyntax, env);
             }
             foreach (var (type, hostSyntax) in hosts)
             {
@@ -101,7 +106,9 @@ namespace RigiCompiler
                     return decl;
                 }
             }
-            throw new CompilerInternalException("合成序列化方法时编译单元无声明节点");
+            // artifact-only 最终应用仍需自己的诊断/Origin anchor，不加载 provider AST。
+            return new RootASTNode { Span = new CharRange { sourceName = "<module:" + env.Unit.ModuleIdentity + ">",
+                Start = new CharPosition { line = 1 }, End = new CharPosition { line = 1 } } };
         }
 
         private static bool EnsureInfrastructure(BindEnvironment env, NamespaceSymbol ns,
@@ -140,8 +147,20 @@ namespace RigiCompiler
             };
             fromParcel.Parameters.Add(new ParameterSymbol("parcel", parcel));
             var flag = ns.Methods.First(m => m.Name == "deepCopy").Parameters[1];
-            toParcel.Parameters.Add(flag);
-            fromParcel.Parameters.Add(flag);
+            ParameterSymbol FlagFor(MethodSymbol owner)
+            {
+                if (!env.Unit.IsModuleCompilation) return flag;
+                // 接口不借 deepCopy<T> 的 T；默认值仍用已在声明点绑定的同一表达式。
+                var syntax = FallbackSyntax(env);
+                var factory = new MethodSymbol("..default.iface." + owner.Name, MethodKind.Regular, ns: ns, returnType: flag.Type)
+                { Accessibility = Accessibility.Private, IsSynthetic = true, HasBody = true, IsCompilerLibrary = true };
+                ModuleOrigin.Assign(factory, env.Unit, syntax);
+                env.SyntheticCellBodies.Add(new BoundFunctionBody(factory, [], new BoundBlock(syntax,
+                    [new BoundReturnStatement(syntax, env.GetParameterDefault(flag) ?? throw new CompilerInternalException("接口默认值未预绑定"))])));
+                return new ParameterSymbol(flag.Name, flag.Type) { HasDefaultValue = true, DefaultFactory = factory };
+            }
+            toParcel.Parameters.Add(FlagFor(toParcel));
+            fromParcel.Parameters.Add(FlagFor(fromParcel));
             iface.Methods.Add(toParcel);
             iface.Methods.Add(fromParcel);
             var runtime = ns.Types.First(t => t.Name == "SerializationGraphContext");
@@ -233,7 +252,7 @@ namespace RigiCompiler
         };
 
         private static void EnsureHostMethods(TypeSymbol type, TypeSymbol iface, TypeSymbol token,
-            TypeSymbol parcel, ASTNode syntax)
+            TypeSymbol parcel, ASTNode syntax, BindEnvironment env)
         {
             // 所有公开与私有递归槽从统一接口签名复制，避免泛型动态派发形状漂移。
             foreach (var slot in iface.Methods)
@@ -242,7 +261,32 @@ namespace RigiCompiler
                 var implementation = new MethodSymbol(slot.Name, MethodKind.Regular,
                     owner: type, returnType: slot.ReturnType)
                 { Accessibility = Accessibility.Public, HasBody = true, IsSynthetic = true, IsOverride = true };
-                implementation.Parameters.AddRange(slot.Parameters);
+                if (!env.Unit.IsModuleCompilation) implementation.Parameters.AddRange(slot.Parameters);
+                else foreach (var parameter in slot.Parameters)
+                {
+                    // 宿主与接口不能共享默认参数身份：泛型宿主有自己的 typeid 向量，
+                    // 且用户宿主的工厂必须属于用户模块；接口默认表达式仍由 provider 求值。
+                    var copy = new ParameterSymbol(parameter.Name, parameter.Type,
+                        isVariadic: parameter.IsVariadic, isNamedVariadic: parameter.IsNamedVariadic)
+                    { HasDefaultValue = parameter.HasDefaultValue };
+                    if (copy.HasDefaultValue)
+                    {
+                        var original = parameter.DefaultFactory
+                            ?? throw new CompilerInternalException("Serializable 接口默认工厂缺失");
+                        var factory = new MethodSymbol("..default.host." + ModuleOrigin.Hash(
+                            CanonicalSymbolPrinter.PrintType(type) + "$" + slot.Name) + "." + implementation.Parameters.Count,
+                            MethodKind.Regular, ns: type.Namespace, returnType: copy.Type)
+                        { Accessibility = Accessibility.Private, IsSynthetic = true, HasBody = true,
+                            IsCompilerLibrary = type.IsCompilerLibrary };
+                        factory.GenericParameters.AddRange(type.GenericParameters);
+                        ModuleOrigin.Assign(factory, env.Unit, syntax);
+                        var value = new BoundCallExpression(syntax, original, [], copy.Type!);
+                        env.SyntheticCellBodies.Add(new BoundFunctionBody(factory, [], new BoundBlock(syntax,
+                            [new BoundReturnStatement(syntax, value)])));
+                        copy.DefaultFactory = factory;
+                    }
+                    implementation.Parameters.Add(copy);
+                }
                 type.Methods.Add(implementation);
             }
             if (!type.Interfaces.Contains(iface))
@@ -553,7 +597,7 @@ namespace RigiCompiler
         {
             var method = ns.Methods.FirstOrDefault(m => m.Name == "fromParcel"
                 && m.GenericParameters.Count == 1);
-            if (method == null) return;
+            if (method == null || method.IsImported) return;
             if (env.SyntheticCellBodies.Any(b => ReferenceEquals(b.Method, method))) return;
             var ctx = PublicContext(env, syntax, iface, parcel, token);
             var graphLocals = new List<LocalSymbol>();
@@ -573,7 +617,7 @@ namespace RigiCompiler
         {
             var method = ns.Methods.FirstOrDefault(m => m.Name == "deepCopy"
                 && m.GenericParameters.Count == 1);
-            if (method == null) return;
+            if (method == null || method.IsImported) return;
             if (env.SyntheticCellBodies.Any(b => ReferenceEquals(b.Method, method))) return;
             var tParam = method.GenericParameters[0];
             var valueParam = method.Parameters[0];
@@ -631,6 +675,10 @@ namespace RigiCompiler
             var serializable = SerializationFacts.FindWrapper(env.Unit.Symbols, "Serializable")!;
             var hosts = new List<(TypeSymbol Type, ASTNode Syntax)>();
             CollectSerializableHosts(env, serializable, hosts);
+            foreach (var imported in env.Unit.Symbols.ImportedUserHosts.Where(t => !t.IsAbstract
+                && t.Kind is TypeKind.Class or TypeKind.Struct or TypeKind.EnumStruct
+                && SerializationFacts.HasWrapper(t, serializable)))
+                hosts.Add((imported, syntax));
             return new(env, syntax, host, serializable,
                 SerializationFacts.FindWrapper(env.Unit.Symbols, "SerializationBase"),
                 SerializationFacts.FindWrapper(env.Unit.Symbols, "Temporary"), parcel, host, token,
@@ -1015,7 +1063,7 @@ namespace RigiCompiler
             StrictWireCheck(ctx, stored, ctx.Parcel, locals, statements);
             if (ReferenceEquals(type, ctx.Env.B.Any))
                 return new BoundCallExpression(ctx.Syntax,
-                    SerializationFacts.FindSerializationNamespace(ctx.Env.Unit.Symbols)!.Methods.First(m => m.Name == "decodeAnyValue"),
+                    Modules.ModuleLateHelpers.Decoder(ctx.Env.Unit.Symbols),
                     new BoundExpression[] { Cast(ctx, stored, ctx.Parcel), ctx.Runtime,
                         ctx.PendingId ?? IntLiteral(ctx, 0, IntType.I64, ctx.Env.B.Int64) }, ctx.Env.B.Any);
             var parcelLocal = NewLocal(ctx, locals, "objectParcel", ctx.Parcel);
@@ -1619,8 +1667,7 @@ namespace RigiCompiler
                 Iface = iface;
                 Token = token;
                 SerializableHosts = serializableHosts;
-                RuntimeType = SerializationFacts.FindSerializationNamespace(env.Unit.Symbols)!.Types
-                    .First(t => t.Name == "SerializationGraphContext");
+                RuntimeType = Modules.ModuleLateHelpers.Infrastructure(env.Unit.Symbols, "SerializationGraphContext");
                 ParcelInit = parcel.Methods.First(m =>
                     m.Kind == MethodKind.Init && m.Parameters.Count == 1);
                 TokenInit = token.Methods.First(m => m.Kind == MethodKind.Init);

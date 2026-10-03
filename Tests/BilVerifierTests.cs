@@ -1184,6 +1184,13 @@ namespace RigiCompiler.Tests
                 "bin.not 的操作数类型非法：\".char\"");
         }
 
+        internal static void ReservedThisNegative()
+        {
+            var module = MinimalModule(out _, out _);
+            module.Functions[0].Vars.Add(new BilVarDeclaration(".i32", ".this"));
+            BilTestHarness.CheckBilInvalid("保留名作局部变量", module, "保留名");
+        }
+
         private static void NegativeCases()
         {
             // 基线：最小手工模块本身必须合法（负例均在其上改造）
@@ -1195,9 +1202,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilInvalid("版本号不受支持", m, "不支持的 BIL 版本");
 
             // §21.1：保留名声明为局部变量
-            m = MinimalModule(out _, out _);
-            m.Functions[0].Vars.Add(new BilVarDeclaration(".i32", ".this"));
-            BilTestHarness.CheckBilInvalid("保留名作局部变量", m, "保留名");
+            ReservedThisNegative();
 
             // §21.1：.void 局部变量
             m = MinimalModule(out _, out _);

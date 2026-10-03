@@ -10,11 +10,13 @@ namespace RigiCompiler
         public static bool IsAccessible(SemanticSymbol target, RootASTNode? useFile,
             NamespaceSymbol? useNamespace, TypeSymbol? useHost)
         {
+            if (target.IsLinkOnly) return false;
             return target.Accessibility switch
             {
                 Accessibility.Public => true,
                 // §16.1：当前单编译单元即模块，internal 恒可见
-                Accessibility.Internal => true,
+                Accessibility.Internal => target.OriginModuleId == null || target.OriginModuleId
+                    == (useHost?.OriginModuleId ?? ModuleOrigin.OfFile(useFile)),
                 Accessibility.Private => CheckPrivate(target, useFile, useHost),
                 Accessibility.Protected => CheckProtected(target, useNamespace, useHost),
                 _ => true,
@@ -68,7 +70,7 @@ namespace RigiCompiler
             {
                 // 顶层声明（含顶层 ext）：同文件（SourceFile 缺失 = 不经声明
                 // 收集的产物，保守放行）
-                return target.SourceFile == null ||
+                return target.SourceFile == null && target.OriginModuleId == null ||
                     (useFile != null && ReferenceEquals(target.SourceFile, useFile));
             }
             for (var h = useHost; h != null; h = h.DeclaringType)

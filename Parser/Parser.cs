@@ -132,7 +132,11 @@ namespace RigiCompiler
                 root.Span = new CharRange { sourceName = "<empty>" };
             }
             // Parser 成功后、进入后续阶段前：AST 完整性验证（失败即内部编译器错误）
-            ASTIntegrityValidator.Validate(root);
+            using (var metric = PerformanceMetrics.Begin("frontend.ast-integrity"))
+            {
+                try { ASTIntegrityValidator.Validate(root); }
+                catch (Exception exception) { metric?.Fail(exception); throw; }
+            }
             return root;
         }
 

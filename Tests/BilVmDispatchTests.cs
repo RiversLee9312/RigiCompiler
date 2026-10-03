@@ -20,7 +20,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "BilVmDispatch", Cases, sectionTitle: "BilVmDispatch");
 
         private static readonly (string Label, Action Run)[] Cases =

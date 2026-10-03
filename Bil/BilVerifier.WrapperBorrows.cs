@@ -49,8 +49,17 @@ namespace RigiCompiler.Bil
                     if (arguments.Count != 0
                         && BilVerificationContext.TryParseMethodSymbol(method, out var owner,
                             out var isStatic, out _, out _)
-                        && !isStatic && IsWrapperType(owner))
+                        && !isStatic && (IsWrapperType(owner)
+                            || (IsWrapperVariable(arguments[0])
+                                && context.VariableTypes.TryGetValue(arguments[0].Name,
+                                    out var receiverType)
+                                && BilVerificationContext.StripTypeArguments(receiverType)
+                                    == BilVerificationContext.StripTypeArguments(owner))))
+                    {
+                        // 泛型 owner 在方法符号中只有定义名，按零元反查会漏掉
+                        // wrapper；由接收者的完整类型确认同一声明，仍只豁免首参。
                         values.Remove(arguments[0]);
+                    }
                 }
             }
 

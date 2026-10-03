@@ -35,6 +35,7 @@ BIL VM 已是仓库的一部分（`Bil/Vm`，行为参考实现）。
 RigiCompiler/
 ├── Program.cs                # 薄入口：命令行解析 → 分发 → 退出码
 ├── RigiCompiler.csproj      # net10.0，Exe，Nullable enable
+├── Tests/TUnit/              # 独立 source-generated TUnit/MTP 项目（不进入生产编译项）
 ├── AST/                      # AST 节点定义（按类别分文件）
 │   ├── ASTNode.cs               # AST 节点基类 + RootASTNode
 │   ├── SymbolNodes.cs           # 符号结构（Symbol/SymbolElement/SymbolASTNode）
@@ -86,7 +87,7 @@ RigiCompiler/
 │   ├── Exceptions.cs            # LexerException / ParserException（用户源码错误）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成
-│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/run/help 六个 COMMAND 及其 --sub-cmd
+│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/module/help 六个 COMMAND 及其 --sub-cmd
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
 ├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断
@@ -173,7 +174,7 @@ RigiCompiler/
 │   │   │                           #   调用点 1/2（BoundTree 后置遍历单落点）+
 │   │   │                           #   async lambda 捕获 4（AST 级粗粒度扫描）
 │   │   ├── CallableModel.cs        # Func/Action/Cell 抽象基类族查找与构造
-│   │   ├── CellClassFactory.cs     # 统一 cell 存储：逐变量合成 ..cell..UUID 隐藏子类
+│   │   ├── CellClassFactory.cs     # 统一 cell 存储：逐变量合成 ..cell..稳定摘要 隐藏子类
 │   │   │                           #   （pub value + wrapped(W) + override getValue/setValue）
 │   │   └── Visitors/               # 结构 visitor 簇（Literal/Declaration/Conditional
 │   │                               #   含值块壳/Loop/Switch/TrySeq/Binary/Path/Call/
@@ -432,7 +433,8 @@ RigiCompiler/
 │   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
 │   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
 │   │                            #   外部进程封装
-│   ├── Runtime/RigiRtBuilder.cs # rigi_rt 源 EmbeddedResource 内嵌 → 内容哈希缓存 →
+│   ├── Cache/                  # runtime/object 完整目录原子缓存、稳定 key 文件锁与 whole-program 对象身份
+│   ├── Runtime/RigiRtBuilder.cs # EmbeddedResource → 实际预处理快照身份 → 同快照 bitcode 编译 →
 │   │                            #   clang -emit-llvm -c 编成 bitcode（unity build）
 │   └── Cli/NativeCommand.cs     # native COMMAND（--file/--out/--emit-obj/--emit-ll/
 │                                #   --toolchain）
@@ -692,3 +694,33 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
   并弹回字符串层；嵌套插值经帧栈递归，EOF 帧未闭合先于冲刷报错。
   多行层段 token 以原文暂存保序，闭界确定缩进基准后统一回填解码内容。
   段 token 的 span 不含引号与引导 `$`（首段/段尾修正）。
+
+### 4.8 测试资源与进程边界
+
+`Core/ResourceBudget` 提供不可变 `ResourceRequest`/`ResourceLease` 和严格 FIFO 加权队列。队头无法满足时预留资源，避免大请求被后来的小请求饿死；超过容量立即拒绝，排队取消移除节点并继续推进，lease 幂等释放。CPU 容量取 .NET 有效值、Linux affinity/cpuset/可见祖先 quota 的较小值，内存取 GC 与可见 cgroup 限制的较小值后给父宿主留余量。配置只限制资源授予，不声称限制 OS 总线程数。
+
+`Tests/LegacyDispatcher` 将实际 suite provider 的 case/action 数组转成独立任务或小批次，所有已选 suite 同时进入同一父进程 pending 队列。`TestRunner` 的 All/编号入口共用该调度器；`ParallelSuiteRunner` 只适配旧入口，spawned 中禁止再次派生。旧单块套件只断言其返回失败数的 suite 退出契约，私有计数不冒称可枚举断言。平台/fixture 不可用由显式 `TestHarness.RecordSkip` 进入 typed Skip；部分可用批次保留真实断言和跳过诊断。
+
+完整源码 E2e、多轮 BilVmStress 与 NativeE2E 各输入独立执行。默认截止策略由任务选择和 ID 解码共用，直接 case 客户端复用同一策略；显式调用方覆盖优先。有限重型窗口只覆盖 legacy NativeE2E 的 whole-program O2 和 Binder/BilEmitter/Lowerer 无参数完整整组；完整 BilEmitter 的七十五分钟窗口为共享预算满载时的正常整套成本留余量，其余普通 case 保留轻型截止。完成回调只输出单行进度，最终结果按输入序归并，不能以进度行替代最终结果。
+
+Semantics fuzz 稀疏批次仍按固定种子从全局 0 推进生成前缀，只执行所选序号；Stress 按原全局 i 调用 `Generate(i)`。确定性检查仍按原 i 模 60，默认预算、CI 预算和慢门控不变。Lexer fuzz 未拆分时保持 suite 粒度。native/VM 并发 profile 至少保留四 Compute Worker；可在较少 CPU slots 上独占共享，GC/IO 线程不计入 Compute 数。
+
+`tools/PerfBaseline/ProcessIsolation.cs` 是性能工具、case client 与 legacy worker 的共用受管启动实现。Linux 独立 setsid session/group，负 pgid 清理后代；Windows 使用 `CreateProcessW` 与 STARTUPINFOEX 的 Job/stdio 白名单，旧系统回退 CREATE_SUSPENDED→AssignJob→ResumeThread。只有 child 端 stdio 可继承，属性值活到 DeleteAttributeList，挂起期间固定 root 进程句柄，正常结束也杀剩余后代。根等待、管道排空与请求临时根清理按顺序执行。Linux 无法约束主动 setsid 逃组，Windows 实测由可用 Windows/CI 环境承担，Linux 构建不能替代该验证。
+
+`RIGI_LLD_THREADS` 显式设置时在 1..254 严格校验，LLVM 20 ELF/COFF 均追加 `-Wl,--threads=N` 并进入真实 link record；不改变 O2 object key，每次请求仍 relink。未设置时沿用 lld 默认。COMP-003 的完整 LLVM lease 与缓存锁顺序保持不变，同进程 LLVM exclusive 不扩展成跨进程静态共享锁。
+
+### 4.9 编译器内部并行边界
+
+前端、P1 声明事实、P2 字段/方法签名、P3 独立函数体、P4a 函数重写与 P4b
+函数发射共用 `Core/CompilerJobs` 的 indexed 队列和阶段 join。符号驻留、
+P2 依赖检查、P3 预合成/global cell 提升/全局初始化、P4b 声明与资源回放
+保持确定的串行边界；详细身份、delta 和资源引用契约见
+[语义架构 §1.1](../compiler/semantic/SEMANTIC_ARCHITECTURE.md#11-有界并行与发布屏障)。
+已获得外层测试 lease 的 child 通过 `RIGI_RESOURCE_LEASE_CPU_SLOTS` /
+`RIGI_RESOURCE_LEASE_MEMORY_MIB` 标记内部上限，清除父进程测试内存配置，
+不再次扣除外层父宿主预留；GC/实际 cgroup/affinity 上限仍参与取最小值。
+共享预算仅属于当前进程，不能将父 lease 与 child 内部阶段 lease 混同。
+不可枚举的 P2/Binder/BilEmitter/Lowerer/SmartCast/StdlibSources 整组及其定向组
+声明较重的编译内存 profile：旧测试方法的多个命名局部图可同时存活，预算
+依据该生命周期，而非单个新编译的工作集。单 E2e 编译仍使用自己的 profile；
+二者都经同一共享预算授予，child GC 上限仍是所得 lease 的一半。

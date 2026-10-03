@@ -1,4 +1,5 @@
 using LLVMSharp.Interop;
+using RigiCompiler.Middleware.Emit;
 using RigiCompiler.Bil;
 using RigiCompiler.Middleware.Mir;
 
@@ -77,6 +78,7 @@ namespace RigiCompiler.Middleware.Layout
 
         public static LLVMTypeRef FatReferenceType(LLVMContextRef context)
         {
+            LlvmHost.RequireOwnership();
             return context.GetStructType(new[] { LLVMTypeRef.Int64, LLVMTypeRef.Int64 }, false);
         }
 
@@ -85,6 +87,7 @@ namespace RigiCompiler.Middleware.Layout
         // StringAbi（唯一事实源），此处仅映射
         public static LLVMTypeRef MapType(LLVMContextRef context, MirType type)
         {
+            LlvmHost.RequireOwnership();
             switch (type.Key)
             {
                 case "void": return LLVMTypeRef.Void;

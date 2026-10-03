@@ -2484,8 +2484,7 @@ namespace RigiCompiler.Bil
             {
                 return;
             }
-            if (!isInstanceWrite && MethodNameSegment(context.Function.Symbol)
-                    == BilSpellings.GlobalsInitFunctionName)
+            if (!isInstanceWrite && BilLogicalName.IsGlobalInitializer(context.Function.Symbol))
             {
                 return;
             }

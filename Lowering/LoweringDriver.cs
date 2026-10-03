@@ -16,26 +16,26 @@ namespace RigiCompiler
 
         public IReadOnlyList<LoweredFunctionBody> Run()
         {
-            var result = new List<LoweredFunctionBody>();
-            foreach (var body in bodies)
+            var result = CompilerJobs.MapDiagnosed(env.Unit, bodies.Count, index =>
             {
+                var body = bodies[index];
                 // Handle 源码成员只承载类型检查，调用统一改为带 T 的私有全局 helper。
-                if (body.Method.Owner?.BilAlias == ".handle") continue;
+                if (body.Method.Owner?.BilAlias == ".handle") return null;
                 var ctx = new LowerContext(body.Method);
                 // 闭包存储计划（SYNTAX §5.2）：在体降级前构建——被捕获参数的
                 // cell 构造 prologue 前插到体首；计划随 ctx 供全部 rewriter 查询
                 ctx.Closure = ClosureStoragePlan.Build(body, ctx, env);
                 var lowered = LowerBody(body, ctx, env);
-                if (lowered == null) continue;
+                if (lowered == null) return null;
                 if (ctx.Closure.Prologue.Count > 0)
                 {
                     lowered = new LoweredBlock(body.Body,
                         ctx.Closure.Prologue.Concat(lowered.Statements).ToList());
                 }
-                result.Add(new LoweredFunctionBody(body.Method,
-                    body.Locals.Concat(ctx.Synth.SynthLocals).ToList(), lowered));
-            }
-            return result;
+                return new LoweredFunctionBody(body.Method,
+                    body.Locals.Concat(ctx.Synth.SynthLocals).ToList(), lowered);
+            }, phase: "lowering.P4a.functions");
+            return result.OfType<LoweredFunctionBody>().ToArray();
         }
 
         // 逐体降级入口：值块 lambda 的 $$call 体走值块协议（结果局部 +

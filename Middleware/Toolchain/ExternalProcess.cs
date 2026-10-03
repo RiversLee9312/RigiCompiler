@@ -22,8 +22,12 @@ namespace RigiCompiler.Middleware.Toolchain
         public static int Run(string exe, IReadOnlyList<string> args,
             out string stdout, out string stderr, string? workingDirectory = null,
             IReadOnlyDictionary<string, string>? environment = null,
-            int timeoutMilliseconds = 600_000, bool closeStdin = false)
+            int timeoutMilliseconds = 600_000, bool closeStdin = false, string? parentPhase = null, bool replaceEnvironment = false)
         {
+            using var parentMetric = parentPhase == null ? null : PerformanceMetrics.Begin(parentPhase);
+            using var metric = PerformanceMetrics.Begin("external-process");
+            try
+            {
             if (timeoutMilliseconds <= 0)
                 throw new ArgumentOutOfRangeException(nameof(timeoutMilliseconds));
             var startInfo = new ProcessStartInfo
@@ -52,6 +56,7 @@ namespace RigiCompiler.Middleware.Toolchain
             }
             if (environment != null)
             {
+                if (replaceEnvironment) startInfo.Environment.Clear();
                 foreach (var pair in environment)
                 {
                     startInfo.Environment[pair.Key] = pair.Value;
@@ -72,6 +77,7 @@ namespace RigiCompiler.Middleware.Toolchain
                     "若为 C 工具链缺失，请先运行 tools/Fetch-LlvmToolchain.ps1", ex);
             }
 
+            PerformanceMetrics.Event("child-process", "external-process", "started", exe + " " + string.Join(" ", args), process.Id);
             using (process)
             {
                 if (closeStdin)
@@ -82,7 +88,25 @@ namespace RigiCompiler.Middleware.Toolchain
                 // 先开双路异步读再等退出：同步顺序读会因子进程缓冲填满而互等死锁
                 Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
                 Task<string> stderrTask = process.StandardError.ReadToEndAsync();
-                if (!process.WaitForExit(timeoutMilliseconds)
+                double? observedCpu = null;
+                long? observedPeak = null;
+                bool exited;
+                if (!PerformanceMetrics.Enabled) exited = process.WaitForExit(timeoutMilliseconds);
+                else
+                {
+                    do
+                    {
+                        try
+                        {
+                            process.Refresh();
+                            observedCpu = process.TotalProcessorTime.TotalMilliseconds;
+                            observedPeak = Math.Max(observedPeak ?? 0, process.PeakWorkingSet64);
+                        }
+                        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                        exited = process.WaitForExit((int)Math.Min(100, Math.Max(0, timeoutMilliseconds - elapsed.ElapsedMilliseconds)));
+                    } while (!exited && elapsed.ElapsedMilliseconds < timeoutMilliseconds);
+                }
+                if (!exited
                     || !Task.WhenAll(stdoutTask, stderrTask).Wait(
                         (int)Math.Max(0, timeoutMilliseconds - elapsed.ElapsedMilliseconds)))
                 {
@@ -95,8 +119,14 @@ namespace RigiCompiler.Middleware.Toolchain
                 }
                 stdout = stdoutTask.GetAwaiter().GetResult();
                 stderr = stderrTask.GetAwaiter().GetResult();
+                metric?.ExitCode(process.ExitCode);
+                parentMetric?.ExitCode(process.ExitCode);
+                PerformanceMetrics.ChildCompleted(process, exe, elapsed.Elapsed.TotalMilliseconds, observedCpu, observedPeak);
                 return process.ExitCode;
             }
+
+            }
+            catch (Exception exception) { metric?.Fail(exception); parentMetric?.Fail(exception); throw; }
         }
     }
 }

@@ -179,9 +179,7 @@ namespace RigiCompiler.Middleware.Passes
                     "stdlib 缺少 native 原语声明: core.coroutine::$" + namePrefix);
             // Dispatcher 成员：名前缀 + 参数个数
             MwMemberSymbol DispatcherFn(string name) =>
-                (context.Symbols.FindType(DispatcherCanonical)?.Members.FirstOrDefault(m =>
-                    m.Canonical.StartsWith(DispatcherCanonical + "$" + name + "(",
-                        System.StringComparison.Ordinal)))
+                context.CompilerMember(DispatcherCanonical + "$" + name + "(")
                 ?? throw new CompilerInternalException(
                     "stdlib 缺少 Dispatcher 通道: " + name);
             var syms = new RuntimeSyms
@@ -204,7 +202,7 @@ namespace RigiCompiler.Middleware.Passes
                 LaneOfCurrent = DispatcherFn("laneOfCurrent"),
             };
             // Dispatcher singleton get fn（SingletonLowering 已合成）
-            var getCanonical = SingletonPlanner.GetFnCanonicalOf(DispatcherCanonical);
+            var getCanonical = SingletonPlanner.GetFnCanonicalOf(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical));
             syms.DispatcherGet = mir.Functions.FirstOrDefault(f =>
                 f.Symbol.Canonical == getCanonical)?.Symbol
                 ?? throw new CompilerInternalException(
@@ -218,9 +216,7 @@ namespace RigiCompiler.Middleware.Passes
         // 顶层（Owner=null）core.coroutine 成员：按 canonical 前缀取
         internal static MwMemberSymbol? FindCoroutineGlobal(MwContext context,
             string namePrefix) =>
-            context.Symbols.GlobalMembers.FirstOrDefault(m =>
-                m.Canonical.StartsWith("core.coroutine::$" + namePrefix,
-                    System.StringComparison.Ordinal));
+            context.CompilerMember("core.coroutine::$" + namePrefix);
 
         // Task 声明前缀（Task / Task<TReturn> 两套同构声明）
         internal static string TaskPrefixOf(string taskTypeRef) =>
@@ -255,9 +251,7 @@ namespace RigiCompiler.Middleware.Passes
             string name)
         {
             var prefix = TaskPrefixOf(taskTypeRef);
-            return RequireTaskType(context, taskTypeRef).Members.FirstOrDefault(m =>
-                m.Canonical.StartsWith(prefix + "$" + name + "(",
-                    System.StringComparison.Ordinal))
+            return context.CompilerMember(prefix + "$" + name + "(")
                 ?? throw new CompilerInternalException(
                     "stdlib 缺少 Task 通道: " + prefix + "$" + name);
         }
@@ -266,18 +260,15 @@ namespace RigiCompiler.Middleware.Passes
         // 用户直继子类 handle==0 时补手动事件粘滞形态，§19.3）
         internal static MwMemberSymbol EventAlarmFn(MwContext context, string name)
         {
-            return (context.Symbols.FindType(EventAlarmCanonical)?.Members
-                .FirstOrDefault(m => m.Canonical.StartsWith(
-                    EventAlarmCanonical + "$" + name + "(",
-                    System.StringComparison.Ordinal)))
+            return context.CompilerMember(EventAlarmCanonical + "$" + name + "(")
                 ?? throw new CompilerInternalException(
                     "stdlib 缺少 EventAlarm 通道: " + name);
         }
 
         // Task 字段符号（declaration 形态；FieldEmitter 按宿主段查布局计划）
-        internal static string TaskField(string taskTypeRef, string name,
+        internal static string TaskField(MwContext context, string taskTypeRef, string name,
             string typeCanonical) =>
-            TaskPrefixOf(taskTypeRef) + "#" + name + "@" + typeCanonical;
+            BilCompilerSymbols.ResolveField(context.Module, TaskPrefixOf(taskTypeRef) + "#" + name + "@" + typeCanonical);
 
         internal const string ExceptionCanonical = "core::Exception";
 
@@ -318,6 +309,8 @@ namespace RigiCompiler.Middleware.Passes
             // 的挂起点沿直调图反向传染调用方；tainted 普通 fn 走裸
             // frame split，tainted main 走 Task 包装 split + 根驱动
             var tainted = TaintAnalysis(context, mir);
+            // 必须在 plain tainted 被改写为同步签名陷阱之前拒绝 C 导出。
+            context.NativeBuild.ValidateSynchronousClosure(mir, tainted, context);
             // 快照遍历（split 向模块追加 resume/init 合成 fn）
             var asyncFns = mir.Functions.Where(f => f.IsAsync).ToList();
             var entrypoint = mir.Functions.FirstOrDefault(f => f.IsEntrypoint);
@@ -375,7 +368,7 @@ namespace RigiCompiler.Middleware.Passes
                     foreach (var inst in block.Instructions)
                     {
                         if (inst is MirAwait or MirYieldBare or MirYieldAlarm
-                            || IsMutexEnter(inst)
+                            || IsMutexEnter(context, inst)
                             || (inst is MirCall residualCall
                                 && tainted.Contains(residualCall.Target.Canonical))
                             || (inst is MirSuperCall residualSuper
@@ -422,7 +415,7 @@ namespace RigiCompiler.Middleware.Passes
                 if (!fn.IsAsync
                     && fn.Blocks.SelectMany(b => b.Instructions).Any(inst =>
                         inst is MirAwait or MirYieldBare or MirYieldAlarm
-                        || IsMutexEnter(inst))
+                        || IsMutexEnter(context, inst))
                     && tainted.Add(fn.Symbol.Canonical))
                 {
                     queue.Enqueue(fn.Symbol.Canonical);
@@ -567,7 +560,7 @@ namespace RigiCompiler.Middleware.Passes
                     continue;
                 }
                 var canonical = fn.Symbol.Canonical;
-                if (canonical.StartsWith("$..globals.init(", System.StringComparison.Ordinal))
+                if (BilLogicalName.IsGlobalInitializer(canonical))
                 {
                     throw new MwNotSupportedException(
                         "R3 暂不支持含挂起点（含经 lambda/indirect 传染）的全局初始值设定项："
@@ -793,8 +786,7 @@ namespace RigiCompiler.Middleware.Passes
                 }
                 // 宿主声明级 ..init.wrapper（字段初始值缝合，可空；
                 // DynamicNewEmitter.CollectInits 同钥匙）
-                var wrapper = context.Symbols.FindMember(
-                    template.Declaration.Symbol + "$..init.wrapper()@.void");
+                var wrapper = context.Symbols.FindInitWrapper(template, 0);
                 list.Add(new IndirectInitOverload
                 {
                     InitFn = fn,
@@ -1278,7 +1270,7 @@ namespace RigiCompiler.Middleware.Passes
                     // 任一实现 tainted 则整点升级（动态分流协议）；
                     // Mutex.enter 优先判（其目标永不 tainted）
                     var isPoint = inst is MirAwait or MirYieldBare or MirYieldAlarm
-                        || IsMutexEnter(inst)
+                        || IsMutexEnter(context, inst)
                         || (inst is MirCall call && !call.OperatorDispatch
                             && tainted.Contains(call.Target.Canonical)
                             && Binding.ImplBinder.BindCall(call.Target)
@@ -1302,7 +1294,7 @@ namespace RigiCompiler.Middleware.Passes
                         }
                         : null;
                     if (point == null && inst is MirCall dispatchCall
-                        && !IsMutexEnter(dispatchCall)
+                        && !IsMutexEnter(context, dispatchCall)
                         && IsVirtualDispatchSite(dispatchCall)
                         && ClosurePairsOf(context, dispatchCall.Target,
                             dispatchCall.OperatorDispatch)
@@ -1362,7 +1354,7 @@ namespace RigiCompiler.Middleware.Passes
         // 反向数据流活性分析：CFG 边 = 终结符边 + 全部可抛指令的
         // ExcTarget 异常边（try 派发垫/逃逸垫里的清理状态同样跨挂起，
         // 漏边会把 finally/catch 所需槽漏出 frame）
-        private static void AnalyzeLiveness(MirFunction fn, List<SuspensionPoint> points)
+        private static void AnalyzeLiveness(MwContext context, MirFunction fn, List<SuspensionPoint> points)
         {
             var successors = new Dictionary<MirBlock, List<MirBlock>>();
             var byId = new Dictionary<string, MirBlock>(System.StringComparer.Ordinal);
@@ -1485,7 +1477,7 @@ namespace RigiCompiler.Middleware.Passes
                 }
                 // Mutex.enter 的 receiver 恒活跃：恢复后 acquire 续行读
                 // this.gate 构造 Lock
-                if (point.Inst is MirCall enterCall && IsMutexEnter(enterCall)
+                if (point.Inst is MirCall enterCall && IsMutexEnter(context, enterCall)
                     && enterCall.Args.Count > 0
                     && enterCall.Args[0] is MirLocalOperand mutexThis
                     && !point.LiveAfter.Contains(mutexThis.Name))
@@ -1561,15 +1553,12 @@ namespace RigiCompiler.Middleware.Passes
             }
         }
 
-        private static bool IsMutexEnter(MirInst inst) =>
+        internal static bool IsMutexEnter(MwContext context, MirInst inst) =>
             inst is MirCall call
-            && call.Target.Canonical.StartsWith(MutexEnterPrefix,
-                System.StringComparison.Ordinal);
+            && context.CompilerMember(MutexEnterPrefix)?.Canonical == call.Target.Canonical;
 
         internal static MwMemberSymbol MutexFn(MwContext context, string name) =>
-            (context.Symbols.FindType(MutexCanonical)?.Members.FirstOrDefault(m =>
-                m.Canonical.StartsWith(MutexCanonical + "$" + name + "(",
-                    System.StringComparison.Ordinal)))
+            context.CompilerMember(MutexCanonical + "$" + name + "(")
             ?? throw new CompilerInternalException("stdlib 缺少 Mutex 通道: " + name);
 
         private static MirBlock? ExcTargetOf(MirInst inst) => inst switch
@@ -1837,7 +1826,7 @@ namespace RigiCompiler.Middleware.Passes
             // Phase 2.6：yield-alarm 探测站点建臂（闭包内存在 tainted
             // isReady 实现时）——探测 callee frame 槽同理先入 fn.Locals
             PreparePollProbeSites(context, mir, fn, points, tainted);
-            AnalyzeLiveness(fn, points);
+            AnalyzeLiveness(context, fn, points);
 
             // 保存槽集 = 全部参数 ∪ 类级 .generic.* 局部（恒活跃）∪ 各
             // 挂起点 live-after 并集，保 fn.Locals 序（frame 字段序确定性）
@@ -1938,7 +1927,7 @@ namespace RigiCompiler.Middleware.Passes
                 string? hostConstructedRef = null;
                 switch (point.Inst)
                 {
-                    case MirCall call when !IsMutexEnter(call):
+                    case MirCall call when !IsMutexEnter(context, call):
                         args = call.Args;
                         target = call.Target;
                         hostConstructedRef = call.HostConstructedRef;
@@ -2588,7 +2577,7 @@ namespace RigiCompiler.Middleware.Passes
             var isFail = Fresh("$mw.settle.isf.", Bool);
             settle.AddBlock(new MirBlock("entry", new List<MirInst>
             {
-                new MirGetField(taskOp, TaskField(taskTypeRef, "failureNodeId", ".i64"),
+                new MirGetField(taskOp, TaskField(context, taskTypeRef, "failureNodeId", ".i64"),
                     nodeId),
                 new MirLoadResource(ProxyWildcardAbi.AddI64Resource(context, 0), zero),
                 new MirBinaryIntrinsic(BilBinaryOp.CmpNe, new MirLocalOperand(nodeId),
@@ -2604,7 +2593,7 @@ namespace RigiCompiler.Middleware.Passes
                 var rn = Fresh("$mw.settle.rn.",
                     MirType.Of(".nullable<" + mainFn.ReturnType.Canonical + ">"));
                 okInsts.Add(new MirGetField(taskOp,
-                    TaskField(taskTypeRef, "result",
+                    TaskField(context, taskTypeRef, "result",
                         ".nullable<" + mainFn.ReturnType.Canonical + ">"), rn));
                 okInsts.Add(new MirUnwrapNullable(new MirLocalOperand(rn),
                     mainFn.ReturnType, okResult));
@@ -2945,7 +2934,7 @@ namespace RigiCompiler.Middleware.Passes
                             taskFieldSymbol, taskTypeRef,
                             EmitSave, ResumeRet, syms, Fresh);
                     }
-                    else if (point.Inst is MirCall enterCall && IsMutexEnter(enterCall))
+                    else if (point.Inst is MirCall enterCall && IsMutexEnter(context, enterCall))
                     {
                         EmitMutexEnterSplit(context, resumeFn, point, enterCall,
                             currentId, headInsts, frameOp, stateFieldSymbol,
@@ -3774,7 +3763,7 @@ namespace RigiCompiler.Middleware.Passes
             var failId = waitId + ".fail";
             var cancelId = waitId + ".cancel";
             var taskOp = new MirLocalOperand(awaitInst.TaskSlot);
-            var gateField = TaskField(awaitedTaskTypeRef, "gate", ".i64");
+            var gateField = TaskField(context, awaitedTaskTypeRef, "gate", ".i64");
 
             resumeFn.AddBlock(new MirBlock(headId, headInsts, new MirBranch(waitId)));
 
@@ -3807,7 +3796,7 @@ namespace RigiCompiler.Middleware.Passes
                     new MirLocalOperand(stZero), I32, I32, Bool, stGo),
             }, new MirCondBranch(new MirLocalOperand(stGo), coldGoId, regId)));
 
-            var dispC = fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var dispC = fresh("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             resumeFn.AddBlock(new MirBlock(coldGoId, new List<MirInst>
             {
                 new MirCall(TaskFn(context, awaitedTaskTypeRef, "spawnIntoLocked"),
@@ -3867,7 +3856,7 @@ namespace RigiCompiler.Middleware.Passes
                 var rn = fresh("$mw.await.rn.",
                     MirType.Of(".nullable<" + resultType.Canonical + ">"));
                 doneInsts.Add(new MirGetField(taskOp,
-                    TaskField(awaitedTaskTypeRef, "result",
+                    TaskField(context, awaitedTaskTypeRef, "result",
                         ".nullable<" + resultType.Canonical + ">"), rn));
                 doneInsts.Add(new MirUnwrapNullable(new MirLocalOperand(rn),
                     resultType, awaitInst.ResultSlot, awaitInst.ExcTarget));
@@ -3881,7 +3870,7 @@ namespace RigiCompiler.Middleware.Passes
             var outFat = fresh("$mw.await.out.", Any);
             var failInsts = new List<MirInst>
             {
-                new MirGetField(taskOp, TaskField(awaitedTaskTypeRef, "failureNodeId", ".i64"),
+                new MirGetField(taskOp, TaskField(context, awaitedTaskTypeRef, "failureNodeId", ".i64"),
                     nodeId),
                 new MirFailureLoad(nodeId, outFat),
                 new MirThrow(new MirLocalOperand(outFat), awaitInst.ExcTarget),
@@ -3922,7 +3911,7 @@ namespace RigiCompiler.Middleware.Passes
             var got = fresh("$mw.mx.got.", Bool);
             var enterInsts = new List<MirInst>
             {
-                new MirGetField(mutexOp, MutexGateField, gate),
+                new MirGetField(mutexOp, BilCompilerSymbols.Resolve(context.Module, MutexGateField), gate),
                 new MirCall(syms.MutexAcquire,
                     new List<MirOperand> { new MirLocalOperand(gate) }, null),
                 new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), cur),
@@ -3983,7 +3972,7 @@ namespace RigiCompiler.Middleware.Passes
             // Dispatcher.publish(当前协程)：自重排回所属 lane（lane 从
             // cohandle 槽读，§19.1 只保证重新经过一次调度决策）
             var cur = fresh("$mw.yield.cur.", I64);
-            var disp = fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var disp = fresh("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             insts.Add(new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), cur));
             insts.Add(new MirCall(syms.DispatcherGet, new List<MirOperand>(), disp));
             insts.Add(new MirCall(syms.Publish,
@@ -4034,7 +4023,7 @@ namespace RigiCompiler.Middleware.Passes
             // PollingAlarm：arm + 自重排（VM YieldAlarm polling 段
             //  Publish 同口径；探测在恢复块进行）
             var curP = fresh("$mw.yield.cur.", I64);
-            var dispP = fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var dispP = fresh("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             var pollInsts = new List<MirInst>
             {
                 new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), curP),
@@ -4076,7 +4065,7 @@ namespace RigiCompiler.Middleware.Passes
             // 已触发：自重排后结束执行段（§19.4 末条：带 Alarm 的 yield
             // 恒结束当前执行段）
             var curS = fresh("$mw.yield.cur.", I64);
-            var dispS = fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var dispS = fresh("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             var signaledInsts = new List<MirInst>
             {
                 new MirCall(syms.CoroutineCurrent, new List<MirOperand>(), curS),
@@ -4497,7 +4486,7 @@ namespace RigiCompiler.Middleware.Passes
                 taskFieldSymbol, task));
             insts.Add(new MirSetField(new MirLocalOperand(nodeId),
                 new MirLocalOperand(task),
-                TaskField(taskTypeRef, "failureNodeId", ".i64")));
+                TaskField(context, taskTypeRef, "failureNodeId", ".i64")));
             EmitTerminalPublish(context, fn, insts, task, taskTypeRef,
                 failed: true, syms, Fresh, FreshManaged);
             return ResumeDoneTerminator(context, fn, insts, Fresh);
@@ -4538,7 +4527,7 @@ namespace RigiCompiler.Middleware.Passes
         {
             var gate = fresh("$mw.done.gate.", I64);
             insts.Add(new MirGetField(new MirLocalOperand(task),
-                TaskField(taskTypeRef, "gate", ".i64"), gate));
+                TaskField(context, taskTypeRef, "gate", ".i64"), gate));
             insts.Add(new MirCall(syms.MutexAcquire,
                 new List<MirOperand> { new MirLocalOperand(gate) }, null));
             var drained = freshManaged("$mw.drained.",
@@ -4547,7 +4536,7 @@ namespace RigiCompiler.Middleware.Passes
                 new List<MirOperand> { new MirLocalOperand(task) }, drained));
             insts.Add(new MirCall(syms.MutexRelease,
                 new List<MirOperand> { new MirLocalOperand(gate) }, null));
-            var disp = freshManaged("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var disp = freshManaged("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             insts.Add(new MirCall(syms.DispatcherGet, new List<MirOperand>(), disp));
             insts.Add(new MirCall(syms.PublishAll,
                 new List<MirOperand> { new MirLocalOperand(disp),
@@ -4658,7 +4647,7 @@ namespace RigiCompiler.Middleware.Passes
                 insts.Add(new MirWrapNullable(ret.Value, original.ReturnType, rn));
                 insts.Add(new MirSetField(new MirLocalOperand(rn),
                     new MirLocalOperand(task),
-                    TaskField(taskTypeRef, "result",
+                    TaskField(context, taskTypeRef, "result",
                         ".nullable<" + original.ReturnType.Canonical + ">")));
             }
             EmitTerminalPublish(context, resumeFn, insts, task, taskTypeRef,
@@ -4717,7 +4706,7 @@ namespace RigiCompiler.Middleware.Passes
             insts.Add(new MirCall(syms.CoroLocalInherit,
                 new List<MirOperand> { new MirLocalOperand(handle) }, null));
             // lane 继承（§18.1 第 3 步）→ attachRuntime → noteSpawn → publish
-            var disp = Fresh("$mw.disp.", MirType.Of(DispatcherCanonical));
+            var disp = Fresh("$mw.disp.", MirType.Of(BilCompilerSymbols.Resolve(context.Module, DispatcherCanonical)));
             var lane = Fresh("$mw.lane.", I32);
             insts.Add(new MirCall(syms.DispatcherGet, new List<MirOperand>(), disp));
             insts.Add(new MirCall(syms.LaneOfCurrent,
@@ -4930,8 +4919,9 @@ namespace RigiCompiler.Middleware.Passes
             string taskDecl, bool voidTask)
         {
             var prefix = taskDecl + "$bindColdBody(";
-            var original = mir.Functions.FirstOrDefault(f =>
-                f.Symbol.Canonical.StartsWith(prefix, System.StringComparison.Ordinal));
+            var declaration = context.CompilerMember(prefix);
+            var original = mir.Functions.SingleOrDefault(f =>
+                f.Symbol.Canonical == declaration?.Canonical);
             if (original == null)
             {
                 return;
@@ -5076,8 +5066,7 @@ namespace RigiCompiler.Middleware.Passes
                 throw new CompilerInternalException(
                     "core::IllegalStateException 缺 init(text: String)");
             }
-            var initWrapper = context.Symbols.FindMember(
-                excType.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = context.Symbols.FindInitWrapper(excType, 0);
             var exc = ProxyWildcardAbi.FreshLocal(fn, "$mw.bc.exc.",
                 MirType.Of(excType.Canonical));
             insts.Add(new MirNewObject(excType, initWrapper, init,
@@ -5177,7 +5166,7 @@ namespace RigiCompiler.Middleware.Passes
                 new MirSetField(bodyOp, new MirLocalOperand(task), bodyField),
                 new MirCall(smutexCreate, new List<MirOperand>(), gate),
                 new MirSetField(new MirLocalOperand(gate), new MirLocalOperand(task),
-                    TaskField(taskTypeRef, "gate", ".i64")),
+                    TaskField(context, taskTypeRef, "gate", ".i64")),
                 new MirCoroutineCreate(frame, resumeSymbol, handle),
                 new MirCall(TaskFn(context, taskTypeRef, "attachCold"),
                     new List<MirOperand> { new MirLocalOperand(task),
@@ -5195,16 +5184,8 @@ namespace RigiCompiler.Middleware.Passes
         private static string TaskBodyFieldOf(MwContext context, string taskTypeRef)
         {
             var prefix = TaskPrefixOf(taskTypeRef);
-            var type = RequireTaskType(context, taskTypeRef);
-            foreach (var member in type.Members)
-            {
-                if (member.Declaration.Kind == BilMemberKind.Field
-                    && member.Canonical.Contains("#body@", System.StringComparison.Ordinal))
-                {
-                    return member.Canonical;
-                }
-            }
-            throw new CompilerInternalException("Task 缺 body 字段: " + prefix);
+            return context.CompilerMember(prefix + "#body@")?.Canonical
+                ?? throw new CompilerInternalException("Task 缺 body 字段: " + prefix);
         }
     }
 }

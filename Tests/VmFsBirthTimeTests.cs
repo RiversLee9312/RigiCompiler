@@ -14,7 +14,10 @@ namespace RigiCompiler.Tests
         public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsBirthTime", Cases, sectionTitle: "VmFsBirthTime");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -108,7 +111,7 @@ namespace RigiCompiler.Tests
             if (!OperatingSystem.IsLinux()
                 || RuntimeInformation.ProcessArchitecture != Architecture.X64)
             {
-                Console.WriteLine("  SKIP Linux-only link/proc birth fixture");
+                TestHarness.RecordSkip("  SKIP Linux-only link/proc birth fixture");
                 return;
             }
             var vm = NewDispatch();

@@ -47,6 +47,21 @@ namespace RigiCompiler
     public sealed class DiagnosticBag
     {
         private readonly List<Diagnostic> diagnostics = new List<Diagnostic>();
+        private readonly AsyncLocal<JobDiagnostics?> currentJob = new();
+        internal sealed class JobDiagnostics : IDisposable
+        {
+            private readonly DiagnosticBag bag;
+            private readonly JobDiagnostics? previous;
+            internal List<Diagnostic> Items { get; } = new();
+            internal JobDiagnostics(DiagnosticBag bag)
+            {
+                this.bag = bag;
+                previous = bag.currentJob.Value;
+                bag.currentJob.Value = this;
+            }
+            public void Dispose() => bag.currentJob.Value = previous;
+        }
+        internal JobDiagnostics CaptureJob() => new(this);
 
         public IReadOnlyList<Diagnostic> Diagnostics => diagnostics;
 
@@ -55,6 +70,7 @@ namespace RigiCompiler
 
         public void Add(Diagnostic diagnostic)
         {
+            if (currentJob.Value is { } job) { job.Items.Add(diagnostic); return; }
             diagnostics.Add(diagnostic);
             if (diagnostic.Severity == DiagnosticSeverity.Error)
             {

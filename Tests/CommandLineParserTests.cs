@@ -17,9 +17,7 @@ namespace RigiCompiler.Tests
     ///   compile --file 多路径；
     /// - 少量 compile 端到端：--dump-ast/--emit-bil 输出路径不可写时友好
     ///   报错且返回非零退出码（此前无 catch 直接崩溃）；
-    /// - run 命令端到端（vm 目标 stdout/退出码透传、缺省 target、非法
-    ///   --target、编译失败不执行、native 目标 stdout/退出码透传与临时目录
-    ///   清理，native 用例按 NativeE2E 口径无工具链时 skip）。
+    /// - module 纯解析与 registry；真实独立构建/运行由 Module 套件覆盖。
     /// 其余 CLI 端到端行为（菜单打印、正常文件编译）不在本套件内，手动验证。
     /// </summary>
     public static class CommandLineParserTests
@@ -36,10 +34,10 @@ namespace RigiCompiler.Tests
 
             var names = commands.Select(c => c.Mask.Name).ToList();
             Check("COMMAND 名字唯一", names.Distinct().Count() == names.Count);
-            Check("包含 compile/test/vm/native/run/help",
+            Check("包含 compile/test/vm/native/module/help",
                 names.Contains("compile") && names.Contains("test")
                 && names.Contains("vm") && names.Contains("native")
-                && names.Contains("run") && names.Contains("help"));
+                && names.Contains("module") && names.Contains("help"));
             Check("COMMAND 名字不带 -- 前缀", commands.All(c => !c.Mask.Name.StartsWith("--")));
 
             foreach (var cmd in commands)
@@ -72,10 +70,10 @@ namespace RigiCompiler.Tests
             var nativeSubs = native.SubCommands.Select(s => s.Mask.Name).ToList();
             Check("native 子命令齐全（--file/--out/--libuv-dir/--mimalloc-dir/--verbose/--log-to）",
                 new[] { "--file", "--out", "--libuv-dir", "--mimalloc-dir", "--verbose", "--log-to" }.All(nativeSubs.Contains));
-            var run = commands.First(c => c.Mask.Name == "run");
-            var runSubs = run.SubCommands.Select(s => s.Mask.Name).ToList();
-            Check("run 子命令齐全（--file/--target/--entry-point/--max-steps/--verbose/--log-to）",
-                new[] { "--file", "--target", "--entry-point", "--max-steps", "--verbose", "--log-to" }.All(runSubs.Contains));
+            var module = commands.First(c => c.Mask.Name == "module");
+            var moduleSubs = module.SubCommands.Select(s => s.Mask.Name).ToList();
+            Check("module 子命令与原样 argv optin", module.Mask.AllowsProgramArguments
+                && new[] { "--init", "--run", "--root", "--profile", "--verbose", "--log-to" }.All(moduleSubs.Contains));
             Check("help 无子命令", help.SubCommands.Count == 0);
             Console.WriteLine();
         }
@@ -349,160 +347,6 @@ namespace RigiCompiler.Tests
             Console.WriteLine();
         }
 
-        // ===== run 命令端到端 =====
-        public static void TestRunCommand()
-        {
-            Console.WriteLine("=== Testing run 命令端到端 ===");
-
-            // 缺 --file → 退出码 2
-            var missing = RunRun("run");
-            Check("run 缺 --file 退出码 2", missing.Code == 2);
-
-            var dir = Path.Combine(Path.GetTempPath(), $"rigi_run_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(dir);
-            try
-            {
-                var src = Path.Combine(dir, "app.rg");
-                File.WriteAllText(src,
-                    "pub func main(): i32 {\n" +
-                    "    core.io.Console.println(\"run ok\")\n" +
-                    "    return 42\n" +
-                    "}\n");
-
-                // --target vm：stdout 精确 + main 的 i32 返回值透传为 rigic 退出码
-                var vm = RunRun("run", "--file", src, "--target", "vm");
-                Check("run --target vm 退出码透传 main 返回值", vm.Code == 42);
-                Check("run --target vm stdout 精确", vm.Out == "run ok\n");
-
-                // 缺省 --target 即 vm
-                var defaulted = RunRun("run", "--file", src);
-                Check("run 缺省 target=vm 退出码透传", defaulted.Code == 42);
-                Check("run 缺省 target=vm stdout 精确", defaulted.Out == "run ok\n");
-
-                // --max-steps 与 vm 命令同语义；--entry-point 解析与 vm 命令共用
-                var limited = RunRun("run", "--file", src, "--max-steps", "1");
-                Check("run --max-steps 1 退出码 1", limited.Code == 1);
-                Check("run --max-steps 1 消息含步数上限", limited.Err.Contains("步数超过上限"));
-                var badSteps = RunRun("run", "--file", src, "--max-steps", "0");
-                Check("run --max-steps 0 退出码 2", badSteps.Code == 2);
-                Check("run --max-steps 0 提示正整数", badSteps.Err.Contains("正整数"));
-
-                // 非法 --target：用法错误，退出码 2 + 提示合法值
-                var badTarget = RunRun("run", "--file", src, "--target", "jit");
-                Check("run 非法 --target 退出码 2", badTarget.Code == 2);
-                Check("run 非法 --target 提示合法值",
-                    badTarget.Err.Contains("vm") && badTarget.Err.Contains("native"));
-
-                // native 目标的选项适用性：明确报错，不静默忽略
-                var nativeSteps = RunRun("run", "--file", src, "--target", "native", "--max-steps", "10");
-                Check("run native --max-steps 退出码 2", nativeSteps.Code == 2);
-                Check("run native --max-steps 报文", nativeSteps.Err.Contains("仅 --target vm"));
-                var nativeEntry = RunRun("run", "--file", src, "--target", "native", "--entry-point", "$main()@.i32");
-                Check("run native --entry-point 退出码 2", nativeEntry.Code == 2);
-                Check("run native --entry-point 报文", nativeEntry.Err.Contains("仅 --target vm"));
-
-                // 编译失败：诊断同 compile 形态（stderr + 非零退出码），不产生执行
-                var badSrc = Path.Combine(dir, "bad.rg");
-                File.WriteAllText(badSrc, "pub func main(: i32 { return 0 }\n");
-                var badCompile = RunRun("run", "--file", badSrc);
-                Check("run 编译失败退出码非零", badCompile.Code != 0);
-                Check("run 编译失败报文走 stderr", badCompile.Err.Contains("编译失败"));
-                Check("run 编译失败无执行输出", !badCompile.Out.Contains("run ok"));
-
-                // 多 entrypoint：缺省退出码 2 并提示 --entry-point（与 vm 命令共用解析）
-                var multiSrc = Path.Combine(dir, "multi.rg");
-                File.WriteAllText(src,
-                    "namespace app\n" +
-                    "@EntryPoint\n" +
-                    "pub func main(): i32 { return 7 }\n");
-                File.WriteAllText(multiSrc,
-                    "pub func main(): i32 { return 9 }\n");
-                var multi = RunRun("run", "--file", src, multiSrc);
-                Check("run 多 entrypoint 退出码 2", multi.Code == 2);
-                Check("run 多 entrypoint 提示 --entry-point", multi.Err.Contains("--entry-point"));
-
-                // --target native：有 clang/libuv/mimalloc 工具链时验证产物执行
-                // （stdout/退出码透传 + 临时目录清理）；无则按 NativeE2E 口径 skip
-                if (ToolchainResolver.ResolveClang(null) == null
-                    || LibuvResolver.Resolve(null) == null
-                    || MimallocResolver.Resolve(null) == null)
-                {
-                    Console.WriteLine("  （跳过：run --target native 用例需要 clang/libuv/mimalloc 工具链，"
-                        + "开发机跑 tools/Fetch-*.ps1 后生效）");
-                }
-                else
-                {
-                    Check("run --entry-point 显式选中执行（透传返回值 7）",
-                        RunRun("run", "--file", src, multiSrc, "--entry-point", "app::$main()@.i32").Code == 7);
-                    File.WriteAllText(src,
-                        "pub func main(): i32 {\n" +
-                        "    core.io.Console.println(\"run ok\")\n" +
-                        "    return 42\n" +
-                        "}\n");
-                    // 产物执行器注入捕获式 runner（B2-4b2 口径：closeStdin 确定性
-                    // EOF）：断言 exe 生于临时目录、stdout 透传内容、退出码透传；
-                    // 真实 runner（stdin 继承的三流接力泵）见 RunProductInherited，
-                    // 手动/发布产物验证
-                    string? exePath = null;
-                    string productOut = "";
-                    var command = new RunCommand();
-                    command.ProductRunner = path =>
-                    {
-                        exePath = path;
-                        var exit = ExternalProcess.Run(path, Array.Empty<string>(),
-                            out var pOut, out _, closeStdin: true);
-                        productOut = pOut;
-                        return exit;
-                    };
-                    var native = RunRunWith(command, "run", "--file", src, "--target", "native");
-                    Check("run --target native 退出码透传 main 返回值", native.Code == 42);
-                    Check("run --target native stdout 透传",
-                        productOut.Replace("\r\n", "\n") == "run ok\n");
-                    Check("run --target native 产物生于临时目录",
-                        exePath != null && exePath.Contains("rigi_run_"));
-                    Check("run --target native 临时目录已清理",
-                        exePath != null && !Directory.Exists(Path.GetDirectoryName(exePath)!));
-                }
-            }
-            finally
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-            Console.WriteLine();
-        }
-
-        // 驱动 run COMMAND 端到端，捕获 stdout/stderr（Console 重定向对 VM 目标
-        // 生效；native 目标的产物 stdout 由注入的捕获式 ProductRunner 断言）
-        private static (int Code, string Out, string Err) RunRun(params string[] args)
-        {
-            return RunRunWith(new RunCommand(), args);
-        }
-
-        private static (int Code, string Out, string Err) RunRunWith(RunCommand command,
-            params string[] args)
-        {
-            if (!CommandLineParser.TryParse(args, out var result, out var error))
-            {
-                throw new InvalidOperationException($"测试构造的命令行应解析成功: {error}");
-            }
-            var oldOut = Console.Out;
-            var oldErr = Console.Error;
-            var outWriter = new StringWriter();
-            var errWriter = new StringWriter();
-            Console.SetOut(outWriter);
-            Console.SetError(errWriter);
-            try
-            {
-                int code = command.Execute(result!);
-                return (code, outWriter.ToString(), errWriter.ToString());
-            }
-            finally
-            {
-                Console.SetOut(oldOut);
-                Console.SetError(oldErr);
-            }
-        }
-
         // ===== §17：BIL 命名空间切分写盘 + --entry-point 端到端 =====
         public static void TestEmitBilSlicesAndEntryPoint()
         {
@@ -652,6 +496,38 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
+        public static void TestInventoryOption()
+        {
+            CheckParseOk("test --inventory 可纯枚举", new[] { "test", "--inventory" }, r => r.Has("--inventory"));
+            CheckParseError("inventory 与 all 互斥", new[] { "test", "--inventory", "--all" }, "互斥");
+            CheckParseError("inventory 与 run 互斥", new[] { "test", "--inventory", "--run", "1" }, "互斥");
+            CheckParseError("inventory 与 suite-args 互斥", new[] { "test", "--inventory", "--suite-args", "x" }, "互斥");
+            CheckParseError("inventory 与 spawned 互斥", new[] { "test", "--inventory", "--spawned" }, "互斥");
+            CheckParseError("inventory 不接受参数", new[] { "test", "--inventory", "x" }, "参数个数");
+        }
+
+        public static int RunWithArgs(IReadOnlyList<string> args)
+        {
+            if (args.Count == 0) return RunAll();
+            if (args.Count != 1 || args[0] != "PERF-001")
+            {
+                Console.Error.WriteLine("CommandLineParser 仅支持定向组 PERF-001。");
+                return 2;
+            }
+            // 纯解析组不启动编译器/native，避免性能契约检查隐式扩展为慢集成测试。
+            passCount = 0;
+            failCount = 0;
+            TestRegistryIntegrity();
+            TestCommandMatching();
+            TestSubCommandMatching();
+            TestArgCountValidation();
+            TestMutualExclusion();
+            TestStrayArgs();
+            TestInventoryOption();
+            Console.WriteLine($"=== CommandLineParser PERF-001 Complete: {passCount} passed, {failCount} failed ===");
+            return failCount;
+        }
+
         public static int RunAll()
         {
             Console.WriteLine("\n╔════════════════════════════════════╗");
@@ -667,10 +543,10 @@ namespace RigiCompiler.Tests
             TestArgCountValidation();
             TestMutualExclusion();
             TestStrayArgs();
+            TestInventoryOption();
             TestOutputPathErrors();
             TestVmCommand();
             TestEmitBilSlicesAndEntryPoint();
-            TestRunCommand();
 
             Console.WriteLine($"=== CommandLineParser Tests Complete: {passCount} passed, {failCount} failed ===");
             return failCount;

@@ -23,11 +23,14 @@ namespace RigiCompiler.Tests
     {
         public static int PassCount { get; private set; }
         public static int FailCount { get; private set; }
+        public static string? SkipReason { get; private set; }
+        public static void RecordSkip(string reason) { SkipReason = reason; Console.WriteLine(reason); }
 
         public static void Reset()
         {
             PassCount = 0;
             FailCount = 0;
+            SkipReason = null;
         }
 
         public static void Section(string title) => Console.WriteLine($"=== {title} ===");
@@ -46,7 +49,7 @@ namespace RigiCompiler.Tests
         // 的类型推断依赖单签名）；sourceName 供中端套件的 Span/诊断链断言
         public static RootASTNode ParseRoot(string code, string sourceName)
         {
-            return (RootASTNode)new Parser().Parse(new Lexer().Tokenize(code, sourceName));
+            return Frontend.Parse(new SourceInput(code, sourceName));
         }
 
         // 独立代码块驱动（TestRootParserLayer 垫底：被测层漏消费 token 会立即暴露）

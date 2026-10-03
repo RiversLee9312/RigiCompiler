@@ -64,6 +64,58 @@ BIL 文本
 
 ---
 
+### 1.1 有界并行与发布屏障
+
+`CompilerJobs` 每阶段只持一个共享资源 lease，完成全部 indexed job 后再发布结果。
+`RIGI_JOBS` 限制共享预算的 CPU 槽数；嵌套 bootstrap、默认值和 lambda 使用
+当前施工上下文的串行快路，不重复申请同一预算。小文件集合采用串行快路。
+各 job 的诊断和日志使用 AsyncLocal sink，按输入序归并，保留 phase、severity、
+sourceName、起止坐标和消息的原序；异常在 join 后按输入序重抛原异常。
+取消等待释放 lease，取消的阶段不返回部分结果。
+
+前端固定 immutable 文件输入，每个 job 独占 Lexer、Parser 和 ASTValidator。
+P1 按文件并行收集声明事实和签名键，按文件序/声明先序集中驻留 namespace、
+创建符号和检查重复。P2 的继承、接口与泛型约束等依赖 visitor 保持串行，
+字段类型签名 join 后才能处理 init 映射与方法签名；override、extension、
+wrapper 等检查仍在签名屏障之后执行，构造模板回填不与 P2 模板写入交错。
+
+P3 先串行绑定参数默认值、固定 enum 参数、预置调用/构造器/like 转发体、
+companion、wrapper cell 和早期 Serialization 合成。body job 具有独立
+BindContext 和 BindEnvironment delta；nested lambda 与 companion 壳和原体
+留在所属 job。声明 wrapper 参数冻结，需重试时写 job overlay。
+含 `placeOf`（包括 nested lambda）的 body 按固定 job 序提前串行执行，
+精确提升实际使用的 global cell；结果仍放回原 ordinal 槽。
+body、诊断、generic use 和合成 delta 全部按槽序归并；全局初始化仍串行按
+源码声明序绑定，最后保持 lambda/cell 分组附加与晚期检查顺序。
+延迟默认构造诊断只保存不可变消息载荷，不捕获 worker 环境。
+
+P4a 各函数独占 LowerContext、闭包存储计划和结构化退出路由，完成后按
+body 序发布。P4b 模块 metadata、声明与枚举判别值先串行发射，函数独占
+EmitEnvironment、资源池和块/临时变量表并行发射。join 后按函数 ordinal
+和局部跨种类首次出现序回放 scalar/null/switch 的旧 intern 键，重建全局
+`R_N` 与 load/hint/switch/try 的资源引用，保留 Origin 和所有 handler/block
+对象。catch 表仅在所属函数内去重。下游 Middleware 的 CoroutineSplit
+及 LLVM Context/O2 所有权保持各自的串行边界。
+
+隐藏名称来自稳定 module identity、文件序/sourceName、声明路径、body 宿主
+角色和 job 内创建 ordinal；global cell 只依字段声明身份，不能依竞争赢家。
+独立模块可显式设置 module identity，默认值稳定且不从机器工作目录推导。
+`Modules/ModuleBuildService` 按稳定依赖 DAG 准备产物，每个消费者用
+`SymbolGraph.CreateArtifactOnly` 创建固定内建壳并导入已校验接口，再对自身
+源码执行 P1–P4。内建 resolver 授权的标准库冷构建使用内嵌源；命中时只读
+内容身份并消费接口/BIL，不调用 ParseIntrinsics 或 BindSourceSignatures。
+单模块缓存锁之前依赖已准备完毕；builder 不递归构建依赖或取得 LLVM lease。
+接口与 BIL 在一个原子 envelope 中发布，校验时在临时图导入依赖与候选，
+事务性链接全部实现后运行 BIL verifier。最终应用的晚期 override 仅从可信
+标准库审批的完整 canonical/ABI 集合恢复，缓存模型及其字节不被回写。
+构造类型仍按 definition/arguments 的引用身份驻留；Get、Substitute、递归
+成员回填、快照和 generic-use 表由同一个可重入 Monitor 保护。同线程递归
+可取得施工 placeholder，其它线程只能取得完成对象；最外施工失败撤销本次
+全部递归新增键。快照按 definition 稳定身份及有序实参身份排列，泛型参数
+身份包括 owner/index，bootstrap 类型与方法使用固定身份。
+
+---
+
 ## 2. Pass 职责分配
 
 `BIL_STANDARD.md` §3.3 清单逐项归属如下。原则：**声明间的事实归 P1/P2，
@@ -249,7 +301,7 @@ SemanticSymbol
       + 只读禁令全拦截面。
     - **局部/静态 wrapper 应用触发 cell 子类合成**（统一
       cell 存储，P3 合成例外）：`CellClassFactory` 逐变量合成
-      隐藏子类 `..cell..UUID`（P2 仍 Freeze 前零合成；合成方法体
+      隐藏子类 `..cell..稳定摘要`（P2 仍 Freeze 前零合成；合成方法体
       经 `BindEnvironment.SyntheticCellBodies` 汇入 BindingDriver
       函数体列表走统一 P4 管线；静态/全局字段 cell 化在
       BindingDriver 阶段 1.6）。wrapper 应用标记挂在子类
@@ -418,7 +470,7 @@ native 面见本文 §7.2。
   字段寻址。
 - **统一 cell 存储**：lambda 捕获与局部/静态 Value wrapper
   共用同一机制——`core::Cell<T>`/`ReadonlyCell<T>` 为抽象基类；P3
-  `CellClassFactory` 逐变量合成隐藏子类 `..cell..UUID`（自持
+  `CellClassFactory` 逐变量合成隐藏子类 `..cell..稳定摘要`（自持
   `pub value: T`，wrapper 应用以同 `WrapperApplication` 挂在该字段
   上，BIL 投影为字段 `wrapped(W)`）。局部/静态 place 以 **cell 根**
   分派：读 = `get.wrapper.field $cell field(value) type(W)`；写 =
@@ -540,7 +592,7 @@ continuation 仍须保存 Coroutine-owned `cFlag` 状态。
 lambda 记录按符号身份排序的捕获集；捕获在 lambda 求值点经构造函数传入，只发生
 一次：
 
-- 隐藏类 `..lambda..UUID` 继承 `core::Func`/`Action`/`AsyncFunc`/`AsyncAction`；
+- 隐藏类 `..lambda..稳定摘要` 继承 `core::Func`/`Action`/`AsyncFunc`/`AsyncAction`；
   调用走 `invoke.indirect` → 对象虚调用 `$$call`（callable 协议）；
 - 被捕获局部/参数存储改 cell（.vars 投影 + 参数 prologue `.c.<名>`），读写走
   getValue/setValue；BIL `.cell<T>`/`.readonly_cell<T>`；

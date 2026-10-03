@@ -11,9 +11,9 @@ dotnet build        # 在项目根目录执行；当前 0 错误、0 警告
 dotnet clean
 ```
 
-唯一配置文件是 `RigiCompiler.csproj`。依赖纪律：原则上纯 BCL、无第三方依赖——豁免两类，新增前必须先讨论并同步本文档：**编译器托管侧是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）；**native 产物运行时侧是 libuv（协程事件底座，MW11b 起）与 mimalloc（GC 分配器，GC Phase 2 起）两个静态链接 C 库**（均经 tools/ 下 Fetch 脚本钉版预取，见下文）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。csproj 另开 `AllowUnsafeBlocks`，仅限 `Middleware/Emit/LlvmBitcode.cs` 的 libLLVM 指针编组封装使用。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。另有 `RigiCompiler.sln`。
+生产项目配置为 `RigiCompiler.csproj`，独立测试项目配置为 `Tests/TUnit/RigiCompiler.Tests.csproj`；实际仓库根包含 `.git` 与 solution（当前环境 `/workspace/RigiCompiler`）。依赖纪律：原则上纯 BCL、无第三方依赖——豁免以下用途，新增前必须先讨论并同步本文档：**编译器托管侧是 Middleware 的 LLVMSharp.Interop + libLLVM（锁定 LLVM 20）**（选型裁决见 `docs/compiler/middleware/MIDDLEWARE_ARCHITECTURE.md` §2）；**模块配置侧是 YamlDotNet 18.1.0（仅 RepresentationModel 手工严格 schema 解析，禁止反射 Deserializer）**；**native 产物运行时侧是 libuv（协程事件底座，MW11b 起）与 mimalloc（GC 分配器，GC Phase 2 起）两个静态链接 C 库**（均经 tools/ 下 Fetch 脚本钉版预取，见下文）。注意：libLLVM 原生资产经 runtime.json 传递、只在带 RID 时解析，csproj 已显式引用 win-x64/linux-x64 两个 runtime 包以支持无 RID 的 `dotnet build`/`dotnet run` 开发回路。csproj 另开 `AllowUnsafeBlocks`，仅限 `Middleware/Emit/LlvmBitcode.cs` 的 libLLVM 指针编组封装使用。新增依赖前必须先讨论并同步本文档；**优先复用现有的、高质量且久经验证的轮子（仓库内设施优先，外部库须成熟可靠），不重复造轮子**。独立测试项目使用锁定版本 TUnit，传递依赖为 Microsoft.Testing.Platform 与 TRX 扩展；不加入 Microsoft.NET.Test.Sdk/Coverlet，也不把框架引用传递进生产项目。`global.json` 选择 .NET 10 与 MTP runner，solution 同时构建生产和测试项目。另有 `RigiCompiler.sln`。
 
-Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。`native --out` 走全链：clang 驱动（`-fuse-ld=lld`）链接 CRT 出可执行文件；`--emit-obj`/`--emit-ll` 免工具链（中间产物与合并 rigi_rt 前的黄金快照）。rigi_rt 源改动经内容哈希缓存自动重编，无需手工清理。
+Middleware 的 C 工具链（MW1 起编译 rigi_rt 与 lld 链接所需）：CI 用 runner 预装 clang/lld；开发机 PATH 优先，缺则跑 `pwsh tools/Fetch-LlvmToolchain.ps1`（钉版官方 20.1.2 选择性部件，缓存 `tools/.llvm/`，gitignored）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 链接器/rigi_rt 编译行。`native --out` 走全链：clang 驱动（`-fuse-ld=lld`）链接 CRT 出可执行文件；`--emit-obj`/`--emit-ll` 免工具链（中间产物与合并 rigi_rt 前的黄金快照）。rigi_rt 实际预处理快照、工具链内容或 codegen 参数变化会自动换缓存身份。普通 native/module 请求缓存合并 runtime 后的 whole-program O2 对象，命中跳过 Middleware/IR/O2/object，仍按当前链接输入 relink；诊断产物请求绕快路。缓存根可用 `RIGI_CACHE_ROOT` 独立覆盖，缓存 I/O 故障自动退化，不需要清用户缓存；身份与锁顺序详见 Middleware 架构指南。
 
 libuv 静态库（MW11b 起协程 Alarm 族事件底座）：CI 双平台 job 各跑一步 `tools/Fetch-Libuv.ps1`（runner 预装 cmake）；开发机跑 `pwsh tools/Fetch-Libuv.ps1`（钉版 GitHub tag v1.52.1 源码 + SHA256 校验，cmake 现场构建静态库，缓存 `tools/.libuv/<rid>/`，gitignored，幂等 / `-Force` 重建）。native 解析顺序 `--libuv-dir` → 环境变量 `RIGI_LIBUV` → `tools/.libuv/<rid>` → 编译器 exe 旁 `.libuv/<rid>`；命中时 `--out` 链接行追加静态库 + 平台系统库、rigi_rt 带 `-DRIGI_HAS_LIBUV=1` 编译；未命中为编译期明确拒绝（review-20260910 用户裁定：旧行为是运行期 abort）。详见 `MIDDLEWARE_ARCHITECTURE.md` §2 事件/定时底座行。
 
@@ -23,7 +23,7 @@ mimalloc 静态库（GC Phase 2 起 rigi_rt track 台账的底层分配面，替
 
 ### 2.2 运行
 
-CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 六个：`compile` / `test` / `vm` / `native` / `run` / `help`。裸 `dotnet run` 等价于 `help`。
+CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 六个：`compile` / `test` / `vm` / `native` / `module` / `help`。裸 `dotnet run` 等价于 `help`。
 
 ```bash
 dotnet run -- test --all                 # CoreCLR 全量（迭代用；提交前验证见 §2.3，不能只跑本命令）
@@ -36,10 +36,12 @@ dotnet run -- compile --file a.rg --sema-only        # 只跑语义分析（P1�
 dotnet run -- compile --file a.rg --emit-bil a.bil   # 语义通过后发射 BIL（先经 BilVerifier 验证）；
                                                      #   §17.2 按命名空间切分：全局写 a.bil，其余写 a.<ns>.bil
 dotnet run -- compile --file a.rg --explain-dispatch # 派发链诊断报告（烘焙链 + 降级路由，RUNTIME §15）
-dotnet run -- run --file a.rg                          # 一键编译并运行（--target 缺省 vm：BIL VM 直接执行）
-dotnet run -- run --file a.rg --target native          # 经 LLVM 管线产临时可执行后运行（产物 stdout/stderr 透传、
-                                                     #   退出码透传、stdin 继承用户终端；临时 exe 无论成败用完即删）
-dotnet run -- run --file a.rg --target vm --max-steps 1000000 --entry-point <符号>   # VM 步数上限与多入口选择（与 vm 命令同语义）
+dotnet run -- module --init --root app               # 创建 schema 1 模板，显式依赖 stdlib
+dotnet run -- module --run --root app                # 默认 debug profile，在 VM 中自动构建后运行
+dotnet run -- module --run --root app --profile release -- first "two words" # native profile 与原样程序 argv
+dotnet run -- module --publish --root app --profile debug # 发布 YAML type 指定的真实 Native 产品
+dotnet run -- module --bundle --root app --output app.zip # 先发布，再打包 ZIP
+dotnet run -- module --install app.zip --root client      # 安装依赖到 client
 dotnet run -- vm --file a.bil a.core.bil ...         # 加载执行 BIL（§17.2：须传入全部切片还原完整模块）
 dotnet run -- vm --file a.bil a.core.bil --entry-point <符号>   # 多 entrypoint 时显式选入口
 dotnet run -- native --file a.bil --out app.exe        # BIL → 原生可执行（clang 驱动 lld 链接 CRT，需 C 工具链）
@@ -50,7 +52,57 @@ dotnet run -- help compile               # 单个 COMMAND 详情
 dotnet run -- help compile.file          # 单个子命令详情（子命令名不带 -- 前缀）
 ```
 
-`run` 语义要点：完整走与 `compile` 相同的管线（P1–P4 + BilVerifier），**BIL 切片不落用户目录**（vm 目标全内存；native 目标仅临时目录承载临时 exe，无论成败用完即删）；`--target vm` 为默认（大小写不敏感），非法值退出码 2；一键运行语义下 **main 的 i32 返回值即 rigic 退出码**（两目标一致；VM 异常仍为 1；`vm` 命令本身恒 0，是 `run` 与它的唯一差异）；`--target native` 要求恰一个 entrypoint，`--entry-point`/`--max-steps` 暂仅 vm 目标支持（混用明确报错退出码 2，不静默忽略）；编译失败与 `compile` 同形态（诊断走 stderr + 非零退出码），不产生执行。
+`module --run` 从根目录的 `module.yaml` 选择默认或显式命名 profile，按依赖 DAG 消费独立 API/BIL，仅编译本模块源码；target 决定 VM 或 native。配置 `entry` 使用完整 BIL canonical，缺省要求唯一标记入口。入口返回 i32 时原样转递退出码；无参数入口忽略程序 argv，`main(args: Array<String>)` 接收 `--` 后的所有参数（不含宿主 argv0）。构建失败不启动程序，诊断走 stderr，stdout 留给程序。顶层 `run` 已由 `module` 替换；低级 `compile`、`vm`、`native` 仍可直接操作源码或 BIL。
+
+schema 1 配置要求 `name`、语义版本 `version` 与 `type`，拒绝未知/重复字段、YAML
+别名及越界路径。`type` 为 `executable`、`static-library` 或 `dyn-library`；`source`
+默认为 `['**/*.rg']`，相对自身 `source/`。`profiles` 的名字由配置声明，`target` 为
+`vm` 或 `native`；初始化模板显式提供默认 `debug`（VM）和 `release`（Native）。
+`product` 可指定模块根内相对目录，缺省为 `product/<profile>`；`entry` 可放在根
+或 profile 内，profile 优先，且只能选择当前模块自己的函数。
+
+`--publish` 和 `--bundle` 均生成真实 Native 产品，profile 的 VM target 仅影响
+`--run`。库不能 `--run`。可执行产品为 `app`（Windows 为 `app.exe`）；库为
+`lib<name>.a` / `lib<name>.so`（Windows 为 `<name>.lib` / `<name>.dll`）。
+所有产品及资源放在 `PRODUCT/modules/<name>/<version>`。库配置通过完整 BIL
+canonical 指定 C 名称到本模块实现的映射，例如：
+
+```yaml
+schema: 1
+name: arithmetic
+version: 1.0.0
+type: static-library
+dependencies: [{name: stdlib, version: 1.0.0}]
+exports:
+  arithmetic_add: 'arithmetic::$add(a:.i32,b:.i32)@.i32'
+```
+
+C 导出只接受有本地函数体的公开、同步、非泛型全局/静态函数，宿主类型也不得
+开放泛型。参数/返回支持固定宽整数、float/double、bool 和 char，返回另支持 void。
+对象、String、泛型、实例 receiver、可变参数、native import、挂起、任务发布及不能
+确定目标的间接/虚/接口调用明确拒绝，包括构造器和 wrapper 安装器的隐式闭包。
+生成 `<name>.h`；静态产品另附 `<name>.pc` 与独立 `native-dependencies` 归档，
+宿主可设置自己的 `PKG_CONFIG_PATH` 后使用 `pkg-config --cflags --libs <name>`。
+带空格路径仍作为完整参数消费；归档不嵌套其他归档。
+内建标准库静态产品默认导出 `rigi_std_abs_i32`、`rigi_std_min_i32` 和
+`rigi_std_max_i64`，均调用实际标准库实现。
+
+C bool 为 `uint8_t`（输入非零为 true），char 为 `uint32_t` Unicode scalar。
+每个最终映像有一份 Rigi runtime，初始化 GC、所有 singleton 与 DAG 全局初始化
+一次；C API 不运行 Rigi main。所有 API 只能在同一宿主 OS 线程同步调用，库须
+保持加载至进程退出，不支持 dlclose 或多个 runtime owner。未捕获异常打印真实
+Rigi 类型及消息并终止进程，异常不跨 C 边界。Rigi 模块消费者导入接口/BIL，由
+最终应用合并实现；不能同时链接这些自带 runtime 的 Native 库。
+
+`hooks` 每项声明 `phase`（before/after-publish 或 before/after-install）、
+`environment`（all/linux/windows）、单行 shell `command` 与可选 `inputs`。
+环境匹配实际宿主，独立于 profile target。子进程工作目录为当前模块根，
+`RIGI_SRC`、`RIGI_RES`、`RIGI_ARTIFACT` 指自身目录，`BUILD_ROOT`、`PRODUCT`
+指入口共享根；不修改父进程环境。stdin 关闭，超时或非零退出使当前操作失败。
+
+模块 ZIP 保持根 `module.yaml`、源码、资源、发布的 `artifact` 与声明的 hook 输入；文件顺序、时间戳固定。安装使用 `module --install <ZIP> --root <入口目录>`，落在入口的 `dependencies/<name>/<version>`；大小写冲突、路径越界、符号链接、特殊节点与不匹配的嵌入依赖身份均拒绝。完整验证和 before-install 在同父级临时目录中完成，原子提交后执行 after-install；失败删除本次新安装。同身份、同 ZIP 摘要的重复安装不覆盖文件，也不重复执行安装 hook；同版本不同内容明确拒绝。信任位不从 ZIP/receipt 恢复。
+
+资源规则从每个模块自身 `resources` 读取，复制到共享 `PRODUCT/modules/<name>/<version>/<destination>`，文件/目录及大小写冲突在替换前检查。产品目录的锁覆盖 after-publish 与提交/回滚，发布失败恢复旧产品；安装与发布事务只管理自身目录，hook 的外部副作用不属于回滚范围。
 
 诊断子命令（`compile` 与 `test` 共有，可组合）：
 
@@ -59,13 +111,50 @@ dotnet run -- test --all --verbose      # 控制台输出 verbose 级日志（�
 dotnet run -- test --all --log-to run.jsonl   # 全量日志（含 verbose）以 JSONL 落盘
 ```
 
+### 分阶段遥测与代表输入性能基线
+
+性能测量默认关闭。设置 `RIGI_PROFILE_DIR=<目录>` 后，编译器只向该目录写每进程独立的 `metrics-<pid>-<uuid>.jsonl`，不改变 stdout/stderr；无需开启会逐 token 输出的 `--verbose`。JSONL 的 `scope` 记录包括 phase、父 scope ID、完成/失败状态、wall、当前进程 CPU 差值、托管 GC 分配差值、阶段结束 RSS 和**进程生命周期** RSS 高水位。后者不是阶段峰值；托管 GC 分配不包含 LLVM/C 原生堆。子工具另以 `child-process-lifetime` 记录；Linux 已退出进程的最终计数不可读时保留 `lastObservedChildCpuMilliseconds` / `observedChildLifetimePeakRssBytes`，采样间隔明确为 100ms，不把存活采样冒称最终计数。遥测覆盖文件 Lexer/Parser/AST 校验、stdlib、P1–P4b/Verifier、测试 suite、每个 Middleware stage、LLVM IR/runtime bitcode/merge/O2/object/final link 和外部进程。异常和受控非零结果均标为 failed；不可写的遥测目录静默禁写。
+
+编译阶段的 `compiler-workers` 事件在 join 后记录 jobCount、grantedCpuSlots
+和实际 activeWorkerPeak，并区分 started/completed job 数和失败/取消状态；
+串行快路 leaseAcquired=false、grantedCpuSlots=0，workerLimit=1。
+配置 jobs=N 不等于实际使用 N 个 worker。
+worker 内的 scope 标为 `overlappingProcessCounters=true`，CPU/GC 分配是
+重叠的进程区间，不能相加作为阶段成本。性能比较使用外层阶段 makespan、
+CPU 和分配差值；endRss 是结束采样，processLifetimePeakRss 仍是生命周期
+高水位。前端文件子 scope 同样只用于定位，不能将相互重叠的 wall 相加。
+`CompilerParallel` 定向套件对拍完整 AST/Span、诊断原序、Bound/Lowered 描述、
+cell 身份、BIL 字节与 VM 输出；保留真实多 worker 观测和失败/取消契约。
+
+`RIGI_CACHE_ROOT=<私有根>` 下的 `runtime-cache`、`object-cache` 与 `module-cache` 分别缓存运行时、最终原生对象与单个模块的接口/BIL 配对产物；未设置时使用 LocalApplicationData/rigi 下的对应目录。缓存事件在真实查验边界记录。冷样本只控制指定内容缓存；不清用户缓存、不更改 HOME、不宣称清除了 OS 页缓存或 C# obj/bin 缓存。
+
+独立模块的源码 selector 相对自身 `source/`，按配置顺序处理，每项命中路径按 ordinal 排序并去重。键包含原始源码字节与路径顺序、配置和实际 profile、编译器内容与模块 ABI、ModuleId/信任来源，以及依赖完整接口摘要与 API 摘要；完整接口中的 BIL 摘要保证 provider 默认值或固定表达式 helper 仅实现变化也使消费者失效。依赖采用入口选中 profile 的同名配置；没有同名配置时选依赖自身 default-profile。依赖的 `RIGI_SRC/RES/ARTIFACT` 指自身，`BUILD_ROOT/PRODUCT` 仍属于入口。
+
+before-publish 每次请求都先执行，再固定源码和声明的 hook 输入；after-publish 每次请求也执行。两阶段的命令、实际宿主、声明输入字节和注入环境均参与键；任意 before-publish 没有声明输入时保守绕缓存。接口/BIL 作为一个 `module.rgi` 配对缓存，损坏会重建，语义失败不发布新条目；成功 receipt 仅在当前模块发布步骤和 after-publish 均成功后原子替换，旧 receipt 保留到该边界。源码仍存在时每次重新计算内容键；源码缺席时只消费自身 `artifact/<profile>/module.rgi` 的已发布产物，校验当前依赖和完整链接闭包，此状态记录为 prebuilt，与内容键 hit 分开。内建标准库信任只来自编译器 resolver，磁盘包及同名普通模块不能自授。
+
+独立 BCL 工具位于 `tools/PerfBaseline`，主项目排除其 C# 文件，二者串行构建。只运行 profile 指定的代表程序和受影响测试；套件通过 `test --inventory` 的注册名动态解析编号。清单完整发现所有套件、可枚举用例、慢门控与 fuzz 种子/预算，旧单块套件保持 suite 粒度，`PassCount` 是断言数。通用 ParallelSuiteRunner 支持 `--suite-args list` 纯枚举和 `--suite-args label <精确标签...>`；未知标签整批返回 2，绝不回退全套。Native/E2E 保留现有按名/数值选择；profile 按已发现标签校验，E2E 子串会扩大选择时明确拒绝。Middleware 的 `COMP-003` 组从现有 case 数组派生统一标签列表（`test --run 57 --suite-args COMP-003`），只覆盖对象/runtime 缓存、LLVM 所有权与真实冷/hit/自愈/relink/诊断旁路；精确标签仍用 `--suite-args label <ExactLabel>`。CommandLineParser 的 `PERF-001` 组只执行纯解析及 inventory 契约；Binder/BilEmitter 的已注册定向组可通过 `groups` 选择，不能据此推断整个 suite 都已覆盖。
+
+```bash
+# Linux 命令均关闭 stdin 并设总看门狗；Windows 外层用 Watch-Command.ps1。
+timeout --kill-after=10s 180s dotnet build </dev/null
+timeout --kill-after=10s 120s dotnet build tools/PerfBaseline/PerfBaseline.csproj </dev/null
+timeout --kill-after=10s 60s dotnet tools/PerfBaseline/bin/Debug/net10.0/PerfBaseline.dll self-test </dev/null
+timeout --kill-after=10s 1000s dotnet tools/PerfBaseline/bin/Debug/net10.0/PerfBaseline.dll run tools/PerfBaseline/representative.json playground/perf-baseline-new </dev/null
+```
+
+profile 的 `compiler.fileName/arguments` 指定实际编译器（CoreCLR 可用 dotnet + DLL；AOT 可直接用 exe）；`repoRoot`、`timeoutSeconds`、`budgetSeconds`、`warmupRuns`、`hotRuns` 与 `environment` 明确实验条件。`commands` 接受任意构建/发布/编译/运行命令，使用参数数组，支持 `{repo}`、`{output}` 与单个 `{glob:路径模式}` 的有序展开；`inputs` 保存输入摘要（glob 展开的输入也逐一摘要），`toolchains` 保存工具版本与实际 PATH 解析产物摘要，`dependencyArtifacts` 可记录 libLLVM/libuv/mimalloc 等实际依赖产物摘要。代表 profile 的依赖路径为 Linux 布局，Windows/AOT 测量需按实际发布布局调整。`suites` 接受注册名以及互斥的 `labels`、`groups`、`range`，每条命令/套件可覆盖 hotRuns。所有输出目录必须为空；每个工作负载用独立私有内容缓存，固定冷一次、预热至少一次、hot 至少一次。可靠基线要求 hot ≥ 3；单样本标 exploratory，不能用于宣称提速。比较时应固定源码/编译器产物摘要、机器、配置、输入、完整参数、工具版本与采样模式。C# publish 可以在 commands 中设 `category: "csharp-publish"`、`fileName: "dotnet"`、`arguments: ["publish", "-c", "Release", "-r", "linux-x64", "-o", "{output}/publish"]`；不选择时清单明确记录 not-selected。
+
+机器资源同时记录 .NET 有效 CPU 数、GC 可用内存预算、Linux host CPU 数与 /proc/meminfo，并按 /proc/self/cgroup 和 mountinfo 解析实际 cgroup CPU/内存限制；不可读取时标 unknown。已有采样可用 `machine-resources <输出文件>` 单独补录读取时点，无需重跑工作负载。
+
+输出包括 manifest（机器、源码 HEAD/dirty 与文件摘要、编译器产物摘要、profile、env、工具版本、预算）、原始 `runs.jsonl`、每次 stdout/stderr 日志和阶段 JSONL、完整 discovered-inventory、此次 coverage 和 hot 样本 median/min/max。源码→BIL、BIL→native、native 运行、测试执行、C# build/publish 与端到端分项记录；没有选择的类别不伪报覆盖。工具只采启动进程的 CPU/RSS，不把其子进程开销算入父值；外部工具详见编译器 JSONL。Linux 工具以独立 setsid 进程组清理后代，包括根提前退出但后台仍持管道的情况；Windows 共用受管 launcher 通过 STARTUPINFOEX 的原子 Job/stdio 句柄名单启动，不支持 JOB_LIST 时挂起创建、归入 Job 后恢复。Linux 环境不能实测 Windows，此路径须由 Windows/CI 验证；Linux 无法限制主动 setsid 逃组的程序。
+
 ### 2.3 发布（Release = NativeAOT）
 
 Release 配置发布为 **NativeAOT 原生单文件**（约 16 MB，免 dotnet 运行时）：
 
 ```bash
-dotnet publish -c Release -r linux-x64 -o publish/linux-x64   # 产物：publish/linux-x64/rigic
-dotnet publish -c Release -r win-x64 -o publish/win-x64
+dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64   # 产物：publish/linux-x64/rigic
+dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
 ```
 
 - **不支持跨 OS 交叉编译**：linux-x64 产物必须在 Linux（如 WSL）上构建；Linux 侧需 `dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。
@@ -74,15 +163,15 @@ dotnet publish -c Release -r win-x64 -o publish/win-x64
 - **CI**：`.github/workflows/ci.yml` 按上述流程在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）双平台分别发布 AOT 产物并用产物跑全量测试（AOT 不支持跨 OS 交叉编译，只能按平台分别构建）。
 - **提交前本地必须同口径**：在**本机已有的 Windows 与 Linux 环境**（本仓库开发机一般为 Windows 宿主 + WSL Ubuntu）各 `publish -c Release` 一次，并用产物跑 `test --all`。禁止只跑 `dotnet run -- test --all` 就提交——那是 CoreCLR 开发回路，不会覆盖 AOT 反射根、RID 原生库与无 JIT 路径。Linux 必须在 Linux 里 publish（不能在 Windows 上交叉编 linux-x64 AOT）。
 - **本机 WSL 的 dotnet 路径（环境事实，2026-09-30 实测更新）**：WSL Ubuntu 的 PATH 上现为 **/usr/bin/dotnet = .NET SDK 10.0.112**（满足 net10.0，可直接用）；早期「PATH 是 apt 的 .NET 8、.NET 10 在 `~/.dotnet`」的布局已过时（`~/.dotnet` 仅剩旧 sentinel 残留）。若 `dotnet --version` 不是 10.x 再回退到导出 `DOTNET_ROOT=$HOME/.dotnet` 的旧手法。clang 18 在 /usr/bin/clang，zlib1g-dev 经 apt 装齐。
-- **Linux 侧跑全量的工作目录必须在原生 Linux 文件系统上（如 WSL home 的 ext4），不要在 `/mnt/c`（9p/drvfs）里跑**：e2e 探针目录是相对 CWD 创建的；9p/drvfs 的 `renameat2(NOREPLACE)` 返回 ENOSYS，而 rigi_rt 对「不能提供原子不覆盖保证的宿主/文件系统」**刻意报 Unsupported、绝不回退 rename**（rigi_rt/fs.c 注释），于是 fs_copymove/fs_primitives/accept_dir_management 等用例在 /mnt/c 下必败、在 ext4 下全绿——这是环境限制不是产品缺陷。同理 lstat 对「文件/子路径」在 ext4 报 ENOTDIR（契约 §4.5 保留的宿主差异），9p 报 ENOENT 会让平台分支断言真空通过，失去覆盖意义。做法：`cd ~ && /mnt/c/.../publish/linux-x64/rigic test --all`（语料经编译器内绝对路径定位，与 CWD 无关）。
+- **Linux 侧跑全量的工作目录必须在原生 Linux 文件系统上（如 WSL home 的 ext4），不要在 `/mnt/c`（9p/drvfs）里跑**：e2e 探针目录是相对 CWD 创建的；9p/drvfs 的 `renameat2(NOREPLACE)` 返回 ENOSYS，而 rigi_rt 对「不能提供原子不覆盖保证的宿主/文件系统」**刻意报 Unsupported、绝不回退 rename**（rigi_rt/fs.c 注释），于是 fs_copymove/fs_primitives/accept_dir_management 等用例在 /mnt/c 下必败、在 ext4 下全绿——这是环境限制不是产品缺陷。同理 lstat 对「文件/子路径」在 ext4 报 ENOTDIR（契约 §4.5 保留的宿主差异），9p 报 ENOENT 会让平台分支断言真空通过，失去覆盖意义。做法：`cd ~ && /mnt/c/.../publish/linux-x64/rigic test --all`（语料由输出/发布目录优先定位，与 CWD 无关）。
 
 ```bash
 # Windows
-dotnet publish -c Release -r win-x64 -o publish/win-x64
+dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
 ./publish/win-x64/rigic.exe test --all
 
 # WSL Ubuntu / 其它可用 Linux
-dotnet publish -c Release -r linux-x64 -o publish/linux-x64
+dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64
 ./publish/linux-x64/rigic test --all
 ```
 
@@ -90,15 +179,15 @@ dotnet publish -c Release -r linux-x64 -o publish/linux-x64
 
 ## 测试策略
 
-- **不使用任何测试框架**。测试是 `Tests/` 下的静态类，每个类提供 `public static int RunAll()`（返回失败用例数），由 `Tests/TestRunner.cs` 统一驱动（`test` 命令入口）。
+- **测试入口并存**：独立 `Tests/TUnit/` 使用 TUnit source generator 与 MTP；框架依赖仅属于测试项目。`Tests/` 下尚未迁移的静态套件继续由 `TestRunner` 驱动。日常只跑受影响 case；双平台 NativeAOT 全量提交/CI 门禁保持有效。
 - **全量入口（迭代）**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名。**提交前入口**是 §2.3 的双平台 NativeAOT publish 产物 `test --all`（与 CI 同口径），不是 `dotnet run`。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
 - **统一基建**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等），`Tests/TestHarness.cs` 是唯一的驱动与断言（ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl + Check/CheckTrue/CheckParseError/Summary）。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
 - **断言对象约定**：除查的就是命令行/日志/token 流/层协议行为的套件（Logger、CommandLineParser、LexerFuzz、TokenDisposition）外，一律断言 AST 树产物（AstDescribe 描述串 + 结构断言），不断言控制台输出文本。
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
 - **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
 - **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
-- **fuzz 并行子进程超时**：`SemanticsFuzz` 区间 >100 例时切多子进程并行，父进程默认**不限时**等待（NativeAOT 产物比 CoreCLR 慢约 3 倍，固定预算会误杀）；需要时限时用 `--suite-args <from> <to> child-timeout-ms=<毫秒>` 显式给出（套件参数不能带 `--` 前缀，会被解析成 test 子命令）。
-- **NativeE2E 定位与按名运行**：`test --run 58 --suite-args` 三选一——①`list`：只打印当前真实索引+Label 清单（不启动编译，无 clang 也可用；**定位/验收一律以此为准，禁止凭记忆猜索引**）；②首参为整数：保持原 `from to` 区间语义（含不完整区间的用法报错）；③其余非空参数：按 Label 子串过滤（OrdinalIgnoreCase Contains，进程内单例执行、[PASS]/[FAIL] 行自带标签），零匹配退出 2。示例：`--suite-args list`、`--suite-args 545 545`、`--suite-args Parcel 动态访问`。
+- **fuzz 动态批次超时**：`SemanticsFuzz`/`StressFuzz` 全局索引按小批进入共享 pending，默认**不限时**等待（保留旧口径；caller cancellation 仍终止并排空进程树）；Semantics 需要时限时用 `--suite-args <from> <to> child-timeout-ms=<毫秒>` 显式给出（套件参数不能带 `--` 前缀，会被解析成 test 子命令）。
+- **NativeE2E 定位与按名运行**：`test --run 58 --suite-args` 三选一——①`list`：只打印当前真实索引+Label 清单（不启动编译，无 clang 也可用；**定位/验收一律以此为准，禁止凭记忆猜索引**）；②首参为整数：保持原 `from to` 区间语义（含不完整区间的用法报错）；③其余非空参数：按 Label 子串过滤（OrdinalIgnoreCase Contains，父入口交给隔离 worker、[PASS]/[FAIL] 行自带标签），零匹配退出 2。示例：`--suite-args list`、`--suite-args 545 545`、`--suite-args Parcel 动态访问`。
 - **挂死调试纪律（必须设超时）**：调试可能引入死锁/活锁/进程不退出的改动（调度器、线程、等待-唤醒协议、quiescence 类计数）时，**任何测试运行都必须带超时**，禁止裸跑无限等待：① 优先用单例进程内复现通道（`--suite-args <i> <i>`）逐条验证，先单例绿再跑并行；② 必须跑子进程/产物进程时显式给超时（套件的 `child-timeout-ms`、或 shell 层看门狗 `tools/Watch-Command.ps1`，见下条）；③ 运行被中止后先检查并结束残留的 rigic/dotnet 测试子进程（文件锁会干扰重跑），再继续——`pwsh tools/Watch-Command.ps1 -CleanupOrphans` 一键清扫。
 - **shell 层看门狗（tools/Watch-Command.ps1，MW12 起常驻公共工具）**：任何可能挂死/留孤儿的命令（dotnet test、native 产物、手工探测）都必须经它带超时拉起：`pwsh tools/Watch-Command.ps1 -Command dotnet -ArgumentList "run -- test --run 58" -TimeoutSeconds 900`。行为契约：子进程 stdout/stderr 原样穿透；正常结束时退出码 = 子进程退出码、job 关闭顺带清扫残留孙进程；超时灭整树并退出 **124**；参数校验失败退出 2；启动失败退出 127。`-ArgumentList` 是**原始参数字符串**（经 powershell.exe 命令行传参时逗号不会拆分数组，含空格的参数自行加双引号）。另注意 PowerShell 关键字参数模式下 `exit $p.ExitCode` 会被拆成 `$p` + 字面量 `.ExitCode`（透传退出码须先落局部变量），cmd 行内 `%ERRORLEVEL%` 在整行解析期展开（测上一条命令退出码须单独一行）。实现遵循下述四条铁律（1 stdin 断开、2 不用 `$p.Kill($true)`、3 Job Object 灭树、4 不求提权）。
 - **macroGC 诊断 env 三旋钮（MW12 起）**：native 产物支持 `RIGI_RT_GC_THRESHOLD=<字节>`（债务阈值，默认 1MiB，调低可强制 mid-run 收集）、`RIGI_RT_GC_OFF=1`（纯 ARC 对照）、`RIGI_RT_GC_TRACE=1`（候选/收集全链路 stderr 追踪）；NativeE2E 的 `EnvCase` 构造器可按用例注入（与 MEMTRACK 合并）。收集器/ARC 问题排查时与 Watch-Command 组合使用。
@@ -108,6 +197,53 @@ dotnet publish -c Release -r linux-x64 -o publish/linux-x64
   3. **推荐 Job Object 根治**：`CreateJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE(0x2000)` + `AssignProcessToJobObject`——后代出生即入 job，job 句柄随看门狗退出（无论正常/被杀）关闭时内核自动灭整树；PS 5.1 可经 Add-Type P/Invoke 使用（注意嵌套 struct 赋值须整体拷出改完再塞回）。C# 测试代码同理。
   4. **提权边界**：本机工具链若以管理员运行，残留孤儿只能提权清理；能不求管理员就不求。
 - 测试数量与通过状态等易变数字不写入文档，以实际运行为准。
+
+### 独立 TUnit 与隔离 case 协议
+
+`Tests/CaseCatalog.cs` 是稳定 ID、suite/source/group/trait/LegacyRef 与单 input 驱动的唯一机器目录；`test --inventory` 的 `pilotCases` 输出同一映射。Lexer slash/comment、Parser 正负表达式、Semantic wrapper 负例、BIL scalar roundtrip/保留名负例、VM/native hello 逐 input 执行。旧 suite 未纳入该目录的部分继续如实报告既有 suite 或 provider 粒度。
+
+TUnit 的 `MethodDataSource` 为每个目录项生成独立发现行，DisplayName 与稳定 ID 相同，Categories 包含 ID、suite、Pilot、group、trait。框架生成的 UID 含数据行序号，不作为持久 ID；精确选择使用稳定 ID category。发现清单可输出 JSON 并核对 displayName/traits：
+
+```bash
+dotnet build
+dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --list-tests
+# 发布宿主同样支持发现 JSON；CoreCLR 可用 dotnet <测试DLL> --list-tests json。
+# suite 类别选择：
+dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --treenode-filter '/*/*/*/*[Category=Lexer]' --minimum-expected-tests 2
+# 精确稳定 ID + TRX：
+dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --treenode-filter '/*/*/*/*[Category=lexer.slash]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename impacted.trx
+```
+
+MTP 不能使用 VSTest 的 `--filter`。`--minimum-expected-tests` 是必需的零匹配防护；未知 ID 类别不会回退全套，零匹配返回非零。该固定 MTP 版本不支持 `--zero-tests-policy`。TRX 的测试数与 Harness 断言数分开：一条目录项是一条框架测试，内部可能执行多条断言。
+
+`CaseOutcome` 状态为 Pass/Fail/Skip/Cancel，包含 assertions/failures/skipReason/diagnostics；JSON 用 `Utf8JsonWriter`/`JsonDocument` 编解码，带协议版本与 caseId，拒绝零断言 Pass、矛盾计数与无理由 Skip。每 case 重置 Harness/日志并捕获恢复日志状态；Lexer 保留其私有计数适配。异常、非零退出、缺失或矛盾 JSON 均失败。TUnit adapter 将 Fail 转成失败、Skip 转成正式 `Skip.Test(reason)`、Cancel 在 worker 灭树/排空之后调用当前测试 `Execution.Cancel()` 并抛框架 token 的取消异常；MTP/TRX 将取消计入失败，退出非零。
+
+`CaseWorkerClient` 每请求创建唯一临时根，并让 child TMPDIR/TEMP/TMP 指向该根；结果文件与 stdout/stderr 分开。只执行 `test --worker --case-id <稳定ID> --result-file <路径> --spawned`，禁止旧 runner 二次展开；未知 ID 返回 2。worker 产物默认来自 `typeof(TestRunner).Assembly.Location`，可显式设置 `RIGI_TEST_RIGIC` 为真实 rigic EXE 或 DLL；DLL 使用匹配的 runtimeconfig/deps 经 `dotnet exec` 启动。AOT Location 为空时必须指定 override，不能把 TUnit 宿主当作 rigic。
+
+框架 limiter 采用同一配置的 CPU 容量，真正启动时仍经过 `ResourceBudget.Shared` 的 CPU/内存/exclusive FIFO 授予；它只在当前父进程共享，不同 CLI/TUnit 宿主互不共享，CI 必须串行。`RIGI_JOBS` 是 1..实际有效 CPU 的十进制整数；`RIGI_TEST_MEMORY_MIB` 是 256..父宿主预留后的内存容量，非法/超额明确拒绝。资源探测复用性能工具的实际 cgroup membership/mount 解析并收紧可见祖先限制，还取 Linux affinity/cpuset 边界。
+
+每个 child 分别注入 `DOTNET_PROCESSOR_COUNT`、`RIGI_JOBS`、`RIGI_COMPUTE_WORKERS`、`RIGI_LLD_THREADS` 与 `DOTNET_GCHeapHardLimit`，GC 只占其 lease 内存的一半，给 LLVM/C native heap 留余量；不更改父环境。native 内存权重保守预留，case outcome 的 execution 可记录实际进程组 RSS/CPU 采样，reservation 不是实际 RSS。CPU slots 不等于 OS 总线程数，真并发用例至少四 Compute，即使只有两物理 slots 也保留四线程共享；GC 与懒建 IO 另有线程。
+
+legacy `test --run <编号...>`/All 共用动态跨 suite dispatcher；实际动作与 inventory 来自同一 provider，不反射。轻例小批、native 重例逐 case；Module 中声明 2048MiB 的实际重型 case 各用独立 worker，轻例在重型边界切批，单 worker 截止不因拆批而提高；未拆的单块如实报告 `suite-exit`，返回失败数转成退出契约断言。`--suite-args indices <全局序号...>` 选择稀疏 Semantics/Stress，严格校验预算内索引；范围、组、精确标签及旧 Native/E2e 名称选择整体先校验，未知项不回退全套。默认排除 slow gate，显式 label/name 可运行慢例。稳定 pilot ID 保持不变。
+
+完整源码 E2e 与 BilVmStress 每输入独立 worker，避免多次编译或多轮 VM 回归在同一个截止内累加，原循环次数不变。普通 worker 的默认截止为九分钟；包含进程内 whole-program `default<O2>` 与对象发射的 legacy NativeE2E 使用四十五分钟的有限窗口。按真实冷编译整套成本及共享预算满载时的执行余量，Binder/BilEmitter/Lowerer 无参数完整整组分别使用六十、七十五、三十分钟。定向组、模块 case 与小 BIL pilot 仍用九分钟；调用方显式 `RunAsync(timeout: ...)` 优先。任务选择、稳定 ID 解码与直接 case 客户端共用同一默认截止策略；fuzz 保留既有默认不限时及显式覆盖。根等待、灭树与排空责任不随窗口改变。CLI 每个任务完成时输出一行进度，最终结果与计数仍按原选择顺序输出。
+
+进程隔离使用性能工具同一受管 launcher：Linux `setsid` 建 session/group，负 pgid 灭树；Windows 原子 Job 或挂起归入 Job 后恢复，stdio 仅继承 child 端。根等待与管道排空共用截止；成功也清残留后代，root/drain 完成后只删除本次 TMP 请求根。Linux 无法容纳主动 setsid 逃组；Windows 不能由 Linux 环境冒称实测。case execution 的进程组 RSS/CPU 以 100ms 活体采样，是下界，最后可读 PID 累计 CPU 不是退出后最终计数；其他平台不可得值为 null。
+
+native 链接配置 `RIGI_LLD_THREADS` 仅显式设置时严格接受 1..254，ELF/COFF 都使用 `-Wl,--threads=N`，未设置沿用工具默认；该参数进入 link record，不进入 O2 对象 key。测试 lease 会显式设置链接线程数，因此工具链、lld 和产物运行继承一致的子预算。
+
+协议契约覆盖 Harness/私有 Lexer 失败、显式 Skip、缺失结果的非零退出、超时、开始前与运行中取消，以及 Linux 根早退但后代持有管道。外部失败/TRX 验收可对单 ID 显式设置 `RIGI_TEST_PROBE=fail-harness|fail-lexer|skip|delay|crash`；取消同时设置 `RIGI_TEST_CANCEL_AFTER_MS`。这些门控不改变默认语义覆盖，不进入默认 CI 失败配置。
+
+闭合泛型测试使用 `[GenerateGenericTest(typeof(int))]` 静态生成，发布后必须真实发现并执行 Generic 类别：
+
+```bash
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r linux-x64 -o publish-tests/linux-x64
+./publish-tests/linux-x64/RigiCompiler.Tests --treenode-filter '/*/*/*/*[Category=Generic]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename generic-aot.trx
+```
+
+TUnit AOT 宿主需要运行 worker 时指定 `RIGI_TEST_RIGIC`，并保留真实编译器产物的 sidecars；Generic 自身不依赖 worker。编译器程序集沿用既有反射根描述符；框架/测试宿主 AOT 分析与生产 AOT 警告应分别核对。
+
+`TestCorpusPaths` 优先 `AppContext.BaseDirectory`；e2e/native 语料、mq 压力源和 C fixture 所需 runtime headers 随输出与 publish 复制。开发时允许源码回退；发布验收设置 `RIGI_TEST_CORPUS_ONLY_OUTPUT=1` 禁止回退，并在独立发布布局/不同 CWD 执行，缺少资产必须失败，不能借 checkout 掩盖漏复制。
 
 ### e2e 语料通道（`E2e` 套件）
 
@@ -155,9 +291,9 @@ push 后立即 apply 把工作区原样恢复，stash 条目留存为恢复点�
 
 **实施型任务提示词风格**（缺第 1 块曾致子代理陷入权限幻觉、空转整个上下文零产出）：
 
-1. 开头「操作须知」块逐条写明：① 你拥有完整的文件读写/编辑/搜索/shell 工具，可直接修改仓库内任何文件，不要怀疑权限，直接动手；② 环境事实——Windows，无 cat/heredoc/tail/grep/wc，创建文件用写文件工具、搜索用搜索工具、管道收尾用 `| powershell -Command "$input | Select-Object -Last 5"`；③ 临时探测文件写到 playground/ 下，用完即删，且只删自己创建的文件，严禁批量删除 playground/ 下任何既有内容；④ shell 偶发网络/证书错误属抖动，直接重试。
+1. 开头「操作须知」块逐条写明：① 你拥有完整的文件读写/编辑/搜索/shell 工具，可直接修改仓库内任何文件，不要怀疑权限，直接动手；② 按实际宿主填写环境事实（OS、shell、实际仓库根、SDK/工具链与启动脚本），不得把历史 Windows/内层路径约定套到 Linux/bash 环境；③ 临时探测文件写到 playground/ 下，用完即删，且只删自己创建的文件，严禁批量删除 playground/ 下任何既有内容；④ shell 偶发网络/证书错误属抖动，直接重试。
 2. 任务分阶段，每阶段写完立即 `dotnet build` 验证（0 错误 0 警告），不得一口气写完全部代码再编译；上下文宝贵，避免长篇内心独白，直接执行。
-3. 给出明确的验证命令与基线断言数（`dotnet run -- test --run N` + `test --all`），断言数只增不减。
+3. 给出明确的受影响验证选择与基线断言数（legacy suite/group/exact-label 或 TUnit 稳定 ID/category），断言数只增不减。遵守用户指定的验证范围；双平台 NativeAOT 全量提交/CI 原门禁保留，不在仅受影响验证的工作中擅自扩大范围。
 4. 报告要求简洁：改动文件清单、关键决策、验证输出、意外与处理。
 5. 明确要求：用中文思考、注释中文、严禁 git 变更操作（仅两个例外：① 按备份纪律在每个小阶段验证通过后执行快照对 `git stash push -u -m "<任务>: <阶段>" && git stash apply`；② 遇误删/误改等意外时可 `git stash apply stash@{N}` 恢复自己创建的快照条目自救，apply 后条目保留）。
 

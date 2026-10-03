@@ -1,0 +1,10 @@
+schema: 1
+name: minimal
+version: 1.0.0
+type: executable
+dependencies: [{name: stdlib, version: 1.0.0}]
+default-profile: debug
+profiles:
+  debug: {target: vm}
+  release: {target: native}
+  representative: {target: vm}

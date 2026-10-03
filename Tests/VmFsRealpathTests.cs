@@ -15,7 +15,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsRealpath", Cases, sectionTitle: "VmFsRealpath");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -152,7 +155,7 @@ namespace RigiCompiler.Tests
                 catch (Exception ex) when (ex is IOException
                     or UnauthorizedAccessException or NotSupportedException)
                 {
-                    Console.WriteLine("  UNSUPPORTED 末段文件符号链接 fixture："
+                    TestHarness.RecordSkip("  UNSUPPORTED 末段文件符号链接 fixture："
                         + ex.Message);
                 }
             }
@@ -170,7 +173,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsLinux())
             {
-                Console.WriteLine("  SKIP 链接前 ..：仅 Linux 实盘链接解析，当前平台未验证");
+                TestHarness.RecordSkip("  SKIP 链接前 ..：仅 Linux 实盘链接解析，当前平台未验证");
                 return;
             }
             var dispatch = NewDispatch();
@@ -218,7 +221,7 @@ namespace RigiCompiler.Tests
                 catch (Exception ex) when (ex is IOException
                     or UnauthorizedAccessException or NotSupportedException)
                 {
-                    Console.WriteLine("  UNSUPPORTED 断链/循环符号链接 fixture："
+                    TestHarness.RecordSkip("  UNSUPPORTED 断链/循环符号链接 fixture："
                         + ex.Message);
                     return;
                 }

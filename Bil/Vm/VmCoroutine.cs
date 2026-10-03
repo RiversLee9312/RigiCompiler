@@ -826,15 +826,13 @@
             }
             var typeName = VmTypeOps.ActualType(failure.ExceptionObject);
             var message = DispatchGetMessage(context, failure.ExceptionObject)
-                ?? ReadMessageField(failure.ExceptionObject);
+                ?? ReadMessageField(context, failure.ExceptionObject);
             if (message == null)
             {
                 return failure;
             }
             return new VmException(typeName + ": " + message, failure.ExceptionObject);
         }
-
-        private const string UncaughtGetMessageSlot = "$.uncaught.getMessage";
 
         private string? DispatchGetMessage(VmContext context, VmValue exceptionValue)
         {
@@ -850,27 +848,10 @@
                 {
                     return null;
                 }
-                var depth = CallStack.Count;
-                // 清 Throw pending 让派发帧可执行；终态 Fail 会重置 _pending
-                _pending = null;
-                PushFrame(function, new[] { exceptionValue }, UncaughtGetMessageSlot);
-                while (CallStack.Count > depth
-                    && State == VmCoroutineState.Running
-                    && !HasAbruptCompletion)
-                {
-                    Step(context);
-                }
-                if (CallStack.Count != depth
-                    || State != VmCoroutineState.Running
-                    || HasAbruptCompletion)
-                {
-                    return null;
-                }
-                _pending = null;
-                return CurrentFrame.Slots.TryGetValue(UncaughtGetMessageSlot, out var value)
-                    && value is VmString text
-                    ? text.Value
-                    : null;
+                // 消息 getter 可以抛出；复用同步隔离桥，保留原异常协程的
+                // 栈、Throw pending 和终态，失败后仍由原 receiver 的字段兜底。
+                return context.Dispatch.InvokeIsolated(function, new[] { exceptionValue })
+                    is VmString text ? text.Value : null;
             }
             catch (VmException)
             {
@@ -878,10 +859,10 @@
             }
         }
 
-        private static string? ReadMessageField(VmValue exceptionValue)
+        private static string? ReadMessageField(VmContext context, VmValue exceptionValue)
         {
             return exceptionValue is IVmFieldHost host
-                && host.TryReadField("core::Exception#message@.string", out var value)
+                && host.TryReadField(context.RuntimeField("core::Exception#message@.string"), out var value)
                 && value is VmString text
                 ? text.Value
                 : null;

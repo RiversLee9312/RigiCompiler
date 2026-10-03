@@ -6,17 +6,16 @@ namespace RigiCompiler.Tests
     {
         // VM 与 native 使用同一份有明确行为断言的语料，避免复制两份测试源码。
         private static string SerializationGraphCorpus(string name, [CallerFilePath] string path = "") =>
-            File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!, "e2e", "rigi", name + ".rg"));
+            File.ReadAllText(TestCorpusPaths.Resolve("Tests/e2e/rigi/" + name + ".rg", path));
 
         // 依赖原生台账的语料不属于 BIL VM 语言语料目录。
         private static string NativeResourceCorpus(string name, [CallerFilePath] string path = "") =>
-            File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!, "native", "rigi", name + ".rg"));
+            File.ReadAllText(TestCorpusPaths.Resolve("Tests/native/rigi/" + name + ".rg", path));
 
         // 日常回归保留竞争形态；百万级压力由工具显式运行。
         private static string MqConcurrentReleaseCorpus([CallerFilePath] string path = "")
         {
-            var source = File.ReadAllText(Path.Combine(Path.GetDirectoryName(path)!,
-                "..", "tools", "stress", "mq.rg"));
+            var source = File.ReadAllText(TestCorpusPaths.Resolve("tools/stress/mq.rg", path));
             // 四生产者、四读者、八个以上日志段仍完整覆盖竞争形态；
             // VM 全指令计费下控制日常预算，大吞吐量留给原生压力工具。
             source = source.Replace("1000000", "2048").Replace("250000", "512")

@@ -36,9 +36,52 @@ BilModule（BIL 内存对象模型）
 
 核心决策（修改须重新过一遍取舍）：
 
+独立模块的私有 canonical 后缀是链接身份，保留名识别使用 `BilLogicalName`。
+Wrapper proxy 匹配只在目标 wrapper 的实例成员及 proxy-kind 修饰符内进行，返回原
+canonical；普通符号索引仍精确匹配。标准库协程机制通过可信接口转递的
+`compiler.runtime.<逻辑完整 ABI 的 SHA256>` 绑定解析私有 Dispatcher、原语、方法和
+字段。前缀协议只筛这些准确绑定，检查摘要键及唯一性，再查询完整 canonical；不能
+从普通声明中挑选同逻辑名。无模块绑定的低级编译保留原精确拼写。VM 与 Native 的
+singleton、调度、Task 字段和退出 drain 共用此绑定规则。
+
+`NativeBuildOptions` 明确区分 executable、static-library 和 dynamic-library。
+C 导出 canonical 同时作为 MIR 可达根和 layout 的构造调用根，不能仅在 LLVM
+阶段添加外部符号。CoroutineSplit 在原始 TaintAnalysis 集合上检查导出，避免
+Plain tainted 函数降为 trap 后仍保留同步签名；随后遍历所有显式与构造器/enum/
+wrapper 隐式调用，拒绝任务发布、间接/虚/接口目标。库的 eager singleton/global
+初始化也接受相同闭包检查；仅可信标准库同步构造及准确绑定的同步锁创建可用。
+
+外层 C wrapper 为 external linkage，内部 Rigi 函数仍 internal。wrapper 按内部
+CallAbi 编组后调用真实函数体；bool 在 uint8_t 与 i1 间归一/扩展，Linux 窄整数
+根据目标 C ABI 挂 signext/zeroext，属性只作用于 C 边界。异常检查复用 typed
+uncaught reporter，报告并终止，不跨 C 栈恢复。shared 链接按显式导出 allowlist
+隐藏运行时面；static 用 archiver 归档经过 runtime merge、default<O2> 的 PIC
+最终对象，uv/mimalloc 由宿主另行链接。library runtime 变体不含 main，Linux
+预处理和 codegen 同时使用 PIC，避免 executable TLS local-exec 重定位进入 DSO。
+kind、完整 export map、ABI/visibility、runtime flags、archiver 内容身份参与缓存。
+
+库通过 uv_once 完成 GC、singleton、DAG global 初始化与 atexit 注册；每次 API
+检查同一宿主线程，不 per-call shutdown，不运行 rigi_entry/main，也不支持卸载。
+可执行入口则从 argc/argv 构造真实 Array<String>，使用闭合 Array/String sheets
+与严格 UTF-8 检查，将 owned String 初始引用转移给零初始化数组槽。合成入口
+持有桥接数组根至 Dispatcher quiescence 后释放；正常与 typed reporter 路径都
+清零根，避免异步 frame 拥有引用时泄漏或重复释放。Windows wmain UTF-16 转换
+与工具链分支属于 Windows runner 验证范围，Linux 验收不能替代其动态证据。
+
 工具链调用默认设十分钟期限，超时终止本次子进程树并报告受控错误；双路输出读取也受期限约束。`--verbose`/日志记录所用 clang 的路径与 SHA256，运行时 bitcode 缓存身份包含该摘要。部署方可通过 `RIGI_LLVM_SHA256` 钉住可信 clang 内容；未设置钉值时，`--toolchain`、`RIGI_LLVM` 和本机工具链仍属于用户显式信任输入，内容指纹本身不证明发行来源。
 
 **运行时目标与缓存防线**：libLLVM 的 `LlvmHost.HostTriple` 是生成 LLVM 模块的唯一目标三元组来源；`rigi_rt` 现场 clang 编译和最终 clang 驱动链接都显式传入该模块目标（`--target=<triple>`）；Windows clang 会从本机 VS 自动补 MSVC 版本，编 bitcode 时另以 `-Xclang -triple -Xclang <triple>` 钉住 cc1 的精确模块目标，仍由驱动发现 VS/SDK 头文件与 CRT。不能依赖 clang 自身默认 vendor，也不能通过改写 bitcode 文本掩盖编译目标。缓存身份包含有序完整 clang 编译参数（含目标、特性宏、libuv 头目录）、clang 内容 SHA256、全部内嵌源及生成的 unity 翻译单元；不同目标不复用旧缓存。生成模块显式采用同一 TargetMachine 的 data layout；缓存命中与新编译产物均在合并前解析真实 bitcode，核对 triple 及 libLLVM 宿主 TargetMachine 实际 data layout；不相容、无法解析或目标工具链编译失败必须明确拒绝，不能吞掉 LLVM 合并 warning 继续产物。此处比较的是 LLVM 目标布局，外部 CRT/系统库仍由目标 clang 驱动发现；若未来启用不同 CPU/ABI 选项，必须同步纳入编译参数、缓存身份和目标机布局检查。
+
+
+**whole-program 对象缓存**：缓存边界为合并 runtime 并经过 `default<O2>` 后、最终链接前的 `.o`；查询位于 MwPipeline/IR 构建前。完整 `BilWriter.Write(module)`（保持声明、资源、metadata、函数顺序）与 schema、后端 ABI、build kind、实际 compiler/binding/libLLVM 内容身份、真实目标/data layout、generic CPU/空 features、PIC/默认 code model、object ABI、runtime 编译身份共同构成完整 SHA256 key。`--out` 与临时路径不进入对象 key；`--emit-ll` 保持 merge 前 IR、`--emit-obj` 保持 opt 前对象语义，因此这两类诊断请求绕对象快路。Gate/BilVerifier 与「本地 entrypoint 声明实际具有函数体」的入口门槛恒执行；可变 BilModule 不得并发回写，同一实例的请求串行消费。
+
+runtime 每次用请求级子进程环境快照及同一完整目标/特性参数做 `clang -E -P`，将实际预处理字节（包括系统与 libuv 头文件、环境搜索路径影响）纳入身份，miss 从同一快照以 `-x cpp-output` 和原 codegen 参数编译。私有源目录在预处理展开前用 `-ffile-prefix-map` 映射为 `rigi_rt`，快照输入名固定为 `runtime.i`；不事后改写预处理文本。Linux 工具链身份核对 clang 动态依赖闭包、driver config 与有效 cc1 参数；额外插件/profile/PCH/module 输入或无法确认的依赖闭包安全绕缓存。Windows 的依赖闭包尚未实测确认，当前正常 fresh compile 并绕过 runtime/object 缓存；SHA pin 不因绕缓存而失效。
+
+libLLVM 身份紧随首次真实加载捕获，来自 `Process.Modules` 的唯一实际加载文件，后续验证初始摘要及 Linux 映射 device/inode，不猜搜索目录里的库。compiler 的已加载程序集提供独立 `Location` 时，compiler/binding 同时核对已加载模块 MVID 与磁盘 PE，再保存不可变内容身份；即使 CoreCLR 的 Release runtimeconfig 关闭动态代码，仍分别使用 compiler DLL 与 LLVMSharp DLL，不能以 `IsDynamicCodeSupported` 推断 NativeAOT。无独立托管映像路径的 NativeAOT 使用实际映射的进程可执行文件，Linux 另核 `/proc/self/exe` 内容。托管 PE 验证失败不得退回 runtime 宿主摘要。映射删除、替换、不可读、多候选或身份未知均关闭快路。LLVM global context 与 SharedHostMachine 使用可重入 Monitor lease；短宿主查询/目标验证与完整 create/merge/O2/object/dispose 生命期均遵约，public LLVM helpers要求相同所有权。禁止在持有 LLVM lease 时等待缓存锁。
+
+runtime/object 缓存分别采用每 key 进程 singleflight 与跨进程稳定 sibling `.locks/<完整key>.lock`，锁文件不随 entry 删除；锁内重新校验 digest、修复损坏 entry，将关闭的产物与 manifest 放在 staging 目录后 `Directory.Move` 完整发布。编译总写本次请求私有路径，缓存 I/O 失败正常继续 fresh compile，不吞语义/工具链诊断；对象命中先在锁内复制到请求路径，再释放锁链接。锁顺序为 runtime 准备及短 LLVM 校验结束 → object singleflight/filelock → MwPipeline → 完整 LLVM lease；不嵌套 runtime/object 文件锁。`RIGI_CACHE_ROOT` 可覆盖私有根，POSIX 目录模式为 0700。
+
+每次请求仍解析 libuv/mimalloc/`--link` 并执行最终链接；静态库、lld、CRT 与完整链接参数属于链接记录，不进入对象 key。旁路遥测记录 native-object miss/hit/bypass 与 O2 scope；开启测量时额外记录 clang 真实 linker/CRT 计划和 Linux lld 实际选中的文件摘要。链接失败保留已经验证的对象。Windows 当前仅记录驱动计划与可读显式文件，默认 CRT 实际选择闭包尚未实测完整覆盖，不据此宣称 Windows 实际链接文件摘要齐全。
 
 LLVM 元数据全局名保留完整 canonical，由 LLVM API 处理文本引号转义，不将泛型逗号和类型名中的点折叠成同一字符。
 

@@ -19,8 +19,7 @@ namespace RigiCompiler.Tests
 
         private static string GcDebtC([CallerFilePath] string path = "")
         {
-            var header = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path)!,
-                "..", "rigi_rt", "macrogc.h")).Replace('\\', '/');
+            var header = TestCorpusPaths.Resolve("rigi_rt/macrogc.h", path).Replace('\\', '/');
             // 只测试账本计量：region 内放入虚拟的大体积候选，离开前全部摘除。
             // collector 永远不会扫描这些栈对象，不必实际分配数 GiB 才测到溢出。
             return "#include \"" + header + "\"\n" + """

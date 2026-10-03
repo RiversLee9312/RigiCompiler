@@ -136,7 +136,7 @@ if (-not (Test-Path (Join-Path $srcDir "CMakeLists.txt"))) { throw "提取失败
 $buildDir = Join-Path $stage "build"
 New-Item -ItemType Directory -Force $buildDir | Out-Null
 $cmakeArgs = @("-S", $srcDir, "-B", $buildDir,
-    "-DBUILD_TESTING=OFF", "-DCMAKE_BUILD_TYPE=Release")
+    "-DBUILD_TESTING=OFF", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
 if ($Rid -eq "win-x64") {
     $llvmClangCl = Join-Path $repoRoot "tools/.llvm/$Rid/bin/clang-cl.exe"
     $ninjaExe = Get-Command ninja -ErrorAction SilentlyContinue

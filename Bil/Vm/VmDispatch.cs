@@ -196,7 +196,7 @@ namespace RigiCompiler.Bil.Vm
 
         private VmValue DispatcherInstance()
         {
-            return _context.GetSingleton("core.coroutine::Dispatcher")
+            return _context.GetSingleton(_context.RuntimeSymbol("core.coroutine::Dispatcher"))
                 ?? throw new VmException("core.coroutine::Dispatcher singleton 未初始化");
         }
 
@@ -217,19 +217,19 @@ namespace RigiCompiler.Bil.Vm
                 ?? throw new VmException("stdlib 缺少 " + prefix + "$" + name);
         }
 
-        private static long ReadI64Field(IVmFieldHost host, string symbol)
+        private long ReadI64Field(IVmFieldHost host, string symbol)
         {
-            return host.TryReadField(symbol, out var value) && value is VmI64 number
+            return host.TryReadField(_context.RuntimeField(symbol), out var value) && value is VmI64 number
                 ? number.Value
                 : 0;
         }
 
-        private static long CoroutineTokenOf(VmValue value)
+        private long CoroutineTokenOf(VmValue value)
         {
             if (value is not VmObject carriage
-                || carriage.TypeRef != "core.coroutine::CoroutineCarriage"
+                || carriage.TypeRef != _context.RuntimeSymbol("core.coroutine::CoroutineCarriage")
                 || !carriage.TryReadField(
-                    "core.coroutine::CoroutineCarriage#token@.i64", out var token)
+                    _context.RuntimeField("core.coroutine::CoroutineCarriage#token@.i64"), out var token)
                 || token is not VmI64 number)
             {
                 return 0;
@@ -248,9 +248,9 @@ namespace RigiCompiler.Bil.Vm
             taskObject.WriteHidden(TaskCoroutineHiddenKey, new VmI64(token));
         }
 
-        private static bool ReadBoolField(IVmFieldHost host, string symbol)
+        private bool ReadBoolField(IVmFieldHost host, string symbol)
         {
-            return host.TryReadField(symbol, out var value) && value is VmBool flag
+            return host.TryReadField(_context.RuntimeField(symbol), out var value) && value is VmBool flag
                 && flag.Value;
         }
 
@@ -451,11 +451,12 @@ namespace RigiCompiler.Bil.Vm
         // 拼写随声明漂移，运行时桥只锁简单名）
         private string FieldSymbolOf(string typeRef, string simpleName)
         {
+            var prefix = TaskPrefixOf(typeRef) + "#" + simpleName + "@";
+            var canonical = BilCompilerSymbols.ResolvePrefix(_context.Module, prefix);
             foreach (var field in _context.CollectInstanceFields(typeRef))
             {
-                if (BilVerificationContext.TryParseFieldSymbol(field.Symbol,
-                        out _, out _, out _)
-                    && VmContext.FieldSimpleName(field.Symbol) == simpleName)
+                if (canonical != null ? field.Symbol == canonical
+                    : field.Symbol.StartsWith(prefix, StringComparison.Ordinal))
                 {
                     return field.Symbol;
                 }
@@ -479,10 +480,10 @@ namespace RigiCompiler.Bil.Vm
             return coroutine.BoundExecutor;
         }
 
-        private static VmObject? ReadExecutorField(VmObject taskObject, string prefix)
+        private VmObject? ReadExecutorField(VmObject taskObject, string prefix)
         {
             return taskObject.TryReadField(
-                    prefix + "#executor@.nullable<core.coroutine::Executor>", out var value)
+                    _context.RuntimeField(prefix + "#executor@.nullable<core.coroutine::Executor>"), out var value)
                 && value is VmObject executor
                 ? executor
                 : null;
@@ -594,7 +595,7 @@ namespace RigiCompiler.Bil.Vm
                 ?? throw new VmException("stdlib 缺少 core.coroutine::Mutex$" + name);
         }
 
-        private static long ReadMutexGate(VmObject mutexObject)
+        private long ReadMutexGate(VmObject mutexObject)
         {
             return ReadI64Field(mutexObject, "core.coroutine::Mutex#gate@.i64");
         }
@@ -782,7 +783,7 @@ namespace RigiCompiler.Bil.Vm
                 return gate;
             }
             var created = SyncMutexCreate();
-            taskObject.WriteField(prefix + "#gate@.i64", new VmI64(created));
+            taskObject.WriteField(_context.RuntimeField(prefix + "#gate@.i64"), new VmI64(created));
             return created;
         }
 
@@ -1184,22 +1185,22 @@ namespace RigiCompiler.Bil.Vm
                     return false;
                 }
             }
-            var dispatcher = _context.GetSingleton("core.coroutine::Dispatcher");
+            var dispatcher = _context.GetSingleton(_context.RuntimeSymbol("core.coroutine::Dispatcher"));
             if (dispatcher is not IVmFieldHost host)
             {
                 return false;
             }
-            if (!host.TryReadField("core.coroutine::Dispatcher#live@.i32", out var liveValue)
+            if (!host.TryReadField(_context.RuntimeField("core.coroutine::Dispatcher#live@.i32"), out var liveValue)
                 || liveValue is not VmI32 live || live.Value <= 0)
             {
                 return false;
             }
             foreach (var lane in new[] { "mainQueue", "computeQueue", "ioQueue" })
             {
-                if (host.TryReadField("core.coroutine::Dispatcher#" + lane
-                        + "@core.coroutine::CoroutineCarriageQueue", out var queueValue)
+                if (host.TryReadField(_context.RuntimeField("core.coroutine::Dispatcher#" + lane
+                        + "@core.coroutine::CoroutineCarriageQueue"), out var queueValue)
                     && queueValue is IVmFieldHost queueHost
-                    && queueHost.TryReadField("core.coroutine::CoroutineCarriageQueue#count@.i32",
+                    && queueHost.TryReadField(_context.RuntimeField("core.coroutine::CoroutineCarriageQueue#count@.i32"),
                         out var countValue)
                     && countValue is VmI32 count && count.Value > 0)
                 {
@@ -1815,7 +1816,7 @@ namespace RigiCompiler.Bil.Vm
                     return existing;
                 }
                 var handle = EventCreateCore();
-                alarmObject.WriteField("core.coroutine::EventAlarm#handle@.i64",
+                alarmObject.WriteField(_context.RuntimeField("core.coroutine::EventAlarm#handle@.i64"),
                     new VmI64(handle));
                 return handle;
             }

@@ -18,6 +18,7 @@ namespace RigiCompiler.Middleware
     {
         // 已过 Gate 门禁的 BIL 模块（只读消费；各层不得回写）
         public BilModule Module { get; }
+        internal NativeBuildOptions NativeBuild { get; }
 
         // MW1 驻留符号表
         public MwSymbolTable Symbols { get; }
@@ -27,6 +28,11 @@ namespace RigiCompiler.Middleware
 
         // MW4 产物：布局计划表（LayoutStage 挂载；只依赖符号表，不依赖 MIR）
         public LayoutPlanTable? Layout { get; internal set; }
+
+        // Module 的 compiler bindings 在本会话内只读。首次查询完整校验
+        // ABI/唯一性，随后复用准确成员或空结果；不跨模块、会话共享。
+        private readonly Dictionary<string, MwMemberSymbol?> compilerMembers =
+            new(System.StringComparer.Ordinal);
 
         // MW10 刀5 产物：singleton 运行时条目表（SingletonLoweringPass
         // 挂载；Emit 侧发射合成静态槽 + rigi_entry 急切初始化调用）
@@ -42,10 +48,25 @@ namespace RigiCompiler.Middleware
         public System.Collections.Generic.HashSet<string>? BorrowedReturnSymbols
         { get; internal set; }
 
-        public MwContext(BilModule module)
+        public MwContext(BilModule module) : this(module, NativeBuildOptions.Executable) { }
+        internal MwContext(BilModule module, NativeBuildOptions nativeBuild)
         {
             Module = module;
             Symbols = MwSymbolTable.Build(module);
+            NativeBuild = nativeBuild;
+            nativeBuild.Validate(this);
+        }
+        internal MwMemberSymbol? CompilerMember(string logicalPrefix)
+        {
+            lock (compilerMembers)
+            {
+                if (compilerMembers.TryGetValue(logicalPrefix, out var member)) return member;
+                var canonical = BilCompilerSymbols.ResolvePrefix(Module, logicalPrefix);
+                member = canonical != null ? Symbols.FindMember(canonical)
+                    : Symbols.Members.SingleOrDefault(m => m.Canonical.StartsWith(logicalPrefix, System.StringComparison.Ordinal));
+                compilerMembers.Add(logicalPrefix, member);
+                return member;
+            }
         }
     }
 }

@@ -4,10 +4,10 @@
 > 本文件只放核心要求与指路；架构与开发细节见 `docs/agent_guide/`，语言/BIL/运行时规范见 `docs/` 索引。
 
 **项目名**: RigiCompiler
-**语言**: C#（.NET 10.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用；原则上纯 BCL 无第三方依赖，唯一豁免是 Middleware 的 LLVMSharp + libLLVM，见 `docs/agent_guide/development.md` 依赖纪律）
+**语言**: C#（.NET 10.0，控制台程序，`Nullable` 与 `ImplicitUsings` 已启用；原则上纯 BCL 无第三方依赖，编译器托管依赖豁免是 Middleware 的 LLVMSharp + libLLVM，以及模块配置的 YamlDotNet 18.1.0 节点解析器；独立测试项目允许 TUnit/MTP，见 `docs/agent_guide/development.md` 依赖纪律）
 **版本控制**: Git（`main` 分支；CI 见 `.github/workflows/ci.yml`）
 
-⚠️ **仓库根在内层 `RigiCompiler/RigiCompiler/`（`.git` 在此）**，外层目录只放 `RigiCompiler.sln`，不是仓库；`dotnet build`/`dotnet run`/git 等工作目录同样是内层。
+**仓库根是包含 `.git`、`RigiCompiler.csproj` 与 `RigiCompiler.sln` 的目录；当前环境为 `/workspace/RigiCompiler`。** 构建、运行与 Git 均从实际仓库根执行，不能使用历史内层路径。
 
 ## 1. 项目一句话
 
@@ -31,12 +31,12 @@ dotnet run -- test --all     # CoreCLR 全量（迭代用，**不能**代替提�
 **提交前验证（必须，禁止只跑 `dotnet run`）**：用 **Release + NativeAOT publish** 产物在**本机已有的 Windows 与 Linux 环境各跑一遍全量测试**。本仓库开发机典型组合是 Windows 宿主 + WSL Ubuntu。AOT 与 CoreCLR 的行为差（反射根、RID 原生库、无 JIT）只在发布产物上暴露；CI 也是双平台 AOT，本地提交前必须同口径。
 
 ```bash
-# Windows（仓库内层目录 RigiCompiler/RigiCompiler）
-dotnet publish -c Release -r win-x64 -o publish/win-x64
+# Windows（实际仓库根）
+dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
 ./publish/win-x64/rigic.exe test --all
 
 # Linux（WSL Ubuntu 等；AOT 不能跨 OS 交叉编译，必须在 Linux 里 publish）
-dotnet publish -c Release -r linux-x64 -o publish/linux-x64
+dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64
 ./publish/linux-x64/rigic test --all
 ```
 
@@ -53,7 +53,8 @@ Linux 侧前置：`dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。细节见 `docs/a
 - **日志**：编译器内部日志一律走 `Core/Logger`，禁止直接 `Console.WriteLine`（测试报告输出除外）；控制台日志走 stderr，不污染 stdout 数据流。
 - **简洁优先**：新增代码前自问三问——真的有必要存在吗？有没有更简洁优雅的方法？可不可以复用已有的轮子？新代码模仿相邻文件风格；项目无 linter/格式化工具配置。
 - **复用优先**：尽量复用现有的、高质量且久经验证的轮子——仓库内设施（如 `Bil/` 生态、`TestHarness`/`BilTestHarness`）优先，确需外部能力时选成熟可靠的外部库（如 Middleware 的 LLVMSharp），不重复造轮子；新增第三方依赖属纪律变更，先讨论并同步文档。
-- **测试**：不使用任何测试框架；新 ParserLayer 必须在 `Tests/` 添加测试类并在 `TestRunner` 注册；三树新节点必须同步 BoundDescribe/LoweredDescribe 与三套件用例。
+- **测试调度预算**：`ResourceBudget.Shared` 只在同一父进程内共享 CPU slot/内存/exclusive FIFO 授予；TUnit case 与 legacy dispatcher 共用它，不同测试宿主必须串行运行。CPU slot 是物理资源权重，不等于 OS 总线程数，真并发 case 保留至少四 Compute Worker，GC/IO 另有线程。worker 子环境独立设置 jobs/Compute/lld/GC 上限，禁止改父环境或让每 child 继承整机 GC 预算。Windows 必须通过共用受管 launcher 原子 Job 启动或挂起归入 Job 后恢复，禁止 Process.Start 后 Attach 冒称完整隔离；Linux group 不能容纳主动 setsid 逃组的恶意程序。
+- **测试**：`Tests/TUnit/` 是独立 TUnit/Microsoft.Testing.Platform 项目，框架依赖不得进入生产项目。静态 `CaseCatalog` 提供稳定 ID 与旧驱动映射，逐 input 试点通过隔离 worker 执行；未迁移测试继续由 `TestRunner` 驱动，不宣称全量细粒度迁移。新 ParserLayer 必须添加对应测试；三树新节点必须同步 BoundDescribe/LoweredDescribe 与三套件用例。过滤/TRX/AOT 命令见开发指南。
 - **禁止 AskUserQuestion**（harness 为 Kimi Code 时）：该工具有显示 bug，用户看不到第一个问题之后的后续问题。需要用户决策时把问题整理好在回复正文中一次问完，然后停下来等待回答。
 - **文档维护**：进度现状以代码与 git 历史为准，不在文档里记录里程碑/进度/易变测试数字；历史档案在 `docs/legacy/`（不再更新）；不新建单点完成报告/实现总结类文档。
 

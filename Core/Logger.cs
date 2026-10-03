@@ -27,6 +27,23 @@ namespace RigiCompiler
     public static class Logger
     {
         private static StreamWriter? logWriter;
+        private static readonly object writeGate = new();
+        private static readonly AsyncLocal<Capture?> capture = new();
+
+        // 每个 indexed job 独立缓冲，join 后由父线程按输入序回放。
+        internal sealed class Capture : IDisposable
+        {
+            private readonly Capture? previous = capture.Value;
+            private readonly List<(LogLevel Level, string Source, string Message)> entries = new();
+            internal Capture() { capture.Value = this; }
+            internal void Replay()
+            {
+                foreach (var (level, source, message) in entries) Write(level, source, message);
+            }
+            public void Dispose() { capture.Value = previous; }
+            internal void Add(LogLevel level, string source, string message) => entries.Add((level, source, message));
+        }
+        internal static Capture CaptureJob() => new();
 
         // 当前日志文件路径（供 CaptureState 快照；Reset 时清空）
         private static string? logPath;
@@ -59,6 +76,11 @@ namespace RigiCompiler
 
         public static void Write(LogLevel level, string source, string message)
         {
+            // 先按旧门槛过滤，关闭 verbose 时不能积累逐字符/逐 token 日志。
+            if (level == LogLevel.Verbose && !VerboseEnabled) return;
+            if (capture.Value is { } job) { job.Add(level, source, message); return; }
+            lock (writeGate)
+            {
             // 控制台门槛：Verbose 需显式开启；保持既有 "VERBOSE [source]{message}" 前缀风格。
             // 走 stderr（M31）：编译器诊断不污染 stdout——compile --parse-only 的
             // AST JSONL 输出到 stdout，任何按行解析 JSONL 的下游都依赖其纯净
@@ -76,6 +98,7 @@ namespace RigiCompiler
                     ["source"] = source,
                     ["message"] = message
                 }));
+            }
             }
         }
 

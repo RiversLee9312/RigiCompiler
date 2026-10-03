@@ -19,6 +19,15 @@ namespace RigiCompiler
     public abstract class SemanticSymbol
     {
         public string Name { get; }
+        public string? OriginModuleId { get; internal set; }
+        public string? OriginFileId { get; internal set; }
+        public bool IsImported { get; internal set; }
+        public bool IsLinkOnly { get; internal set; }
+        public bool IsCompilerLibrary { get; internal set; }
+        public CharRange? DeclarationSpan { get; internal set; }
+
+        // 声明身份独立于 canonical 投影，尤其区分不同宿主的同名泛型参数。
+        internal string? StableIdentity { get; set; }
 
         // 访问级别（SYNTAX §16；P2 由声明修饰符写入，默认 Private 与规范
         // 默认一致；bootstrap 硬编码符号统一置 Public（BootstrapSymbols），
@@ -220,6 +229,11 @@ namespace RigiCompiler
             // 访问控制两属性随定义传播（S8e：构造类型与定义同可见性/同声明文件）
             Accessibility = definition.Accessibility;
             SourceFile = definition.SourceFile;
+            OriginModuleId = definition.OriginModuleId;
+            OriginFileId = definition.OriginFileId;
+            IsImported = definition.IsImported;
+            IsLinkOnly = definition.IsLinkOnly;
+            IsCompilerLibrary = definition.IsCompilerLibrary;
         }
 
         // SYNTAX §3.1.1 共享安全类型白名单（「可离开单 Coroutine 所有权域」的完整集合）
@@ -621,6 +635,9 @@ namespace RigiCompiler
         // 产物的 BindEnvironment.ParameterDefaults 先例）——符号层只持结构
         // 信息，不依赖 Bound 节点
         public MethodSymbol? ResolvedInit { get; internal set; }
+        public MethodSymbol? CaseFactory { get; internal set; }
+        // 带洞 case 的固定位置单独求值，consumer 按 init 声明序交错执行。
+        public IReadOnlyList<MethodSymbol?>? FixedArgumentFactories { get; internal set; }
         public List<EnumCaseHoleParameter>? HoleParameters { get; internal set; }
 
         public EnumCaseSymbol(string name, TypeSymbol owner) : base(name)
@@ -669,6 +686,8 @@ namespace RigiCompiler
         // BindEnvironment.ParameterDefaults，调用点缺省时填充（每次调用
         // 重新求值语义由 P4a 每次降级自然保证）
         public ExpressionRootASTNode? DefaultValue { get; }
+        public bool HasDefaultValue { get; internal set; }
+        public MethodSymbol? DefaultFactory { get; internal set; }
 
         // 位置可变（Type...）/ 具名可变（named Type...）参数标记（SYNTAX §4.3）。
         // S8d 起 P3 调用绑定遇之归口诊断（可变参数调用归后续里程碑）
@@ -681,6 +700,7 @@ namespace RigiCompiler
         {
             Type = type;
             DefaultValue = defaultValue;
+            HasDefaultValue = defaultValue != null;
             IsVariadic = isVariadic;
             IsNamedVariadic = isNamedVariadic;
         }

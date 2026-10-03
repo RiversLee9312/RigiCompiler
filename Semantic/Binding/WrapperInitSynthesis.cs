@@ -8,7 +8,7 @@ namespace RigiCompiler
     // M109b：`..init.wrapper` 合成（BIL §9.7 / §14.5）+ 静态 companion
     // （§8.7）。新 init 原则（§9.3/§9.7 修订）：
     // - 每个带声明初始值的实例字段合成一个可覆写的 `..init.field.<名>`
-    //   方法（class/struct/enum struct 同规则不退化）；子类同名字段
+    //   方法（class/struct/enum struct/wrapper 同规则不退化）；子类同名字段
     //   override 时生成同族 override 版（写同一基类槽），虚派发自动选中
     //   最高派生实现。
     // - `..init.wrapper` 本体 = 安装**继承闭包全部** wrapper（本类与基类
@@ -77,7 +77,8 @@ namespace RigiCompiler
             var host = new TypeSymbol(BilSpellings.GlobalMethodHostTypeName, TypeKind.Class,
                 ns: ns, baseType: env.Unit.Symbols.Bootstrap.Object, isShared: true)
             {
-                Accessibility = Accessibility.Public,
+                // 这是每模块的实现宿主，不是源 API；独立模块必须隔离链接身份。
+                Accessibility = env.Unit.IsModuleCompilation ? Accessibility.Private : Accessibility.Public,
                 IsSingleton = true,
             };
             host.CompanionInfo = new StaticCompanionInfo(host);
@@ -161,7 +162,7 @@ namespace RigiCompiler
         // ===== 阶段 A：..init.field.<名> 合成（§9.7 字段初始化器方法）=====
 
         // 本类型每个带声明初始值的实例字段一个 priv+compiler-generated
-        // 实例 void 方法，体 = this.<存储槽> = 初值（声明点静态语境绑定，
+        // 实例 void 方法，体 = this.<存储槽> = 初值（声明点隔离语境绑定，
         // 复用 BindFieldInitializer）。override 字段写基类槽
         // （OverriddenField）；其余字段存储槽即自身。幂等
         private static void SynthesizeInitFieldMethods(TypeSymbol type, ASTNode syntax,
@@ -181,7 +182,7 @@ namespace RigiCompiler
                     continue;   // 毒化静默
                 }
                 var value = BindFieldInitializer(field, variable, fileCtx, env);
-                if (value == null) continue;    // 绑定失败（诊断已报）/泛型参数类型跳过
+                if (value == null) continue;    // 绑定失败（诊断已报）
                 var method = new MethodSymbol(
                     BilSpellings.InitFieldMethodPrefix + field.Name, MethodKind.Regular,
                     owner: type, returnType: null)
@@ -205,7 +206,7 @@ namespace RigiCompiler
 
         // 当前类型声明处带初始化器的实例字段（声明序）。仅 get 无 set
         // 无法经 setter 应用（P2 已诊断，防御跳过）。class/struct/
-        // enum struct 同规则；其余类型（interface/wrapper）空表。
+        // enum struct/wrapper 同规则；interface 空表。
         // 自 BindingDriver 迁入（阶段 1.7/1.8 共用）
         public static List<(FieldSymbol Field, VariableDeclarationASTNode Variable)>
             CollectInstanceFieldsWithInitializers(ASTNode typeNode, TypeSymbol type,
@@ -213,7 +214,7 @@ namespace RigiCompiler
         {
             var fields = new List<(FieldSymbol, VariableDeclarationASTNode)>();
             if (typeNode is not (ClassDeclarationASTNode or StructDeclarationASTNode
-                or EnumStructDeclarationASTNode))
+                or EnumStructDeclarationASTNode or WrapperDeclarationASTNode))
             {
                 return fields;
             }
@@ -472,19 +473,20 @@ namespace RigiCompiler
             entry.InitValue = BindFieldInitializer(field, variable, fileCtx, env);
         }
 
-        // 静态字段初始化器绑定（声明点静态语境：无 this/无形参；仿
-        // BindFieldWrapperInitArgs 的隔离上下文）。公开供全局字段 singleton
-        // cell 的初值绑定复用（裁定 1）
+        // 字段初值在声明点隔离上下文绑定：无 this/无形参。实例字段可见
+        // 宿主泛型参数；真正静态/全局字段仍受静态泛型限制。公开供 cell
+        // 及普通实例字段的真实初始化器复用。
         public static BoundExpression? BindFieldInitializer(FieldSymbol field,
             VariableDeclarationASTNode variable, FileContext fileCtx, BindEnvironment env)
         {
             if (variable.Initializer == null) return null;
-            if (field.FieldType is not TypeSymbol expectedType || expectedType is ErrorTypeSymbol)
+            if (field.FieldType is not { } expectedType || expectedType is ErrorTypeSymbol)
             {
                 return null;
             }
             var host = new MethodSymbol(".field.init.bind", MethodKind.Regular,
-                owner: field.Owner, ns: field.Namespace, isStatic: true)
+                owner: field.Owner, ns: field.Namespace,
+                isStatic: field.Owner == null || field.IsStatic)
             {
                 HasBody = false,
                 IsSynthetic = true,
@@ -492,7 +494,7 @@ namespace RigiCompiler
             var ctx = new BindContext(host, fileCtx, field.Owner, isDefaultValueContext: true);
             var scope = new Scope(null);
             var value = ExpressionDispatcher.Visit(variable.Initializer.Expression,
-                scope, ctx, env, expectedType);
+                scope, ctx, env, expectedType as TypeSymbol);
             if (value == null) return null;
             if (ctx.Locals.Count > 0)
             {
@@ -924,8 +926,8 @@ namespace RigiCompiler
         public static List<BoundExpression>? BindInitArgsInScope(WrapperApplication app,
             Scope scope, BindContext ctx, BindEnvironment env, ASTNode fallbackSyntax)
         {
-            if (app.BoundInitArguments != null)
-                return app.BoundInitArguments.ToList();
+            if (env.WrapperArguments(app) is { } cached)
+                return cached.ToList();
 
             var syntax = app.Syntax;
             var span = syntax?.Span ?? fallbackSyntax.Span;
@@ -941,7 +943,8 @@ namespace RigiCompiler
                     env.Error(span, $"Wrapper '{wrapperDef.Name}' has no constructor");
                     return null;
                 }
-                app.BoundInitArguments = Array.Empty<BoundExpression>();
+                env.DefaultWrapperConstructions.TryAdd(app, span);
+                env.StoreWrapperArguments(app, Array.Empty<BoundExpression>());
                 return new List<BoundExpression>();
             }
 
@@ -950,8 +953,24 @@ namespace RigiCompiler
             var resolved = OverloadResolution.Resolve(anchor, inits, argNodes, scope, ctx, env,
                 receiverType: app.Wrapper);
             if (resolved == null) return null;
-            app.BoundInitArguments = resolved.Value.Arguments;
+            env.StoreWrapperArguments(app, resolved.Value.Arguments);
             return resolved.Value.Arguments;
+        }
+
+        // 默认 wrapper 安装也属于构造使用点，不能绕过普通实体的字段 DA。
+        // 此时全部真实初始化方法已合成；有 init 的路径由 CheckInitBody 担保。
+        public static void CheckDefaultWrapperConstructions(BindEnvironment env)
+        {
+            foreach (var (app, span) in env.DefaultWrapperConstructions)
+            {
+                if (InitFieldDa.HasCheckedDefaultInit(app.Wrapper, env)) continue;
+                var missing = InitFieldDa.RequiredFields(app.Wrapper, env);
+                if (missing.Count == 0) continue;
+                env.Error(span,
+                    $"Wrapper '{app.WrapperDefinition.Name}' has no constructor that assigns " +
+                    $"non-nullable field '{missing[0].Name}' (§9.3: declare an init that " +
+                    "assigns it, add a declaration initializer, or make the field Nullable)");
+            }
         }
 
         // 壳体静态方法体：new companion → invoke 实例方法（实参透传）→ ret

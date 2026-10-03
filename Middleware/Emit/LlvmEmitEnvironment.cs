@@ -38,6 +38,8 @@ namespace RigiCompiler.Middleware.Emit
             Layout = layout;
             Symbols = symbols;
             BilFunctions = bilModule?.Functions;
+            BilModule = bilModule;
+            GlobalInitializers = bilModule == null ? [] : BilModuleInitialization.Order(bilModule);
         }
 
         internal LLVMModuleRef Module { get; }
@@ -46,6 +48,8 @@ namespace RigiCompiler.Middleware.Emit
         internal LayoutPlanTable? Layout { get; }
         internal MwSymbolTable Symbols { get; }
         internal IReadOnlyList<BilFunction>? BilFunctions { get; }
+        internal BilModule? BilModule { get; }
+        internal IReadOnlyList<string> GlobalInitializers { get; }
         internal IReadOnlyList<(LLVMValueRef Global, MirType Type)> StaticSlots => _staticSlots;
 
         internal EmittedFunction FunctionOf(string canonical) => _functions[canonical];

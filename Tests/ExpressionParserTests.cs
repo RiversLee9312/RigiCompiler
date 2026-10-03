@@ -537,7 +537,7 @@ namespace RigiCompiler.Tests
         }
 
         // 辅助：解析变量声明并比对初始化表达式的 AST 描述串
-        private static void TestExpr(string code, string expectedDesc)
+        internal static void TestExpr(string code, string expectedDesc)
         {
             try
             {

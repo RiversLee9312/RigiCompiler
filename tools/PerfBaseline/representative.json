@@ -1,0 +1,132 @@
+{
+  "repoRoot": ".",
+  "compiler": {
+    "fileName": "dotnet",
+    "arguments": [
+      "{repo}/bin/Debug/net10.0/rigic.dll"
+    ]
+  },
+  "timeoutSeconds": 180,
+  "budgetSeconds": 900,
+  "warmupRuns": 1,
+  "hotRuns": 3,
+  "environment": {
+    "RIGI_E2E_SLOW": "0",
+    "RIGI_NATIVE_E2E_SLOW": "0"
+  },
+  "toolchains": [
+    {
+      "fileName": "dotnet",
+      "arguments": [
+        "--info"
+      ]
+    },
+    {
+      "fileName": "clang",
+      "arguments": [
+        "--version"
+      ]
+    },
+    {
+      "fileName": "ld.lld",
+      "arguments": [
+        "--version"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "csharp-build",
+      "category": "csharp-build",
+      "fileName": "dotnet",
+      "arguments": [
+        "build",
+        "RigiCompiler.csproj",
+        "--no-restore"
+      ],
+      "inputs": [
+        "{repo}/RigiCompiler.csproj"
+      ]
+    },
+    {
+      "name": "source-to-bil",
+      "category": "source-to-bil",
+      "fileName": "dotnet",
+      "arguments": [
+        "{repo}/bin/Debug/net10.0/rigic.dll",
+        "compile",
+        "--file",
+        "{repo}/tools/PerfBaseline/inputs/minimal.rg",
+        "--emit-bil",
+        "{output}/minimal.bil"
+      ],
+      "inputs": [
+        "{repo}/tools/PerfBaseline/inputs/minimal.rg",
+        "{repo}/bin/Debug/net10.0/rigic.dll"
+      ]
+    },
+    {
+      "name": "bil-to-native",
+      "category": "bil-to-native",
+      "fileName": "dotnet",
+      "arguments": [
+        "{repo}/bin/Debug/net10.0/rigic.dll",
+        "native",
+        "--file",
+        "{glob:{output}/minimal*.bil}",
+        "--out",
+        "{output}/minimal-native"
+      ],
+      "inputs": [
+        "{output}/minimal.bil",
+        "{repo}/bin/Debug/net10.0/rigic.dll"
+      ]
+    },
+    {
+      "name": "native-run",
+      "category": "native-run",
+      "fileName": "{output}/minimal-native",
+      "arguments": [],
+      "inputs": [
+        "{output}/minimal-native"
+      ]
+    },
+    {
+      "name": "source-vm-end-to-end",
+      "category": "end-to-end",
+      "fileName": "dotnet",
+      "arguments": [
+        "{repo}/bin/Debug/net10.0/rigic.dll",
+        "module",
+        "--run",
+        "--root",
+        "{repo}/tools/PerfBaseline/inputs/minimal-module",
+        "--profile",
+        "representative"
+      ],
+      "inputs": [
+        "{repo}/tools/PerfBaseline/inputs/minimal-module/module.yaml",
+        "{repo}/tools/PerfBaseline/inputs/minimal-module/source/main.rg",
+        "{repo}/bin/Debug/net10.0/rigic.dll"
+      ]
+    }
+  ],
+  "suites": [
+    {
+      "name": "Middleware",
+      "labels": [
+        "TestGateAcceptsValidModule",
+        "TestExternalProcessDeadline",
+        "TestRuntimeTargetIdentity"
+      ]
+    }
+  ],
+  "dependencyArtifacts": [
+    "{repo}/bin/Debug/net10.0/LLVMSharp.Interop.dll",
+    "{repo}/bin/Debug/net10.0/runtimes/linux-x64/native/libLLVM.so",
+    "{repo}/tools/.libuv/linux-x64/lib/libuv_a.a",
+    "{repo}/tools/.libuv/linux-x64/VERSION.txt",
+    "{repo}/tools/.mimalloc/linux-x64/lib/libmimalloc.a",
+    "{repo}/tools/.mimalloc/linux-x64/VERSION.txt"
+  ]
+}

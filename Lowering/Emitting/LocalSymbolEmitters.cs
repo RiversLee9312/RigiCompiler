@@ -32,19 +32,28 @@ namespace RigiCompiler
             }
             foreach (var field in ns.Fields)
             {
+                if (field.IsImported) continue;
                 // 全局 wrapped 字段（裁定 1）：cell 子类即 singleton，BIL 不再
                 // 发全局字段声明（访问经 cell 单例 getValue/setValue）
                 if (field.CellStorage != null && field.Owner == null) continue;
-                env.AddLocalSymbol(EmitFieldDeclaration(field));
+                AddDeclaration(env, field, EmitFieldDeclaration(field));
                 foreach (var accessor in EmitFieldAccessorDeclarations(field))
                 {
-                    env.AddLocalSymbol(accessor);
+                    AddDeclaration(env, field, accessor);
                 }
             }
             foreach (var method in ns.Methods)
             {
-                env.AddLocalSymbol(EmitMethodDeclaration(method));
+                if (method.IsImported) continue;
+                AddDeclaration(env, method, EmitMethodDeclaration(method));
             }
+        }
+
+        private static void AddDeclaration(EmitEnvironment env, SemanticSymbol symbol, BilSymbolSectionEntry declaration)
+        {
+            if (env.Unit.IsModuleCompilation && (symbol.IsImported || symbol.OriginModuleId == null))
+                env.AddExternalSymbol(declaration);
+            else env.AddLocalSymbol(declaration);
         }
 
         // 切片归属命名空间（§17 切分）：全局符号取自身 Namespace；成员取
@@ -97,6 +106,7 @@ namespace RigiCompiler
                     { IsBuiltin: true } builtinType) continue;
                 foreach (var field in builtinType.Fields)
                 {
+                    if (field.IsImported) continue;
                     if (field.ExtTargetPath == null) continue;
                     env.CurrentSliceNs = RootNsOf(builtinType);
                     env.AddLocalSymbol(EmitFieldDeclaration(field));
@@ -110,6 +120,7 @@ namespace RigiCompiler
                 }
                 foreach (var method in builtinType.Methods)
                 {
+                    if (method.IsImported) continue;
                     if (method.ExtTargetPath == null) continue;
                     env.CurrentSliceNs = RootNsOf(builtinType);
                     env.AddLocalSymbol(EmitMethodDeclaration(method));
@@ -146,6 +157,7 @@ namespace RigiCompiler
 
         private static void EmitTypeTree(TypeSymbol type, EmitEnvironment env)
         {
+            if (type.IsImported) return;
             // 内建 bootstrap 符号（基元/层级根）不声明：经 BIL 别名投影引用；
             // ErrorType 是毒化单例，同样不进符号段
             if (type.IsBuiltin || type is ErrorTypeSymbol) return;
@@ -376,7 +388,7 @@ namespace RigiCompiler
             if (method.Name == BilSpellings.InitWrapperMethodName
                 || method.Name.StartsWith(BilSpellings.InitFieldMethodPrefix,
                     StringComparison.Ordinal)
-                || method.Name == BilSpellings.GlobalsInitFunctionName
+                || BilLogicalName.IsGlobalInitializerName(method.Name)
                 || method.Name == BilSpellings.ToParcelMethodName
                 || method.Name == BilSpellings.FromParcelMethodName
                 || method.Name == BilSpellings.InitSerializableMethodName

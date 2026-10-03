@@ -13,10 +13,11 @@ namespace RigiCompiler
             // 填入点检查登记后待约束与 wrapper 应用就绪统一执行：字段循环
             // 先于方法签名解析，被引用构造类型的 async 成员签名此时尚未
             // 就绪——（构造类型, 标注位置）先登记，签名及约束就绪后统一收口
-            var pendingFillIns = new List<(TypeSymbol Constructed, CharRange? Span)>();
             // 先字段（init `_ -> field` 省略类型时沿用字段类型，字段须先就绪）
-            foreach (var entry in env.Entries)
+            var fieldFillIns = CompilerJobs.MapDiagnosed(env.Unit, env.Entries.Count, index =>
             {
+                var entry = env.Entries[index];
+                var pendingFillIns = new List<(TypeSymbol Constructed, CharRange? Span)>();
                 if (entry.Node is VariableDeclarationASTNode { TypeAnnotation: not null } v)
                 {
                     ((FieldSymbol)entry.Symbol).FieldType = env.ResolveTypeReference(v.TypeAnnotation, entry);
@@ -25,10 +26,13 @@ namespace RigiCompiler
                     RegisterFillIn(((FieldSymbol)entry.Symbol).FieldType!,
                         v.TypeAnnotation.Span ?? entry.Node.Span, pendingFillIns);
                 }
-            }
-            foreach (var entry in env.Entries)
+                return pendingFillIns;
+            }, phase: "semantic.P2.fields");
+            var methodFillIns = CompilerJobs.MapDiagnosed(env.Unit, env.Entries.Count, index =>
             {
-                if (entry.Node is not CallableDeclarationASTNode fn) continue;
+                var entry = env.Entries[index];
+                var pendingFillIns = new List<(TypeSymbol Constructed, CharRange? Span)>();
+                if (entry.Node is not CallableDeclarationASTNode fn) return pendingFillIns;
                 var method = (MethodSymbol)entry.Symbol;
                 if (fn.ReturnType != null)
                 {
@@ -68,9 +72,11 @@ namespace RigiCompiler
                             "(a preceding parameter has one)");
                     }
                 }
-            }
+                return pendingFillIns;
+            }, phase: "semantic.P2.signatures");
             // 此时仅签名就绪，约束尚未解析；统一在声明解析完成后证明。
-            env.TypeFillIns.AddRange(pendingFillIns);
+            env.TypeFillIns.AddRange(fieldFillIns.SelectMany(items => items));
+            env.TypeFillIns.AddRange(methodFillIns.SelectMany(items => items));
         }
 
         // 登记填入点（构造类型标注；非构造类型/泛型参数/毒化不登记）

@@ -29,7 +29,7 @@
  * VM 侧 TextFromBytes hook 同规则——双宿主对「合法 UTF-8」的判定必须
  * 一致；3-4 编解码器块复用同一口径。
  */
-static int rigi_utf8_validate(const uint8_t *data, int32_t count)
+int rigi_utf8_validate(const uint8_t *data, int32_t count)
 {
     int32_t i = 0;
     while (i < count)

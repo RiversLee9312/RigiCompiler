@@ -13,8 +13,8 @@ namespace RigiCompiler.Middleware.Runtime
     /// rigi_rt 现场编译为 LLVM bitcode（MIDDLEWARE_ARCHITECTURE §4.8 MW1 定稿）：
     /// rigi_rt/**/*.c 以 EmbeddedResource 内嵌进本程序集（参照
     /// Semantic/StdlibSources.cs 的 stdlib 内嵌模式），按全部源拼接的 SHA256
-    /// 源码、clang 内容及有序目标编译参数共同做缓存目录身份；未命中则
-    /// 解出源并调 clang 编成 rigi_rt.bc，命中与新产物均检验真实目标布局。
+    /// 源码、实际预处理快照、clang codegen 依赖与有效参数共同做缓存身份；
+    /// 未命中从同一 cpp-output 快照编译，目录完整原子发布，真实目标布局恒验证。
     /// </summary>
     public static class RigiRtBuilder
     {
@@ -47,136 +47,125 @@ namespace RigiCompiler.Middleware.Runtime
         /// -DRIGI_HAS_LIBUV=1（MW11b 棒2 预留：rigi_rt 的 uv 用法一律包在
         /// #ifdef RIGI_HAS_LIBUV 内）；两个参数纳入内容哈希，命中/未命中间不串味。
         /// </summary>
+        // 私有覆盖根可供性能冷/热实验复用；默认路径与既有用户缓存兼容。
+        internal static string GetCacheRoot()
+        {
+            return Cache.ArtifactCache.Root("runtime-cache");
+        }
+
+        // 本次请求持有自己的 bitcode 副本，runtime 文件锁释放后才进入对象缓存。
+        internal sealed class PreparedBitcode : IDisposable
+        {
+            internal string Path { get; }
+            internal string? Identity { get; }
+            private readonly string directory;
+            internal PreparedBitcode(string directory, string path, string? identity)
+            { this.directory = directory; Path = path; Identity = identity; }
+            public void Dispose() { try { Directory.Delete(directory, true); } catch (IOException) { } }
+        }
+
         public static string EnsureBitcode(string clangPath, string targetTriple,
             out bool rebuilt, LibuvLayout? libuv = null)
         {
-            if (string.IsNullOrWhiteSpace(targetTriple))
-                throw new ArgumentException("rigi_rt 目标三元组不能为空", nameof(targetTriple));
-            // 编译参数是缓存身份的唯一事实源；路径为每次构建私有目录，
-            // 在哈希中用固定占位符，避免随机 build GUID 破坏命中。
-            var compileArgs = BuildCompileArgs(targetTriple, libuv,
-                "unity.c", "rigi_rt.bc");
-            // ① 读出全部 rigi_rt 源文本（逻辑名序保证可重现）；.c 是编译
-            //    单元，.h 仅解出供 #include（MW4 arc.h 起）
-            var assembly = Assembly.GetExecutingAssembly();
-            var names = new List<string>(assembly.GetManifestResourceNames());
-            names.Sort(StringComparer.Ordinal);
-            var sources = new List<(string FileName, string Text)>();
-            foreach (var name in names)
-            {
-                if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal) ||
-                    (!name.EndsWith(".c", StringComparison.Ordinal) &&
-                     !name.EndsWith(".h", StringComparison.Ordinal)))
-                {
-                    continue;
-                }
-                using var stream = assembly.GetManifestResourceStream(name);
-                using var reader = new StreamReader(stream!, Encoding.UTF8);
-                // 逻辑名 rigi_rt/shim.c → 文件名 shim.c（缓存目录内扁平落盘）
-                sources.Add((name.Substring(ResourcePrefix.Length), reader.ReadToEnd()));
-            }
-            if (sources.Count == 0)
-            {
-                // 与 StdlibSources 同纪律：零匹配 = EmbeddedResource 配置失效，响亮失败
-                throw new InvalidOperationException(
-                    "rigi_rt 内嵌源缺失：程序集中未找到任何 rigi_rt/**/*.{c,h} 资源（EmbeddedResource 配置失效）");
-            }
+            var prepared = PrepareBitcode(clangPath, targetTriple, out rebuilt, libuv);
+            // 旧 path-only API 无法交付 IDisposable；未缓存产物保留到进程退出。
+            // 一律交付已验证的请求副本，不能在 cache I/O 退化后回指旧的坏 entry。
+            // native 正式请求使用 PrepareBitcode 的词法生命期，不经过此兼容通路。
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => prepared.Dispose();
+            return prepared.Path;
+        }
 
-            var unitySource = BuildUnitySource(sources, RtFeatureMacros);
-
-            // ② 全部源拼接的 SHA256（按逻辑名序拼接，可重现）；libuv 编译参数
-            //    （-I 目录 + RIGI_HAS_LIBUV 定义）一并入哈希，否则同一批源在
-            //    libuv 命中/未命中间会命中同一缓存目录而串味
-            var compilerHash = ToolchainResolver.Fingerprint(clangPath,
-                Environment.GetEnvironmentVariable("RIGI_LLVM_SHA256"));
-            Logger.Verbose("Middleware", $"clang={Path.GetFullPath(clangPath)} SHA256={compilerHash}");
-            var hash = ComputeCacheIdentity(sources, unitySource, compilerHash, compileArgs);
-
-            // ③ 缓存目录落用户私有数据区，避免 /tmp 等世界可写目录中的
-            // 可预测路径被其他用户预置。POSIX 明确收紧为 0700。
-            var cacheRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "rigi", "runtime-cache");
-            Directory.CreateDirectory(cacheRoot);
-            EnsurePrivateDirectory(cacheRoot);
-            var cacheDir = Path.Combine(cacheRoot, hash.Substring(0, 16));
-            Directory.CreateDirectory(cacheDir);
-            EnsurePrivateDirectory(cacheDir);
-            var bitcodePath = Path.Combine(cacheDir, "rigi_rt.bc");
-            var manifestPath = Path.Combine(cacheDir, "rigi_rt.sha256");
-
-            // ④ 命中时同时核对源身份与 bitcode 内容摘要。任一缺失或不符
-            // 都视为污染缓存并重新编译，绝不把未知字节交给 LLVM 解析器。
-            if (TryValidateCache(bitcodePath, manifestPath, hash))
-            {
-                LlvmBitcode.ValidateRuntimeTarget(bitcodePath, targetTriple);
-                rebuilt = false;
-                Logger.Verbose("Middleware", $"rigi_rt 命中缓存 {bitcodePath}");
-                return bitcodePath;
-            }
-
-            // 每个竞争构建使用独立私有目录；最终发布用不覆盖的原子 Move，
-            // 输掉竞态的一方只复核赢家产物，不会互相踩写。
-            var buildDir = Path.Combine(cacheDir, "build-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(buildDir);
-            EnsurePrivateDirectory(buildDir);
+        internal static PreparedBitcode PrepareBitcode(string clangPath, string targetTriple,
+            out bool rebuilt, LibuvLayout? libuv = null, bool library = false)
+        {
+            using var metric = PerformanceMetrics.Begin("runtime.ensure-bitcode");
             try
             {
-                foreach (var (fileName, text) in sources)
+                if (string.IsNullOrWhiteSpace(targetTriple))
+                    throw new ArgumentException("rigi_rt 目标三元组不能为空", nameof(targetTriple));
+                // 显式 SHA pin 是工具链授权约束，身份无法确认/缓存退化时仍必须执行。
+                ToolchainResolver.Fingerprint(clangPath, Environment.GetEnvironmentVariable("RIGI_LLVM_SHA256"));
+                var assembly = Assembly.GetExecutingAssembly();
+                var sources = new List<(string FileName, string Text)>();
+                foreach (var name in assembly.GetManifestResourceNames().Order(StringComparer.Ordinal))
                 {
-                    WriteNewText(Path.Combine(buildDir, fileName), text);
+                    if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal) ||
+                        !(name.EndsWith(".c", StringComparison.Ordinal) || name.EndsWith(".h", StringComparison.Ordinal))) continue;
+                    using var stream = assembly.GetManifestResourceStream(name);
+                    using var reader = new StreamReader(stream!, Encoding.UTF8);
+                    sources.Add((name.Substring(ResourcePrefix.Length), reader.ReadToEnd()));
                 }
-
-                var unityPath = Path.Combine(buildDir, "unity.c");
-                WriteNewText(unityPath, unitySource);
-
-                // 与哈希中的同一参数表，仅将私有构建目录占位路径替换。
-                var candidatePath = Path.Combine(buildDir, "rigi_rt.bc");
-                var args = BuildCompileArgs(targetTriple, libuv, unityPath, candidatePath);
-                var exitCode = ExternalProcess.Run(clangPath, args,
-                    out _, out var stderr,
-                    workingDirectory: buildDir);
-                if (exitCode != 0 || !File.Exists(candidatePath))
-                {
-                    throw new InvalidOperationException(
-                        $"rigi_rt 现场编译失败（clang 退出码 {exitCode}）：\n{stderr.Trim()}");
-                }
-
-                LlvmBitcode.ValidateRuntimeTarget(candidatePath, targetTriple);
-                var bitcodeHash = ComputeFileSha256(candidatePath);
+                if (sources.Count == 0) throw new InvalidOperationException("rigi_rt 内嵌源缺失");
+                var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "rigi-rt-" + Guid.NewGuid().ToString("N"));
+                Cache.ArtifactCache.PrivateDirectory(directory);
                 try
                 {
-                    File.Move(candidatePath, bitcodePath, overwrite: false);
-                    WriteNewText(manifestPath, hash + "\n" + bitcodeHash + "\n");
+                    // 子进程环境是请求快照，不修改父进程；实际预处理吸收所有头文件/搜索环境。
+                    var environment = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+                        .ToDictionary(x => (string)x.Key, x => (string)x.Value!, StringComparer.Ordinal);
+                    foreach (var (name, text) in sources) WriteNewText(System.IO.Path.Combine(directory, name), text);
+                    var unity = System.IO.Path.Combine(directory, "unity.c");
+                    WriteNewText(unity, BuildUnitySource(sources, RtFeatureMacros));
+                    var snapshot = System.IO.Path.Combine(directory, "runtime.i");
+                    var output = System.IO.Path.Combine(directory, "rigi_rt.bc");
+                    var preprocess = BuildCompileArgs(targetTriple, libuv, unity, snapshot);
+                    if (library) preprocess.Add("-DRIGI_LIBRARY=1");
+                    // PIC TargetMachine 不能修复 clang 已写进 bitcode 的 local-exec TLS 模型。
+                    if (library && !OperatingSystem.IsWindows()) preprocess.Add("-fPIC");
+                    preprocess.Remove("-emit-llvm"); preprocess.Remove("-c");
+                    preprocess.Add("-E"); preprocess.Add("-P");
+                    // assert 的 __FILE__ 已在预处理内展开，必须在展开前归一私有源目录。
+                    preprocess.Add("-ffile-prefix-map=" + directory + "=rigi_rt");
+                    var exit = ExternalProcess.Run(clangPath, preprocess, out _, out var stderr,
+                        directory, environment, parentPhase: "runtime.preprocess", replaceEnvironment: true);
+                    if (exit != 0 || !File.Exists(snapshot))
+                        throw new InvalidOperationException($"rigi_rt 预处理失败（clang 退出码 {exit}）：\n{stderr.Trim()}");
+                    var codegen = BuildCompileArgs(targetTriple, null, snapshot, output);
+                    if (library && !OperatingSystem.IsWindows()) codegen.Add("-fPIC");
+                    codegen.RemoveAll(a => a.StartsWith("-D", StringComparison.Ordinal));
+                    codegen.Add("-x"); codegen.Add("cpp-output");
+                    codegen.Add("-ffile-prefix-map=" + directory + "=rigi_rt");
+                    // -x 是位置参数，必须先于 snapshot，避免驱动按 .i 的默认行为变化。
+                    codegen.Remove(snapshot); codegen.Add("runtime.i");
+                    var compiler = ToolchainIdentity.TryCapture(clangPath, codegen, directory, environment);
+                    var canonicalArgs = string.Join("\n", preprocess.Concat(codegen)
+                        .Select(a => a.Replace(directory, "<runtime-source>", StringComparison.Ordinal)));
+                    var key = compiler == null ? null : Cache.ArtifactCache.Identity("runtime-snapshot-v2",
+                        ComputeCacheIdentity(sources, BuildUnitySource(sources, RtFeatureMacros), compiler, preprocess
+                            .Select(a => a.Replace(directory, "<runtime-source>", StringComparison.Ordinal)).ToArray()),
+                        Cache.ArtifactCache.HashFile(snapshot), canonicalArgs, compiler);
+                    void Build(string path)
+                    {
+                        var args = codegen.Select(a => a == output ? path : a).ToArray();
+                        var result = ExternalProcess.Run(clangPath, args, out _, out var error,
+                            directory, environment, parentPhase: "runtime.bitcode-compile", replaceEnvironment: true);
+                        if (result != 0 || !File.Exists(path))
+                            throw new InvalidOperationException($"rigi_rt 现场编译失败（clang 退出码 {result}）：\n{error.Trim()}");
+                        // 不能将编译期间变换的工具链发布到旧身份下。
+                        if (compiler != null && compiler != ToolchainIdentity.TryCapture(clangPath, codegen, directory, environment))
+                            throw new InvalidOperationException("rigi_rt 编译期间工具链发生变化，请重试");
+                    }
+                    rebuilt = false;
+                    var cached = key != null && Cache.ArtifactCache.TryMaterialize(GetCacheRoot(), key,
+                        "rigi_rt.bc", output, Build, p => LlvmBitcode.ValidateRuntimeTarget(p, targetTriple), out rebuilt);
+                    if (!cached)
+                    {
+                        Build(output); LlvmBitcode.ValidateRuntimeTarget(output, targetTriple);
+                        rebuilt = true;
+                        PerformanceMetrics.Event("cache", "runtime-bitcode", "bypass", key == null
+                            ? "runtime-identity-unavailable" : "cache-io");
+                    }
+                    else PerformanceMetrics.Cache("runtime-bitcode", System.IO.Path.Combine(GetCacheRoot(), key!), rebuilt);
+                    return new PreparedBitcode(directory, output, key);
                 }
-                catch (IOException)
+                catch
                 {
-                    // 另一进程可能已经发布；只接受完整且校验通过的赢家。
-                    var validWinner = false;
-                    // bitcode 与 manifest 是两个原子发布步骤；给赢家一个很短的
-                    // 完成窗口，避免输家恰好落在两步之间时误报冲突。
-                    for (var attempt = 0; attempt < 20 && !validWinner; attempt++)
-                    {
-                        validWinner = TryValidateCache(bitcodePath, manifestPath, hash);
-                        if (!validWinner) System.Threading.Thread.Sleep(10);
-                    }
-                    if (validWinner)
-                    {
-                        LlvmBitcode.ValidateRuntimeTarget(bitcodePath, targetTriple);
-                    }
-                    if (!validWinner)
-                    {
-                        throw new InvalidOperationException("rigi_rt 并发缓存发布冲突且赢家产物校验失败");
-                    }
+                    try { Directory.Delete(directory, true); }
+                    catch (Exception cleanup) when (Cache.ArtifactCache.IsCacheIo(cleanup)) { }
+                    throw;
                 }
-                rebuilt = true;
-                Logger.Verbose("Middleware", $"rigi_rt 已现场编译 {bitcodePath}");
-                return bitcodePath;
             }
-            finally
-            {
-                if (Directory.Exists(buildDir)) Directory.Delete(buildDir, recursive: true);
-            }
+            catch (Exception exception) { metric?.Fail(exception); throw; }
         }
 
         internal static string ComputeCacheIdentity(
@@ -257,36 +246,6 @@ namespace RigiCompiler.Middleware.Runtime
             return unity.ToString();
         }
 
-        private static bool TryValidateCache(string bitcodePath, string manifestPath,
-            string sourceHash)
-        {
-            if (!File.Exists(bitcodePath) || !File.Exists(manifestPath)) return false;
-            try
-            {
-                var lines = File.ReadAllLines(manifestPath);
-                return lines.Length >= 2
-                    && StringComparer.Ordinal.Equals(lines[0], sourceHash)
-                    && StringComparer.OrdinalIgnoreCase.Equals(lines[1],
-                        ComputeFileSha256(bitcodePath));
-            }
-            catch (IOException)
-            {
-                return false;
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return false;
-            }
-        }
-
-        private static string ComputeFileSha256(string path)
-        {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-                FileShare.Read);
-            using var sha = SHA256.Create();
-            return Convert.ToHexString(sha.ComputeHash(stream));
-        }
-
         private static void WriteNewText(string path, string text)
         {
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
@@ -295,11 +254,5 @@ namespace RigiCompiler.Middleware.Runtime
             writer.Write(text);
         }
 
-        private static void EnsurePrivateDirectory(string path)
-        {
-            if (OperatingSystem.IsWindows()) return;
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite
-                | UnixFileMode.UserExecute);
-        }
     }
 }

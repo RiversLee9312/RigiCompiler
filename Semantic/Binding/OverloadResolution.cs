@@ -34,14 +34,17 @@ namespace RigiCompiler
             public SemanticSymbol? ReturnType { get; }
             // 固定泛型实参（显式或推断；非泛型 / 全可变包为空——P4 发射依据）
             public IReadOnlyList<SemanticSymbol> TypeArguments { get; }
+            public IReadOnlyDictionary<GenericParameterSymbol, SemanticSymbol> DefaultSubstitutions { get; }
 
             public CandidateView(MethodSymbol method, IReadOnlyList<SemanticSymbol> parameterTypes,
-                SemanticSymbol? returnType, IReadOnlyList<SemanticSymbol>? typeArguments = null)
+                SemanticSymbol? returnType, IReadOnlyList<SemanticSymbol>? typeArguments = null,
+                IReadOnlyDictionary<GenericParameterSymbol, SemanticSymbol>? defaultSubstitutions = null)
             {
                 Method = method;
                 ParameterTypes = parameterTypes;
                 ReturnType = returnType;
                 TypeArguments = typeArguments ?? Array.Empty<SemanticSymbol>();
+                DefaultSubstitutions = defaultSubstitutions ?? new Dictionary<GenericParameterSymbol, SemanticSymbol>();
             }
         }
 
@@ -242,7 +245,7 @@ namespace RigiCompiler
             {
                 UnsafeGates.CheckMethod(pool[0].Method, node, ctx, env);
                 var single = CallFacility.BindArguments(pool[0].Method, arguments, scope, node.Span,
-                    ctx, env, pool[0].ParameterTypes);
+                    ctx, env, pool[0].ParameterTypes, pool[0].DefaultSubstitutions);
                 return single == null ? null : (pool[0].Method, single, pool[0].ReturnType,
                     packByView.GetValueOrDefault(pool[0]), pool[0].TypeArguments);
             }
@@ -264,7 +267,7 @@ namespace RigiCompiler
             {
                 UnsafeGates.CheckMethod(mapped[0].View.Method, node, ctx, env);
                 var only = CallFacility.BindArguments(mapped[0].View.Method, arguments, scope,
-                    node.Span, ctx, env, mapped[0].View.ParameterTypes);
+                    node.Span, ctx, env, mapped[0].View.ParameterTypes, mapped[0].View.DefaultSubstitutions);
                 return only == null ? null : (mapped[0].View.Method, only,
                     mapped[0].View.ReturnType, packByView.GetValueOrDefault(mapped[0].View),
                     mapped[0].View.TypeArguments);
@@ -793,7 +796,10 @@ namespace RigiCompiler
                 ? null
                 : SubstituteAll(method.ReturnType, generics, args, hostGenerics, hostArgs, env)
                     ?? method.ReturnType;
-            return new CandidateView(method, parameterTypes, returnType, storedTypeArgs);
+            var substitutions = new Dictionary<GenericParameterSymbol, SemanticSymbol>();
+            for (int i = 0; i < generics.Count && i < args.Count; i++) substitutions[generics[i]] = args[i];
+            for (int i = 0; i < hostGenerics.Count && i < (hostArgs?.Count ?? 0); i++) substitutions[hostGenerics[i]] = hostArgs![i];
+            return new CandidateView(method, parameterTypes, returnType, storedTypeArgs, substitutions);
         }
 
         // 双层代入：方法泛型参数（显式实参 / 混合形态的包容器类型）→
@@ -898,7 +904,7 @@ namespace RigiCompiler
             }
             for (int p = 0; p < parameters.Count; p++)
             {
-                if (!occupied[p] && parameters[p].DefaultValue == null) return null;
+                if (!occupied[p] && !parameters[p].HasDefaultValue) return null;
             }
             return mapping;
         }
@@ -985,7 +991,7 @@ namespace RigiCompiler
             for (int p = 0; p < parameters.Count; p++)
             {
                 if (result[p] != null) continue;
-                var defaultValue = env.GetParameterDefault(parameters[p]);
+                var defaultValue = env.GetParameterDefault(parameters[p], ctx.Frame.FileCtx.File, view.DefaultSubstitutions, view.ParameterTypes[p]);
                 if (defaultValue == null)
                 {
                     env.Error(callSpan, $"Missing argument for parameter '{parameters[p].Name}'");

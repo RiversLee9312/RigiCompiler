@@ -18,11 +18,40 @@ namespace RigiCompiler
         // 编译单元唯一符号对象图（ARCHITECTURE §4；构造含 bootstrap 硬编码）
         public SymbolGraph Symbols { get; }
 
-        public CompilationUnit(params RootASTNode[] sourceFiles)
+        public string ModuleIdentity => Symbols.ModuleIdentity;
+        public bool IsModuleCompilation { get; }
+        internal bool IsFinalModuleApplication { get; set; }
+
+        // 结构路径只读，不以线程到达次序或源码位置（可能为空）分配身份。
+        internal string SyntaxIdentity(ASTNode node)
         {
+            var path = new Stack<string>();
+            while (node.Parent is { } parent)
+            {
+                var edge = AstStructureReflection.EnumerateChildren(parent)
+                    .FirstOrDefault(child => ReferenceEquals(child.Child, node)).Via;
+                path.Push(edge ?? node.GetType().Name);
+                node = parent;
+            }
+            var file = node as RootASTNode;
+            var index = -1;
+            for (var i = 0; i < SourceFiles.Count; i++)
+                if (ReferenceEquals(SourceFiles[i], file)) { index = i; break; }
+            return ModuleIdentity + "/file/" + index + "/source/"
+                + (file?.Span?.sourceName ?? "<synthetic>") + "/" + string.Join("/", path);
+        }
+
+        public CompilationUnit(params RootASTNode[] sourceFiles) : this("module", sourceFiles) { }
+
+        public CompilationUnit(string moduleIdentity, params RootASTNode[] sourceFiles) : this(moduleIdentity, false, sourceFiles) { }
+
+        public CompilationUnit(string moduleIdentity, bool moduleCompilation, params RootASTNode[] sourceFiles)
+        {
+            IsModuleCompilation = moduleCompilation;
             SourceFiles = sourceFiles;
             Diagnostics = new DiagnosticBag();
-            Symbols = new SymbolGraph();
+            Symbols = new SymbolGraph(moduleIdentity);
+            ModuleOrigin.Register(this);
         }
 
         // 自举签名绑定复用已经建好的图，避免构造第二套内建身份。
@@ -31,6 +60,15 @@ namespace RigiCompiler
             SourceFiles = new[] { source };
             Diagnostics = new DiagnosticBag();
             Symbols = symbols;
+        }
+
+        internal CompilationUnit(SymbolGraph symbols, IReadOnlyList<RootASTNode> sources)
+        {
+            SourceFiles = sources;
+            Diagnostics = new DiagnosticBag();
+            Symbols = symbols;
+            IsModuleCompilation = true;
+            ModuleOrigin.Register(this);
         }
     }
 }

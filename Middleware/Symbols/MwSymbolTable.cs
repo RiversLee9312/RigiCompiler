@@ -51,6 +51,24 @@ namespace RigiCompiler.Middleware.Symbols
         public MwMemberSymbol? FindMember(string canonical) =>
             _members.TryGetValue(canonical, out var symbol) ? symbol : null;
 
+        // 保留构造通道只在目标声明成员中解析。普通 FindMember 仍按完整链接身份。
+        internal MwMemberSymbol? FindInitWrapper(MwTypeSymbol owner, int arity)
+        {
+            var candidates = owner.Members.Where(m => BilLogicalName.Method(m.Canonical)
+                == BilSpellings.InitWrapperMethodName).ToArray();
+            if (candidates.Length == 0) return null;
+            if (candidates.Length != 1) throw new CompilerInternalException("init wrapper 声明不唯一: " + owner.Canonical);
+            var member = candidates[0];
+            var signature = CanonicalSignature.Parse(member.Canonical);
+            if (!ReferenceEquals(member.Owner?.Declaration, owner.Declaration)
+                || member.Declaration.Kind != BilMemberKind.Method || signature.ReturnTypeRef != ".void"
+                || !member.Declaration.Modifiers.OfType<BilAccessibilityModifier>().Any(m => m.Accessibility == BilAccessibility.Private)
+                || !member.HasKeyword(BilKeyword.CompilerGenerated) || member.HasKeyword(BilKeyword.Native)
+                || member.HasKeyword(BilKeyword.Async))
+                throw new CompilerInternalException("init wrapper 宿主/实例/void/生成标记不符: " + member.Canonical);
+            return signature.Parameters.Count == arity ? member : null;
+        }
+
         public MwMemberSymbol? FindMember(string canonical, string ownerTypeRef)
         {
             var key = BilVerificationContext.DeclarationKeyOf(MwTypeKey.Normalize(ownerTypeRef));

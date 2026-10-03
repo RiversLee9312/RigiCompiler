@@ -20,12 +20,16 @@ namespace RigiCompiler
         // 解析全部内嵌 stdlib 源；stdlib 是编译器自携源，解析失败
         // （LexerException/ParserException）属编译器内部错误，直接上抛不容忍
         public static IReadOnlyList<RootASTNode> ParseAll()
+            => Frontend.ParseRoots(ReadInputs());
+
+        // 模块缓存命中只拍内嵌源内容身份，不进入 Lexer/Parser 或符号自举。
+        internal static IReadOnlyList<SourceInput> ReadInputs()
         {
             var assembly = Assembly.GetExecutingAssembly();
             var names = new List<string>(assembly.GetManifestResourceNames());
             names.Sort(StringComparer.Ordinal);
 
-            var roots = new List<RootASTNode>();
+            var inputs = new List<SourceInput>();
             foreach (var name in names)
             {
                 if (!name.StartsWith(ResourcePrefix, StringComparison.Ordinal) ||
@@ -44,19 +48,17 @@ namespace RigiCompiler
                 {
                     text = reader.ReadToEnd();
                 }
-                var root = (RootASTNode)new Parser().Parse(new Lexer().Tokenize(text, sourceName));
-                root.IsCompilerLibrary = true;
-                root.IsIntrinsicDeclarations = name == "stdlib/.intrinsics.rg";
-                roots.Add(root);
+                inputs.Add(new SourceInput(text, sourceName, CompilerLibrary: true,
+                    Intrinsics: name == "stdlib/.intrinsics.rg"));
             }
             // 零匹配 = EmbeddedResource 配置失效（stdlib 整体缺失）：静默返回空
             // 列表会让 stdlib 符号全部找不到、诊断全指向用户代码，必须响亮失败
-            if (roots.Count == 0)
+            if (inputs.Count == 0)
             {
                 throw new CompilerInternalException(
                     "stdlib 内嵌源缺失：程序集中未找到任何 stdlib/**/*.rg 资源（EmbeddedResource 配置失效）");
             }
-            return roots;
+            return inputs;
         }
 
         internal static RootASTNode ParseIntrinsics()

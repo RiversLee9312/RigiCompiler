@@ -268,8 +268,7 @@ namespace RigiCompiler.Middleware.Mir
                 // 与 toString/hash 先例同；用 SyntheticMember 直调，fn 是否
                 // 在场以 any_hash native 声明为门，同 LocalSymbolEmitters
                 // 的发射门控）
-                member = flow.Context.Symbols.FindMember("core::$any_hash(value:.any)@.i64")
-                    == null
+                member = BilCompilerHelpers.Resolve(flow.Context.Module, "any_hash") == null
                     ? null
                     : ProxyBakeSupport.SyntheticMember(ImplBinder.AnyEqualsCanonical, null);
             }

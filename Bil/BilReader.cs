@@ -1052,6 +1052,14 @@ namespace RigiCompiler.Bil
 
         private BilResource RequireResource(string name)
         {
+            // catch-table 的块名属于使用它的函数。共享同一张文本表时，每个
+            // try 都重新绑定当前函数的块，不能复用首个函数的驻留 handler。
+            if (_catchTableRaw.TryGetValue(name, out var rawCatch))
+            {
+                var bound = BuildCatchTable(name, rawCatch);
+                _resources.TryAdd(name, bound);
+                return bound;
+            }
             if (_resources.TryGetValue(name, out var resource))
             {
                 return resource;
@@ -1078,6 +1086,7 @@ namespace RigiCompiler.Bil
                 }
                 else
                 {
+                    if (_currentBlocks != null) throw Error($"catch-table 引用当前函数未定义的 block \"{blockId}\"");
                     handler = new BilBlock(blockId);
                 }
                 entries.Add(new BilCatchEntry(new BilTypeOperand(typeRef), handler));

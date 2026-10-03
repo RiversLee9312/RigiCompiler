@@ -19,6 +19,14 @@ namespace RigiCompiler.Tests
         private static int passCount = 0;
         private static int failCount = 0;
 
+        // 单 input 驱动沿用本套件自己的计数器，供静态目录适配。
+        internal static (int Assertions, int Failures) RunTokenCase(string code, string expected)
+        {
+            passCount = failCount = 0;
+            ExpectTokens(code, expected);
+            return (passCount + failCount, failCount);
+        }
+
         // ===== 1. 固定用例：精确 token 序列 =====
 
         public static void TestFixedCases()

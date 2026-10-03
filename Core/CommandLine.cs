@@ -21,6 +21,8 @@ namespace RigiCompiler
         public int MinArgs { get; set; } = 0;
         public int MaxArgs { get; set; } = 0;
         public bool AllowsArbitraryArgs => MaxArgs == int.MaxValue;
+        // 只有显式支持程序 argv 的 COMMAND 可以用精确 -- 结束编译器参数解析。
+        public bool AllowsProgramArguments { get; set; }
         // 互斥子命令名列表（含 -- 前缀）：同现时解析报错
         public List<string> MutuallyExclusive { get; } = new();
     }
@@ -48,6 +50,8 @@ namespace RigiCompiler
         public ICommandLineCommand Command { get; set; } = null!;
         public List<string> CommandArgs { get; } = new();
         public Dictionary<string, List<string>> SubCommandArgs { get; } = new();
+        public List<string> ProgramArguments { get; } = new();
+        public bool HasProgramArgumentDelimiter { get; internal set; }
 
         public bool Has(string subCommand) => SubCommandArgs.ContainsKey(subCommand);
 
@@ -64,6 +68,10 @@ namespace RigiCompiler
     public static class CommandLineParser
     {
         public static bool TryParse(string[] args, out CommandLineParseResult? result, out string? error)
+            => TryParse(args, CommandLineRegistry.Commands, out result, out error);
+
+        internal static bool TryParse(string[] args, IReadOnlyList<ICommandLineCommand> commands,
+            out CommandLineParseResult? result, out string? error)
         {
             result = null;
             error = null;
@@ -74,7 +82,7 @@ namespace RigiCompiler
                 return false;
             }
 
-            var command = CommandLineRegistry.Commands.FirstOrDefault(c => c.Mask.Name == args[0]);
+            var command = commands.FirstOrDefault(c => c.Mask.Name == args[0]);
             if (command == null)
             {
                 error = $"未知 COMMAND: {args[0]}（可用 help 查看全部命令）";
@@ -87,6 +95,12 @@ namespace RigiCompiler
             for (int i = 1; i < args.Length; i++)
             {
                 var token = args[i];
+                if (token == "--" && command.Mask.AllowsProgramArguments)
+                {
+                    parseResult.HasProgramArgumentDelimiter = true;
+                    parseResult.ProgramArguments.AddRange(args.Skip(i + 1));
+                    break;
+                }
                 if (token.StartsWith("--"))
                 {
                     // --x=v 形态拆成名字 + 内联首参
@@ -182,7 +196,7 @@ namespace RigiCompiler
             new TestCommand(),
             new VmCommand(),
             new NativeCommand(),
-            new RunCommand(),
+            new Modules.ModuleCommand(),
             new HelpCommand(),
         };
     }

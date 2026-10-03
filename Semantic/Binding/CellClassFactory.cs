@@ -35,7 +35,7 @@ namespace RigiCompiler
             }
             return local.CellStorage = Create(ctx.Frame.FileCtx.Namespace,
                 InScopeGenericParameters(ctx).ToList(), local.Type!, local.IsConst,
-                local.AppliedWrappers, syntax, env);
+                local.AppliedWrappers, syntax, env, synthesisOwner: env.Unit.Symbols.StableTypeIdentity(ctx.Frame.Method));
         }
 
         // 参数 cell 化（幂等；参数无 const 概念，恒 Cell 风味）
@@ -45,7 +45,7 @@ namespace RigiCompiler
             if (parameter.CellStorage != null) return parameter.CellStorage;
             return parameter.CellStorage = Create(ctx.Frame.FileCtx.Namespace,
                 InScopeGenericParameters(ctx).ToList(), parameter.Type!, readOnly: false,
-                Array.Empty<WrapperApplication>(), syntax, env);
+                Array.Empty<WrapperApplication>(), syntax, env, synthesisOwner: env.Unit.Symbols.StableTypeIdentity(ctx.Frame.Method));
         }
 
         // 静态/全局字段 cell 化（幂等；P3 BindingDriver 阶段 1.6 调用）：
@@ -133,7 +133,7 @@ namespace RigiCompiler
                 return null;
             }
             var cellClass = new TypeSymbol(
-                "..cell.." + Guid.NewGuid().ToString("N"),
+                env.HiddenName("cell", syntax, unit.Symbols.StableTypeIdentity(outerCtx.Frame.Method)),
                 TypeKind.Class, ns: outerCtx.Frame.FileCtx.Namespace, baseType: baseType,
                 isShared: IsSharedElement(elementType))
             {
@@ -459,7 +459,7 @@ namespace RigiCompiler
             bool readOnly, IReadOnlyList<WrapperApplication> wrappers, ASTNode syntax,
             BindEnvironment env, bool isSingleton = false, BoundExpression? initializer = null,
             PropertyAccessorASTNode? getterNode = null, PropertyAccessorASTNode? setterNode = null,
-            bool hasBacking = false, BindContext? accessorOuterCtx = null)
+            bool hasBacking = false, BindContext? accessorOuterCtx = null, string? synthesisOwner = null)
         {
             var unit = env.Unit;
             // 毒化静默（类型解析失败的诊断已在前序落袋，不合成残缺子类）
@@ -484,7 +484,7 @@ namespace RigiCompiler
                 return null;
             }
             var cellClass = new TypeSymbol(
-                "..cell.." + Guid.NewGuid().ToString("N"),
+                env.HiddenName("cell", syntax, synthesisOwner ?? "field-declaration"),
                 TypeKind.Class, ns: ns, baseType: baseType,
                 isShared: isSingleton || IsSharedElement(elementType))
             {

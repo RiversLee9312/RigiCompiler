@@ -51,7 +51,15 @@ namespace RigiCompiler.Bil.Vm
         public bool TryInvokeMethod(VmContext context, string methodSymbol,
             IReadOnlyList<VmValue> arguments, out VmValue result)
         {
-            if (_methodTable.TryGetValue(MethodKeyOf(methodSymbol), out var hook))
+            var key = MethodKeyOf(methodSymbol);
+            if (!_methodTable.TryGetValue(key, out var hook))
+            {
+                // 只允许准确的可信完整 ABI 映射到既有机制键；普通私有同名方法不能获 hook。
+                var logical = BilCompilerSymbols.Logical(methodSymbol);
+                if (BilCompilerSymbols.Resolve(context.Module, logical) == methodSymbol)
+                    _methodTable.TryGetValue(MethodKeyOf(logical), out hook);
+            }
+            if (hook != null)
             {
                 result = hook(context, arguments);
                 return true;

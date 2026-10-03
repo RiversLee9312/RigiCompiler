@@ -213,13 +213,13 @@ namespace RigiCompiler.Middleware.Mir
             return null;
         }
 
-        private static string RedirectBuiltinToString(string symbol) => symbol switch
+        private string RedirectBuiltinToString(string symbol) => symbol switch
         {
-            "core::Any$toString()@.string" => "core::$any_to_string(value:.any)@.string",
-            "core::Object$toString()@.string" => "core::$any_to_string(value:.any)@.string",
+            "core::Any$toString()@.string" or "core::Object$toString()@.string" =>
+                BilCompilerHelpers.Resolve(_context.Module, "any_to_string") ?? symbol,
             // hash（Map 键判等）：与 toString 同构的 helper 重定向
-            "core::Any$hash()@.i64" => "core::$any_hash(value:.any)@.i64",
-            "core::Object$hash()@.i64" => "core::$any_hash(value:.any)@.i64",
+            "core::Any$hash()@.i64" or "core::Object$hash()@.i64" =>
+                BilCompilerHelpers.Resolve(_context.Module, "any_hash") ?? symbol,
             _ => symbol,
         };
 

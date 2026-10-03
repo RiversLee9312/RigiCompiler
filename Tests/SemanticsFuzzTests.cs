@@ -33,7 +33,6 @@ namespace RigiCompiler.Tests
         private const int DefaultCaseCount = 3000;
         private const int DeterminismEvery = 60;   // 3000/60 = 50 例确定性抽查
         private const int ProgressEvery = 25;      // 每 N 个已跑 case 打一行进度并 flush
-        private const int SpawnThreshold = 100;    // 区间 > 100 且非 --spawned 时并行派生
 
         private static int passCount;
         private static int failCount;
@@ -108,16 +107,17 @@ namespace RigiCompiler.Tests
 
         private static int RunRange(int from, int to)
         {
-            int caseCount = to - from + 1;
-            // 并行门槛：区间 > 100 且本进程不是被派生的测试子进程（--spawned）时，
-            // 拉起多个编译器自身子进程分区间并行；否则进程内直接跑完。
-            if (caseCount > SpawnThreshold && !TestRunner.IsSpawned)
-                return RunParallel(from, to);
-            return RunInProcess(from, to);
+            if (!TestRunner.IsSpawned) return LegacyDispatcher.RunIndices("SemanticsFuzz", Enumerable.Range(from, to - from + 1).ToArray(),
+                childTimeoutMs > 0 ? TimeSpan.FromMilliseconds(childTimeoutMs) : null);
+            return RunSelected(Enumerable.Range(from, to - from + 1).ToArray());
         }
 
-        private static int RunInProcess(int from, int to)
+        internal static (int Assertions, int Failures) SelectedCounts => (passCount + failCount, failCount);
+
+        internal static int RunSelected(IReadOnlyList<int> indices)
         {
+            int from = indices.Min(), to = indices.Max();
+            var selected = indices.ToHashSet();
             Console.WriteLine("\n╔════════════════════════════════════╗");
             Console.WriteLine("║  Semantics Fuzz Tests (S8d)        ║");
             Console.WriteLine("╚════════════════════════════════════╝\n");
@@ -129,8 +129,8 @@ namespace RigiCompiler.Tests
             messageFrequency.Clear();
             failureLog.Clear();
 
-            int caseCount = to - from + 1;
-            ReportProgress($"SemanticsFuzz 区间 case#{from}..#{to}（种子 {Seed}，共 {caseCount} 例）");
+            int caseCount = indices.Count;
+            ReportProgress($"SemanticsFuzz 全局索引 {string.Join(',', indices)}（跨度 case#{from}..#{to}）（种子 {Seed}，共 {caseCount} 例）");
 
             var rng = new Random(Seed);
             var stopwatch = Stopwatch.StartNew();
@@ -138,7 +138,7 @@ namespace RigiCompiler.Tests
             for (int i = 0; i <= to; i++)
             {
                 string source = new Generator(rng).Generate();
-                if (i < from) continue;
+                if (!selected.Contains(i)) continue;
                 // 进度打在 RunCase 之前：卡死时能看到正在跑的编号
                 if (ran % ProgressEvery == 0 || caseCount <= ProgressEvery)
                     ReportProgress($"SemanticsFuzz 开始 case#{i}（种子 {Seed}，本区间已跑 {ran}/{caseCount}）");
@@ -171,297 +171,6 @@ namespace RigiCompiler.Tests
             Console.WriteLine($"=== Semantics Fuzz Tests Complete: {passCount} passed, {failCount} failed ===");
             Console.Out.Flush();
             return failCount;
-        }
-
-        // ===== 并行派生（仅父进程调用）：总区间切成连续不重叠子区间，并集 = 完整区间 =====
-
-        private static int RunParallel(int from, int to)
-        {
-            int caseCount = to - from + 1;
-            // 用注册名找套件号，不硬编码 43：注册表顺序调整后仍然稳妥
-            int suiteNumber = TestRunner.GetSuiteNumber("SemanticsFuzz");
-            if (suiteNumber < 1)
-            {
-                Console.Error.WriteLine("SemanticsFuzz 并行化：找不到 SemanticsFuzz 套件编号，回退进程内执行");
-                return RunInProcess(from, to);
-            }
-
-            // 子进程数 = CPU 核心数；区间只略超阈值时按 case 数封顶，避免空子区间
-            int workerCount = Math.Min(Environment.ProcessorCount, caseCount);
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Semantics Fuzz Tests (S8d)        ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-            Console.Out.Flush();
-            ReportProgress($"SemanticsFuzz 并行化：区间 case#{from}..#{to}（种子 {Seed}，共 {caseCount} 例），" +
-                $"切 {workerCount} 个子进程（阈值 >{SpawnThreshold}）");
-
-            // 确定性切分：前 caseCount % workerCount 个子进程各多领 1 例，
-            // 子区间连续、不重叠、并集 = [from, to]
-            var children = new List<ChildResult>();
-            int start = from;
-            for (int w = 0; w < workerCount; w++)
-            {
-                int len = caseCount / workerCount + (w < caseCount % workerCount ? 1 : 0);
-                int childFrom = start;
-                int childTo = start + len - 1;
-                start += len;
-                // 先全部启动再统一等待：子进程真正并行执行
-                children.Add(StartChild(suiteNumber, childFrom, childTo));
-            }
-            foreach (var child in children)
-            {
-                WaitChild(child);
-            }
-
-            // 父进程汇总：正常情况只打印每子进程区间 + 通过数；
-            // 任一子进程失败/异常退出 → 列出失败区间与关键输出，整套失败
-            int totalPass = 0;
-            int totalFail = 0;
-            var failedChildren = new List<ChildResult>();
-            Console.WriteLine("  [parallel] 子进程汇总：");
-            foreach (var child in children)
-            {
-                var completion = ParseCompletion(child.Stdout);
-                bool ok = child.StartError == null && !child.TimedOut && child.ExitCode == 0
-                    && completion is { Fail: 0 };
-                if (ok)
-                {
-                    totalPass += completion!.Value.Pass;
-                    Console.WriteLine($"    case#{child.From}..{child.To}（{child.To - child.From + 1} 例）：" +
-                        $"{completion.Value.Pass} passed");
-                }
-                else
-                {
-                    // 有完成统计则精确累计；无（起不来/超时/崩溃）整段按失败计，
-                    // 保证 test --all 非零退出
-                    if (completion != null)
-                    {
-                        totalPass += completion.Value.Pass;
-                        totalFail += completion.Value.Fail;
-                    }
-                    else
-                    {
-                        totalFail += child.To - child.From + 1;
-                    }
-                    failedChildren.Add(child);
-                }
-            }
-
-            foreach (var child in failedChildren)
-            {
-                Console.WriteLine($"  [FAIL] case#{child.From}..{child.To}：{DescribeChildFailure(child)}");
-                // 失败展示纪律：stdout 全量回显（ParallelSuiteRunner 统一面），
-                // 失败用例不得省略；stderr 末尾作崩溃上下文
-                ParallelSuiteRunner.PrintFailureOutput(child.Stdout);
-                PrintChildTail("stderr", child.Stderr);
-            }
-
-            Console.WriteLine($"=== Semantics Fuzz Tests Complete: {totalPass} passed, {totalFail} failed ===");
-            Console.Out.Flush();
-            return totalFail;
-        }
-
-        private static ChildResult StartChild(int suiteNumber, int childFrom, int childTo)
-        {
-            var child = new ChildResult { From = childFrom, To = childTo };
-
-            // dotnet run 场景下 Environment.ProcessPath 指向 dotnet 宿主；
-            // 取入口 dll 路径，用 `dotnet exec <dll>` 起子进程最稳妥
-            string assemblyPath;
-            try
-            {
-                // 单文件发布下 Location 为空字符串属预期，下方有分支处理
-#pragma warning disable IL3000
-                assemblyPath = Assembly.GetEntryAssembly()?.Location
-                    ?? throw new InvalidOperationException("GetEntryAssembly() 为 null");
-#pragma warning restore IL3000
-            }
-            catch (Exception ex)
-            {
-                child.StartError = $"获取编译器 dll 路径失败：{ex.Message}";
-                return child;
-            }
-
-            // 单文件发布时 Assembly.Location 为空，直接以自身 exe 起子进程
-            var runViaDotnetExec = assemblyPath.Length > 0;
-            if (!runViaDotnetExec)
-            {
-                assemblyPath = Environment.ProcessPath
-                    ?? throw new InvalidOperationException("ProcessPath 为 null");
-            }
-
-            try
-            {
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = runViaDotnetExec ? "dotnet" : assemblyPath,
-                    WorkingDirectory = Directory.GetCurrentDirectory(),
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    // 子进程固定 UTF-8（对齐 ParallelSuiteRunner）：防 Windows
-                    // 控制台代码页（en-US 为 CP437）把中文输出解码成乱码
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,
-                };
-                // ArgumentList 自动处理参数转义
-                if (runViaDotnetExec)
-                {
-                    startInfo.ArgumentList.Add("exec");
-                    startInfo.ArgumentList.Add(assemblyPath);
-                }
-                startInfo.ArgumentList.Add("test");
-                startInfo.ArgumentList.Add("--run");
-                startInfo.ArgumentList.Add(suiteNumber.ToString());
-                startInfo.ArgumentList.Add("--suite-args");
-                startInfo.ArgumentList.Add(childFrom.ToString());
-                startInfo.ArgumentList.Add(childTo.ToString());
-                startInfo.ArgumentList.Add("--spawned");
-
-                child.Process = new Process { StartInfo = startInfo };
-            }
-            catch (Exception ex)
-            {
-                child.StartError = $"构建子进程启动信息失败：{ex.Message}";
-                return child;
-            }
-
-            try
-            {
-                if (!child.Process.Start())
-                {
-                    child.StartError = "Process.Start 返回 false";
-                    child.Process.Dispose();
-                    child.Process = null;
-                    return child;
-                }
-            }
-            catch (Exception ex)
-            {
-                child.StartError = $"{ex.GetType().Name}: {ex.Message}";
-                child.Process?.Dispose();
-                child.Process = null;
-                return child;
-            }
-
-            // 先启动异步读再等待退出：子进程输出再大也不会因管道缓冲区满而死锁
-            if (child.Process is not { } process)
-            {
-                child.StartError = "子进程句柄缺失";
-                return child;
-            }
-            child.StdoutTask = process.StandardOutput.ReadToEndAsync();
-            child.StderrTask = process.StandardError.ReadToEndAsync();
-            // 默认不限时（TimeoutMs<=0）：NativeAOT 等慢速运行时下按固定预算会误杀；
-            // 需要时限时由 --suite-args 的 child-timeout-ms=N 显式给出
-            child.TimeoutMs = childTimeoutMs;
-            return child;
-        }
-
-        private static void WaitChild(ChildResult child)
-        {
-            if (child.StartError != null || child.Process == null) return;
-
-            var process = child.Process;
-            bool exited;
-            if (child.TimeoutMs > 0)
-            {
-                exited = process.WaitForExit(child.TimeoutMs);
-            }
-            else
-            {
-                process.WaitForExit();   // 不限时：直等到退出
-                exited = true;
-            }
-            if (!exited)
-            {
-                child.TimedOut = true;
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception ex)
-                {
-                    child.Stderr += $"\n[parent] 终止子进程失败：{ex.Message}";
-                }
-                // Kill 后给系统收尾窗口；仍未退出则放弃，避免父进程二次挂死
-                if (!process.WaitForExit(10_000))
-                {
-                    child.ExitCode = -1;
-                    child.Stdout = "";
-                    child.Stderr += "\n[parent] 子进程在 Kill 后 10s 仍未退出，放弃读取输出";
-                    process.Dispose();
-                    return;
-                }
-            }
-
-            child.ExitCode = process.ExitCode;
-            child.Stdout = child.StdoutTask?.GetAwaiter().GetResult() ?? "";
-            child.Stderr += child.StderrTask?.GetAwaiter().GetResult() ?? "";
-            process.Dispose();
-        }
-
-        // 解析子进程 stdout 末尾的完成统计行："N passed, M failed"
-        private static (int Pass, int Fail)? ParseCompletion(string stdout)
-        {
-            const string marker = "=== Semantics Fuzz Tests Complete: ";
-            int idx = stdout.LastIndexOf(marker, StringComparison.Ordinal);
-            if (idx < 0) return null;
-
-            string rest = stdout[(idx + marker.Length)..];
-            int newline = rest.IndexOf('\n');
-            string line = (newline < 0 ? rest : rest[..newline]).Trim();
-            int end = line.IndexOf(" ===", StringComparison.Ordinal);
-            if (end >= 0) line = line[..end].Trim();
-
-            var parts = line.Split(',');
-            if (parts.Length != 2) return null;
-            var passParts = parts[0].Trim().Split(' ');
-            var failParts = parts[1].Trim().Split(' ');
-            if (passParts.Length == 0 || failParts.Length == 0) return null;
-            if (!int.TryParse(passParts[0], out int pass)) return null;
-            if (!int.TryParse(failParts[0], out int fail)) return null;
-            return (pass, fail);
-        }
-
-        private static string DescribeChildFailure(ChildResult child)
-        {
-            if (child.StartError != null) return $"子进程启动失败：{child.StartError}";
-            if (child.TimedOut) return $"子进程超时（>{child.TimeoutMs} ms），已终止";
-            if (child.ExitCode != 0) return $"子进程退出码 {child.ExitCode}";
-            return "子进程输出缺失完成统计";
-        }
-
-        private static void PrintChildTail(string streamName, string output)
-        {
-            var lines = output.Replace("\r", "").Split('\n')
-                .Select(l => l.TrimEnd())
-                .Where(l => l.Length > 0)
-                .ToArray();
-            if (lines.Length == 0) return;
-            const int tailLines = 15;
-            var tail = lines.Skip(Math.Max(0, lines.Length - tailLines)).ToArray();
-            Console.WriteLine($"    [{streamName} 末尾 {tail.Length} 行]");
-            foreach (var line in tail)
-            {
-                Console.WriteLine("      | " + line);
-            }
-        }
-
-        private sealed class ChildResult
-        {
-            public int From;
-            public int To;
-            public int ExitCode = -1;
-            public string Stdout = "";
-            public string Stderr = "";
-            public bool TimedOut;
-            public int TimeoutMs;      // <=0 表示不限时（WaitChild 直等到子进程退出）
-            public string? StartError;
-            public Process? Process;
-            public Task<string>? StdoutTask;
-            public Task<string>? StderrTask;
         }
 
         private static void ReportProgress(string message)

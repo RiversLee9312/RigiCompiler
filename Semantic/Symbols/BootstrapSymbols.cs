@@ -88,13 +88,16 @@ namespace RigiCompiler
         //（具名包依赖 stdlib core.Pair，构造期 Pair 尚未载入）
         public MethodSymbol CallWildcard { get; private set; } = null!;
 
-        internal RootASTNode DeclarationSource { get; }
+        internal RootASTNode? DeclarationSource { get; }
         internal Dictionary<string, TypeSymbol> SourceTypes { get; } = new(StringComparer.Ordinal);
 
-        internal BootstrapSymbols(NamespaceSymbol globalNamespace)
+        internal BootstrapSymbols(NamespaceSymbol globalNamespace, bool artifactOnly = false)
         {
             Core = new NamespaceSymbol("core", globalNamespace);
             globalNamespace.ChildNamespaces.Add(Core);
+            if (artifactOnly) CreateManifestTypes();
+            else
+            {
             DeclarationSource = StdlibSources.ParseIntrinsics();
             foreach (var node in DeclarationSource.Declarations)
             {
@@ -137,6 +140,7 @@ namespace RigiCompiler
                 SourceTypes.Add(name, symbol);
                 Core.Types.Add(symbol);
             }
+            }
             Any = Require("Any"); Object = Require("Object"); ValueType = Require("ValueType");
             Enum = Require("Enum"); Wrapper = Require("Wrapper");
             Int8 = Require("i8"); Int16 = Require("i16"); Int32 = Require("i32"); Int64 = Require("i64");
@@ -156,6 +160,30 @@ namespace RigiCompiler
             }
         }
 
+        // 固定有序 compiler-owned 类型身份表；Pair 属于标准库 API，不是语言内建。
+        // 此路径完全不解析 .intrinsics，也不绑定源码签名，能力由可信接口 overlay。
+        private void CreateManifestTypes()
+        {
+            foreach (var name in new[] { "Any", "Object", "ValueType", "Enum", "Wrapper", "i8", "i16", "i32", "i64",
+                "u8", "u16", "u32", "u64", "float", "double", "bool", "char", "String", "Type", "Span", "SharedSpan", "Nullable", "Box", "Array", "Map" })
+            {
+                var kind = name switch { "Any" => TypeKind.Interface, "Enum" => TypeKind.EnumStruct, "Wrapper" => TypeKind.Wrapper,
+                    "Object" or "Span" or "SharedSpan" or "Nullable" or "Box" or "Array" or "Map" => TypeKind.Class, _ => TypeKind.Struct };
+                var alias = name switch { "Any" => ".any", "Object" => ".object", "ValueType" => ".valuetype",
+                    "float" => ".f32", "double" => ".f64", "String" => ".string",
+                    "i8" or "i16" or "i32" or "i64" or "u8" or "u16" or "u32" or "u64" or "bool" or "char" => "." + name, _ => null };
+                var standard = name switch { "Type" => ".typeid", "Nullable" => ".nullable", "Array" => ".array", "Map" => ".map", _ => null };
+                var type = new TypeSymbol(name, kind, Core, isBuiltin: true, isShared: name == "SharedSpan",
+                    isValueTypeBranch: kind is TypeKind.Struct or TypeKind.EnumStruct or TypeKind.Wrapper,
+                    derivesSharedSafetyFromTypeArgument: name is "Nullable" or "Array" or "Map",
+                    bilAlias: alias, bilStandardConstructor: standard, intrinsicOps: IntrinsicsOf(name)) { Accessibility = Accessibility.Public };
+                foreach (var gpName in name switch { "Map" => new[] { "TKey", "TValue" },
+                    "Type" or "Span" or "SharedSpan" or "Nullable" or "Box" or "Array" => new[] { "T" }, _ => Array.Empty<string>() })
+                    type.GenericParameters.Add(new GenericParameterSymbol(gpName));
+                SourceTypes.Add(name, type); Core.Types.Add(type);
+            }
+        }
+
         private TypeSymbol Require(string name) => SourceTypes.TryGetValue(name, out var type) ? type
             : throw new CompilerInternalException("内建源码缺少类型声明：" + name);
 
@@ -163,7 +191,7 @@ namespace RigiCompiler
         {
             // 早期仅绑定签名，让无 stdlib 函数体的分析工具也能使用基本类型。
             // 完整编译再次采用同一批类型/泛型身份，标记与函数体走普通 P2/P3。
-            var unit = new CompilationUnit(symbols, DeclarationSource);
+            var unit = new CompilationUnit(symbols, DeclarationSource ?? throw new CompilerInternalException("artifact-only graph 禁止绑定源码签名"));
             var declarations = DeclarationCollector.Collect(unit);
             var env = EntryCollector.Collect(unit, declarations);
             TypeReferenceResolver.Visit(env);

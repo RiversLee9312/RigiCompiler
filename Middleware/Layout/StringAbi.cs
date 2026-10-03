@@ -1,5 +1,6 @@
 using System.Text;
 using LLVMSharp.Interop;
+using RigiCompiler.Middleware.Emit;
 
 namespace RigiCompiler.Middleware.Layout
 {
@@ -16,6 +17,7 @@ namespace RigiCompiler.Middleware.Layout
         // { i8* data, i64 len }（Rigi 内部按值持有）
         public static LLVMTypeRef ValueType(LLVMContextRef context)
         {
+            LlvmHost.RequireOwnership();
             return context.GetStructType(new[]
             {
                 LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
@@ -26,6 +28,7 @@ namespace RigiCompiler.Middleware.Layout
         // rigi_string*（C 边界传参与出参槽共用形态）
         public static LLVMTypeRef PointerType(LLVMContextRef context)
         {
+            LlvmHost.RequireOwnership();
             return LLVMTypeRef.CreatePointer(ValueType(context), 0);
         }
 
@@ -33,6 +36,7 @@ namespace RigiCompiler.Middleware.Layout
         // 全局基址 + 8。空串 data=null（rigi_rt 对 len==0 不解引用 data）
         public static LLVMValueRef BuildConstant(LLVMModuleRef module, string text, string globalName)
         {
+            LlvmHost.RequireOwnership();
             var context = module.Context;
             var bytes = Encoding.UTF8.GetBytes(text);
             var bytePtrType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);

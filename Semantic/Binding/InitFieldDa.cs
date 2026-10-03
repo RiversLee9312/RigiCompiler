@@ -1,5 +1,10 @@
 namespace RigiCompiler
 {
+    // 不捕获 worker 环境；延后诊断的消息只持有不可变声明点数据。
+    internal sealed record DefaultConstructionMessage(string Prefix, string Suffix)
+    {
+        public string Render(FieldSymbol field) => Prefix + field.Name + Suffix;
+    }
     // init 字段定值赋值分析（P18/S2，SYNTAX §9.3「DA 规则」）：所有实体
     //（值类型与对象同规则）的实例字段声明后默认视为未赋值；非 Nullable
     // 字段必须三选一——声明初始值（编译器合成的 ..init.field.*，构造进入
@@ -13,13 +18,37 @@ namespace RigiCompiler
     //      本 init 义务（子类可直接给可见的基类字段赋值，赋不了的在诊断里
     //      引导调 super）；
     //   2. 合成默认构造（BindingDriver 阶段 1.8）按集合直接判定；
-    //   3. 无 init 类型的零参 new 使用点（NewVisitor）——类型从未声明
+    //   3. 无 init 类型的零参 new 使用点（P3 收尾）——类型从未声明
     //      init 时声明点不报错，构造点才报；
-    //   4. 无 init enum struct 的固定 case 模板（BindingDriver 阶段 1.5）。
+    //   4. 无 init enum struct 的固定 case 模板（P3 收尾）；
+    //   5. 无 init wrapper 的应用安装点（P3 收尾，全部初始化器就位后）。
     // 数组元素不做 DA（native 魔法，getAtIndex 返回 T?）；抽象类自身不
     // 可构造，其无初始值非空字段的义务转移给具体子类的 init。
     internal static class InitFieldDa
     {
+        public static void DeferDefaultConstruction(TypeSymbol type, CharRange? span,
+            BindEnvironment env, DefaultConstructionMessage message)
+        {
+            env.DefaultConstructions.Add((type, span, message));
+        }
+
+        // 早期 BoundNew.Init 保持 null：BIL new 按最终类型解析普通零参入口。
+        // 仅实际受检的普通 init 可担保 super 链；token-only 等特殊通道不算。
+        public static bool HasCheckedDefaultInit(TypeSymbol type, BindEnvironment env) =>
+            (type.ConstructedFrom ?? type).Methods.Any(m => m.Kind == MethodKind.Init
+                && m.Name == "init" && !m.IsStatic && m.Parameters.Count == 0
+                && m.Accessibility == Accessibility.Public && env.CheckedInitBodies.Contains(m));
+
+        public static void CheckDefaultConstructions(BindEnvironment env)
+        {
+            foreach (var (type, span, message) in env.DefaultConstructions)
+            {
+                if (HasCheckedDefaultInit(type, env)) continue;
+                var missing = RequiredFields(type, env);
+                if (missing.Count > 0) env.Error(span, message.Render(missing[0]));
+            }
+        }
+
         // 类型的 DA 义务字段集（定义级 FieldSymbol 身份，引用相等）：
         // 继承闭包内「非内建宿主声明的、有存储的、非 Nullable 的、无声明
         // 初始值的」实例字段。泛型参数类型的字段按非 Nullable 悲观计入
@@ -93,6 +122,7 @@ namespace RigiCompiler
         public static void CheckInitBody(MethodSymbol init, BoundBlock body,
             CharRange? span, BindEnvironment env)
         {
+            env.CheckedInitBodies.Add(init);
             var owner = init.Owner;
             if (owner == null) return;
             var ownerDef = owner.ConstructedFrom ?? owner;

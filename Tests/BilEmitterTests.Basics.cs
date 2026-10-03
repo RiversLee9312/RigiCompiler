@@ -15,11 +15,25 @@ namespace RigiCompiler.Tests
             var (unit, module, _) = BilTestHarness.EmitBilUnit(HelloWorldSource);
             CheckNoErrors("全管线无诊断", unit);
             BilTestHarness.CheckBilValid("验证器零错误（hello world）", module);
+            var sourceMetadata = module.Metadata.Where(entry => entry.Key == "module").ToArray();
             TestHarness.CheckTrue("Metadata 恰一条 module = \"hello\"",
-                module.Metadata.Count == 1
-                && module.Metadata[0].Key == "module"
-                && module.Metadata[0].Type == BilScalarType.String
-                && module.Metadata[0].LiteralText == "\"hello\"");
+                sourceMetadata.Length == 1
+                && sourceMetadata[0].Type == BilScalarType.String
+                && sourceMetadata[0].LiteralText == "\"hello\"");
+            // 自携 intrinsics 还登记两个可信 helper；保留完整元数据集合与 native ABI 校验。
+            var helpers = module.Metadata.Where(entry => entry.Key.StartsWith(
+                BilCompilerHelpers.MetadataPrefix, System.StringComparison.Ordinal)).ToArray();
+            TestHarness.CheckTrue("Metadata 仅额外包含两个准确的可信 stdlib helper 绑定",
+                module.Metadata.Count == 3 && helpers.Length == 2
+                && helpers.Select(entry => entry.Key).Order(System.StringComparer.Ordinal).SequenceEqual(
+                    new[] { BilCompilerHelpers.MetadataPrefix + "any_hash", BilCompilerHelpers.MetadataPrefix + "any_to_string" })
+                && helpers.All(entry => entry.Type == BilScalarType.String)
+                && helpers.Single(entry => entry.Key == BilCompilerHelpers.MetadataPrefix + "any_hash").LiteralText
+                    == "\"core::$any_hash(value:.any)@.i64\""
+                && helpers.Single(entry => entry.Key == BilCompilerHelpers.MetadataPrefix + "any_to_string").LiteralText
+                    == "\"core::$any_to_string(value:.any)@.string\""
+                && BilCompilerHelpers.Resolve(module, "any_hash") == "core::$any_hash(value:.any)@.i64"
+                && BilCompilerHelpers.Resolve(module, "any_to_string") == "core::$any_to_string(value:.any)@.string");
             TestHarness.CheckTrue("Resources 含 \"Hello, world!\" 标量资源",
                 module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String

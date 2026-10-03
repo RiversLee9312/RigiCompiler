@@ -185,8 +185,7 @@ namespace RigiCompiler.Middleware.Mir
             {
                 init = null;
             }
-            var initWrapper = flow.Context.Symbols.FindMember(
-                template.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = flow.Context.Symbols.FindInitWrapper(template, 0);
             return new MirNewWrapper(new MirLocalOperand(".this"), kind, wrapperType, field,
                 method, init, initWrapper, FlowBuilder.Locals(arguments));
         }

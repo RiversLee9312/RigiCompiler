@@ -127,6 +127,8 @@ namespace RigiCompiler.Bil.Vm
         internal int HandleKind { get; set; }
         // 通用原生资源所有权快照；终结器不读取解释器字段槽。
         internal System.Action<long, long>? NativeResourceRelease { get; set; }
+        internal string? NativeGateFieldSuffix { get; set; }
+        internal string? NativeCoroutineFieldSuffix { get; set; }
         private long _nativeGate;
         private long _nativeCoroutine;
         internal VmCoroutine? TaskRuntimeState { get; set; }
@@ -189,9 +191,9 @@ namespace RigiCompiler.Bil.Vm
             _slots.WriteField(fieldSymbol, value);
             if (NativeResourceRelease != null && value is VmI64 handle)
             {
-                if (fieldSymbol.EndsWith("#gate@.i64", System.StringComparison.Ordinal))
+                if (NativeGateFieldSuffix != null && fieldSymbol.EndsWith(NativeGateFieldSuffix, System.StringComparison.Ordinal))
                     System.Threading.Interlocked.Exchange(ref _nativeGate, handle.Value);
-                else if (fieldSymbol.EndsWith("#handle@.i64", System.StringComparison.Ordinal))
+                else if (NativeCoroutineFieldSuffix != null && fieldSymbol.EndsWith(NativeCoroutineFieldSuffix, System.StringComparison.Ordinal))
                     System.Threading.Interlocked.Exchange(ref _nativeCoroutine, handle.Value);
             }
         }

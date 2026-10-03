@@ -17,7 +17,10 @@ namespace RigiCompiler.Tests
         public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "VmFsJunctionDelete", Cases, sectionTitle: "VmFsJunctionDelete");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -28,20 +31,8 @@ namespace RigiCompiler.Tests
 
         private static readonly byte[] Sentinel = Encoding.UTF8.GetBytes(
             "junction-target-must-survive-20260928\n");
-        private static string Parent
-        {
-            get
-            {
-                for (var dir = new DirectoryInfo(AppContext.BaseDirectory);
-                    dir != null; dir = dir.Parent)
-                {
-                    if (File.Exists(Path.Combine(dir.FullName, "RigiCompiler.csproj")))
-                        return Path.Combine(dir.FullName, "playground",
-                            "windows_junction_unlink_20260928");
-                }
-                throw new InvalidOperationException("找不到仓库根，拒绝创建 junction fixture");
-            }
-        }
+        // fixture 仅在本请求的 TMP 根下创建 GUID 子目录；不依赖仓库/playground。
+        private static string Parent => Path.Combine(Path.GetTempPath(), "junction-fixtures");
 
         [DllImport("kernel32.dll", EntryPoint = "RemoveDirectoryW", CharSet = CharSet.Unicode,
             SetLastError = true)]
@@ -52,11 +43,10 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                Console.WriteLine("  UNSUPPORTED 非 Windows（junction 未测）");
+                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
                 return;
             }
-            // 只依赖仓库已跟踪内容所在的 playground/；旧探针子目录
-            // gitignored，干净 checkout 不存在。绝不创建或清理父目录。
+            // 不创建或清理共享父目录；仅拥有其下本次 GUID fixture。
             var parent = Path.GetDirectoryName(Parent)!;
             if (!Directory.Exists(parent)
                 || (File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0)
@@ -339,7 +329,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                Console.WriteLine("  UNSUPPORTED 非 Windows（junction move 未测）");
+                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction move 未测）");
                 return;
             }
             // playground/ 含已跟踪文件，干净 checkout 即存在；不依赖
@@ -628,7 +618,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                Console.WriteLine("  SKIP Windows junction Replace：非 Windows 宿主");
+                TestHarness.RecordSkip("  SKIP Windows junction Replace：非 Windows 宿主");
                 return;
             }
             VmFsJunctionDeleteTests.WithMoveFixture(fixture =>
@@ -665,7 +655,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                Console.WriteLine("  UNSUPPORTED 非 Windows（junction 未测）");
+                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
                 return;
             }
             // 两种入口各用独立 GUID 根；构建产物只放入独占 playground。

@@ -95,8 +95,7 @@ namespace RigiCompiler.Middleware.Emit
             }
             var emptySlots = new Dictionary<string, (LLVMValueRef Slot, MirLocal Local)>(
                 System.StringComparer.Ordinal);
-            var wrapper = session.Symbols.FindMember(
-                type!.Canonical + "$..init.wrapper()@.void");
+            var wrapper = session.Symbols.FindInitWrapper(type!, 0);
             var fat = NewEmitter.EmitAllocAndInit(session, builder, emptySlots,
                 type.Canonical, wrapper, init!, args);
             var payload = builder.BuildExtractValue(fat, 1, "guard.payload");

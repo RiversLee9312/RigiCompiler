@@ -72,7 +72,9 @@ namespace RigiCompiler.Middleware.Pipeline
             foreach (var stage in _stages)
             {
                 Logger.Verbose("Middleware", $"阶段 {stage.Name}");
-                stage.Run(context);
+                using var metric = PerformanceMetrics.Enabled ? PerformanceMetrics.Begin("middleware." + stage.Name) : null;
+                try { stage.Run(context); }
+                catch (Exception exception) { metric?.Fail(exception); throw; }
             }
         }
     }

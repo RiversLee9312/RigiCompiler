@@ -313,7 +313,7 @@ namespace RigiCompiler.Bil
             }
             // §8.4.1/§9.3（N1）：..globals.init——全局/静态字段初始值 fn，
             // 返回 .void、无参数、无 .this（非实例方法）+ compiler-generated
-            if (nameSegment == BilSpellings.GlobalsInitFunctionName)
+            if (BilLogicalName.IsGlobalInitializerName(nameSegment ?? ""))
             {
                 if (!BilVerificationContext.TryParseMethodSymbol(symbol,
                         out var globalsInitOwner, out _, out var globalsInitParams,
@@ -869,20 +869,7 @@ namespace RigiCompiler.Bil
         // 方法名段提取（$ 之后、参数段/@ 之前；$$ 运算符形态跳过第二个
         // $，.static. 前缀跳过）——wrapper-proxy 修饰符按名段判定合成
         // 保留名（S11d）。符号 malformed 时返回 null（由 §21.1 另报）
-        private static string? MethodNameSegment(string symbol)
-        {
-            var dollar = symbol.IndexOf('$');
-            if (dollar < 0) return null;
-            var rest = symbol.Substring(dollar + 1);
-            if (rest.StartsWith("$")) rest = rest.Substring(1);
-            if (rest.StartsWith(".static.")) rest = rest.Substring(".static.".Length);
-            var end = rest.Length;
-            var paren = rest.IndexOf('(');
-            if (paren >= 0 && paren < end) end = paren;
-            var at = rest.IndexOf('@');
-            if (at >= 0 && at < end) end = at;
-            return rest.Substring(0, end);
-        }
+        private static string? MethodNameSegment(string symbol) => symbol.Contains('$') ? BilLogicalName.Method(symbol) : null;
 
         // ===== §21.2（fn 级）+ §21.7 泛型与参数包 =====
         // .args 顺序（§7.2）与签名一致性（§9.2：参数名称和顺序必须与方法

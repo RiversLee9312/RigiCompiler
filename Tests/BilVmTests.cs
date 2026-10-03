@@ -22,7 +22,10 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args) =>
             ParallelSuiteRunner.RunWithArgs(Spec, args);
 
-        private static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static IEnumerable<TestInventory.Case> InventoryCases =>
+            Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
             "BilVm", Cases, sectionTitle: "BilVm");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -194,7 +197,7 @@ namespace RigiCompiler.Tests
             ("TestReceiverListenerTimerSuspendResume", TestReceiverListenerTimerSuspendResume),
         };
 
-        private static void TestHelloWorld()
+        internal static void TestHelloWorld()
         {
             var result = Run(
                 "pub func main(): i32 {\n" +
@@ -911,7 +914,7 @@ namespace RigiCompiler.Tests
 
         // V2.5：拆除「单 i32 = 长度」特权。new .array [2] 是 1 元数组
         //（元素为 2），不再分配长度 2 的零数组。源码 `new Array<T>(n)`
-        // 由 P3 拒绝（Array 无 init）。
+        // 由 P3 拒绝（§9.3 隐式默认构造只接受零参，不接受长度）。
         private static void TestBuiltinArrayDirectModule()
         {
             var module = new BilModule();
@@ -951,11 +954,10 @@ namespace RigiCompiler.Tests
                 "    var a = new Array\\<i32>(3)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("源码 new Array<T>(n) 无 init 报错",
+            TestHarness.CheckTrue("源码 new Array<T>(n) 不接受长度参数",
                 unit.Diagnostics.HasErrors
                 && unit.Diagnostics.Diagnostics.Any(d =>
-                    d.Message.Contains("no constructor", StringComparison.OrdinalIgnoreCase)
-                    || d.Message.Contains("has no constructor")),
+                    d.Message.Contains("Too many arguments for 'init'", StringComparison.Ordinal)),
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
         }
 

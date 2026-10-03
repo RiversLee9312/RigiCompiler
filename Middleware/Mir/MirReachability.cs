@@ -61,10 +61,11 @@ namespace RigiCompiler.Middleware.Mir
                 {
                     continue;
                 }
-                if (member.HasKeyword(BilKeyword.Entrypoint)
+                if ((!context.NativeBuild.IsLibrary && member.HasKeyword(BilKeyword.Entrypoint))
+                    || context.NativeBuild.IsExport(bilFn.Symbol)
                     // ..globals.init 不在任何 invoke 闭包内，但 rigi_entry
                     // stub 恒调用它（静态字段初值）：恒可达
-                    || bilFn.Symbol.StartsWith("$..globals.init(", System.StringComparison.Ordinal))
+                    || BilLogicalName.IsGlobalInitializer(bilFn.Symbol))
                 {
                     queue.Enqueue((bilFn.Symbol, false));
                 }
@@ -116,8 +117,7 @@ namespace RigiCompiler.Middleware.Mir
                     }
                     var isZeroArgInit = member.HasKeyword(BilKeyword.Init)
                         && CanonicalSignature.Parse(member.Canonical).Parameters.Count == 0;
-                    var isZeroArgWrapper = member.Canonical.EndsWith(
-                        "$..init.wrapper()@.void", System.StringComparison.Ordinal);
+                    var isZeroArgWrapper = ReferenceEquals(member, context.Symbols.FindInitWrapper(singletonType, 0));
                     if ((isZeroArgInit || isZeroArgWrapper)
                         && bySymbol.ContainsKey(member.Canonical))
                     {
@@ -221,14 +221,12 @@ namespace RigiCompiler.Middleware.Mir
         {
             foreach (var typeCanonical in CoroutineRuntimeTypes)
             {
-                EnqueueTypeMethods(context, bySymbol, queue, typeCanonical);
+                EnqueueTypeMethods(context, bySymbol, queue, BilCompilerSymbols.Resolve(context.Module, typeCanonical));
             }
             // laneOfExecutor 模块级助手（Task executor setter/startCold
             // 调用——那些 fn 已在表内，边会随后展开；此处兜底防御；
             // 顶层 fn 在 GlobalMembers：core.coroutine::$laneOfExecutor）
-            var laneHelper = context.Symbols.GlobalMembers.FirstOrDefault(m =>
-                m.Canonical.StartsWith("core.coroutine::$laneOfExecutor(",
-                    System.StringComparison.Ordinal));
+            var laneHelper = context.CompilerMember("core.coroutine::$laneOfExecutor(");
             if (laneHelper != null && bySymbol.ContainsKey(laneHelper.Canonical))
             {
                 queue.Enqueue((laneHelper.Canonical, false));
@@ -395,10 +393,10 @@ namespace RigiCompiler.Middleware.Mir
                     queue.Enqueue((member.Canonical, false));
                 }
             }
-            var initWrapper = pair.Canonical + "$..init.wrapper()@.void";
-            if (bySymbol.ContainsKey(initWrapper))
+            var initWrapper = context.Symbols.FindInitWrapper(pair, 0);
+            if (initWrapper != null && bySymbol.ContainsKey(initWrapper.Canonical))
             {
-                queue.Enqueue((initWrapper, false));
+                queue.Enqueue((initWrapper.Canonical, false));
             }
         }
 
@@ -1058,14 +1056,9 @@ namespace RigiCompiler.Middleware.Mir
 
         private static bool IsInitFamilyName(string canonical)
         {
-            var dollar = canonical.IndexOf('$');
-            if (dollar < 0)
-            {
-                return false;
-            }
-            var rest = canonical.Substring(dollar + 1);
-            return rest.StartsWith("..init.wrapper(", System.StringComparison.Ordinal)
-                || rest.StartsWith(BilSpellings.InitFieldMethodPrefix, System.StringComparison.Ordinal);
+            var name = BilLogicalName.Method(canonical);
+            return name == BilSpellings.InitWrapperMethodName
+                || name.StartsWith(BilSpellings.InitFieldMethodPrefix, System.StringComparison.Ordinal);
         }
 
         // new.wrapper.*：wrapper 类型的 init + 其自身 ..init.wrapper
@@ -1087,8 +1080,7 @@ namespace RigiCompiler.Middleware.Mir
             catch (MwNotSupportedException) when (arguments.Count == 0)
             {
             }
-            var initWrapper = context.Symbols.FindMember(
-                type.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = context.Symbols.FindInitWrapper(type, 0);
             if (initWrapper != null)
             {
                 edges.Add(initWrapper.Canonical);
@@ -1132,7 +1124,7 @@ namespace RigiCompiler.Middleware.Mir
                 // 形态 / 全链无 init 的子类零参 new）——无 init 边，仅
                 // alloc + 可选 ..init.wrapper（VM TryFindInit 同口径）
             }
-            var initWrapper = context.Symbols.FindMember(type.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = context.Symbols.FindInitWrapper(type, 0);
             if (initWrapper != null)
             {
                 edges.Add(initWrapper.Canonical);

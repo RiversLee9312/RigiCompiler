@@ -38,6 +38,15 @@
        其 obj 生成物（AssemblyInfo 等）会被默认通配符捞进本项目造成特性重复（CS0579），统一排除 -->
   <ItemGroup>
     <Compile Remove="playground/**/*.cs" />
+    <Compile Remove="tools/PerfBaseline/**/*.cs" />
+    <Compile Remove="Tests/TUnit/**/*.cs" />
+    <!-- 性能工具与 case worker 共用同一份灭树设施。 -->
+    <Compile Include="tools/PerfBaseline/ProcessIsolation.cs" />
+    <Compile Include="tools/PerfBaseline/MachineResources.cs" />
+    <Content Include="Tests/e2e/rigi/**/*.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Tests/native/rigi/**/*.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="tools/stress/mq.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="rigi_rt/**/*.h" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- stdlib 内嵌源（M43）：LogicalName 保持路径形态（stdlib/core/Console.rg），
@@ -62,6 +71,8 @@
        带 RID 的 restore/发布时解析；无 RID 的 dotnet build/run 开发回路需要直接
        引用才能把 libLLVM.dll/.so 复制到输出目录（构建按当前平台 RID 二选一） -->
   <ItemGroup>
+    <!-- 模块配置仅用 RepresentationModel 手工解析，不使用反射反序列化。 -->
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
     <PackageReference Include="LLVMSharp.Interop" Version="20.1.2" />
     <PackageReference Include="libLLVM.runtime.win-x64" Version="20.1.2" />
     <PackageReference Include="libLLVM.runtime.linux-x64" Version="20.1.2" />

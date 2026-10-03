@@ -9,6 +9,9 @@ Console.OutputEncoding = new UTF8Encoding(false);
 // 全部 COMMAND 由注册表单一数据源驱动（Core/CommandLine.cs CommandLineRegistry，
 // 插件实现见 Core/Commands.cs 与 Middleware/Cli/；帮助文本由注册表程序生成，
 // 可用 help 查看概览与详情）。无参数 → 等同于 help（打印概览）。
+using var commandMetric = PerformanceMetrics.Begin("cli.command", args.Length == 0 ? "help" : args[0]);
+try
+{
 if (args.Length == 0)
 {
     CommandLineHelp.PrintOverview();
@@ -19,7 +22,12 @@ if (args.Length == 0)
 if (!CommandLineParser.TryParse(args, out var result, out var error))
 {
     Console.Error.WriteLine(error);
+    commandMetric?.ExitCode(2);
     return 2;
 }
 
-return result!.Command.Execute(result);
+    int exitCode = result!.Command.Execute(result);
+    commandMetric?.ExitCode(exitCode);
+    return exitCode;
+}
+catch (Exception exception) { commandMetric?.Fail(exception); throw; }

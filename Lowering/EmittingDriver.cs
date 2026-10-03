@@ -19,9 +19,27 @@ namespace RigiCompiler
 
         public BilModule Run()
         {
+            // 无 body 的合成接口也须在声明/canonical 发射之前具有真实来源。
+            ModuleOrigin.AssignDeclarations(env.Unit, bodies.Select(b => b.Method.Owner).OfType<TypeSymbol>());
+            // 合成声明不一定经过 P1 Map；投影前补来源，保持源名不变。
+            foreach (var body in bodies)
+            {
+                ModuleOrigin.Assign(body.Method, env.Unit);
+                for (var owner = body.Method.Owner; owner != null; owner = owner.DeclaringType)
+                    ModuleOrigin.Assign(owner, env.Unit);
+                if (env.Unit.IsModuleCompilation && BilLogicalName.IsGlobalInitializerName(body.Method.Name))
+                    env.Module.Metadata.Add(new BilMetadataEntry(BilModuleInitialization.MetadataPrefix + ModuleOrigin.Hash(env.Unit.ModuleIdentity),
+                        BilScalarType.String, "\"" + CanonicalSymbolPrinter.PrintMethod(body.Method) + "\""));
+            }
             // §4.1：源模块名（LiteralText 含引号；moduleName 由编译器内部给定）
             env.Module.Metadata.Add(new BilMetadataEntry("module", BilScalarType.String,
                 $"\"{env.ModuleName}\""));
+            // 仅编译器自携 intrinsics 声明有权登记 helper，用户同名私有函数不获得权限。
+            foreach (var helper in env.Unit.Symbols.GetNamespace(["core"]).Methods.Where(m =>
+                m.Name is "any_hash" or "any_to_string" && m.IsCompilerLibrary && !m.IsImported
+                && m.IsNative && m.NativeLibrary == "rigi_rt" && m.NativeSymbol == m.Name))
+                env.Module.Metadata.Add(new BilMetadataEntry(BilCompilerHelpers.MetadataPrefix + helper.Name,
+                    BilScalarType.String, "\"" + CanonicalSymbolPrinter.PrintMethod(helper) + "\""));
             LocalSymbolEmitters.EmitNamespace(env.Unit.Symbols.GlobalNamespace, env);
             LocalSymbolEmitters.EmitBuiltinExtMembers(env);
             LocalSymbolEmitters.EmitBuiltinNativeMethods(env);
@@ -31,6 +49,9 @@ namespace RigiCompiler
                 env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticMethodDeclaration(body.Method));
             }
+            foreach (var body in bodies.Where(b => b.Method.IsImported
+                && env.Unit.Symbols.LateHelperOverrides.Contains(CanonicalSymbolPrinter.PrintMethod(b.Method))))
+                env.AddLocalSymbol(LocalSymbolEmitters.EmitSyntheticMethodDeclaration(body.Method));
             // lambda 隐藏类声明（SYNTAX §5.2）：合成类型不进符号图（避免污染
             // 冻结的用户命名空间图），声明由函数体的宿主归属驱动收集——
             // init 体与 $$call 体的 Owner 即隐藏类；只有 bodies 在场的类
@@ -72,16 +93,113 @@ namespace RigiCompiler
                 env.AddLocalSymbol(
                     LocalSymbolEmitters.EmitSyntheticTypeDeclaration(companion, env));
             }
-            // Resources 在函数发射中按（bodies 顺序 + 树内先序）登记
-            foreach (var body in bodies)
+            // 声明/枚举判别值完成后，函数独占资源池和发射环境；不共享 R_N 计数。
+            var chunks = CompilerJobs.MapDiagnosed(env.Unit, bodies.Count, index =>
             {
-                env.CurrentSliceNs = LocalSymbolEmitters.SliceNsOf(body.Method);
-                var function = EmitFunction(body);
-                if (function != null) env.AddFunction(function);
+                var local = new EmitEnvironment(env.Unit, env.ModuleName)
+                {
+                    CurrentSliceNs = LocalSymbolEmitters.SliceNsOf(bodies[index].Method),
+                };
+                var function = new EmittingDriver(local, Array.Empty<LoweredFunctionBody>())
+                    .EmitFunction(bodies[index]);
+                return (Function: function, Environment: local);
+            }, phase: "emitting.P4b.functions");
+            // 按函数序回放跨种类首次出现序，复用旧模块级 intern 键。
+            foreach (var chunk in chunks)
+            {
+                env.CurrentSliceNs = chunk.Environment.CurrentSliceNs;
+                var resources = ImportResources(chunk.Environment.Module.Resources);
+                if (chunk.Function == null) continue;
+                foreach (var block in chunk.Function.Blocks)
+                    for (var index = 0; index < block.Instructions.Count; index++)
+                        block.Instructions[index] = RemapResource(block.Instructions[index], resources);
+                env.AddFunction(chunk.Function);
+            }
+            // 导入接口不重新发射裁剪过的语义描述：保留 provider 的完整 typed ABI。
+            // enum 判别资源按本模块资源池偏移克隆，绝不改缓存对象。
+            foreach (var artifact in env.Unit.Symbols.ImportedArtifacts)
+            {
+                var imported = BilModuleLinker.Clone(artifact.ReadBil(), env.Module.Resources.Count);
+                env.Module.Resources.AddRange(imported.Resources);
+                foreach (var declaration in imported.LocalSymbols.Concat(imported.ExternalSymbols))
+                {
+                    var key = BilModuleLinker.Key(declaration);
+                    if (!env.Module.ExternalSymbols.Any(d => BilModuleLinker.Key(d) == key))
+                        env.AddExternalSymbol(declaration);
+                }
+                if (artifact.CompilerOwned)
+                    foreach (var helper in imported.Metadata.Where(m => m.Key.StartsWith(BilCompilerHelpers.MetadataPrefix, StringComparison.Ordinal)
+                        || m.Key.StartsWith(BilCompilerSymbols.MetadataPrefix, StringComparison.Ordinal)))
+                        env.Module.Metadata.Add(helper);
             }
             // §17 切片收尾：回填各切片实际引用的共享资源（单文件自足）
             env.FinalizeSlices();
             return env.Module;
+        }
+
+        private Dictionary<BilResource, BilResource> ImportResources(IReadOnlyList<BilResource> resources)
+        {
+            var map = new Dictionary<BilResource, BilResource>();
+            foreach (var resource in resources)
+            {
+                BilResource global;
+                var name = "R_" + env.Module.Resources.Count;
+                switch (resource)
+                {
+                    case BilScalarResource scalar:
+                        global = EmittingFacility.RegisterScalarResource(scalar.Type, scalar.LiteralText, env);
+                        break;
+                    case BilNullResource nil:
+                        if (!env.NullKeys.TryGetValue(nil.TypeRef, out var existingNull))
+                        {
+                            existingNull = new BilNullResource(name, nil.TypeRef);
+                            env.NullKeys.Add(nil.TypeRef, existingNull);
+                            env.AddResource(existingNull);
+                        }
+                        global = existingNull;
+                        break;
+                    case BilSwitchTableResource table:
+                        var key = table.SelectorTypeRef + "|" + string.Join(",", table.Elements);
+                        if (!env.SwitchTableKeys.TryGetValue(key, out var existingTable))
+                        {
+                            existingTable = new BilSwitchTableResource(name, table.SelectorTypeRef, table.Elements);
+                            env.SwitchTableKeys.Add(key, existingTable);
+                            env.AddResource(existingTable);
+                        }
+                        global = existingTable;
+                        break;
+                    case BilCatchTableResource catches:
+                        // handler 对象属于当前函数，跨函数不能 intern。
+                        global = new BilCatchTableResource(name, catches.Entries);
+                        env.AddResource(global);
+                        break;
+                    case BilCollectionResource collection:
+                        global = new BilCollectionResource(name, collection.Header, collection.Elements, collection.Multiline);
+                        env.AddResource(global);
+                        break;
+                    default: throw new CompilerInternalException("未知函数资源类型: " + resource.GetType().Name);
+                }
+                map.Add(resource, global);
+            }
+            return map;
+        }
+
+        private static BilInstruction RemapResource(BilInstruction instruction,
+            IReadOnlyDictionary<BilResource, BilResource> resources)
+        {
+            BilResource Resolve(BilResource resource) => resources.TryGetValue(resource, out var global) ? global : resource;
+            BilInstruction replacement = instruction switch
+            {
+                LoadInstruction load => new LoadInstruction(Resolve(load.Resource), load.Target),
+                HintInstruction hint => new HintInstruction(Resolve(hint.Resource)),
+                SwitchInstruction select => new SwitchInstruction(select.Selector, Resolve(select.Table),
+                    select.ItemBlocks, select.DefaultBlock, select.BreakId),
+                TryInstruction attempt => new TryInstruction(attempt.Body, attempt.ExceptionSlot,
+                    Resolve(attempt.CatchTable), attempt.FinallyBlock, attempt.BreakId),
+                _ => instruction,
+            };
+            replacement.Origin = instruction.Origin;
+            return replacement;
         }
 
         // ===== Functions（§9）=====

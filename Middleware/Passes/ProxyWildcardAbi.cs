@@ -196,8 +196,7 @@ namespace RigiCompiler.Middleware.Passes
                     "core::Pair 类型缺失（Method wrapper 具名包依赖）");
             var init = MirBuilder.ResolveInit(context.Symbols, template,
                 new[] { ".string", ".any" }, skipReceiver: 0, constructedTypeRef: PairTypeRef);
-            var initWrapper = context.Symbols.FindMember(
-                template.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = context.Symbols.FindInitWrapper(template, 0);
             var canonical = MwTypeKey.Normalize(PairTypeRef);
             var type = canonical == template.Canonical
                 ? template

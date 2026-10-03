@@ -937,8 +937,7 @@ namespace RigiCompiler.Middleware.Passes
             var init = FindInit(excType, "text")
                 ?? throw new CompilerInternalException(
                     "core::NoSuchMethodException 缺 init(text: String)");
-            var initWrapper = context.Symbols.FindMember(
-                excType.Canonical + "$..init.wrapper()@.void");
+            var initWrapper = context.Symbols.FindInitWrapper(excType, 0);
             var exc = ProxyWildcardAbi.FreshLocal(fn, "$mw.rt.exc.",
                 MirType.Of(excType.Canonical));
             insts.Add(new MirNewObject(excType, initWrapper, init,

@@ -32,20 +32,59 @@ namespace RigiCompiler
     {
         public static DeclarationCollection Collect(CompilationUnit unit)
         {
-            var result = new DeclarationCollection();
+            var result = new DeclarationCollection(unit);
             if (unit.SourceFiles.Any(f => f.IsIntrinsicDeclarations))
                 unit.Symbols.Bootstrap.Core.Methods.RemoveAll(m => m.SourceFile?.IsIntrinsicDeclarations == true);
-            foreach (var file in unit.SourceFiles)
-            {
-                CollectFile(unit, file, result);
-            }
+            // 文件 worker 只读 AST，提取完整声明事实、文本签名键和结构先序。
+            // 图建壳/namespace 驻留/重复检测集中回放，不能由竞争赢家决定身份。
+            var facts = CompilerJobs.Map(unit.SourceFiles.Count,
+                index => CollectFacts(unit.SourceFiles[index]), phase: "semantic.P1.facts");
+            for (var index = 0; index < unit.SourceFiles.Count; index++)
+                CollectFile(unit, unit.SourceFiles[index], facts[index], result);
             unit.Symbols.Bootstrap.RefreshCallWildcard();
             return result;
         }
 
+        private sealed record DeclarationFact(ASTNode Node, ASTNode? ParentType,
+            bool EnumCases = false, string[]? NamespaceSegments = null, string? MethodKey = null);
+
+        private static DeclarationFact[] CollectFacts(RootASTNode file)
+        {
+            var facts = new List<DeclarationFact>();
+            void Walk(ASTNode node, ASTNode? parent)
+            {
+                string? key = null;
+                if (node is CallableDeclarationASTNode callable)
+                {
+                    var name = callable.Name;
+                    if (callable.Modifiers.Contains(Keywords.EXT) && name.LastIndexOf('.') is var dot && dot > 0)
+                        name = name[(dot + 1)..];
+                    key = MethodKey(name, callable.GenericParameters?.Parameters.Count ?? 0, callable.Parameters);
+                }
+                facts.Add(new DeclarationFact(node, parent,
+                    NamespaceSegments: node is NamespaceDeclarationASTNode ns ? SegmentsOf(ns.Name).ToArray() : null,
+                    MethodKey: key));
+                List<ASTNode>? members = node switch
+                {
+                    ClassDeclarationASTNode type => type.Members,
+                    InterfaceDeclarationASTNode type => type.Members,
+                    StructDeclarationASTNode type => type.Members,
+                    EnumStructDeclarationASTNode type => type.Members,
+                    WrapperDeclarationASTNode type => type.Members,
+                    _ => null,
+                };
+                if (members == null) return;
+                foreach (var member in members) Walk(member, node);
+                if (node is EnumStructDeclarationASTNode)
+                    facts.Add(new DeclarationFact(node, parent, EnumCases: true));
+            }
+            foreach (var declaration in file.Declarations) Walk(declaration, null);
+            return facts.ToArray();
+        }
+
         // ===== 文件级：namespace 唯一性与位置、import 登记 =====
 
-        private static void CollectFile(CompilationUnit unit, RootASTNode file, DeclarationCollection result)
+        private static void CollectFile(CompilationUnit unit, RootASTNode file, DeclarationFact[] facts, DeclarationCollection result)
         {
             var fileNamespace = unit.Symbols.GlobalNamespace;
             var imports = new List<ImportItem>();
@@ -54,8 +93,24 @@ namespace RigiCompiler
             // 容器视图全程复用（Scope.MethodKeys 依赖此生命周期，见 Scope 注释）
             var globalScope = ScopeOf(fileNamespace);
 
-            foreach (var decl in file.Declarations)
+            var memberScopes = new Dictionary<TypeSymbol, Scope>();
+            foreach (var fact in facts)
             {
+                var decl = fact.Node;
+                var owner = fact.ParentType == null ? null : (TypeSymbol)result.SymbolOf(fact.ParentType)!;
+                if (fact.EnumCases)
+                {
+                    CollectEnumCases(unit, (EnumStructDeclarationASTNode)decl,
+                        (TypeSymbol)result.SymbolOf(decl)!, result);
+                    continue;
+                }
+                if (owner != null)
+                {
+                    if (!memberScopes.TryGetValue(owner, out var memberScope))
+                        memberScopes.Add(owner, memberScope = ScopeOf(owner));
+                    CollectDeclaration(unit, decl, fileNamespace, memberScope, owner, result, fact.MethodKey);
+                    continue;
+                }
                 switch (decl)
                 {
                     case NamespaceDeclarationASTNode nsDecl:
@@ -73,7 +128,7 @@ namespace RigiCompiler
                         else
                         {
                             namespaceSeen = true;
-                            fileNamespace = unit.Symbols.GetNamespace(SegmentsOf(nsDecl.Name));
+                            fileNamespace = unit.Symbols.GetNamespace(fact.NamespaceSegments!);
                             // 信任来自内嵌资源解析的 AST 标记，不能按文件名或路径授予。
                             if (!file.IsCompilerLibrary
                                 && (fileNamespace.FullName == "core"
@@ -89,7 +144,7 @@ namespace RigiCompiler
                     default:
                         declarationSeen = true;
                         CollectDeclaration(unit, decl, fileNamespace,
-                            globalScope, declaringType: null, result);
+                            globalScope, declaringType: null, result, fact.MethodKey);
                         break;
                     // 其余顶层条目（如测试驱动的表达式 Root）不是声明骨架，跳过
                 }
@@ -101,7 +156,7 @@ namespace RigiCompiler
 
         private static void CollectDeclaration(
             CompilationUnit unit, ASTNode node, NamespaceSymbol ns,
-            Scope scope, TypeSymbol? declaringType, DeclarationCollection result)
+            Scope scope, TypeSymbol? declaringType, DeclarationCollection result, string? methodKey = null)
         {
             switch (node)
             {
@@ -125,7 +180,7 @@ namespace RigiCompiler
                         e.Modifiers, e.GenericParameters, e.Members, node, ns, declaringType, scope, result);
                     // enum case 建壳（SYNTAX §12）：挂宿主 Cases 表，判别值落定归 P2、
                     // init 模板绑定归 P3 声明点
-                    CollectEnumCases(unit, e, (TypeSymbol)result.SymbolOf(node)!, result);
+                    // case 事实位于成员之后，由集中回放登记。
                     break;
                 case WrapperDeclarationASTNode w:
                     // wrapper 默认非 rich（§14.9），隐式基类 Wrapper。
@@ -136,7 +191,7 @@ namespace RigiCompiler
                     CollectVariable(unit, v, ns, declaringType, scope, result);
                     break;
                 case CallableDeclarationASTNode fn:
-                    CollectCallable(unit, fn, ns, declaringType, scope, result);
+                    CollectCallable(unit, fn, ns, declaringType, scope, result, methodKey!);
                     break;
                 default:
                     // 成员列表中的非声明条目（同上，不进函数体）
@@ -194,12 +249,7 @@ namespace RigiCompiler
             {
                 scope.Types.Add(symbol);
             }
-            // 递归成员与嵌套类型（容器切换为新类型自身；Scope 全程复用）
-            var memberScope = ScopeOf(symbol);
-            foreach (var member in members)
-            {
-                CollectDeclaration(unit, member, ns, memberScope, symbol, result);
-            }
+            // 成员事实已由文件 worker 按先序展开；这里不再重复递归 AST。
         }
 
         // ===== 变量壳（字段 / 全局变量与常量）=====
@@ -284,7 +334,7 @@ namespace RigiCompiler
 
         private static void CollectCallable(
             CompilationUnit unit, CallableDeclarationASTNode node, NamespaceSymbol ns,
-            TypeSymbol? declaringType, Scope scope, DeclarationCollection result)
+            TypeSymbol? declaringType, Scope scope, DeclarationCollection result, string methodKey)
         {
             var kind = node.Kind switch
             {
@@ -336,7 +386,7 @@ namespace RigiCompiler
             // 方法重复检测（P1 文本级粒度：同名 + 同泛型元数 + 同参数名序列 +
             // 同参数类型文本全同必为重复；重载合法——签名级精确判定依赖类型
             // 解析，归 P2）
-            var key = MethodKey(symbol.Name, symbol.GenericParameters.Count, node.Parameters);
+            var key = methodKey;
             if (scope.MethodKeys.Contains(key))
             {
                 unit.Diagnostics.Error(DiagnosticPhase.P1, node.Span,
@@ -477,12 +527,16 @@ namespace RigiCompiler
     // ext 待注册列表（P2 DeclarationResolver 消费）。
     public sealed class DeclarationCollection
     {
+        private readonly CompilationUnit? unit;
+        public DeclarationCollection() { }
+        internal DeclarationCollection(CompilationUnit unit) { this.unit = unit; }
         private readonly Dictionary<ASTNode, SemanticSymbol> symbolOf = new Dictionary<ASTNode, SemanticSymbol>();
         private readonly Dictionary<RootASTNode, FileContext> fileContexts = new Dictionary<RootASTNode, FileContext>();
         private readonly List<SemanticSymbol> pendingExtMembers = new List<SemanticSymbol>();
 
         // ext 声明的符号壳（FieldSymbol/MethodSymbol），ExtTargetPath 待 P2 解析注册
         public IReadOnlyList<SemanticSymbol> PendingExtMembers => pendingExtMembers;
+        internal IEnumerable<SemanticSymbol> AllSymbols => symbolOf.Values;
 
         // 声明节点 → 符号（类型/变量/可调用/参数/泛型参数；重复声明的符号同样登记）
         public SemanticSymbol? SymbolOf(ASTNode node)
@@ -496,7 +550,16 @@ namespace RigiCompiler
         internal ASTNode? DeclarationOf(SemanticSymbol symbol) =>
             symbolOf.FirstOrDefault(pair => ReferenceEquals(pair.Value, symbol)).Key;
 
-        internal void Map(ASTNode node, SemanticSymbol symbol) => symbolOf.Add(node, symbol);
+        internal void Map(ASTNode node, SemanticSymbol symbol)
+        {
+            // bootstrap 固定身份保留；用户声明（含重复声明）按独立结构路径赋值。
+            symbol.StableIdentity ??= unit?.SyntaxIdentity(node);
+            if (unit != null) ModuleOrigin.Assign(symbol, unit, node);
+            symbol.DeclarationSpan ??= node.Span;
+            for (var parent = node; parent != null; parent = parent.Parent)
+                if (parent is RootASTNode root) { symbol.IsCompilerLibrary = root.IsCompilerLibrary; break; }
+            symbolOf.Add(node, symbol);
+        }
 
         internal void RegisterFile(RootASTNode file, FileContext context) => fileContexts.Add(file, context);
 

@@ -44,7 +44,7 @@ namespace RigiCompiler.Bil
         // MW11c 棒4a（§17.4）：main 发布到 Dispatcher（MainExecutor 调度
         // 域），主线程即 Worker——同步解释 Dispatcher$workerLoop(0) 至
         // quiescence（live==0 且队列空），再汇总 main 失败/未观察失败
-        public BilVmResult Run(long maxSteps = 0, string? entryPoint = null)
+        public BilVmResult Run(long maxSteps = 0, string? entryPoint = null, IReadOnlyList<string>? programArguments = null)
         {
             var context = new VmContext(Module);
             context.Dispatch.TraceResumes = TraceResumes;
@@ -59,7 +59,7 @@ namespace RigiCompiler.Bil
                 // N1（§8.4.1/§9.3）：全局/静态字段声明初始值（..globals.init），
                 // singleton 之后、main 之前
                 context.InvokeGlobalInitializers();
-                return RunProgram(context, entryPoint);
+                return RunProgram(context, entryPoint, programArguments ?? []);
             }
             catch (VmStepLimitException ex)
             {
@@ -68,24 +68,44 @@ namespace RigiCompiler.Bil
             }
         }
 
-        private static BilVmResult RunProgram(VmContext context, string? entryPoint)
+        private static BilVmResult RunProgram(VmContext context, string? entryPoint, IReadOnlyList<string> programArguments)
         {
             // 入口解析失败仍抛（此刻 stdout 尚无任何内容；调用方/test 依赖该
             // 异常语义，见 BilVmTests 多入口用例）
             var entry = context.FindEntrypoint(entryPoint);
+            var parameters = entry.Args.Where(a => a.Name != ".return").ToArray();
+            VmValue[] arguments = [];
+            if (parameters.Length != 0)
+            {
+                if (parameters.Length != 1 || parameters[0].TypeRef != ".array<.string>")
+                    throw new VmException("入口只支持无参数或一个 Array<String> 参数");
+                var array = new VmArray(".string", programArguments.Count, new VmString(""));
+                for (var i = 0; i < programArguments.Count; i++)
+                {
+                    var text = programArguments[i];
+                    // 宿主 UTF-16 必须由完整 Unicode scalar 组成，不能把半个代理对放进 Rigi String。
+                    for (var offset = 0; offset < text.Length;)
+                    {
+                        if (!System.Text.Rune.TryGetRuneAt(text, offset, out var rune)) throw new VmException("程序参数包含无效 Unicode");
+                        offset += rune.Utf16SequenceLength;
+                    }
+                    array.SetAt(i, new VmString(text));
+                }
+                arguments = [array];
+            }
             try
             {
                 // 无 Dispatcher 的直建模块（单元测试）走降级通道同步直跑
                 if (!context.Dispatch.HasDispatcher)
                 {
-                    var standalone = context.Dispatch.RunStandalone(entry, Array.Empty<VmValue>());
+                    var standalone = context.Dispatch.RunStandalone(entry, arguments);
                     context.CheckStepLimit();
                     // MW12b §25.2：main 之后、失败汇总之前派发 undisposed 事件
                     var standaloneDrain = context.CollectAndDispatchUndisposed();
                     return new BilVmResult(context.Stdout, context.Stderr,
                         standalone.Result, standalone.Failure ?? standaloneDrain);
                 }
-                var main = context.Dispatch.Spawn(entry, Array.Empty<VmValue>(), caller: null);
+                var main = context.Dispatch.Spawn(entry, arguments, caller: null);
                 context.Dispatch.MainHandle = main.Handle;
                 context.Dispatch.RunMainLoop();
                 context.CheckStepLimit();
@@ -108,7 +128,7 @@ namespace RigiCompiler.Bil
         }
 
         public static BilVmResult Run(BilModule module, long maxSteps = 0,
-            string? entryPoint = null) =>
-            new BilVm(module).Run(maxSteps, entryPoint);
+            string? entryPoint = null, IReadOnlyList<string>? programArguments = null) =>
+            new BilVm(module).Run(maxSteps, entryPoint, programArguments);
     }
 }

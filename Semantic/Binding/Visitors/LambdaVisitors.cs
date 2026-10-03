@@ -71,7 +71,7 @@ namespace RigiCompiler
                 baseType = unit.Symbols.Bootstrap.Object;
             }
             var hiddenClass = new TypeSymbol(
-                "..lambda.." + Guid.NewGuid().ToString("N"),
+                env.HiddenName("lambda", lambda, unit.Symbols.StableTypeIdentity(ctx.Frame.Method)),
                 TypeKind.Class, ns: ctx.Frame.FileCtx.Namespace, baseType: baseType,
                 isShared: lambda.IsAsync)
             {

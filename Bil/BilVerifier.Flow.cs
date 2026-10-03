@@ -1826,7 +1826,7 @@ namespace RigiCompiler.Bil
             {
                 return fieldSymbol;
             }
-            var name = fieldSymbol.Substring(hash + 1, at - hash - 1);
+            var name = BilLogicalName.Of(fieldSymbol.Substring(hash + 1, at - hash - 1));
             return name.StartsWith(".static.") ? name.Substring(".static.".Length) : name;
         }
 

@@ -12,6 +12,8 @@ extern "C" {
 #endif
 
 typedef struct { const char *data; int64_t len; } rigi_string;
+int rigi_utf8_validate(const uint8_t *data, int32_t count);
+char *rigi_string_new(int64_t len);
 
 #ifdef __cplusplus
 }

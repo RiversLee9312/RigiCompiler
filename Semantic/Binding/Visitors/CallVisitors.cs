@@ -397,17 +397,14 @@ namespace RigiCompiler
             {
                 return Fail($"bound '{display}' is abstract");
             }
-            var inits = boundDef.Methods.Where(m => m.Kind == MethodKind.Init).ToList();
+            var inits = boundDef.Methods.Where(m => m.Kind == MethodKind.Init
+                && m.Name != BilSpellings.InitSerializableMethodName).ToList();
             if (inits.Count == 0)
             {
-                // 界无显式 init：默认构造路径——DA 义务字段非空则构造无法
-                // 担保（与 new 使用点同口径；义务字段在界的声明点未必报过）
-                var missing = InitFieldDa.RequiredFields(bound, env);
-                if (missing.Count > 0)
-                {
-                    return Fail($"bound '{display}' has no init assigning non-nullable " +
-                        $"field '{missing[0].Name}'");
-                }
+                InitFieldDa.DeferDefaultConstruction(bound, node.Span, env,
+                    new DefaultConstructionMessage($"'{genericParameter.Name}()' has no such method: " +
+                        $"bound '{display}' has no init assigning non-nullable field '",
+                        "' (T() checks the constraint bound at compile time, §3.7)"));
                 return true;
             }
             // init 继承原则：界自身的零参 init（可见性按使用点过滤；
@@ -1189,7 +1186,8 @@ namespace RigiCompiler
         // 具名实参名不在固定表且存在具名包时归包）
         public static List<BoundExpression>? BindArguments(MethodSymbol target,
             List<ArgumentASTNode> arguments, Scope scope, CharRange? callSpan, BindContext ctx,
-            BindEnvironment env, IReadOnlyList<SemanticSymbol>? parameterTypes = null)
+            BindEnvironment env, IReadOnlyList<SemanticSymbol>? parameterTypes = null,
+            IReadOnlyDictionary<GenericParameterSymbol, SemanticSymbol>? defaultSubstitutions = null)
         {
             var parameters = target.Parameters;
             var effectiveTypes = parameterTypes ?? parameters.Select(p => p.Type!).ToList();
@@ -1305,7 +1303,7 @@ namespace RigiCompiler
                 if (bound[i] != null) continue;
                 // 缺省形参：预绑定默认值填充（S8d）；预绑定失败的按缺失处理
                 // （声明点诊断已报，此处级联 Missing）
-                var defaultValue = env.GetParameterDefault(parameters[i]);
+                var defaultValue = env.GetParameterDefault(parameters[i], ctx.Frame.FileCtx.File, defaultSubstitutions, effectiveTypes[i]);
                 if (defaultValue != null)
                 {
                     bound[i] = defaultValue;
@@ -1402,19 +1400,13 @@ namespace RigiCompiler
                 // 无显式 init 的零参构造（§9.3 默认构造）
                 if (newNode.Arguments.Count == 0)
                 {
-                    // P18/S2（§9.3 DA）：零值兜底已废除——类型从未声明
-                    // init 时声明点不报错（抽象类/仅声明场景合法），构造点
-                    // 要求不存在无初始值非空字段义务
-                    var missing = InitFieldDa.RequiredFields(typeSymbol, env);
-                    if (missing.Count > 0)
-                    {
-                        env.Error(newNode.Span,
-                            $"Type '{typeSymbol.Name}' has no constructor that assigns " +
-                            $"non-nullable field '{missing[0].Name}' (§9.3: declare an " +
+                    // 初值、默认 init 可能在早期语境之后才合成；保留构造产物，
+                    // 收尾仅按真实成功初始化器或受检普通 init 判定字段 DA。
+                    InitFieldDa.DeferDefaultConstruction(typeSymbol, newNode.Span, env,
+                        new DefaultConstructionMessage($"Type '{typeSymbol.Name}' has no constructor that assigns " +
+                            "non-nullable field '", "' (§9.3: declare an " +
                             "init that assigns it, add a declaration initializer, or make " +
-                            "the field Nullable)");
-                        return null;
-                    }
+                            "the field Nullable)"));
                     return new BoundNewExpression(node, typeSymbol, null, new List<BoundExpression>());
                 }
                 env.Error(newNode.Span, $"Type '{typeSymbol.Name}' has no constructor");

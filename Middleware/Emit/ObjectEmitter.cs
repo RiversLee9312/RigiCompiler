@@ -13,6 +13,10 @@ namespace RigiCompiler.Middleware.Emit
         // 模块验证失败属编译器内部错误（已门禁模块产生非法 LLVM IR = 发射器 bug）
         public static bool TryEmitObject(LLVMModuleRef module, string outputPath, out string error)
         {
+            LlvmHost.RequireOwnership();
+            using var metric = PerformanceMetrics.Begin("llvm.object-emit");
+            try
+            {
             error = "";
             if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verifyError))
             {
@@ -24,9 +28,13 @@ namespace RigiCompiler.Middleware.Emit
                 out var emitError))
             {
                 error = emitError;
+                metric?.ExitCode(2);
                 return false;
             }
             return true;
+
+            }
+            catch (Exception exception) { metric?.Fail(exception); throw; }
         }
     }
 }
