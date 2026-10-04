@@ -58,6 +58,11 @@ $ErrorActionPreference = "Stop"
 # 渠道，按 Fetch-Libuv.ps1 先例以 SHA256 为准）。
 $ReleaseTag = "v3.5.1"
 $LibVersion = "2.5.1"
+# 上游包名使用 windows，.NET RID 使用 win；下载名不能直接套用 RID。
+$AssetPlatformByRid = @{
+    "win-x64" = "windows-x64"
+    "linux-x64" = "linux-x64"
+}
 $Sha256ByRid = @{
     "win-x64" = "9e04ed1c78a53576d669a29cbc348880f4aac06c3ef4ca15cf05f315a953aaa9"
     "linux-x64" = "1837dffe754f2f8080ee34d8b8f75adb3270a7bf627036e4e5c93caca4e0a600"
@@ -96,12 +101,13 @@ if (-not $Force -and (Test-Path $destLib) -and (Test-Path (Join-Path $destInclud
 New-Item -ItemType Directory -Force $dest | Out-Null
 
 # ===== 获取压缩包 =====
+$archiveName = "mimalloc-v$LibVersion-$($AssetPlatformByRid[$Rid]).tar.gz"
 $url = "https://github.com/microsoft/mimalloc/releases/download/$ReleaseTag/" +
-    "mimalloc-v$LibVersion-$Rid.tar.gz"
+    $archiveName
 $archive = $ArchivePath
 $downloadedHere = $false
 if ($archive -eq "") {
-    $archive = Join-Path $dest "mimalloc-v$LibVersion-$Rid.tar.gz"
+    $archive = Join-Path $dest $archiveName
     if (-not (Test-Path $archive)) {
         Write-Host "下载 $url ..."
         & curl -fSL --retry 3 -C - -o $archive $url
@@ -126,8 +132,12 @@ if ($actual -ne $Sha256ByRid[$Rid]) {
 # tar 解析：优先 Windows 自带 bsdtar（System32，接受 Windows 盘符路径）；从
 # Git Bash 会话调本脚本时 PATH 上的 /usr/bin/tar 是 MSYS GNU tar，会把
 # `-C C:\...` 当远程主机（`C:` 触发 remote 语义）而失败，故不能裸用 PATH tar
-$tarExe = Join-Path $env:SystemRoot "System32/tar.exe"
-if (-not (Test-Path $tarExe)) { $tarExe = "tar" }
+# Linux 没有 SystemRoot，默认使用 PATH 中的 tar；仅 Windows 探测系统 bsdtar。
+$tarExe = "tar"
+if ($IsWindows -and -not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+    $windowsTar = Join-Path $env:SystemRoot "System32/tar.exe"
+    if (Test-Path $windowsTar) { $tarExe = $windowsTar }
+}
 Write-Host "提取静态库与头文件（逐成员，tar = $tarExe）..."
 $entries = & $tarExe -tzf $archive
 if ($LASTEXITCODE -ne 0) { throw "无法读取压缩包成员清单（tar 退出码 $LASTEXITCODE）" }
