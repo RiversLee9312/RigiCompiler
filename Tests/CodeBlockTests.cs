@@ -187,20 +187,18 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestVariableDeclarations();
-            TestExpressionStatements();
-            TestAssignStatements();
-            TestReturnStatements();
-            TestLoopControlStatements();
-            TestIfStatements();
-            TestErrorCases();
-            TestAnnotatedDeclarations();
-
-            return TestHarness.Summary("CodeBlock");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CodeBlock",
+        [
+            (nameof(TestVariableDeclarations), TestVariableDeclarations),
+            (nameof(TestExpressionStatements), TestExpressionStatements),
+            (nameof(TestAssignStatements), TestAssignStatements),
+            (nameof(TestReturnStatements), TestReturnStatements),
+            (nameof(TestLoopControlStatements), TestLoopControlStatements),
+            (nameof(TestIfStatements), TestIfStatements),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestAnnotatedDeclarations), TestAnnotatedDeclarations),
+        ], sectionTitle: "CodeBlock");
     }
 }

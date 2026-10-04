@@ -188,16 +188,14 @@ namespace RigiCompiler.Tests
         private static string Label(string source) => source.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestAccessorForms();
-            TestMultiLine();
-            TestPositions();
-            TestErrorCases();
-
-            return TestHarness.Summary("PropertyAccessor");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("PropertyAccessor",
+        [
+            (nameof(TestAccessorForms), TestAccessorForms),
+            (nameof(TestMultiLine), TestMultiLine),
+            (nameof(TestPositions), TestPositions),
+            (nameof(TestErrorCases), TestErrorCases),
+        ], sectionTitle: "PropertyAccessor");
     }
 }

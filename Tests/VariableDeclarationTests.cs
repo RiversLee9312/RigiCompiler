@@ -115,18 +115,16 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicDeclarations();
-            TestTypedDeclarations();
-            TestNullableDeclarations();
-            TestGenericDeclarations();
-            TestDestructuringDeclarations();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("VariableDeclaration");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("VariableDeclaration",
+        [
+            (nameof(TestBasicDeclarations), TestBasicDeclarations),
+            (nameof(TestTypedDeclarations), TestTypedDeclarations),
+            (nameof(TestNullableDeclarations), TestNullableDeclarations),
+            (nameof(TestGenericDeclarations), TestGenericDeclarations),
+            (nameof(TestDestructuringDeclarations), TestDestructuringDeclarations),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "VariableDeclaration");
     }
 }

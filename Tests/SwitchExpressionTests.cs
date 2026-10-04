@@ -253,19 +253,17 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestValueMatch();
-            TestPatternMatch();
-            TestSingleLine();
-            TestMultiStatementCaseBodies();
-            TestSwitchStatement();
-            TestErrorCases();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("SwitchExpression");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SwitchExpression",
+        [
+            (nameof(TestValueMatch), TestValueMatch),
+            (nameof(TestPatternMatch), TestPatternMatch),
+            (nameof(TestSingleLine), TestSingleLine),
+            (nameof(TestMultiStatementCaseBodies), TestMultiStatementCaseBodies),
+            (nameof(TestSwitchStatement), TestSwitchStatement),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "SwitchExpression");
     }
 }

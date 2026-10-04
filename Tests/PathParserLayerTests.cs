@@ -112,16 +112,14 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicPaths();
-            TestGenericPaths();
-            TestErrorCases();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("Path");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Path",
+        [
+            (nameof(TestBasicPaths), TestBasicPaths),
+            (nameof(TestGenericPaths), TestGenericPaths),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "Path");
     }
 }

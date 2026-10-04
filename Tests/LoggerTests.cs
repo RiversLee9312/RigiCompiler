@@ -198,32 +198,13 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Logger Tests                      ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            passCount = 0;
-            failCount = 0;
-
-            // 保存 CLI 日志状态（--log-to 路径 + VerboseEnabled），套件结束时
-            // 还原：本套件各用例的 Reset 会关掉 CLI 已打开的日志文件，不还原
-            // 则 test --all --log-to 的后续套件日志全部静默不落盘
-            var cliState = Logger.CaptureState();
-            try
-            {
-                TestJsonlFileWrite();
-                TestConsoleGating();
-                TestCliStateRestore();
-            }
-            finally
-            {
-                Logger.RestoreState(cliState);
-            }
-
-            Console.WriteLine($"=== Logger Tests Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("Logger",
+        [
+            (nameof(TestJsonlFileWrite), TestJsonlFileWrite),
+            (nameof(TestConsoleGating), TestConsoleGating),
+            (nameof(TestCliStateRestore), TestCliStateRestore),
+        ], () => passCount = failCount = 0, () => (passCount, failCount));
     }
 }

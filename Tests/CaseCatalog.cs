@@ -146,6 +146,18 @@ public static class CaseCatalog
             }
             if (probe?.StartsWith("finite-delay:", StringComparison.Ordinal) == true)
                 Thread.Sleep(int.Parse(probe["finite-delay:".Length..], System.Globalization.CultureInfo.InvariantCulture));
+            if (probe?.StartsWith("peer-barrier:", StringComparison.Ordinal) == true)
+            {
+                // 只在显式协议探针中使用跨进程屏障；串行 worker 无法满足会合条件。
+                var directory = probe["peer-barrier:".Length..];
+                File.WriteAllText(Path.Combine(directory, Environment.ProcessId + ".ready"), "ready");
+                var deadline = System.Diagnostics.Stopwatch.StartNew();
+                while (Directory.GetFiles(directory, "*.ready").Length < 2)
+                {
+                    if (deadline.Elapsed > TimeSpan.FromSeconds(20)) throw new TimeoutException("两个 worker 未真实同时执行");
+                    Thread.Sleep(10);
+                }
+            }
             if (probe == "skip") return new(id, CaseStatus.Skip, 0, 0, "显式 Skip 协议探针", "");
             if (probe == "delay") Thread.Sleep(Timeout.Infinite);
             if (probe == "crash") Environment.Exit(17);

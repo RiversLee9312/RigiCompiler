@@ -180,19 +180,17 @@ namespace RigiCompiler.Tests
                 () => TestHarness.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestSimpleSeq();
-            TestVolatileSeq();
-            TestUsingBindings();
-            TestNamedLabel();
-            TestCombinations();
-            TestSeqAsExpression();
-            TestInvalidCases();
-
-            return TestHarness.Summary("SeqBlock");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SeqBlock",
+        [
+            (nameof(TestSimpleSeq), TestSimpleSeq),
+            (nameof(TestVolatileSeq), TestVolatileSeq),
+            (nameof(TestUsingBindings), TestUsingBindings),
+            (nameof(TestNamedLabel), TestNamedLabel),
+            (nameof(TestCombinations), TestCombinations),
+            (nameof(TestSeqAsExpression), TestSeqAsExpression),
+            (nameof(TestInvalidCases), TestInvalidCases),
+        ], sectionTitle: "SeqBlock");
     }
 }

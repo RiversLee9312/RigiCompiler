@@ -18,15 +18,6 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BinderTests
     {
-        private static void TestFlowFixes()
-        {
-            TestIfMergeNoRevive();
-            TestLoopExitNoRevive();
-            TestTryNarrowing();
-            TestNullLiteralContext();
-            TestValueBlockBareReturn();
-            TestNestedValueBlockReturnValue();
-        }
 
         // ===== 1. if 无 else 非 guard：then 体内失效的收窄不复活 =====
         private static void TestIfMergeNoRevive()

@@ -130,17 +130,15 @@ namespace RigiCompiler.Tests
                 () => TestHarness.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestSimpleThrow();
-            TestThrowExpression();
-            TestThrowInTryCatch();
-            TestThrowInDifferentContexts();
-            TestInvalidCases();
-
-            return TestHarness.Summary("Throw");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Throw",
+        [
+            (nameof(TestSimpleThrow), TestSimpleThrow),
+            (nameof(TestThrowExpression), TestThrowExpression),
+            (nameof(TestThrowInTryCatch), TestThrowInTryCatch),
+            (nameof(TestThrowInDifferentContexts), TestThrowInDifferentContexts),
+            (nameof(TestInvalidCases), TestInvalidCases),
+        ], sectionTitle: "Throw");
     }
 }

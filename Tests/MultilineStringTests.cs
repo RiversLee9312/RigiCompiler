@@ -263,18 +263,16 @@ namespace RigiCompiler.Tests
         private static string Describe(string code) =>
             code.Replace("\r", "\\r").Replace("\n", "\\n");
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestContent();
-            TestErrors();
-            TestQuoteRegression();
-            TestSpans();
-            TestInterpolationFlag();
-            TestAst();
-
-            return TestHarness.Summary("MultilineString");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("MultilineString",
+        [
+            (nameof(TestContent), TestContent),
+            (nameof(TestErrors), TestErrors),
+            (nameof(TestQuoteRegression), TestQuoteRegression),
+            (nameof(TestSpans), TestSpans),
+            (nameof(TestInterpolationFlag), TestInterpolationFlag),
+            (nameof(TestAst), TestAst),
+        ], sectionTitle: "MultilineString");
     }
 }

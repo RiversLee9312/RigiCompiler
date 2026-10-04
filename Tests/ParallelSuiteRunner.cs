@@ -4,12 +4,13 @@ namespace RigiCompiler.Tests;
 public static class ParallelSuiteRunner
 {
     public sealed class SuiteSpec(string suiteName, IReadOnlyList<(string Label, Action Run)> cases,
-        string? sectionTitle = null, Action? beforeSpawn = null)
+        string? sectionTitle = null, Action? beforeSpawn = null, int memoryMiB = 512)
     {
         public string SuiteName { get; } = suiteName;
         public IReadOnlyList<(string Label, Action Run)> Cases { get; } = cases;
         public string? SectionTitle { get; } = sectionTitle;
         public Action? BeforeSpawn { get; } = beforeSpawn;
+        public int MemoryMiB { get; } = memoryMiB;
     }
     public static int RunAll(SuiteSpec spec) => RunRange(spec, 0, spec.Cases.Count - 1);
     public static int RunWithArgs(SuiteSpec spec, IReadOnlyList<string> args)

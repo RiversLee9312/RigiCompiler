@@ -516,6 +516,20 @@ RigiCompiler/
 
 ### 3.1 关键文件
 
+同一类型按职责使用 partial 文件组织，主文件保留入口、共享状态及有顺序依赖的初始化。
+`Bil/Vm/VmDispatch.*.cs` 分别承载 Task/await、Worker、协程、NativeRc、时钟事件、
+标准输入及 FileSystem 原语；`VmContext.*.cs` 分别承载符号成员查询、初始化、异常、
+销毁检查、运算符和泛型匹配。它们仍共享同一宿主实例、句柄空间与锁，文件边界不建立新的运行时实例。
+`Middleware/Passes/CoroutineSplitPass.*.cs` 按 Runtime/Taint/Liveness/Planning、
+resume 与各挂起点发射、Completion/ColdTasks 分文件，`Run` 的阶段顺序统一留在主文件。
+`Semantic/Binding/Visitors/PathVisitors.cs` 保留 visitor 与路径绑定入口，
+Values/Calls/Fields/Segments/Indexing 文件承载相应路径设施。
+
+`MiddlewareTests.*.cs` 与 `BilVmTests.*.cs` 按被测阶段或行为组织，主文件保留注册目录。
+`NativeE2ETests.Cases.*.cs` 提供有序用例分组，主文件显式按原顺序组装目录；
+初始化依赖的共享表仍在主文件内先声明。Execution、Fixtures 与指令专项文件共用原驱动，
+拆文件不得改变用例标签、编号、门控或注册副作用顺序。
+
 | 文件 | 用途 | 重要性 |
 |------|------|--------|
 | `docs/SYNTAX.md` | **语言语法规范（最权威）**（索引文档，正文在同名子目录） | ⭐⭐⭐ 有歧义时以此为准，不要猜语法 |

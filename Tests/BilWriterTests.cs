@@ -15,11 +15,21 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilWriterTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("BilWriter");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilWriter",
+        [
+            (nameof(TestCompleteGolden), TestCompleteGolden),
+            (nameof(TestWrapperGolden), TestWrapperGolden),
+            (nameof(TestResources), TestResources),
+            (nameof(TestHint), TestHint),
+            (nameof(TestDeclarations), TestDeclarations),
+            (nameof(TestInstructions), TestInstructions),
+            (nameof(TestGlobalDeclarations), TestGlobalDeclarations),
+        ], sectionTitle: "BilWriter");
+
+        private static void TestCompleteGolden()
+        {
             // ===== §20 完整黄金示例（逐行一致）=====
             var module = new BilModule();
             module.Metadata.Add(new BilMetadataEntry("module", BilScalarType.String, "\"com.example.app\""));
@@ -106,6 +116,13 @@ namespace RigiCompiler.Tests
             // §20 完整示例是自足合法模块：验证器零错误（M58）
             BilTestHarness.CheckBilValid("§20 完整示例验证器零错误", module);
 
+            // ===== Origin 调试链占位（ARCHITECTURE §6.3：反序列化/手工构造恒为 null）=====
+            TestHarness.CheckTrue("Origin 默认 null", entry.Instructions[0].Origin == null);
+
+        }
+
+        private static void TestWrapperGolden()
+        {
             // ===== §20 wrapper 应用标记与 proxy 模板示例（M88）=====
             // 黄金按 §20 用 LocalSymbols 排版；验证器侧把 proxy 模板放
             // ExternalSymbols（声明无 body，§9.1 本地方法才强制 fn）
@@ -156,7 +173,10 @@ namespace RigiCompiler.Tests
             wrapperValid.LocalSymbols.Add(service);
             wrapperValid.ExternalSymbols.Add(logged);
             BilTestHarness.CheckBilValid("§20 wrapper 示例验证器零错误", wrapperValid);
+        }
 
+        private static void TestResources()
+        {
             // ===== §19 资源全形态 =====
             // （排版抽样：资源引用的类型（com.example::User/core::IO*Exception）
             // 未声明进模块，不过验证器——合法性归 BilEmitter/BilVerifier 套件）
@@ -215,7 +235,10 @@ namespace RigiCompiler.Tests
                 "",
                 "ExternalSymbols {",
                 "}"));
+        }
 
+        private static void TestHint()
+        {
             // ===== §18 hint 指令 =====
             // 自足合法模块（string 资源 + entry block 内 hint），过验证器
             var hintModule = new BilModule();
@@ -270,7 +293,10 @@ namespace RigiCompiler.Tests
                 "    }",
                 "}"));
             BilTestHarness.CheckBilValid("§18 hint 模块验证器零错误", hintModule);
+        }
 
+        private static void TestDeclarations()
+        {
             // ===== §8.2 extends/implements 多行形态 + §8.5 enum case =====
             // （排版抽样：extends/implements 类型与 discriminant 资源未登记进
             // 模块，不过验证器）
@@ -311,7 +337,10 @@ namespace RigiCompiler.Tests
                 "",
                 "ExternalSymbols {",
                 "}"));
+        }
 
+        private static void TestInstructions()
+        {
             // ===== §10–§16 指令形态抽样 =====
             // （抽样指令引用的 block/资源仅作操作数占位，不进模块——
             // 强类型模型下悬空引用不可构造，须先建对象；变量/符号均未声明，
@@ -507,7 +536,10 @@ namespace RigiCompiler.Tests
                 "        ret",
                 "    }",
                 "}"));
+        }
 
+        private static void TestGlobalDeclarations()
+        {
             // ===== §8.4.1 段内裸成员声明（全局函数，含 native 修饰符串）=====
             // （排版抽样：println 声明无 fn 体、无 fn 段产出，不过验证器）
             var globalModule = new BilModule();
@@ -565,11 +597,6 @@ namespace RigiCompiler.Tests
                 "",
                 "ExternalSymbols {",
                 "}"));
-
-            // ===== Origin 调试链占位（ARCHITECTURE §6.3：反序列化/手工构造恒为 null）=====
-            TestHarness.CheckTrue("Origin 默认 null", entry.Instructions[0].Origin == null);
-
-            return TestHarness.Summary("BilWriter");
         }
 
         // 黄金文本拼装：显式 \n，与源文件换行编码无关（autocrlf 免疫）

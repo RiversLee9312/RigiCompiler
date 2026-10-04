@@ -232,18 +232,16 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestNestedGenericTypes();
-            TestGenericVsLessThan();
-            TestCombinedOperators();
-            TestRegressionOperators();
-            TestErrorCases();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("GenericParsing");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("GenericParsing",
+        [
+            (nameof(TestNestedGenericTypes), TestNestedGenericTypes),
+            (nameof(TestGenericVsLessThan), TestGenericVsLessThan),
+            (nameof(TestCombinedOperators), TestCombinedOperators),
+            (nameof(TestRegressionOperators), TestRegressionOperators),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "GenericParsing");
     }
 }

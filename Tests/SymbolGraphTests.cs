@@ -7,11 +7,21 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class SymbolGraphTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("SymbolGraph");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SymbolGraph",
+        [
+            (nameof(TestConstructedTypesAndInterfaces), TestConstructedTypesAndInterfaces),
+            (nameof(TestBootstrapHierarchy), TestBootstrapHierarchy),
+            (nameof(TestBranches), TestBranches),
+            (nameof(TestSharedSafety), TestSharedSafety),
+            (nameof(TestGenericConstraints), TestGenericConstraints),
+            (nameof(TestIntrinsicOps), TestIntrinsicOps),
+            (nameof(TestFreeze), TestFreeze),
+        ], sectionTitle: "SymbolGraph");
+
+        private static void TestConstructedTypesAndInterfaces()
+        {
             var graph = new SymbolGraph();
             var b = graph.Bootstrap;
 
@@ -50,6 +60,15 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("传递接口可赋值", SymbolLookup.IsAssignable(impl, ia, graph));
             TestHarness.CheckTrue("无关接口仍不可赋值", !SymbolLookup.IsAssignable(b.Object, ia, graph));
             TestHarness.CheckTrue("接口不得反向赋实现类", !SymbolLookup.IsAssignable(ia, impl, graph));
+        }
+
+        private static void TestBootstrapHierarchy()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
+
             // ===== bootstrap 层级（SYNTAX §3.1）=====
             TestHarness.CheckTrue("Any 无基类", b.Any.BaseType == null);
             TestHarness.CheckTrue("Object <: Any", ReferenceEquals(b.Object.BaseType, b.Any));
@@ -66,6 +85,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Span 是 class", b.SpanDefinition.Kind == TypeKind.Class);
             TestHarness.CheckTrue("SharedSpan 是 shared class",
                 b.SharedSpanDefinition.Kind == TypeKind.Class && b.SharedSpanDefinition.IsShared);
+        }
+
+        private static void TestBranches()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
 
             // ===== 分支与 rich/shared 标记 =====
             TestHarness.CheckTrue("i32 在 ValueType 分支", b.Int32.IsValueTypeBranch);
@@ -75,6 +102,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Wrapper 默认非 rich", !b.Wrapper.IsRich);
             TestHarness.CheckTrue("String 非 rich", !b.String.IsRich);
             TestHarness.CheckTrue("i32 非 rich", !b.Int32.IsRich);
+        }
+
+        private static void TestSharedSafety()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
 
             // ===== 共享安全推导（SYNTAX §3.1.1 白名单）=====
             var localClass = new TypeSymbol("LocalUser", TypeKind.Class, b.Core, baseType: b.Object);
@@ -89,6 +124,14 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Nullable\\<i32> 按 T 推导共享安全", nullableI32a.IsSharedSafe());
             TestHarness.CheckTrue("Nullable\\<local class> 不共享安全",
                 !graph.GetNullable(localClass).IsSharedSafe());
+        }
+
+        private static void TestGenericConstraints()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
 
             // ===== 泛型约束（extends ValueType）=====
             TestHarness.CheckTrue("Span\\<T extends ValueType\\>",
@@ -109,6 +152,15 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("Nullable\\<T\\> 无约束",
                 b.NullableDefinition.GenericParameters.Count == 1
                 && b.NullableDefinition.GenericParameters[0].Constraints.Count == 0);
+        }
+
+        private static void TestIntrinsicOps()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
+            var localClass = new TypeSymbol("LocalUser", TypeKind.Class, b.Core, baseType: b.Object);
 
             // ===== 基元 intrinsic 键空间（BIL §11）=====
             TestHarness.CheckTrue("i32 含 Add/CmpLt/ShiftLeft/BinAnd",
@@ -132,6 +184,14 @@ namespace RigiCompiler.Tests
                 && b.String.IntrinsicOps.Contains(BilIntrinsicOp.CmpNe)
                 && !b.String.IntrinsicOps.Contains(BilIntrinsicOp.CmpLt));
             TestHarness.CheckTrue("用户类型无 intrinsic", localClass.IntrinsicOps.Count == 0);
+        }
+
+        private static void TestFreeze()
+        {
+            var graph = new SymbolGraph();
+            var b = graph.Bootstrap;
+
+            var nullableI32a = graph.GetNullable(b.Int32);
 
             // ===== Freeze 机制 =====
             TestHarness.CheckTrue("冻结前 IsFrozen == false", !graph.IsFrozen);
@@ -140,7 +200,6 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("冻结后构造驻留仍幂等（透明派生物）",
                 ReferenceEquals(nullableI32a, graph.GetNullable(b.Int32)));
 
-            return TestHarness.Summary("SymbolGraph");
         }
     }
 }

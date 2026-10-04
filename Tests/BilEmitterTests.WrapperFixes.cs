@@ -6,9 +6,18 @@ namespace RigiCompiler.Tests
     // Wrapper 簇发射：§14.5 语句位 void 经 wrapper place 发 invoke.noret。
     public static partial class BilEmitterTests
     {
+        internal static IReadOnlyList<string> GroupLabels(string group)
+            => group.Equals("WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)
+                ? [nameof(TestGenericParameterFieldInitializers), nameof(TestForwardDefaultConstructionEmission),
+                    nameof(TestSerializableImplicitDefaultConstruction)]
+                : [nameof(TestGenericParameterFieldInitializers), nameof(TestForwardDefaultConstructionEmission),
+                    nameof(TestSerializableImplicitDefaultConstruction), nameof(TestWrapperFieldInitializerEmission),
+                    nameof(TestGenericWrapperFieldInitializerEmission)];
+
         public static int RunWithArgs(System.Collections.Generic.IReadOnlyList<string> args)
         {
             if (args.Count == 0) return RunAll();
+            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("BilEmitter"), args);
             if (args.Count != 1 || !(string.Equals(args[0], "WRAP-001", System.StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[0], "WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)))
             {

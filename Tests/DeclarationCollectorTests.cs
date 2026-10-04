@@ -10,22 +10,22 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class DeclarationCollectorTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestBasics();
-            TestTypeDeclarations();
-            TestNestedTypes();
-            TestNamespaces();
-            TestImports();
-            TestDuplicates();
-            TestArityDistinction();
-            TestMethodArityDistinction();
-            TestExtMembers();
-            TestNamespaceDiagnostics();
-            TestCrossFile();
-            return TestHarness.Summary("DeclarationCollector");
-        }
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("DeclarationCollector",
+        [
+            (nameof(TestBasics), TestBasics),
+            (nameof(TestTypeDeclarations), TestTypeDeclarations),
+            (nameof(TestNestedTypes), TestNestedTypes),
+            (nameof(TestNamespaces), TestNamespaces),
+            (nameof(TestImports), TestImports),
+            (nameof(TestDuplicates), TestDuplicates),
+            (nameof(TestArityDistinction), TestArityDistinction),
+            (nameof(TestMethodArityDistinction), TestMethodArityDistinction),
+            (nameof(TestExtMembers), TestExtMembers),
+            (nameof(TestNamespaceDiagnostics), TestNamespaceDiagnostics),
+            (nameof(TestCrossFile), TestCrossFile),
+        ], sectionTitle: "DeclarationCollector");
 
         // 多源文件经全管线解析后组成编译单元，执行 P1 收集
         private static (CompilationUnit Unit, DeclarationCollection Decls) CollectUnit(params string[] sources)

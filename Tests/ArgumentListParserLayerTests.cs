@@ -90,17 +90,15 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestCallArguments();
-            TestNewArguments();
-            TestIndexArguments();
-            TestLineContinuation();
-            TestErrorCases();
-
-            return TestHarness.Summary("ArgumentList");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("ArgumentList",
+        [
+            (nameof(TestCallArguments), TestCallArguments),
+            (nameof(TestNewArguments), TestNewArguments),
+            (nameof(TestIndexArguments), TestIndexArguments),
+            (nameof(TestLineContinuation), TestLineContinuation),
+            (nameof(TestErrorCases), TestErrorCases),
+        ], sectionTitle: "ArgumentList");
     }
 }

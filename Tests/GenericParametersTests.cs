@@ -137,17 +137,15 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestParameters();
-            TestConstraints();
-            TestVariadicParameters();
-            TestWrapperCanonicalShape();
-            TestErrorCases();
-
-            return TestHarness.Summary("GenericParameters");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("GenericParameters",
+        [
+            (nameof(TestParameters), TestParameters),
+            (nameof(TestConstraints), TestConstraints),
+            (nameof(TestVariadicParameters), TestVariadicParameters),
+            (nameof(TestWrapperCanonicalShape), TestWrapperCanonicalShape),
+            (nameof(TestErrorCases), TestErrorCases),
+        ], sectionTitle: "GenericParameters");
     }
 }

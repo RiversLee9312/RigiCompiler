@@ -185,19 +185,17 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicIfExpressions();
-            TestNestedIfExpressions();
-            TestMultiLineIfExpressions();
-            TestIfExpressionAsArgument();
-            TestMultiStatementBranches();
-            TestErrorCases();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("IfExpression");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("IfExpression",
+        [
+            (nameof(TestBasicIfExpressions), TestBasicIfExpressions),
+            (nameof(TestNestedIfExpressions), TestNestedIfExpressions),
+            (nameof(TestMultiLineIfExpressions), TestMultiLineIfExpressions),
+            (nameof(TestIfExpressionAsArgument), TestIfExpressionAsArgument),
+            (nameof(TestMultiStatementBranches), TestMultiStatementBranches),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "IfExpression");
     }
 }

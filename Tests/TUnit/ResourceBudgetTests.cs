@@ -84,11 +84,14 @@ public class ResourceBudgetTests
         foreach (var name in new[] { "DeclarationResolver", "Binder", "BilEmitter", "Lowerer", "SmartCast", "StdlibSources" })
         {
             var number = RigiCompiler.Tests.TestRunner.GetSuiteNumber(name);
-            var task = RigiCompiler.Tests.LegacyDispatcher.Select(number,
-                name is "Binder" or "BilEmitter" ? ["WRAP-001"] : []).Single();
-            var request = RigiCompiler.Tests.LegacyDispatcher.ResourcesFor(task.Id);
-            Check(request.MemoryMiB == 2048 && request.CpuSlots == 1,
-                "多份 stdlib 图的旧整组生命周期必须声明实际内存：" + name);
+            var tasks = RigiCompiler.Tests.LegacyDispatcher.Select(number);
+            Check(tasks.Count > 1 && tasks.All(t => t.Indices.Count == 1), "重型方法组不能重新合批：" + name);
+            foreach (var task in tasks)
+            {
+                var request = RigiCompiler.Tests.LegacyDispatcher.ResourcesFor(task.Id);
+                Check(request.MemoryMiB == 2048 && request.CpuSlots == 1,
+                    "每个 stdlib 编译组必须独立声明内存：" + name);
+            }
         }
         var single = RigiCompiler.Tests.LegacyDispatcher.Select(
             RigiCompiler.Tests.TestRunner.GetSuiteNumber("E2e"), ["rich_return_nullable"]).Single();

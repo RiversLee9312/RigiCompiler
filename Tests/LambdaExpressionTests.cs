@@ -358,23 +358,21 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicLambdas();
-            TestGenericLambdasRejected();
-            TestAsyncLambdas();
-            TestTrailingLambdas();
-            TestMultiLineLambdas();
-            TestBlockBodies();
-            TestVoidLambdas();
-            TestBareReturnErrors();
-            TestErrorCases();
-            TestLambdaAnnotations();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("Lambda");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Lambda",
+        [
+            (nameof(TestBasicLambdas), TestBasicLambdas),
+            (nameof(TestGenericLambdasRejected), TestGenericLambdasRejected),
+            (nameof(TestAsyncLambdas), TestAsyncLambdas),
+            (nameof(TestTrailingLambdas), TestTrailingLambdas),
+            (nameof(TestMultiLineLambdas), TestMultiLineLambdas),
+            (nameof(TestBlockBodies), TestBlockBodies),
+            (nameof(TestVoidLambdas), TestVoidLambdas),
+            (nameof(TestBareReturnErrors), TestBareReturnErrors),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestLambdaAnnotations), TestLambdaAnnotations),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "Lambda");
     }
 }

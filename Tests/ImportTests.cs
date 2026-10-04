@@ -99,16 +99,14 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestSingleImport();
-            TestImportAll();
-            TestMultiImport();
-            TestImportErrors();
-
-            return TestHarness.Summary("Import");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Import",
+        [
+            (nameof(TestSingleImport), TestSingleImport),
+            (nameof(TestImportAll), TestImportAll),
+            (nameof(TestMultiImport), TestMultiImport),
+            (nameof(TestImportErrors), TestImportErrors),
+        ], sectionTitle: "Import");
     }
 }

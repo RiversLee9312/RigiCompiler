@@ -6,17 +6,6 @@ namespace RigiCompiler.Tests
     // 字段访问路径型参代入、for-in 协议按具化接口判定、协变 init 豁免。
     public static partial class BinderTests
     {
-        private static void TestGenericTypeFixes()
-        {
-            TestThisSelfConstructed();
-            TestNestedGenericFieldIdentity();
-            TestGenericFieldSubstitution();
-            TestForEachConstructedInterface();
-            TestCovariantInitUsage();
-            TestConstructedTypeStaticMembers();
-            TestGenericNullableFixes();
-            TestExplicitSharedGenerics();
-        }
 
         // ===== g8/g10：泛型参数可空（Nullable<T>，T 为型参）——T → T? 装箱
         // 视图可赋值、if?/?. 认 Nullable<GP>、反例不误放 =====

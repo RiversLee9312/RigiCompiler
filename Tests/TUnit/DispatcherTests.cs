@@ -31,8 +31,12 @@ public class DispatcherTests
         Check(sparse.Single().Timeout == Timeout.InfiniteTimeSpan, "fuzz 默认保持不限时");
         var timed = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("SemanticsFuzz"), ["0", "1", "child-timeout-ms=123"]);
         Check(timed.Single().Timeout == TimeSpan.FromMilliseconds(123), "显式fuzz截止保留");
-        var monolith = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("LexerFuzz"));
-        Check(monolith.Single().Indices.Count == 0 && monolith.Single().Granularity == "suite-exit", "Lexer6000未拆分不得伪造case");
+        var lexer = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("LexerFuzz"));
+        Check(lexer.Count > 1 && lexer.All(t => t.Indices.Count is > 0 and <= 100)
+            && lexer.SelectMany(t => t.Indices).SequenceEqual(Enumerable.Range(0, 6005)),
+            "Lexer 的五个固定测试组及全部6000输入须恰好进入并行小批，不能遗漏、重复或回退整套");
+        Check(CaseCatalog.Find("legacy/LexerFuzz/suite")?.Group == "suite-exit",
+            "显式旧整套ID仍须如实报告兼容执行粒度");
         var nativeDefault = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("NativeE2E"));
         Check(nativeDefault.All(task => task.Indices.Count == 1), "native重例逐case");
     }
@@ -57,20 +61,32 @@ public class DispatcherTests
     {
         foreach (var (suite, minutes) in new[] { ("Binder", 60), ("BilEmitter", 75), ("Lowerer", 30) })
         {
-            var task = LegacyDispatcher.Select(TestRunner.GetSuiteNumber(suite)).Single();
-            Check(task.Timeout == TimeSpan.FromMinutes(minutes) && LegacyDispatcher.TimeoutFor(task.Id) == task.Timeout,
-                "完整编译整组与直接 ID 必须共用有限重型截止：" + suite);
+            var tasks = LegacyDispatcher.Select(TestRunner.GetSuiteNumber(suite));
+            Check(tasks.Count > 1 && tasks.All(t => t.Indices.Count == 1 && t.Timeout == null
+                    && LegacyDispatcher.TimeoutFor(t.Id) == TimeSpan.FromMinutes(9)),
+                "完整入口拆成独立组，各自保留有限截止：" + suite);
+            Check(LegacyDispatcher.TimeoutFor("legacy/" + suite + "/suite") == TimeSpan.FromMinutes(minutes),
+                "显式旧整组 ID 保留兼容截止：" + suite);
         }
         var native = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("NativeE2E"), ["label", "JSON 写侧对拍"]).Single();
-        Check(native.Timeout == TimeSpan.FromMinutes(45) && LegacyDispatcher.TimeoutFor(native.Id) == native.Timeout,
-            "whole-program O2 对拍与直接 ID 必须共用截止");
+        Check(native.Timeout == TimeSpan.FromMinutes(75) && LegacyDispatcher.TimeoutFor(native.Id) == native.Timeout,
+            "JSON 写侧冷编译的有限截止必须同时适用于选择器与直接 ID");
+        var ordinary = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("NativeE2E"), ["0", "0"]).Single();
+        Check(ordinary.Timeout == TimeSpan.FromMinutes(45) && LegacyDispatcher.TimeoutFor(ordinary.Id) == ordinary.Timeout,
+            "其他 Native 对拍不能继承 JSON 写侧的重型期限");
+        var json = LegacyDispatcher.ResourcesFor(native.Id);
+        Check(json.MemoryMiB == 4096 && json.CpuSlots == 1 && json.ComputeWorkers == 1,
+            "JSON 冷编译的 native 峰值须纳入预留，不能伪装为多线程 Compute 测试");
+        Check(LegacyDispatcher.ResourcesFor(ordinary.Id).MemoryMiB == 2048,
+            "其他 Native 对拍保留原有内存 profile");
         foreach (var id in new[] { "native.hello-world-bil", "parser.add", "legacy/Binder/suite/WRAP-001",
             "legacy/BilEmitter/suite/WRAP-001", "legacy/BilEmitter/suite/WRAP-001-review", "legacy/Module/27" })
             Check(LegacyDispatcher.TimeoutFor(id) == TimeSpan.FromMinutes(9), "轻例与定向组保留九分钟：" + id);
         foreach (var group in new[] { "WRAP-001", "WRAP-001-review" })
         {
-            var task = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("BilEmitter"), [group]).Single();
-            Check(task.Timeout == null && LegacyDispatcher.TimeoutFor(task.Id) == TimeSpan.FromMinutes(9),
+            var tasks = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("BilEmitter"), [group]);
+            Check(tasks.Count > 1 && tasks.All(t => t.Timeout == null && t.Indices.Count == 1
+                    && LegacyDispatcher.TimeoutFor(t.Id) == TimeSpan.FromMinutes(9)),
                 "BilEmitter 定向组不能继承完整整套期限：" + group);
         }
         Check(LegacyDispatcher.TimeoutFor("legacy/SemanticsFuzz/0,1") == Timeout.InfiniteTimeSpan,

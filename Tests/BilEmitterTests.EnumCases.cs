@@ -10,14 +10,6 @@ namespace RigiCompiler.Tests
     // 声明 + fn 定义）
     public static partial class BilEmitterTests
     {
-        private static void TestEnumCaseEmission()
-        {
-            TestEnumCaseFixedEmission();
-            TestEnumCaseFixedPayloadEmission();
-            TestEnumCaseParameterizedEmission();
-            TestEnumCaseExplicitDiscriminant();
-            TestEnumCaseDiscardedStatementEmission();
-        }
 
         // ===== 固定 case 端到端：构造/赋值/is .Case =====
         private static void TestEnumCaseFixedEmission()

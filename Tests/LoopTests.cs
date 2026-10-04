@@ -150,19 +150,17 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestForEachLoops();
-            TestForRangeLoops();
-            TestWhileLoops();
-            TestDoWhileLoops();
-            TestNamedLoops();
-            TestNestedLoops();
-            TestErrorCases();
-
-            return TestHarness.Summary("Loop");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Loop",
+        [
+            (nameof(TestForEachLoops), TestForEachLoops),
+            (nameof(TestForRangeLoops), TestForRangeLoops),
+            (nameof(TestWhileLoops), TestWhileLoops),
+            (nameof(TestDoWhileLoops), TestDoWhileLoops),
+            (nameof(TestNamedLoops), TestNamedLoops),
+            (nameof(TestNestedLoops), TestNestedLoops),
+            (nameof(TestErrorCases), TestErrorCases),
+        ], sectionTitle: "Loop");
     }
 }

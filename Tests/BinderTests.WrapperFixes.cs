@@ -7,10 +7,17 @@ namespace RigiCompiler.Tests
     // specific `.proxy.call` 形状全等。
     public static partial class BinderTests
     {
+        internal static IReadOnlyList<string> GroupLabels(string group)
+            => group.Equals("WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)
+                ? [nameof(TestGenericParameterFieldInitializers), nameof(TestForwardDefaultConstructionDa)]
+                : [nameof(TestGenericParameterFieldInitializers), nameof(TestForwardDefaultConstructionDa),
+                    nameof(TestWrapperFieldInitializers), nameof(TestWrapperDefaultConstructionDa)];
+
         // WRAP-001：wrapper 自身初值必须走真实初始化器，DA 与普通实体一致。
         public static int RunWithArgs(System.Collections.Generic.IReadOnlyList<string> args)
         {
             if (args.Count == 0) return RunAll();
+            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("Binder"), args);
             if (args.Count != 1 || !(string.Equals(args[0], "WRAP-001", System.StringComparison.OrdinalIgnoreCase)
                     || string.Equals(args[0], "WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)))
             {

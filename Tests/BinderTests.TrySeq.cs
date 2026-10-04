@@ -215,10 +215,11 @@ namespace RigiCompiler.Tests
         }
 
         // ===== seq（S7e，SYNTAX §10）=====
-        private static void TestSeq()
+        // 每次绑定包含整套 stdlib 的 AST/语义图。用不内联的子方法界定
+        // 结果生命周期，避免 NativeAOT 在同一栈帧保留几十份图而耗尽 worker 堆。
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqStatements()
         {
-            TestHarness.Section("P3 Seq");
-
             // 语句形态：块级直通（作用域/assigned 语义同裸块）
             var (unit, bodies) = BindUnitWithStdlib(
                 "func s() {\n" +
@@ -253,7 +254,11 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("seq 赋值直通", unit3);
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqReturnAnalysis()
+        {
             // 返回保证分析透视语句位置 seq（含嵌套）：裸 return 直达外层
             // 函数；循环（零迭代）与逃逸型 return@seq 不透视
             var (unitRet, _) = BindUnitWithStdlib(
@@ -281,7 +286,11 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("return@seq 逃逸不透视", unitEsc.Diagnostics,
                 "Function 'sr4' must return a value on all code paths");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqExpressions()
+        {
             // 表达式形态：显式 return@_
             var (unit4, bodies4) = BindUnitWithStdlib(
                 "func se(): i32 {\n" +
@@ -331,7 +340,11 @@ namespace RigiCompiler.Tests
                 "}\n");
             TestHarness.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqExpectedTypes()
+        {
             var (unitInit, bodiesInit) = BindUnitWithStdlib(
                 "func siv() {\n" +
                 "    var x: i32 = seq { 7 }\n" +
@@ -375,7 +388,11 @@ namespace RigiCompiler.Tests
                 BoundDescribe.Body(BodyOf(seqNullBodies, "f")),
                 "Body(f, [], [Return(SeqExpr([], ValueBlock(_, String?, implicit, " +
                 "[ExprStmt(Null(String?))])))])");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqUsingStatements()
+        {
             // 语句形态 using：逐项绑定、资源类型与 dispose 符号落定
             var (unit10, bodies10) = BindUnitWithStdlib(
                 "class UsingResource implements core.IDisposable {\n" +
@@ -425,7 +442,11 @@ namespace RigiCompiler.Tests
                 "func sbad() { seq using(var x = bad()) { } }\n");
             TestHarness.CheckSemanticError("非 IDisposable using 拒绝", unitBadResource.Diagnostics,
                 "must be assignable to 'core.IDisposable'");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqUsingExpressions()
+        {
             // 表达式形态 using：initializer 与体可见前序资源，绑定规则与语句形态一致
             var (unitExprUsing, exprBodies) = BindUnitWithStdlib(
                 "class Resource implements core.IDisposable { pub override func dispose() { } }\n" +
@@ -458,7 +479,11 @@ namespace RigiCompiler.Tests
                 "func exprAsync(): AsyncResource2 { return seq using(var r = acquireAsync2()) { return@_ r } }\n");
             TestHarness.CheckSemanticError("表达式 using async dispose 拒绝", unitExprAsync.Diagnostics,
                 "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqUsingExpressionDiagnostics()
+        {
             // 显式类型的降级调用结果仍由 P4a 负责 cast 物化；无类型 Any 不因
             // 此豁免 IDisposable 规则，仍须保守拒绝。
             var (unitExprMismatch, _) = BindUnitWithStdlib(
@@ -520,7 +545,11 @@ namespace RigiCompiler.Tests
                 "seq using(var resource2 = resource) { } }\n");
             TestHarness.CheckSemanticError("表达式 using abstract dispose 拒绝", unitExprAbstractDispose.Diagnostics,
                 "has an unsupported dispose method");
+        }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static void TestSeqReturnBoundaries()
+        {
             // 诊断：语句 seq 不压值块栈——return@ 指向它报未定义标签
             var (unit11, _) = BindUnitWithStdlib(
                 "func sl(): i32 {\n" +

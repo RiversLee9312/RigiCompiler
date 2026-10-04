@@ -8,13 +8,6 @@ namespace RigiCompiler.Tests
     // C1 裸字段名在调用接收者位置先按实例成员解析。
     public static partial class BinderTests
     {
-        private static void TestMemberLookupFixes()
-        {
-            TestInterfaceDefaultOnConcrete();
-            TestAssignmentLhsSmartCast();
-            TestBareFieldCallReceiver();
-            TestUnqualifiedOverrideShadowing();
-        }
 
         // ===== A2/C4：接口默认实现隐式继承，具体类上可直接调用 =====
         private static void TestInterfaceDefaultOnConcrete()

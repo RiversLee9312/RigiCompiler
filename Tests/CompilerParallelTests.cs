@@ -5,15 +5,15 @@ namespace RigiCompiler.Tests;
 // 并行契约采用完整序列/字节对拍；不归一化隐藏名字，也不排序诊断。
 public static class CompilerParallelTests
 {
-    public static int RunAll()
-    {
-        TestHarness.Reset();
-        TestFrontend();
-        TestGraph();
-        TestDeclarations();
-        TestBodies();
-        return TestHarness.Summary("CompilerParallel");
-    }
+    public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+    internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CompilerParallel",
+    [
+        (nameof(TestFrontend), TestFrontend),
+        (nameof(TestGraph), TestGraph),
+        (nameof(TestDeclarations), TestDeclarations),
+        (nameof(TestBodies), TestBodies),
+    ], sectionTitle: "CompilerParallel");
 
     private static void TestFrontend()
     {

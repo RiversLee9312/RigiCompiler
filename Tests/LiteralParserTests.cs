@@ -509,31 +509,29 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestIntLiterals();
-            TestIntBasePrefixes();
-            TestIntSuffixErrors();
-            TestUInt64Boundaries();
-            TestIntRangeChecks();
-            TestNegativeIntFolding();
-            TestUnderscoreSeparators();
-            TestFloatLiterals();
-            TestScientificNotationLiterals();
-            TestScientificNotationErrorCases();
-            TestBoolAndNull();
-            TestStringLiterals();
-            TestStringInterpolation();
-            TestInterpolationErrorCases();
-            TestCharLiterals();
-            TestLiteralErrorCases();
-            TestCharErrorCases();
-            TestStructuralAssertions();
-            TestCharStructural();
-
-            return TestHarness.Summary("Literal");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Literal",
+        [
+            (nameof(TestIntLiterals), TestIntLiterals),
+            (nameof(TestIntBasePrefixes), TestIntBasePrefixes),
+            (nameof(TestIntSuffixErrors), TestIntSuffixErrors),
+            (nameof(TestUInt64Boundaries), TestUInt64Boundaries),
+            (nameof(TestIntRangeChecks), TestIntRangeChecks),
+            (nameof(TestNegativeIntFolding), TestNegativeIntFolding),
+            (nameof(TestUnderscoreSeparators), TestUnderscoreSeparators),
+            (nameof(TestFloatLiterals), TestFloatLiterals),
+            (nameof(TestScientificNotationLiterals), TestScientificNotationLiterals),
+            (nameof(TestScientificNotationErrorCases), TestScientificNotationErrorCases),
+            (nameof(TestBoolAndNull), TestBoolAndNull),
+            (nameof(TestStringLiterals), TestStringLiterals),
+            (nameof(TestStringInterpolation), TestStringInterpolation),
+            (nameof(TestInterpolationErrorCases), TestInterpolationErrorCases),
+            (nameof(TestCharLiterals), TestCharLiterals),
+            (nameof(TestLiteralErrorCases), TestLiteralErrorCases),
+            (nameof(TestCharErrorCases), TestCharErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+            (nameof(TestCharStructural), TestCharStructural),
+        ], sectionTitle: "Literal");
     }
 }

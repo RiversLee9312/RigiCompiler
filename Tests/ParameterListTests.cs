@@ -170,20 +170,18 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestPlainParameters();
-            TestDefaultParameters();
-            TestVariadicParameters();
-            TestMixedParameters();
-            TestLineContinuation();
-            TestInitParameterMapping();
-            TestErrorCases();
-            TestReservedParameterNames();
-
-            return TestHarness.Summary("ParameterList");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("ParameterList",
+        [
+            (nameof(TestPlainParameters), TestPlainParameters),
+            (nameof(TestDefaultParameters), TestDefaultParameters),
+            (nameof(TestVariadicParameters), TestVariadicParameters),
+            (nameof(TestMixedParameters), TestMixedParameters),
+            (nameof(TestLineContinuation), TestLineContinuation),
+            (nameof(TestInitParameterMapping), TestInitParameterMapping),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestReservedParameterNames), TestReservedParameterNames),
+        ], sectionTitle: "ParameterList");
     }
 }

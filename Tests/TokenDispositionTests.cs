@@ -145,22 +145,14 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Token Disposition Tests           ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            passCount = 0;
-            failCount = 0;
-
-            TestPushConsume();
-            TestPushReplay();
-            TestPopConsume();
-            TestPopReplay();
-
-            Console.WriteLine($"=== Token Disposition Tests Complete: {passCount} passed, {failCount} failed ===\n");
-            return failCount;
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("TokenDisposition",
+        [
+            (nameof(TestPushConsume), TestPushConsume),
+            (nameof(TestPushReplay), TestPushReplay),
+            (nameof(TestPopConsume), TestPopConsume),
+            (nameof(TestPopReplay), TestPopReplay),
+        ], () => passCount = failCount = 0, () => (passCount, failCount));
     }
 }

@@ -10,7 +10,7 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class TestRunner
     {
-        // 套件注册表：名字 + 无参入口 + 可选带参入口（未实现则忽略 --suite-args）
+        // 编号注册表与显式旧整组兼容入口；默认选择由 TestInventory 的静态 provider 调度。
         private static readonly (string Name, Func<int> Run, Func<IReadOnlyList<string>, int>? RunWithArgs)[] Suites =
         {
             ("Literal", LiteralParserTests.RunAll, null),

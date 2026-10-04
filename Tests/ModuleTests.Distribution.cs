@@ -24,11 +24,12 @@ public static partial class ModuleTests
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         var windows = OperatingSystem.IsWindows();
         var host = ModuleBuildContext.HostEnvironment;
+        // cmd 的 IF 会吞入同一行余下的命令；整条 IF 分组才可让成功路径继续写事件。
         var beforeCommand = windows
-            ? "if not \"%RIGI_SRC%\"==\"%CD%\\source\" exit /b 7 & if not \"%RIGI_RES%\"==\"%CD%\\resources\" exit /b 7 & echo before:%BUILD_ROOT%>>\"%BUILD_ROOT%\\install-events\""
+            ? "(if not \"%RIGI_SRC%\"==\"%CD%\\source\" exit /b 7) & (if not \"%RIGI_RES%\"==\"%CD%\\resources\" exit /b 7) & echo before:%BUILD_ROOT%>>\"%BUILD_ROOT%\\install-events\""
             : "test \"$RIGI_SRC\" = \"$PWD/source\" && test \"$RIGI_RES\" = \"$PWD/resources\" && printf \"before:%s\\n\" \"$BUILD_ROOT\" >> \"$BUILD_ROOT/install-events\"";
         var afterCommand = windows
-            ? "if not \"%RIGI_ARTIFACT%\"==\"%CD%\\artifact\\debug\" exit /b 7 & echo after:%PRODUCT%>>\"%BUILD_ROOT%\\install-events\""
+            ? "(if not \"%RIGI_ARTIFACT%\"==\"%CD%\\artifact\\debug\" exit /b 7) & echo after:%PRODUCT%>>\"%BUILD_ROOT%\\install-events\""
             : "test \"$RIGI_ARTIFACT\" = \"$PWD/artifact/debug\" && printf \"after:%s\\n\" \"$PRODUCT\" >> \"$BUILD_ROOT/install-events\"";
         var yaml = "schema: 1\nname: packlib\nversion: 1.0.0\ntype: static-library\n"
             + "dependencies: [{name: stdlib, version: 1.0.0}]\ndefault-profile: debug\nprofiles: {debug: {target: vm}}\n"

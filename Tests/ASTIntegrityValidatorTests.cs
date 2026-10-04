@@ -285,15 +285,13 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestValidTree();
-            TestInvalidStructures();
-            TestSpanAndAuditViolations();
-
-            return TestHarness.Summary("ASTIntegrityValidator");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("ASTIntegrityValidator",
+        [
+            (nameof(TestValidTree), TestValidTree),
+            (nameof(TestInvalidStructures), TestInvalidStructures),
+            (nameof(TestSpanAndAuditViolations), TestSpanAndAuditViolations),
+        ], sectionTitle: "ASTIntegrityValidator");
     }
 }

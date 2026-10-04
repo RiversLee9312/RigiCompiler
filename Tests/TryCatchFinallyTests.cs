@@ -153,19 +153,17 @@ namespace RigiCompiler.Tests
                 () => TestHarness.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestSimpleTryCatch();
-            TestMultipleCatch();
-            TestDiscardedExceptionVariable();
-            TestTryFinally();
-            TestTryCatchFinally();
-            TestNestedTry();
-            TestInvalidCases();
-
-            return TestHarness.Summary("TryCatchFinally");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TryCatchFinally",
+        [
+            (nameof(TestSimpleTryCatch), TestSimpleTryCatch),
+            (nameof(TestMultipleCatch), TestMultipleCatch),
+            (nameof(TestDiscardedExceptionVariable), TestDiscardedExceptionVariable),
+            (nameof(TestTryFinally), TestTryFinally),
+            (nameof(TestTryCatchFinally), TestTryCatchFinally),
+            (nameof(TestNestedTry), TestNestedTry),
+            (nameof(TestInvalidCases), TestInvalidCases),
+        ], sectionTitle: "TryCatchFinally");
     }
 }

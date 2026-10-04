@@ -56,129 +56,155 @@ namespace RigiCompiler.Tests
             "    return 0\n" +
             "}\n";
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("BilEmitter");
-            TestUnsafeProjection();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestGoldenOutput();
-            TestOriginChain();
-            TestResourceDeduplication();
-            TestLocalDeclarationAndAssignment();
-            TestUnaryAndComparison();
-            TestUserOperatorEqualsEmission();
-            TestUserOperatorPlusEmission();
-            TestInvokeWithResult();
-            TestNew();
-            TestLiteralResources();
-            TestStaticFieldReadWrite();
-            TestIfStatementEmission();
-            TestIfExpressionEmission();
-            TestIfExpressionSubtypeEmission();
-            TestShortCircuitEmission();
-            TestLoopEmission();
-            TestInstanceEmission();
-            TestGenericParamMemberEmission();
-            TestInitMappingEmission();
-            TestForLoopEmission();
-            TestSwitchEmission();
-            TestPatternSwitchEmission();
-            TestThrowEmission();
-            TestCastEmission();
-            TestStringInterpolationEmission();
-            TestSafeAccessEmission();
-            TestNullFallbackEmission();
-            TestDestructuringEmission();
-            TestTryEmission();
-            TestSeqEmission();
-            TestTypeCheckEmission();
-            TestTypeOfEmission();
-            TestDynamicNewEmission();
-            TestIndexEmission();
-            TestContainerCallSuffixChainEmission();
-            TestAccessorEmission();
-            TestLocalAccessorEmission();
-            TestOverrideProjection();
-            TestSuperEmission();
-            TestGenericEmission();
-            TestIndirectGenericEmission();
-            TestGenericVarianceEmission();
-            TestVarArgsEmission();
-            TestGenericVarArgsEmission();
-            TestExceptionEmission();
-            TestDisposableEmission();
-            TestUsingEmission();
-            TestAsyncTaskEmission();
-            TestAwaitEmission();
-            TestYieldEmission();
-            TestGenericNullableNullResource();
-            TestVarArgsParameterAssignment();
-            TestNamedPackResultType();
-            TestVarArgsIndexBoxingEmission();
-            TestExtFieldDeclarationModifier();
-            TestExtInstanceFieldAndMethodEmission();
-            TestExtAccessorEmission();
-            TestExtBuiltinAccessorEmission();
-            TestExtStaticEmission();
-            TestStringLengthFieldEmission();
-            TestExtCompoundAssignmentEmission();
-            TestConstFieldModifierEmission();
-            TestSmartCastCompoundAssignmentEmission();
-            TestEvalOrderGuardEmission();
-            TestSiblingScopeLocalUniquification();
-            TestCrossFunctionCatchTablePrivate();
-            TestSafeAccessVoidCallEmission();
-            TestEnumCaseEmission();
-            TestWrapperFieldInitializerEmission();
-            TestGenericParameterFieldInitializers();
-            TestForwardDefaultConstructionEmission();
-            TestSerializableImplicitDefaultConstruction();
-            TestGenericWrapperFieldInitializerEmission();
-            TestWrapperEntityReadEmission();
-            TestWrapperEntityWriteEmission();
-            TestWrapperEntityCallEmission();
-            TestWrapperNestedChainEmission();
-            TestWrapperIndexReadEmission();
-            TestWrapperFieldValueEmission();
-            TestWrapperFieldValueSameWrapperTwoFields();
-            TestWrapperCompoundAssignmentEmission();
-            TestWrapperPlaceEmissionGates();
-            TestWrapperCellStorageCoverage();
-            TestWrapperFieldValueCallAndIndexEmission();
-            TestWrapperIndexWriteEmission();
-            TestWrapperDeepWriteEmission();
-            TestWrapperDeepWriteMixedBoundary();
-            TestWrapperDeepCompoundAssignmentEmission();
-            TestWrapperSharedHostFieldStability();
-            TestGenericParamWithWrapperEmission();
-            TestProxyBakingEmission();
-            TestProxyWildcardBakingEmission();
-            TestProxySpecificVariadicEmission();
-            TestProxyAccessorBakingEmission();
-            TestDowngradeEmissionSingle();
-            TestDowngradeCastMaterialization();
-            TestDowngradeStatementPosition();
-            TestDowngradeDoubleChain();
-            TestDowngradeGateNoChain();
-            TestDowngradeViaInterface();
-            TestDowngradeExemptionPositions();
-            TestInitWrapperTypeLevelEmission();
-            TestInitFieldSynthesisEmission();
-            TestInitWrapperCellArgsEmission();
-            TestWrapperPlaceVoidCallEmission();
-            TestGlobalWrappedFieldEmission();
-            TestStaticMethodCompanionEmission();
-            TestLambdaEmission();
-            TestBuiltinToStringEmission();
-            TestUnsupportedNodes();
-            TestGenericIndexOperatorEmission();
-            TestClassGenericParamFrameEmission();
-            TestEntryPointAnnotationEmission();
-            TestNamespaceSliceEmission();
-
-            return TestHarness.Summary("BilEmitter");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilEmitter",
+        [
+            (nameof(TestUnsafeProjection), TestUnsafeProjection),
+            (nameof(TestGoldenOutput), TestGoldenOutput),
+            (nameof(TestOriginChain), TestOriginChain),
+            (nameof(TestResourceDeduplication), TestResourceDeduplication),
+            (nameof(TestLocalDeclarationAndAssignment), TestLocalDeclarationAndAssignment),
+            (nameof(TestUnaryAndComparison), TestUnaryAndComparison),
+            (nameof(TestUserOperatorEqualsEmission), TestUserOperatorEqualsEmission),
+            (nameof(TestUserOperatorPlusEmission), TestUserOperatorPlusEmission),
+            (nameof(TestInvokeWithResult), TestInvokeWithResult),
+            (nameof(TestNew), TestNew),
+            (nameof(TestLiteralResources), TestLiteralResources),
+            (nameof(TestStaticFieldReadWrite), TestStaticFieldReadWrite),
+            (nameof(TestIfStatementEmission), TestIfStatementEmission),
+            (nameof(TestIfExpressionEmission), TestIfExpressionEmission),
+            (nameof(TestIfExpressionSubtypeEmission), TestIfExpressionSubtypeEmission),
+            (nameof(TestShortCircuitEmission), TestShortCircuitEmission),
+            (nameof(TestLoopEmission), TestLoopEmission),
+            (nameof(TestInstanceEmission), TestInstanceEmission),
+            (nameof(TestGenericParamMemberEmission), TestGenericParamMemberEmission),
+            (nameof(TestInitMappingEmission), TestInitMappingEmission),
+            (nameof(TestForLoopEmission), TestForLoopEmission),
+            (nameof(TestSwitchEmission), TestSwitchEmission),
+            (nameof(TestPatternSwitchEmission), TestPatternSwitchEmission),
+            (nameof(TestThrowEmission), TestThrowEmission),
+            (nameof(TestCastEmission), TestCastEmission),
+            (nameof(TestStringInterpolationEmission), TestStringInterpolationEmission),
+            (nameof(TestSafeAccessEmission), TestSafeAccessEmission),
+            (nameof(TestNullFallbackEmission), TestNullFallbackEmission),
+            (nameof(TestDestructuringEmission), TestDestructuringEmission),
+            (nameof(TestTryEmission), TestTryEmission),
+            (nameof(TestSeqEmission), TestSeqEmission),
+            (nameof(TestTypeCheckEmission), TestTypeCheckEmission),
+            (nameof(TestTypeOfEmission), TestTypeOfEmission),
+            (nameof(TestDynamicNewEmission), TestDynamicNewEmission),
+            (nameof(TestIndexEmission), TestIndexEmission),
+            (nameof(TestContainerCallSuffixChainEmission), TestContainerCallSuffixChainEmission),
+            (nameof(TestAccessorEmission), TestAccessorEmission),
+            (nameof(TestLocalAccessorEmission), TestLocalAccessorEmission),
+            (nameof(TestOverrideProjection), TestOverrideProjection),
+            (nameof(TestSuperEmission), TestSuperEmission),
+            (nameof(TestGenericEmission), TestGenericEmission),
+            (nameof(TestIndirectGenericEmission), TestIndirectGenericEmission),
+            (nameof(TestGenericVarianceEmission), TestGenericVarianceEmission),
+            (nameof(TestVarArgsEmission), TestVarArgsEmission),
+            (nameof(TestGenericVarArgsEmission), TestGenericVarArgsEmission),
+            (nameof(TestExceptionEmission), TestExceptionEmission),
+            (nameof(TestDisposableEmission), TestDisposableEmission),
+            (nameof(TestUsingEmission), TestUsingEmission),
+            (nameof(TestAsyncTaskEmission), TestAsyncTaskEmission),
+            (nameof(TestAwaitEmission), TestAwaitEmission),
+            (nameof(TestYieldEmission), TestYieldEmission),
+            (nameof(TestGenericNullableNullResource), TestGenericNullableNullResource),
+            (nameof(TestVarArgsParameterAssignment), TestVarArgsParameterAssignment),
+            (nameof(TestNamedPackResultType), TestNamedPackResultType),
+            (nameof(TestVarArgsIndexBoxingEmission), TestVarArgsIndexBoxingEmission),
+            (nameof(TestExtFieldDeclarationModifier), TestExtFieldDeclarationModifier),
+            (nameof(TestExtInstanceFieldAndMethodEmission), TestExtInstanceFieldAndMethodEmission),
+            (nameof(TestExtAccessorEmission), TestExtAccessorEmission),
+            (nameof(TestExtBuiltinAccessorEmission), TestExtBuiltinAccessorEmission),
+            (nameof(TestExtStaticEmission), TestExtStaticEmission),
+            (nameof(TestStringLengthFieldEmission), TestStringLengthFieldEmission),
+            (nameof(TestExtCompoundAssignmentEmission), TestExtCompoundAssignmentEmission),
+            (nameof(TestConstFieldModifierEmission), TestConstFieldModifierEmission),
+            (nameof(TestSmartCastCompoundAssignmentEmission), TestSmartCastCompoundAssignmentEmission),
+            (nameof(TestEvalOrderGuardEmission), TestEvalOrderGuardEmission),
+            (nameof(TestSiblingScopeLocalUniquification), TestSiblingScopeLocalUniquification),
+            (nameof(TestCrossFunctionCatchTablePrivate), TestCrossFunctionCatchTablePrivate),
+            (nameof(TestSafeAccessVoidCallEmission), TestSafeAccessVoidCallEmission),
+            (nameof(TestEnumCaseFixedEmission), TestEnumCaseFixedEmission),
+            (nameof(TestEnumCaseFixedPayloadEmission), TestEnumCaseFixedPayloadEmission),
+            (nameof(TestEnumCaseParameterizedEmission), TestEnumCaseParameterizedEmission),
+            (nameof(TestEnumCaseExplicitDiscriminant), TestEnumCaseExplicitDiscriminant),
+            (nameof(TestEnumCaseDiscardedStatementEmission), TestEnumCaseDiscardedStatementEmission),
+            (nameof(TestWrapperFieldInitializerEmission), TestWrapperFieldInitializerEmission),
+            (nameof(TestGenericParameterFieldInitializers), TestGenericParameterFieldInitializers),
+            (nameof(TestForwardDefaultConstructionEmission), TestForwardDefaultConstructionEmission),
+            (nameof(TestSerializableImplicitDefaultConstruction), TestSerializableImplicitDefaultConstruction),
+            (nameof(TestGenericWrapperFieldInitializerEmission), TestGenericWrapperFieldInitializerEmission),
+            (nameof(TestWrapperEntityReadEmission), TestWrapperEntityReadEmission),
+            (nameof(TestWrapperEntityWriteEmission), TestWrapperEntityWriteEmission),
+            (nameof(TestWrapperEntityCallEmission), TestWrapperEntityCallEmission),
+            (nameof(TestWrapperNestedChainEmission), TestWrapperNestedChainEmission),
+            (nameof(TestWrapperIndexReadEmission), TestWrapperIndexReadEmission),
+            (nameof(TestWrapperFieldValueEmission), TestWrapperFieldValueEmission),
+            (nameof(TestWrapperFieldValueSameWrapperTwoFields), TestWrapperFieldValueSameWrapperTwoFields),
+            (nameof(TestWrapperCompoundAssignmentEmission), TestWrapperCompoundAssignmentEmission),
+            (nameof(TestWrapperPlaceEmissionGates), TestWrapperPlaceEmissionGates),
+            (nameof(TestWrapperCellStorageCoverage), TestWrapperCellStorageCoverage),
+            (nameof(TestWrapperFieldValueCallAndIndexEmission), TestWrapperFieldValueCallAndIndexEmission),
+            (nameof(TestWrapperIndexWriteEmission), TestWrapperIndexWriteEmission),
+            (nameof(TestWrapperDeepWriteEmission), TestWrapperDeepWriteEmission),
+            (nameof(TestWrapperDeepWriteMixedBoundary), TestWrapperDeepWriteMixedBoundary),
+            (nameof(TestWrapperDeepCompoundAssignmentEmission), TestWrapperDeepCompoundAssignmentEmission),
+            (nameof(TestWrapperSharedHostFieldStability), TestWrapperSharedHostFieldStability),
+            (nameof(TestGenericParamWithWrapperEmission), TestGenericParamWithWrapperEmission),
+            (nameof(TestProxyBakingEmission), TestProxyBakingEmission),
+            (nameof(TestProxyWildcardBakingEmission), TestProxyWildcardBakingEmission),
+            (nameof(TestProxySpecificVariadicEmission), TestProxySpecificVariadicEmission),
+            (nameof(TestProxyAccessorBakingEmission), TestProxyAccessorBakingEmission),
+            (nameof(TestDowngradeEmissionSingle), TestDowngradeEmissionSingle),
+            (nameof(TestDowngradeCastMaterialization), TestDowngradeCastMaterialization),
+            (nameof(TestDowngradeStatementPosition), TestDowngradeStatementPosition),
+            (nameof(TestDowngradeDoubleChain), TestDowngradeDoubleChain),
+            (nameof(TestDowngradeGateNoChain), TestDowngradeGateNoChain),
+            (nameof(TestDowngradeViaInterface), TestDowngradeViaInterface),
+            (nameof(TestDowngradeExemptionPositions), TestDowngradeExemptionPositions),
+            (nameof(TestInitWrapperTypeLevelEmission), TestInitWrapperTypeLevelEmission),
+            (nameof(TestInitFieldSynthesisEmission), TestInitFieldSynthesisEmission),
+            (nameof(TestInitWrapperCellArgsEmission), TestInitWrapperCellArgsEmission),
+            (nameof(TestWrapperPlaceVoidCallEmission), TestWrapperPlaceVoidCallEmission),
+            (nameof(TestGlobalWrappedFieldEmission), TestGlobalWrappedFieldEmission),
+            (nameof(TestStaticMethodCompanionEmission), TestStaticMethodCompanionEmission),
+            (nameof(TestLambdaNoCapture), TestLambdaNoCapture),
+            (nameof(TestLambdaVarCapture), TestLambdaVarCapture),
+            (nameof(TestLambdaConstCapture), TestLambdaConstCapture),
+            (nameof(TestLambdaThisCapture), TestLambdaThisCapture),
+            (nameof(TestLambdaNestedCapture), TestLambdaNestedCapture),
+            (nameof(TestLambdaVoidAction), TestLambdaVoidAction),
+            (nameof(TestLambdaAsync), TestLambdaAsync),
+            (nameof(TestLambdaExplicitFuncType), TestLambdaExplicitFuncType),
+            (nameof(TestLambdaParamCapturePrologue), TestLambdaParamCapturePrologue),
+            (nameof(TestLambdaBlockBody), TestLambdaBlockBody),
+            (nameof(TestLambdaThrowBlock), TestLambdaThrowBlock),
+            (nameof(TestLambdaCompoundAssignCapture), TestLambdaCompoundAssignCapture),
+            (nameof(TestLambdaGenericContext), TestLambdaGenericContext),
+            (nameof(TestLambdaMethodGenericCellCapture), TestLambdaMethodGenericCellCapture),
+            (nameof(TestLambdaMethodGenericNestedCapture), TestLambdaMethodGenericNestedCapture),
+            (nameof(TestLambdaMethodGenericParamCapture), TestLambdaMethodGenericParamCapture),
+            (nameof(TestLambdaVoidIndirectCall), TestLambdaVoidIndirectCall),
+            (nameof(TestLambdaVoidIndirectCallGrouped), TestLambdaVoidIndirectCallGrouped),
+            (nameof(TestLambdaVoidIndirectCallReturned), TestLambdaVoidIndirectCallReturned),
+            (nameof(TestLambdaVoidIndirectCallIndexed), TestLambdaVoidIndirectCallIndexed),
+            (nameof(TestLambdaForCapture), TestLambdaForCapture),
+            (nameof(TestLambdaNestedForCapture), TestLambdaNestedForCapture),
+            (nameof(TestLambdaCatchCapture), TestLambdaCatchCapture),
+            (nameof(TestLambdaFinallyCapture), TestLambdaFinallyCapture),
+            (nameof(TestLambdaUsingCapture), TestLambdaUsingCapture),
+            (nameof(TestLambdaMethodWrapperEmission), TestLambdaMethodWrapperEmission),
+            (nameof(TestBuiltinToStringEmission), TestBuiltinToStringEmission),
+            (nameof(TestUnsupportedNodes), TestUnsupportedNodes),
+            (nameof(TestGenericIndexOperatorEmission), TestGenericIndexOperatorEmission),
+            (nameof(TestClassGenericParamFrameEmission), TestClassGenericParamFrameEmission),
+            (nameof(TestEntryPointAnnotationEmission), TestEntryPointAnnotationEmission),
+            (nameof(TestNamespaceSliceEmission), TestNamespaceSliceEmission),
+        ], sectionTitle: "BilEmitter", memoryMiB: 2048);
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {

@@ -6,11 +6,16 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class DiagnosticsTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("Diagnostics");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Diagnostics",
+        [
+            (nameof(TestBagAccumulation), TestBagAccumulation),
+            (nameof(TestMissingError), TestMissingError),
+        ], sectionTitle: "Diagnostics");
+
+        private static void TestBagAccumulation()
+        {
             // 空袋：无错、无内容
             var bag = new DiagnosticBag();
             TestHarness.CheckTrue("空袋 HasErrors == false", !bag.HasErrors);
@@ -52,7 +57,10 @@ namespace RigiCompiler.Tests
 
             // CheckSemanticError 断言本身：命中 Error 子串
             TestHarness.CheckSemanticError("CheckSemanticError 命中", bag, "错误丙");
+        }
 
+        private static void TestMissingError()
+        {
             // 全新空袋：CheckSemanticError 应判失败——此处改为直接验证
             // 「无匹配即失败」的事实（不经过 CheckSemanticError 自身，避免污染计数）
             var empty = new DiagnosticBag();
@@ -66,7 +74,6 @@ namespace RigiCompiler.Tests
             }
             TestHarness.CheckTrue("空袋查不到诊断", !found);
 
-            return TestHarness.Summary("Diagnostics");
         }
     }
 }

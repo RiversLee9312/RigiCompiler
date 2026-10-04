@@ -14,7 +14,7 @@ public static class LegacyDispatcher
         ["Binder"] = ["WRAP-001", "WRAP-001-review"], ["BilEmitter"] = ["WRAP-001", "WRAP-001-review"],
         ["CommandLineParser"] = ["PERF-001"], ["Middleware"] = ["COMP-003"],
     };
-    // 这些不可枚举套件/定向组在一个旧测试方法内保留多份 stdlib AST 与
+    // 显式旧整组/定向组在一个测试方法内保留多份 stdlib AST 与
     // 语义图（Debug 命名局部可活到方法结束），不能套用单编译的 512MiB。
     private static readonly HashSet<string> CompilerBulkSuites = new(StringComparer.Ordinal)
     {
@@ -31,7 +31,8 @@ public static class LegacyDispatcher
                 // 完整 Native 对拍包含进程内 whole-program O2，正常冷优化可超过九分钟。
                 // 三个旧整组则累加多次 stdlib 编译；只给这些重型工作负载有限窗口。
                 // 完整 BilEmitter 为共享预算满载时仍推进的整套编译留有限余量。
-                : suite == "NativeE2E" ? TimeSpan.FromMinutes(45)
+                : suite == "NativeE2E" ? TimeSpan.FromMinutes(TestInventory.Cases(suite)!
+                    .Where(c => indices.Contains(c.Index)).Select(c => c.TimeoutMinutes ?? 45).DefaultIfEmpty(45).Max())
                 : indices.Count == 0 && (args == null || args.Count == 0)
                     && suite is "Binder" or "BilEmitter" or "Lowerer"
                     ? TimeSpan.FromMinutes(suite == "Binder" ? 60 : suite == "BilEmitter" ? 75 : 30) : null));
@@ -43,6 +44,10 @@ public static class LegacyDispatcher
     {
         if (number < 1 || number > TestRunner.SuiteCount) throw new ArgumentOutOfRangeException(nameof(number));
         var suite = TestRunner.SuiteNames.ElementAt(number - 1); args ??= [];
+        // 命名定向组也映射到真实动作；显式旧 suite/group ID 仍由 Decode 兼容。
+        if (args.Count == 1 && GroupsFor(suite).Contains(args[0], StringComparer.OrdinalIgnoreCase)
+            && LegacySuiteSpecs.GroupLabels(suite, args[0]) is { } labels)
+            args = new[] { "label" }.Concat(labels).ToArray();
         var inventory = TestInventory.Cases(suite)?.ToArray();
         if (inventory == null)
         {
@@ -100,7 +105,8 @@ public static class LegacyDispatcher
         // 编译/VM 轻例按小批控制启动成本；native 较重逐 case，fuzz 保留稀疏全局序号。
         // E2e 的完整编译与 BilVmStress 的多轮 VM 回归各自有执行成本，
         // 单例避免四个输入叠在同一个九分钟窗口内，保留原每输入预算与全部轮数。
-        int size = suite is "SemanticsFuzz" or "StressFuzz" ? 25 : suite is "NativeE2E" or "Middleware" or "E2e" or "BilVmStress" ? 1 : 4;
+        int size = suite == "LexerFuzz" ? 100 : suite is "SemanticsFuzz" or "StressFuzz" ? 25
+            : LegacySuiteSpecs.Find(suite) != null || suite is "NativeE2E" or "Middleware" or "E2e" or "BilVmStress" ? 1 : 4;
         if (suite != "Module")
             return indices.Chunk(size).Select(batch => Create(suite, batch, timeout: timeout)).ToArray();
         // 模块重型 case 会独立编译标准库/Native，不能在同一 worker 截止内累加多个 O2。
@@ -128,14 +134,15 @@ public static class LegacyDispatcher
         var suite = parts[1];
         if (parts[2] == "suite")
         {
-            if (TestInventory.Cases(suite) != null || parts.Length == 4 && !GroupsFor(suite).Contains(parts[3], StringComparer.OrdinalIgnoreCase)) return null;
+            if (TestInventory.Cases(suite) != null && LegacySuiteSpecs.Find(suite) == null) return null;
+            if (parts.Length == 4 && !GroupsFor(suite).Contains(parts[3], StringComparer.OrdinalIgnoreCase)) return null;
             return Create(suite, [], parts.Length == 4 ? [parts[3]] : []);
         }
         if (parts.Length != 3) return null;
         var inventory = TestInventory.Cases(suite)?.ToArray();
         if (inventory == null) return null;
         var values = parts[2].Split(',');
-        if (values.Length == 0 || values.Length > 25 || values.Any(v => !int.TryParse(v, NumberStyles.None, CultureInfo.InvariantCulture, out int i) || i < 0 || i >= inventory.Length)) return null;
+        if (values.Length == 0 || values.Length > (suite == "LexerFuzz" ? 100 : 25) || values.Any(v => !int.TryParse(v, NumberStyles.None, CultureInfo.InvariantCulture, out int i) || i < 0 || i >= inventory.Length)) return null;
         var indices = values.Select(int.Parse).ToArray();
         if (!indices.SequenceEqual(indices.Distinct().Order())) return null;
         return Create(suite, indices);

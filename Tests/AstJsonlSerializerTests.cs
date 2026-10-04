@@ -493,20 +493,18 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestVariableDeclaration();
-            TestBinaryExpression();
-            TestImport();
-            TestImportAllForm();
-            TestGenericTypeReference();
-            TestRoundTrip();
-            TestMetaRecordSkip();
-            TestDeserializeErrors();
-
-            return TestHarness.Summary("AstJsonlSerializer");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("AstJsonlSerializer",
+        [
+            (nameof(TestVariableDeclaration), TestVariableDeclaration),
+            (nameof(TestBinaryExpression), TestBinaryExpression),
+            (nameof(TestImport), TestImport),
+            (nameof(TestImportAllForm), TestImportAllForm),
+            (nameof(TestGenericTypeReference), TestGenericTypeReference),
+            (nameof(TestRoundTrip), TestRoundTrip),
+            (nameof(TestMetaRecordSkip), TestMetaRecordSkip),
+            (nameof(TestDeserializeErrors), TestDeserializeErrors),
+        ], sectionTitle: "AstJsonlSerializer");
     }
 }

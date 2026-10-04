@@ -27,113 +27,141 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BinderTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestLiterals();
-            TestLocalDeclarations();
-            TestDeclInitFailurePoisonSilence();
-            TestValueReferences();
-            TestGlobalFieldInitializerBan();
-            TestBinaryOperators();
-            TestUserEqualityOperators();
-            TestUnaryOperators();
-            TestAssignments();
-            TestCalls();
-            TestHostTypeMembers();
-            TestNew();
-            TestInitMappingSynthesis();
-            TestReturn();
-            TestScopes();
-            TestIfStatements();
-            TestIfExpressions();
-            TestBranchDefiniteAssignment();
-            TestCompoundAssignments();
-            TestLoops();
-            TestLoopControl();
-            TestInstanceMembers();
-            TestIndexAccess();
-            TestContainerCallSuffixChain();
-            TestForLoops();
-            TestSwitch();
-            TestThrow();
-            TestCast();
-            TestTry();
-            TestSeq();
-            TestUnsafeContexts();
-            TestSeqExit();
-            TestStringInterpolation();
-            TestSafeAccess();
-            TestNullFallback();
-            TestDestructuring();
-            TestTypeCheck();
-            TestTypeOf();
-            TestDefaultParameters();
-            TestOverloadResolution();
-            TestAccessControl();
-            TestUseSiteAccessibilityF1();
-            TestProbedTypeChecksF2();
-            TestAccessors();
-            TestLocalAccessors();
-            TestOverride();
-            TestSuperCalls();
-            TestDefaultConstructorSynthesis();
-            TestConversionOperators();
-            TestAsyncGates();
-            TestYieldBinding();
-            TestAsyncResultTypes();
-            TestAwaitBinding();
-            TestGenericCalls();
-            TestIndirectGenericCalls();
-            TestGenericVarArgs();
-            TestGenericInference();
-            TestOperatorNameCalls();
-            TestUserOperatorPositions();
-            TestGenericFunctionBody();
-            TestGenericParamEffectiveMembers();
-            TestNamedGenericImportUsage();
-            TestDynamicNew();
-            TestInitFieldDa();
-            TestGenericBaseClassMemberLookup();
-            TestGenericVarianceAssignability();
-            TestCallFixes();
-            TestGateFixes();
-            TestGenericTypeFixes();
-            TestFlowFixes();
-            TestMemberLookupFixes();
-            TestOverrideFixes();
-            TestFieldOverrideRules();
-            TestEnumCases();
-            TestDiagnosticsAccumulation();
-            TestKwArgsBodyView();
-            TestWrapperPlaceBinding();
-            TestWrapperPlaceReadOnly();
-            TestStaticMethodCompanionBinding();
-            TestWrapperInitArgBinding();
-            TestWrapperPlaceErrors();
-            TestValueWrapperGetOnlyLocal();
-            TestWrapperPlaceLowering();
-            TestProxyBodyBinding();
-            TestProxyGenericParamTypeRefs();
-            TestInnerCallGenericPackForwarding();
-            TestGenericParamWithWrapperPlace();
-            TestDowngradeBinding();
-            TestWrapperFieldInitializers();
-            TestGenericParameterFieldInitializers();
-            TestForwardDefaultConstructionDa();
-            TestWrapperDefaultConstructionDa();
-            TestWrapperPlaceVoidStatement();
-            TestGetProxyInnerForbidden();
-            TestSubclassWrapperInheritedShape();
-            TestMethodWrapperSpecificCallShape();
-            TestLambdaBinding();
-            TestVoidLambdaExpressionBodyStatementSemantics();
-            TestNamedImportValueConsumption();
-            TestMw11cCoroutineShapes();
-            TestMw11dSerializationFront();
-            TestPlaceOfStorage();
-            return TestHarness.Summary("Binder");
-        }
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Binder",
+        [
+            (nameof(TestLiterals), TestLiterals),
+            (nameof(TestLocalDeclarations), TestLocalDeclarations),
+            (nameof(TestDeclInitFailurePoisonSilence), TestDeclInitFailurePoisonSilence),
+            (nameof(TestValueReferences), TestValueReferences),
+            (nameof(TestGlobalFieldInitializerBan), TestGlobalFieldInitializerBan),
+            (nameof(TestBinaryOperators), TestBinaryOperators),
+            (nameof(TestUserEqualityOperators), TestUserEqualityOperators),
+            (nameof(TestUnaryOperators), TestUnaryOperators),
+            (nameof(TestAssignments), TestAssignments),
+            (nameof(TestCalls), TestCalls),
+            (nameof(TestHostTypeMembers), TestHostTypeMembers),
+            (nameof(TestNew), TestNew),
+            (nameof(TestInitMappingSynthesis), TestInitMappingSynthesis),
+            (nameof(TestReturn), TestReturn),
+            (nameof(TestScopes), TestScopes),
+            (nameof(TestIfStatements), TestIfStatements),
+            (nameof(TestIfExpressions), TestIfExpressions),
+            (nameof(TestBranchDefiniteAssignment), TestBranchDefiniteAssignment),
+            (nameof(TestCompoundAssignments), TestCompoundAssignments),
+            (nameof(TestLoops), TestLoops),
+            (nameof(TestLoopControl), TestLoopControl),
+            (nameof(TestInstanceMembers), TestInstanceMembers),
+            (nameof(TestIndexAccess), TestIndexAccess),
+            (nameof(TestContainerCallSuffixChain), TestContainerCallSuffixChain),
+            (nameof(TestForLoops), TestForLoops),
+            (nameof(TestSwitch), TestSwitch),
+            (nameof(TestThrow), TestThrow),
+            (nameof(TestCast), TestCast),
+            (nameof(TestTry), TestTry),
+            (nameof(TestSeqStatements), TestSeqStatements),
+            (nameof(TestSeqReturnAnalysis), TestSeqReturnAnalysis),
+            (nameof(TestSeqExpressions), TestSeqExpressions),
+            (nameof(TestSeqExpectedTypes), TestSeqExpectedTypes),
+            (nameof(TestSeqUsingStatements), TestSeqUsingStatements),
+            (nameof(TestSeqUsingExpressions), TestSeqUsingExpressions),
+            (nameof(TestSeqUsingExpressionDiagnostics), TestSeqUsingExpressionDiagnostics),
+            (nameof(TestSeqReturnBoundaries), TestSeqReturnBoundaries),
+            (nameof(TestUnsafeContexts), TestUnsafeContexts),
+            (nameof(TestSeqExit), TestSeqExit),
+            (nameof(TestStringInterpolation), TestStringInterpolation),
+            (nameof(TestSafeAccess), TestSafeAccess),
+            (nameof(TestNullFallback), TestNullFallback),
+            (nameof(TestDestructuring), TestDestructuring),
+            (nameof(TestTypeCheck), TestTypeCheck),
+            (nameof(TestTypeOf), TestTypeOf),
+            (nameof(TestDefaultParameters), TestDefaultParameters),
+            (nameof(TestOverloadResolution), TestOverloadResolution),
+            (nameof(TestAccessControl), TestAccessControl),
+            (nameof(TestUseSiteAccessibilityF1), TestUseSiteAccessibilityF1),
+            (nameof(TestProbedTypeChecksF2), TestProbedTypeChecksF2),
+            (nameof(TestAccessors), TestAccessors),
+            (nameof(TestLocalAccessors), TestLocalAccessors),
+            (nameof(TestOverride), TestOverride),
+            (nameof(TestSuperCalls), TestSuperCalls),
+            (nameof(TestDefaultConstructorSynthesis), TestDefaultConstructorSynthesis),
+            (nameof(TestConversionOperators), TestConversionOperators),
+            (nameof(TestAsyncGates), TestAsyncGates),
+            (nameof(TestYieldBinding), TestYieldBinding),
+            (nameof(TestAsyncResultTypes), TestAsyncResultTypes),
+            (nameof(TestAwaitBinding), TestAwaitBinding),
+            (nameof(TestGenericCalls), TestGenericCalls),
+            (nameof(TestIndirectGenericCalls), TestIndirectGenericCalls),
+            (nameof(TestGenericVarArgs), TestGenericVarArgs),
+            (nameof(TestGenericInference), TestGenericInference),
+            (nameof(TestOperatorNameCalls), TestOperatorNameCalls),
+            (nameof(TestUserOperatorPositions), TestUserOperatorPositions),
+            (nameof(TestGenericFunctionBody), TestGenericFunctionBody),
+            (nameof(TestGenericParamEffectiveMembers), TestGenericParamEffectiveMembers),
+            (nameof(TestNamedGenericImportUsage), TestNamedGenericImportUsage),
+            (nameof(TestDynamicNew), TestDynamicNew),
+            (nameof(TestInitFieldDa), TestInitFieldDa),
+            (nameof(TestGenericBaseClassMemberLookup), TestGenericBaseClassMemberLookup),
+            (nameof(TestGenericVarianceAssignability), TestGenericVarianceAssignability),
+            (nameof(TestCallFixes), TestCallFixes),
+            (nameof(TestAsyncGateVariadicPacks), TestAsyncGateVariadicPacks),
+            (nameof(TestGenericBackingAccessors), TestGenericBackingAccessors),
+            (nameof(TestPerCandidateConstraints), TestPerCandidateConstraints),
+            (nameof(TestAmbiguityWinnersAndPackSyntax), TestAmbiguityWinnersAndPackSyntax),
+            (nameof(TestSharedInterfaceContagion), TestSharedInterfaceContagion),
+            (nameof(TestInstantiationFillInP3), TestInstantiationFillInP3),
+            (nameof(TestGenericBoundSharedSafeDerivation), TestGenericBoundSharedSafeDerivation),
+            (nameof(TestThisSelfConstructed), TestThisSelfConstructed),
+            (nameof(TestNestedGenericFieldIdentity), TestNestedGenericFieldIdentity),
+            (nameof(TestGenericFieldSubstitution), TestGenericFieldSubstitution),
+            (nameof(TestForEachConstructedInterface), TestForEachConstructedInterface),
+            (nameof(TestCovariantInitUsage), TestCovariantInitUsage),
+            (nameof(TestConstructedTypeStaticMembers), TestConstructedTypeStaticMembers),
+            (nameof(TestGenericNullableFixes), TestGenericNullableFixes),
+            (nameof(TestExplicitSharedGenerics), TestExplicitSharedGenerics),
+            (nameof(TestIfMergeNoRevive), TestIfMergeNoRevive),
+            (nameof(TestLoopExitNoRevive), TestLoopExitNoRevive),
+            (nameof(TestTryNarrowing), TestTryNarrowing),
+            (nameof(TestNullLiteralContext), TestNullLiteralContext),
+            (nameof(TestValueBlockBareReturn), TestValueBlockBareReturn),
+            (nameof(TestNestedValueBlockReturnValue), TestNestedValueBlockReturnValue),
+            (nameof(TestInterfaceDefaultOnConcrete), TestInterfaceDefaultOnConcrete),
+            (nameof(TestAssignmentLhsSmartCast), TestAssignmentLhsSmartCast),
+            (nameof(TestBareFieldCallReceiver), TestBareFieldCallReceiver),
+            (nameof(TestUnqualifiedOverrideShadowing), TestUnqualifiedOverrideShadowing),
+            (nameof(TestOverrideFixes), TestOverrideFixes),
+            (nameof(TestFieldOverrideRules), TestFieldOverrideRules),
+            (nameof(TestEnumCases), TestEnumCases),
+            (nameof(TestDiagnosticsAccumulation), TestDiagnosticsAccumulation),
+            (nameof(TestKwArgsBodyView), TestKwArgsBodyView),
+            (nameof(TestWrapperPlaceBinding), TestWrapperPlaceBinding),
+            (nameof(TestWrapperPlaceReadOnly), TestWrapperPlaceReadOnly),
+            (nameof(TestStaticMethodCompanionBinding), TestStaticMethodCompanionBinding),
+            (nameof(TestWrapperInitArgBinding), TestWrapperInitArgBinding),
+            (nameof(TestWrapperPlaceErrors), TestWrapperPlaceErrors),
+            (nameof(TestValueWrapperGetOnlyLocal), TestValueWrapperGetOnlyLocal),
+            (nameof(TestWrapperPlaceLowering), TestWrapperPlaceLowering),
+            (nameof(TestProxyBodyBinding), TestProxyBodyBinding),
+            (nameof(TestProxyGenericParamTypeRefs), TestProxyGenericParamTypeRefs),
+            (nameof(TestInnerCallGenericPackForwarding), TestInnerCallGenericPackForwarding),
+            (nameof(TestGenericParamWithWrapperPlace), TestGenericParamWithWrapperPlace),
+            (nameof(TestDowngradeBinding), TestDowngradeBinding),
+            (nameof(TestWrapperFieldInitializers), TestWrapperFieldInitializers),
+            (nameof(TestGenericParameterFieldInitializers), TestGenericParameterFieldInitializers),
+            (nameof(TestForwardDefaultConstructionDa), TestForwardDefaultConstructionDa),
+            (nameof(TestWrapperDefaultConstructionDa), TestWrapperDefaultConstructionDa),
+            (nameof(TestWrapperPlaceVoidStatement), TestWrapperPlaceVoidStatement),
+            (nameof(TestGetProxyInnerForbidden), TestGetProxyInnerForbidden),
+            (nameof(TestSubclassWrapperInheritedShape), TestSubclassWrapperInheritedShape),
+            (nameof(TestMethodWrapperSpecificCallShape), TestMethodWrapperSpecificCallShape),
+            (nameof(TestLambdaBinding), TestLambdaBinding),
+            (nameof(TestVoidLambdaExpressionBodyStatementSemantics), TestVoidLambdaExpressionBodyStatementSemantics),
+            (nameof(TestNamedImportValueConsumption), TestNamedImportValueConsumption),
+            (nameof(TestMw11cCoroutineShapes), TestMw11cCoroutineShapes),
+            (nameof(TestMw11dSerializationFront), TestMw11dSerializationFront),
+            (nameof(TestPlaceOfStorage), TestPlaceOfStorage),
+        ], sectionTitle: "Binder", memoryMiB: 2048);
 
         // 多源文件经全管线（Parser → P1 → P2 → P3）后取编译单元与 bound 函数体列表
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies) BindUnit(

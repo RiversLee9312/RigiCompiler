@@ -138,18 +138,16 @@ namespace RigiCompiler.Tests
             return typeNode;
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicTypes();
-            TestNullableTypes();
-            TestGenericTypes();
-            TestErrorCases();
-            TestIntegratedParsing();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("TypeReference");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TypeReference",
+        [
+            (nameof(TestBasicTypes), TestBasicTypes),
+            (nameof(TestNullableTypes), TestNullableTypes),
+            (nameof(TestGenericTypes), TestGenericTypes),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestIntegratedParsing), TestIntegratedParsing),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "TypeReference");
     }
 }

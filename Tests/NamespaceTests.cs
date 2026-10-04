@@ -79,15 +79,13 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicNamespace();
-            TestNamespaceCombinations();
-            TestNamespaceErrors();
-
-            return TestHarness.Summary("Namespace");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Namespace",
+        [
+            (nameof(TestBasicNamespace), TestBasicNamespace),
+            (nameof(TestNamespaceCombinations), TestNamespaceCombinations),
+            (nameof(TestNamespaceErrors), TestNamespaceErrors),
+        ], sectionTitle: "Namespace");
     }
 }

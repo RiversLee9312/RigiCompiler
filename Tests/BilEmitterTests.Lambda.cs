@@ -11,35 +11,6 @@ namespace RigiCompiler.Tests
     // BilTestHarness.NormalizeLambdaUuids 归一。
     public static partial class BilEmitterTests
     {
-        private static void TestLambdaEmission()
-        {
-            TestLambdaNoCapture();
-            TestLambdaVarCapture();
-            TestLambdaConstCapture();
-            TestLambdaThisCapture();
-            TestLambdaNestedCapture();
-            TestLambdaVoidAction();
-            TestLambdaAsync();
-            TestLambdaExplicitFuncType();
-            TestLambdaParamCapturePrologue();
-            TestLambdaBlockBody();
-            TestLambdaThrowBlock();
-            TestLambdaCompoundAssignCapture();
-            TestLambdaGenericContext();
-            TestLambdaMethodGenericCellCapture();
-            TestLambdaMethodGenericNestedCapture();
-            TestLambdaMethodGenericParamCapture();
-            TestLambdaVoidIndirectCall();
-            TestLambdaVoidIndirectCallGrouped();
-            TestLambdaVoidIndirectCallReturned();
-            TestLambdaVoidIndirectCallIndexed();
-            TestLambdaForCapture();
-            TestLambdaNestedForCapture();
-            TestLambdaCatchCapture();
-            TestLambdaFinallyCapture();
-            TestLambdaUsingCapture();
-            TestLambdaMethodWrapperEmission();
-        }
 
         // 全路径抛出的值块没有结果，不得发射未赋值结果槽的死读。
         private static void TestLambdaThrowBlock()

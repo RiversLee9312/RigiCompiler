@@ -40,10 +40,305 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVerifierTests
     {
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilVerifier",
+        [
+            (nameof(TestAbiAndGenericCompatibility), TestAbiAndGenericCompatibility),
+            ("hello world", () => Positive("hello world",
+                "pub func main(): i32 {\n" +
+                "    core.io.Console.println(\"Hello, world!\")\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("局部声明/赋值/运算", () => Positive("局部声明/赋值/运算",
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 1 + 2\n" +
+                "    x = x * 3\n" +
+                "    return x\n" +
+                "}\n")),
+            ("带返回值 invoke 与 new", () => Positive("带返回值 invoke 与 new",
+                "pub func double(a: i32): i32 { return a * 2 }\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = double(21)\n" +
+                "    return d\n" +
+                "}\n")),
+            (nameof(TestAwaitInstructions), TestAwaitInstructions),
+            (nameof(TestYieldInstructions), TestYieldInstructions),
+            (nameof(TestIndirectInvokeShapes), TestIndirectInvokeShapes),
+            ("实例成员（this/get.field/set.field/实例 invoke）", () => Positive("实例成员（this/get.field/set.field/实例 invoke）",
+                "pub class Counter {\n" +
+                "    pub var value: i32\n" +
+                "    pub init(v: i32) { value = v }\n" +
+                "    pub func add(n: i32): i32 { return value + n }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Counter(1)\n" +
+                "    return c.add(2)\n" +
+                "}\n")),
+            ("if/值块/短路", () => Positive("if/值块/短路",
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 1\n" +
+                "    if ((x > 0) and (x < 10)) { x = x + 1 } else { x = x - 1 }\n" +
+                "    return x\n" +
+                "}\n")),
+            ("while/break/continue", () => Positive("while/break/continue",
+                "pub func main(): i32 {\n" +
+                "    var i: i32 = 0\n" +
+                "    while (i < 10) {\n" +
+                "        i = i + 1\n" +
+                "        if (i == 5) { continue }\n" +
+                "        if (i == 9) { break }\n" +
+                "    }\n" +
+                "    return i\n" +
+                "}\n")),
+            ("do-while", () => Positive("do-while",
+                "pub func main(): i32 {\n" +
+                "    var i: i32 = 0\n" +
+                "    do { i = i + 1 } while (i < 3)\n" +
+                "    return i\n" +
+                "}\n")),
+            ("for（迭代协议）", () => Positive("for（迭代协议）",
+                "pub func main(): i32 {\n" +
+                "    var sum: i32 = 0\n" +
+                "    for (i in 0 to 3) { sum = sum + i }\n" +
+                "    return sum\n" +
+                "}\n")),
+            ("常量 switch", () => Positive("常量 switch",
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 2\n" +
+                "    switch (x) {\n" +
+                "        (1) -> { return 10 }\n" +
+                "        (2) -> { return 20 }\n" +
+                "        default -> { return 30 }\n" +
+                "    }\n" +
+                "}\n")),
+            ("throw 与 try/catch/finally", () => Positive("throw 与 try/catch/finally",
+                "pub func main(): i32 {\n" +
+                "    try {\n" +
+                "        throw new core.RuntimeException(\"boom\")\n" +
+                "    } catch (e: core.Exception) {\n" +
+                "        return 1\n" +
+                "    } finally (f) {\n" +
+                "    }\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum 局部变量 DA（读前已写）", () => Positive("enum 局部变量 DA（读前已写）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub func main(): i32 {\n" +
+                "    var c: Color = .Red\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum struct 实例字段 init 单路径 set.field（全管线）", () => Positive("enum struct 实例字段 init 单路径 set.field（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) { kind = k }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum struct 实例字段 init if 双分支 set.field（全管线）", () => Positive("enum struct 实例字段 init if 双分支 set.field（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color, alt: Color, which: bool) {\n" +
+                "        if (which) { kind = k } else { kind = alt }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red, .Blue, true)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum struct 实例字段 init loop.rev set.field（全管线）", () => Positive("enum struct 实例字段 init loop.rev set.field（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) {\n" +
+                "        do { kind = k } while (false)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum struct 实例字段 init loop.rev 赋值后 break（全管线）", () => Positive("enum struct 实例字段 init loop.rev 赋值后 break（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color, skip: bool) {\n" +
+                "        do { kind = k\n            if (skip) { break } } while (false)\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red, false)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("enum struct 实例字段 init try-finally set.field（全管线）", () => Positive("enum struct 实例字段 init try-finally set.field（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub class Flag {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) {\n" +
+                "        try { var n: i32 = 0 } finally (e) { kind = k }\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var f = new Flag(.Red)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("派生 init 设置基类 enum struct 字段（全管线）", () => Positive("派生 init 设置基类 enum struct 字段（全管线）",
+                "pub enum struct Color {}[Red, Blue]\n" +
+                "pub open class Base {\n" +
+                "    pub var kind: Color\n" +
+                "    pub init(k: Color) { kind = k }\n" +
+                "}\n" +
+                "pub class Derived : Base {\n" +
+                "    pub init(k: Color) {\n" +
+                "        super(k)\n" +
+                "        kind = k\n" +
+                "    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var d = new Derived(.Red)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("非 enum 实例字段 init 不强制 set.field（回归）", () => Positive("非 enum 实例字段 init 不强制 set.field（回归）",
+                "pub class Box {\n" +
+                "    pub var n: i32 = 0\n" +
+                "    pub init() { }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Box()\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("cast/is/typeOf", () => Positive("cast/is/typeOf",
+                "pub func main(): i32 {\n" +
+                "    var a: Any = 1\n" +
+                "    var b: i32 = 0\n" +
+                "    if (a is i32) { b = a as i32 }\n" +
+                "    var t = typeOf(a)\n" +
+                "    return b\n" +
+                "}\n")),
+            ("字符串插值", () => Positive("字符串插值",
+                "pub func main(): i32 {\n" +
+                "    var x: i32 = 42\n" +
+                "    core.io.Console.println(\"x = ${x}\")\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("?. 安全调用", () => Positive("?. 安全调用",
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub func f(u: User?): String? { return u?.name }\n" +
+                "pub func main(): i32 { return 0 }\n")),
+            ("if? 空值回退", () => Positive("if? 空值回退",
+                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
+                "pub func g(u: User?): User { return u if? new User(\"anon\") }\n" +
+                "pub func main(): i32 { return 0 }\n")),
+            ("解构声明", () => Positive("解构声明",
+                "class Entry : core.Pair\\<String, i32> {\n" +
+                "    pub init(k: String, v: i32) {\n        key = k\n        value = v\n    }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var (k, v) = new Entry(\"a\", 1)\n" +
+                "    return v\n" +
+                "}\n")),
+            ("索引访问（get.array/set.array，S8c）", () => Positive("索引访问（get.array/set.array，S8c）",
+                "pub class Bag {\n" +
+                "    pub var item: i32\n" +
+                "    pub init() { item = 0 }\n" +
+                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
+                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var b = new Bag()\n" +
+                "    b[0] = 7\n" +
+                "    b[1] = ((b[1] if? 0) + 2)\n" +
+                "    return b[2] if? 0\n" +
+                "}\n")),
+            ("访问器（backing/computed/全局自动，S8e）", () => Positive("访问器（backing/computed/全局自动，S8e）",
+                "namespace app\n" +
+                "pub var height: i32 {\n" +
+                "    pub get\n" +
+                "    pub set\n" +
+                "} = 200\n" +
+                "pub class Counter {\n" +
+                "    pub var value: i32 {\n" +
+                "        pub get(value: _) { return value }\n" +
+                "        pub set(value: _) { }\n" +
+                "    }\n" +
+                "    pub var doubled: i32 {\n" +
+                "        pub get(_: _) { return value + value }\n" +
+                "    }\n" +
+                "    pub init() { value = 0 }\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var c = new Counter()\n" +
+                "    c.value = 1\n" +
+                "    return (c.value + height) + c.doubled\n" +
+                "}\n")),
+            ("override/abstract 投影（S8e）", () => Positive("override/abstract 投影（S8e）",
+                "pub open class Base {\n" +
+                "    pub open func area(): i32 { return 0 }\n" +
+                "}\n" +
+                "pub class Square : Base {\n" +
+                "    pub override func area(): i32 { return 1 }\n" +
+                "}\n" +
+                "pub abstract class Concept {\n" +
+                "    pub abstract func id(): i32\n" +
+                "}\n" +
+                "pub func main(): i32 {\n" +
+                "    var s = new Square()\n" +
+                "    return s.area()\n" +
+                "}\n")),
+            ("namespaced 全局函数调用（invoke owner 命名空间前缀）", () => Positive("namespaced 全局函数调用（invoke owner 命名空间前缀）",
+                "import core.coroutine.*\n" +
+                "pub func main(): i32 {\n" +
+                "    var alarm = sleep(1000)\n" +
+                "    return 0\n" +
+                "}\n")),
+            ("普通参数 + 值包混合调用（§7.2 调用序）", () => Positive("普通参数 + 值包混合调用（§7.2 调用序）",
+                "func sum(first: i32, rest: i32...): i32 { return first }\n" +
+                "func config(name: String, options: named i32...): i32 { return 0 }\n" +
+                "pub func main(): i32 {\n" +
+                "    return sum(1, 2, 3) + config(\"a\", x = 1, y = 2)\n" +
+                "}\n")),
+            ("do-while 体内赋值循环后可见（loop.rev DA）", () => Positive("do-while 体内赋值循环后可见（loop.rev DA）",
+                "pub func main(): i32 {\n" +
+                "    var x: i32\n" +
+                "    do { x = 1 } while (x < 5)\n" +
+                "    return x\n" +
+                "}\n")),
+            ("try-finally 无 catch 判终止（entrypoint 结构化）", () => Positive("try-finally 无 catch 判终止（entrypoint 结构化）",
+                "func f(): i32 {\n" +
+                "    try { return 1 } finally (e) { core.io.Console.println(\"f\") }\n" +
+                "}\n" +
+                "pub func main(): i32 { return f() }\n")),
+            ("S11 手工模块（基线，is.case + set.wrapper.field 正例）", () => BilTestHarness.CheckBilValid("S11 手工模块（基线，is.case + set.wrapper.field 正例）",
+                S11Module(
+                    new IsCaseInstruction(BilOp.Var("e"),
+                        BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")),
+                    new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
+                        BilOp.Wrapper("core.logging::Logged"),
+                        BilOp.Field("core.logging::Logged#level@.string"))))),
+            ("S11 get.wrapper.field 正例", () => BilTestHarness.CheckBilValid("S11 get.wrapper.field 正例",
+                FieldValueModule(
+                    new GetWrapperFieldInstruction(BilOp.Var("hero"),
+                        BilOp.Field("com.example::Hero#hp@.i32"),
+                        BilOp.Type("core.clamp::Clamped"), BilOp.Var("w"))))),
+            ("..super 手工模块（override 正例）", () => BilTestHarness.CheckBilValid("..super 手工模块（override 正例）",
+                SuperInvokeModule(validReceiver: true))),
+            ("..super 缺 $.this 首参", () => BilTestHarness.CheckBilInvalid("..super 缺 $.this 首参",
+                SuperInvokeModule(validReceiver: false), "首实参必须精确为 $.this")),
+            (nameof(TestV3IndirectForms), TestV3IndirectForms),
+            (nameof(TestInitWrapperAndNewWrapped), TestInitWrapperAndNewWrapped),
+            (nameof(NegativeCases), NegativeCases),
+            (nameof(TestBitwiseTypeRestriction), TestBitwiseTypeRestriction),
+            (nameof(TestRegionBreakIdBinding), TestRegionBreakIdBinding),
+            (nameof(TestEnumStructInstanceFieldInit), TestEnumStructInstanceFieldInit),
+        ], sectionTitle: "BilVerifier", memoryMiB: 2048);
+
+        private static void TestAbiAndGenericCompatibility()
         {
-            TestHarness.Reset();
-            TestHarness.Section("BilVerifier");
+
             foreach (var mutation in new[] { "field", "variance", "base", "rich" })
             {
                 var abiModule = new BilModule();
@@ -81,320 +376,9 @@ namespace RigiCompiler.Tests
             TestHarness.CheckTrue("继承上转不得擦除不同类型参数",
                 !inheritanceContext.TypesAssignable("Child<.i32>", "Parent<.string>"));
 
-            // ===== 正例：全管线产出验证器零错误 =====
-            Positive("hello world",
-                "pub func main(): i32 {\n" +
-                "    core.io.Console.println(\"Hello, world!\")\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("局部声明/赋值/运算",
-                "pub func main(): i32 {\n" +
-                "    var x: i32 = 1 + 2\n" +
-                "    x = x * 3\n" +
-                "    return x\n" +
-                "}\n");
-            Positive("带返回值 invoke 与 new",
-                "pub func double(a: i32): i32 { return a * 2 }\n" +
-                "pub func main(): i32 {\n" +
-                "    var d = double(21)\n" +
-                "    return d\n" +
-                "}\n");
-            TestAwaitInstructions();
-            TestYieldInstructions();
-            TestIndirectInvokeShapes();
-            Positive("实例成员（this/get.field/set.field/实例 invoke）",
-                "pub class Counter {\n" +
-                "    pub var value: i32\n" +
-                "    pub init(v: i32) { value = v }\n" +
-                "    pub func add(n: i32): i32 { return value + n }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var c = new Counter(1)\n" +
-                "    return c.add(2)\n" +
-                "}\n");
-            Positive("if/值块/短路",
-                "pub func main(): i32 {\n" +
-                "    var x: i32 = 1\n" +
-                "    if ((x > 0) and (x < 10)) { x = x + 1 } else { x = x - 1 }\n" +
-                "    return x\n" +
-                "}\n");
-            Positive("while/break/continue",
-                "pub func main(): i32 {\n" +
-                "    var i: i32 = 0\n" +
-                "    while (i < 10) {\n" +
-                "        i = i + 1\n" +
-                "        if (i == 5) { continue }\n" +
-                "        if (i == 9) { break }\n" +
-                "    }\n" +
-                "    return i\n" +
-                "}\n");
-            Positive("do-while",
-                "pub func main(): i32 {\n" +
-                "    var i: i32 = 0\n" +
-                "    do { i = i + 1 } while (i < 3)\n" +
-                "    return i\n" +
-                "}\n");
-            Positive("for（迭代协议）",
-                "pub func main(): i32 {\n" +
-                "    var sum: i32 = 0\n" +
-                "    for (i in 0 to 3) { sum = sum + i }\n" +
-                "    return sum\n" +
-                "}\n");
-            Positive("常量 switch",
-                "pub func main(): i32 {\n" +
-                "    var x: i32 = 2\n" +
-                "    switch (x) {\n" +
-                "        (1) -> { return 10 }\n" +
-                "        (2) -> { return 20 }\n" +
-                "        default -> { return 30 }\n" +
-                "    }\n" +
-                "}\n");
-            Positive("throw 与 try/catch/finally",
-                "pub func main(): i32 {\n" +
-                "    try {\n" +
-                "        throw new core.RuntimeException(\"boom\")\n" +
-                "    } catch (e: core.Exception) {\n" +
-                "        return 1\n" +
-                "    } finally (f) {\n" +
-                "    }\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum 局部变量 DA（读前已写）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub func main(): i32 {\n" +
-                "    var c: Color = .Red\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum struct 实例字段 init 单路径 set.field（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub class Flag {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color) { kind = k }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var f = new Flag(.Red)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum struct 实例字段 init if 双分支 set.field（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub class Flag {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color, alt: Color, which: bool) {\n" +
-                "        if (which) { kind = k } else { kind = alt }\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var f = new Flag(.Red, .Blue, true)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum struct 实例字段 init loop.rev set.field（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub class Flag {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color) {\n" +
-                "        do { kind = k } while (false)\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var f = new Flag(.Red)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum struct 实例字段 init loop.rev 赋值后 break（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub class Flag {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color, skip: bool) {\n" +
-                "        do { kind = k\n            if (skip) { break } } while (false)\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var f = new Flag(.Red, false)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("enum struct 实例字段 init try-finally set.field（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub class Flag {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color) {\n" +
-                "        try { var n: i32 = 0 } finally (e) { kind = k }\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var f = new Flag(.Red)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("派生 init 设置基类 enum struct 字段（全管线）",
-                "pub enum struct Color {}[Red, Blue]\n" +
-                "pub open class Base {\n" +
-                "    pub var kind: Color\n" +
-                "    pub init(k: Color) { kind = k }\n" +
-                "}\n" +
-                "pub class Derived : Base {\n" +
-                "    pub init(k: Color) {\n" +
-                "        super(k)\n" +
-                "        kind = k\n" +
-                "    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var d = new Derived(.Red)\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("非 enum 实例字段 init 不强制 set.field（回归）",
-                "pub class Box {\n" +
-                "    pub var n: i32 = 0\n" +
-                "    pub init() { }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var b = new Box()\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("cast/is/typeOf",
-                "pub func main(): i32 {\n" +
-                "    var a: Any = 1\n" +
-                "    var b: i32 = 0\n" +
-                "    if (a is i32) { b = a as i32 }\n" +
-                "    var t = typeOf(a)\n" +
-                "    return b\n" +
-                "}\n");
-            Positive("字符串插值",
-                "pub func main(): i32 {\n" +
-                "    var x: i32 = 42\n" +
-                "    core.io.Console.println(\"x = ${x}\")\n" +
-                "    return 0\n" +
-                "}\n");
-            Positive("?. 安全调用",
-                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
-                "pub func f(u: User?): String? { return u?.name }\n" +
-                "pub func main(): i32 { return 0 }\n");
-            Positive("if? 空值回退",
-                "pub class User { pub var name: String\n    pub init(_ -> name) { } }\n" +
-                "pub func g(u: User?): User { return u if? new User(\"anon\") }\n" +
-                "pub func main(): i32 { return 0 }\n");
-            Positive("解构声明",
-                "class Entry : core.Pair\\<String, i32> {\n" +
-                "    pub init(k: String, v: i32) {\n        key = k\n        value = v\n    }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var (k, v) = new Entry(\"a\", 1)\n" +
-                "    return v\n" +
-                "}\n");
-            Positive("索引访问（get.array/set.array，S8c）",
-                "pub class Bag {\n" +
-                "    pub var item: i32\n" +
-                "    pub init() { item = 0 }\n" +
-                "    pub operator getAtIndex(index: i32): i32? { return item }\n" +
-                "    pub operator setAtIndex(index: i32, element: i32) { item = element }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var b = new Bag()\n" +
-                "    b[0] = 7\n" +
-                "    b[1] = ((b[1] if? 0) + 2)\n" +
-                "    return b[2] if? 0\n" +
-                "}\n");
-            Positive("访问器（backing/computed/全局自动，S8e）",
-                "namespace app\n" +
-                "pub var height: i32 {\n" +
-                "    pub get\n" +
-                "    pub set\n" +
-                "} = 200\n" +
-                "pub class Counter {\n" +
-                "    pub var value: i32 {\n" +
-                "        pub get(value: _) { return value }\n" +
-                "        pub set(value: _) { }\n" +
-                "    }\n" +
-                "    pub var doubled: i32 {\n" +
-                "        pub get(_: _) { return value + value }\n" +
-                "    }\n" +
-                "    pub init() { value = 0 }\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var c = new Counter()\n" +
-                "    c.value = 1\n" +
-                "    return (c.value + height) + c.doubled\n" +
-                "}\n");
-            Positive("override/abstract 投影（S8e）",
-                "pub open class Base {\n" +
-                "    pub open func area(): i32 { return 0 }\n" +
-                "}\n" +
-                "pub class Square : Base {\n" +
-                "    pub override func area(): i32 { return 1 }\n" +
-                "}\n" +
-                "pub abstract class Concept {\n" +
-                "    pub abstract func id(): i32\n" +
-                "}\n" +
-                "pub func main(): i32 {\n" +
-                "    var s = new Square()\n" +
-                "    return s.area()\n" +
-                "}\n");
-            // 验证器修复批次：invoke 的 owner 段以 "::" 结尾是命名空间前缀
-            // （全局函数），无 receiver——首实参不得被当 .this 吞掉
-            Positive("namespaced 全局函数调用（invoke owner 命名空间前缀）",
-                "import core.coroutine.*\n" +
-                "pub func main(): i32 {\n" +
-                "    var alarm = sleep(1000)\n" +
-                "    return 0\n" +
-                "}\n");
-            // 验证器修复批次：§7.2 调用序——值包（.vargs/.kwargs）在普通
-            // 参数之后逐条比对，只有 .generic.* 前导跳过
-            Positive("普通参数 + 值包混合调用（§7.2 调用序）",
-                "func sum(first: i32, rest: i32...): i32 { return first }\n" +
-                "func config(name: String, options: named i32...): i32 { return 0 }\n" +
-                "pub func main(): i32 {\n" +
-                "    return sum(1, 2, 3) + config(\"a\", x = 1, y = 2)\n" +
-                "}\n");
-            // 验证器修复批次：§16.4 loop.rev 执行序 body → judge → condition，
-            // body 至少执行一次——judge 与循环出口以 body 出口态分析
-            Positive("do-while 体内赋值循环后可见（loop.rev DA）",
-                "pub func main(): i32 {\n" +
-                "    var x: i32\n" +
-                "    do { x = 1 } while (x < 5)\n" +
-                "    return x\n" +
-                "}\n");
-            // 验证器修复批次：try-finally 无 catch 时 catch-table 为空，
-            // body 终止即判终止
-            Positive("try-finally 无 catch 判终止（entrypoint 结构化）",
-                "func f(): i32 {\n" +
-                "    try { return 1 } finally (e) { core.io.Console.println(\"f\") }\n" +
-                "}\n" +
-                "pub func main(): i32 { return f() }\n");
 
-            // ===== S11：§12.3 type.is.case / §13.3 嵌套字段访问（手工模块）=====
-            // P3 尚未发射（is .Case 与 wrapper place 归 S11），故不走全管线
-            // 正例；以手工模块断言指令形态与验证器规则。宿主 Service 带
-            // Logged wrapper 隐藏字段（§5.3 命名）、RequestResult enum + 两
-            // case（Failed 判别值资源 R_FC）；main(svc, e) 参数入口已赋值
-            // 基线：is.case + set.wrapper.field；lv 经 S11Module 内 R_LV load 已赋值
-            BilTestHarness.CheckBilValid("S11 手工模块（基线，is.case + set.wrapper.field 正例）",
-                S11Module(
-                    new IsCaseInstruction(BilOp.Var("e"),
-                        BilOp.Case("com.example::RequestResult.Failed"), BilOp.Var("b")),
-                    new SetWrapperFieldInstruction(BilOp.Var("lv"), BilOp.Var("svc"),
-                        BilOp.Wrapper("core.logging::Logged"),
-                        BilOp.Field("core.logging::Logged#level@.string"))));
-            BilTestHarness.CheckBilValid("S11 get.wrapper.field 正例",
-                FieldValueModule(
-                    new GetWrapperFieldInstruction(BilOp.Var("hero"),
-                        BilOp.Field("com.example::Hero#hp@.i32"),
-                        BilOp.Type("core.clamp::Clamped"), BilOp.Var("w"))));
-            BilTestHarness.CheckBilValid("..super 手工模块（override 正例）",
-                SuperInvokeModule(validReceiver: true));
-            BilTestHarness.CheckBilInvalid("..super 缺 $.this 首参",
-                SuperInvokeModule(validReceiver: false), "首实参必须精确为 $.this");
-
-            // ===== V3：indirect 全家 + getid.field 手工模块 =====
-            TestV3IndirectForms();
-
-            // ===== M109a：..init.wrapper / new.wrapped / new.wrapper.* / companion =====
-            TestInitWrapperAndNewWrapped();
-
-            // ===== 负例：非法模块按规则命中 =====
-            NegativeCases();
-            TestBitwiseTypeRestriction();
-            TestRegionBreakIdBinding();
-            TestEnumStructInstanceFieldInit();
-
-            return TestHarness.Summary("BilVerifier");
         }
+
 
         private static void TestInitWrapperAndNewWrapped()
         {

@@ -47,34 +47,32 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class StdlibSourcesTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestCountAndSourceName();
-            TestBootstrapStructure();
-            TestConsoleStructure();
-            TestCollectionsStructure();
-            TestCoroutineStructure();
-            TestDisposableStructure();
-            TestExceptionsStructure();
-            TestFsPathStructure();
-            TestFsPrimitivesStructure();
-            TestGlobalExceptionsStructure();
-            TestTimeStructure();
-            TestMathStructure();
-            TestSerializationStructure();
-            TestMessagingStructure();
-            TestSetStructure();
-            TestQueueStructure();
-            TestIoStreamStructure();
-            TestIoStdStreamsStructure();
-            TestAdaptersStructure();
-            TestAlgorithmsStructure();
-            TestConsoleDescribe();
-
-            return TestHarness.Summary("StdlibSources");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("StdlibSources",
+        [
+            (nameof(TestCountAndSourceName), TestCountAndSourceName),
+            (nameof(TestBootstrapStructure), TestBootstrapStructure),
+            (nameof(TestConsoleStructure), TestConsoleStructure),
+            (nameof(TestCollectionsStructure), TestCollectionsStructure),
+            (nameof(TestCoroutineStructure), TestCoroutineStructure),
+            (nameof(TestDisposableStructure), TestDisposableStructure),
+            (nameof(TestExceptionsStructure), TestExceptionsStructure),
+            (nameof(TestFsPathStructure), TestFsPathStructure),
+            (nameof(TestFsPrimitivesStructure), TestFsPrimitivesStructure),
+            (nameof(TestGlobalExceptionsStructure), TestGlobalExceptionsStructure),
+            (nameof(TestTimeStructure), TestTimeStructure),
+            (nameof(TestMathStructure), TestMathStructure),
+            (nameof(TestSerializationStructure), TestSerializationStructure),
+            (nameof(TestMessagingStructure), TestMessagingStructure),
+            (nameof(TestSetStructure), TestSetStructure),
+            (nameof(TestQueueStructure), TestQueueStructure),
+            (nameof(TestIoStreamStructure), TestIoStreamStructure),
+            (nameof(TestIoStdStreamsStructure), TestIoStdStreamsStructure),
+            (nameof(TestAdaptersStructure), TestAdaptersStructure),
+            (nameof(TestAlgorithmsStructure), TestAlgorithmsStructure),
+            (nameof(TestConsoleDescribe), TestConsoleDescribe),
+        ], sectionTitle: "StdlibSources", memoryMiB: 2048);
 
         // ===== 1. 数量与 sourceName =====
         private static void TestCountAndSourceName()

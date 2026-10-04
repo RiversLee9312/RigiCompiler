@@ -145,16 +145,14 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestAwaitExpression();
-            TestYieldStatement();
-            TestAwaitYieldCombination();
-            TestAwaitInDifferentContexts();
-
-            return TestHarness.Summary("CoroutineOps");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CoroutineOps",
+        [
+            (nameof(TestAwaitExpression), TestAwaitExpression),
+            (nameof(TestYieldStatement), TestYieldStatement),
+            (nameof(TestAwaitYieldCombination), TestAwaitYieldCombination),
+            (nameof(TestAwaitInDifferentContexts), TestAwaitInDifferentContexts),
+        ], sectionTitle: "CoroutineOps");
     }
 }

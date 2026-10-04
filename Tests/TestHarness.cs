@@ -33,6 +33,13 @@ namespace RigiCompiler.Tests
             SkipReason = null;
         }
 
+        // 私有旧计数器适配到同一协议，保留真实断言数而非伪造退出码断言。
+        internal static void AddCounts(int passed, int failed)
+        {
+            PassCount += passed;
+            FailCount += failed;
+        }
+
         public static void Section(string title) => Console.WriteLine($"=== {title} ===");
 
         public static void Blank() => Console.WriteLine();

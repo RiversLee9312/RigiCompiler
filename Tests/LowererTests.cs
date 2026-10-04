@@ -36,71 +36,68 @@ namespace RigiCompiler.Tests
     //   LowererTests.EnumCases.cs   —— enum case 构造恒等降级/is .Case 槽透传（S11）
     public static partial class LowererTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("Lowerer");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestLocalDeclarations();
-            TestAssignment();
-            TestExpressionAndCallStatements();
-            TestUnaryAndFieldReference();
-            TestNew();
-            TestOriginChain();
-            TestShortCircuit();
-            TestIfExpressionLowering();
-            TestCompoundAssignmentLowering();
-            TestValueBlockIfTransform();
-            TestLoopLowering();
-            TestLoopStructuredExitRouting();
-            TestInstanceLowering();
-            TestForLoopLowering();
-            TestSwitchLowering();
-            TestThrowLowering();
-            TestThrowLambdaLowering();
-            TestElseIfChainTransform();
-            TestCastLowering();
-            TestTryLowering();
-            TestSeqLowering();
-            TestUsingLowering();
-            TestTryWeaving();
-            TestStructuredExitRoutingForms();
-            TestSameRegionTailExitElision();
-            TestInterpolationLowering();
-            TestSafeAccessLowering();
-            TestNullFallbackLowering();
-            TestDestructuringLowering();
-            TestTypeCheckLowering();
-            TestTypeOfLowering();
-            TestDynamicNewLowering();
-            TestIndexLowering();
-            TestSafeAccessPrefixInThenBlock();
-            TestSafeAccessVoidCallStatement();
-            TestCompoundAssignmentIndexMaterialization();
-            TestCompoundAssignmentGetterMaterialization();
-            TestVarArgsParameterType();
-            TestVarArgsIndexLowering();
-            TestValueChainDeepWrite();
-            TestValueChainDeepWriteThisRoot();
-            TestValueChainCompoundWrite();
-            TestValueReceiverCallWriteback();
-            TestValueChainStaticRootWrite();
-            TestValueChainStaticRootCompound();
-            TestValueChainStaticRootReceiverCall();
-            TestValueChainStaticRootSingleFieldWrite();
-            TestValueChainWrappedStaticRootWrite();
-            TestValueChainGetterOnlyIntermediateError();
-            TestValueChainConstIntermediateError();
-            TestIndexResultFieldWriteRejected();
-            TestClassGenericCallTypeArguments();
-            TestEnumCaseLowering();
-            TestAwaitLowering();
-            TestYieldLowering();
-            TestLambdaLowering();
-            TestUnsupportedNode();
-
-            return TestHarness.Summary("Lowerer");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Lowerer",
+        [
+            (nameof(TestLocalDeclarations), TestLocalDeclarations),
+            (nameof(TestAssignment), TestAssignment),
+            (nameof(TestExpressionAndCallStatements), TestExpressionAndCallStatements),
+            (nameof(TestUnaryAndFieldReference), TestUnaryAndFieldReference),
+            (nameof(TestNew), TestNew),
+            (nameof(TestOriginChain), TestOriginChain),
+            (nameof(TestShortCircuit), TestShortCircuit),
+            (nameof(TestIfExpressionLowering), TestIfExpressionLowering),
+            (nameof(TestCompoundAssignmentLowering), TestCompoundAssignmentLowering),
+            (nameof(TestValueBlockIfTransform), TestValueBlockIfTransform),
+            (nameof(TestLoopLowering), TestLoopLowering),
+            (nameof(TestLoopStructuredExitRouting), TestLoopStructuredExitRouting),
+            (nameof(TestInstanceLowering), TestInstanceLowering),
+            (nameof(TestForLoopLowering), TestForLoopLowering),
+            (nameof(TestSwitchLowering), TestSwitchLowering),
+            (nameof(TestThrowLowering), TestThrowLowering),
+            (nameof(TestThrowLambdaLowering), TestThrowLambdaLowering),
+            (nameof(TestElseIfChainTransform), TestElseIfChainTransform),
+            (nameof(TestCastLowering), TestCastLowering),
+            (nameof(TestTryLowering), TestTryLowering),
+            (nameof(TestSeqLowering), TestSeqLowering),
+            (nameof(TestUsingLowering), TestUsingLowering),
+            (nameof(TestTryWeaving), TestTryWeaving),
+            (nameof(TestStructuredExitRoutingForms), TestStructuredExitRoutingForms),
+            (nameof(TestSameRegionTailExitElision), TestSameRegionTailExitElision),
+            (nameof(TestInterpolationLowering), TestInterpolationLowering),
+            (nameof(TestSafeAccessLowering), TestSafeAccessLowering),
+            (nameof(TestNullFallbackLowering), TestNullFallbackLowering),
+            (nameof(TestDestructuringLowering), TestDestructuringLowering),
+            (nameof(TestTypeCheckLowering), TestTypeCheckLowering),
+            (nameof(TestTypeOfLowering), TestTypeOfLowering),
+            (nameof(TestDynamicNewLowering), TestDynamicNewLowering),
+            (nameof(TestIndexLowering), TestIndexLowering),
+            (nameof(TestSafeAccessPrefixInThenBlock), TestSafeAccessPrefixInThenBlock),
+            (nameof(TestSafeAccessVoidCallStatement), TestSafeAccessVoidCallStatement),
+            (nameof(TestCompoundAssignmentIndexMaterialization), TestCompoundAssignmentIndexMaterialization),
+            (nameof(TestCompoundAssignmentGetterMaterialization), TestCompoundAssignmentGetterMaterialization),
+            (nameof(TestVarArgsParameterType), TestVarArgsParameterType),
+            (nameof(TestVarArgsIndexLowering), TestVarArgsIndexLowering),
+            (nameof(TestValueChainDeepWrite), TestValueChainDeepWrite),
+            (nameof(TestValueChainDeepWriteThisRoot), TestValueChainDeepWriteThisRoot),
+            (nameof(TestValueChainCompoundWrite), TestValueChainCompoundWrite),
+            (nameof(TestValueReceiverCallWriteback), TestValueReceiverCallWriteback),
+            (nameof(TestValueChainStaticRootWrite), TestValueChainStaticRootWrite),
+            (nameof(TestValueChainStaticRootCompound), TestValueChainStaticRootCompound),
+            (nameof(TestValueChainStaticRootReceiverCall), TestValueChainStaticRootReceiverCall),
+            (nameof(TestValueChainStaticRootSingleFieldWrite), TestValueChainStaticRootSingleFieldWrite),
+            (nameof(TestValueChainWrappedStaticRootWrite), TestValueChainWrappedStaticRootWrite),
+            (nameof(TestValueChainGetterOnlyIntermediateError), TestValueChainGetterOnlyIntermediateError),
+            (nameof(TestValueChainConstIntermediateError), TestValueChainConstIntermediateError),
+            (nameof(TestIndexResultFieldWriteRejected), TestIndexResultFieldWriteRejected),
+            (nameof(TestClassGenericCallTypeArguments), TestClassGenericCallTypeArguments),
+            (nameof(TestEnumCaseLowering), TestEnumCaseLowering),
+            (nameof(TestAwaitLowering), TestAwaitLowering),
+            (nameof(TestYieldLowering), TestYieldLowering),
+            (nameof(TestLambdaLowering), TestLambdaLowering),
+            (nameof(TestUnsupportedNode), TestUnsupportedNode),
+        ], sectionTitle: "Lowerer", memoryMiB: 2048);
 
         // 多源文件经全管线（Parser → P1 → P2 → P3 → P4a）后取编译单元、
         // bound 函数体（Origin 对照用）与 lowered 函数体列表

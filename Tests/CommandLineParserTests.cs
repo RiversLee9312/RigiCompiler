@@ -509,6 +509,7 @@ namespace RigiCompiler.Tests
         public static int RunWithArgs(IReadOnlyList<string> args)
         {
             if (args.Count == 0) return RunAll();
+            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("CommandLineParser"), args);
             if (args.Count != 1 || args[0] != "PERF-001")
             {
                 Console.Error.WriteLine("CommandLineParser 仅支持定向组 PERF-001。");
@@ -528,28 +529,24 @@ namespace RigiCompiler.Tests
             return failCount;
         }
 
-        public static int RunAll()
-        {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  CommandLineParser Tests           ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            passCount = 0;
-            failCount = 0;
+        internal static IReadOnlyList<string> GroupLabels { get; } =
+        [nameof(TestRegistryIntegrity), nameof(TestCommandMatching), nameof(TestSubCommandMatching),
+            nameof(TestArgCountValidation), nameof(TestMutualExclusion), nameof(TestStrayArgs), nameof(TestInventoryOption)];
 
-            TestRegistryIntegrity();
-            TestCommandMatching();
-            TestSubCommandMatching();
-            TestArgCountValidation();
-            TestMutualExclusion();
-            TestStrayArgs();
-            TestInventoryOption();
-            TestOutputPathErrors();
-            TestVmCommand();
-            TestEmitBilSlicesAndEntryPoint();
-
-            Console.WriteLine($"=== CommandLineParser Tests Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("CommandLineParser",
+        [
+            (nameof(TestRegistryIntegrity), TestRegistryIntegrity),
+            (nameof(TestCommandMatching), TestCommandMatching),
+            (nameof(TestSubCommandMatching), TestSubCommandMatching),
+            (nameof(TestArgCountValidation), TestArgCountValidation),
+            (nameof(TestMutualExclusion), TestMutualExclusion),
+            (nameof(TestStrayArgs), TestStrayArgs),
+            (nameof(TestInventoryOption), TestInventoryOption),
+            (nameof(TestOutputPathErrors), TestOutputPathErrors),
+            (nameof(TestVmCommand), TestVmCommand),
+            (nameof(TestEmitBilSlicesAndEntryPoint), TestEmitBilSlicesAndEntryPoint),
+        ], () => passCount = failCount = 0, () => (passCount, failCount));
     }
 }

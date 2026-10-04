@@ -13,64 +13,64 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class DeclarationResolverTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestTypeReferences();
-            TestGenericAndNullable();
-            TestGenericVariance();
-            TestArityLookup();
-            TestNameLookupContexts();
-            TestInitMapping();
-            TestInheritance();
-            TestInheritanceF2();
-            TestModifierLegality();
-            TestStaticGenericBans();
-            TestContagion();
-            TestFieldClosures();
-            TestInstantiationFillIn();
-            TestSharedSafetyGates();
-            TestGenericConstraints();
-            TestExtRegistration();
-            TestWrapperApplications();
-            TestProxyShapeChecking();
-            TestProxyDispatchChains();
-            TestDowngradeChains();
-            TestNativeDeclarations();
-            TestEntryPointAnnotations();
-            TestTerminalAndInternalAnnotations();
-            TestSerializableFields();
-            TestAccessibility();
-            TestAccessorDeclarations();
-            TestOverrideModifiers();
-            TestDeclarationSiteAccess();
-            TestSignatureLeak();
-            TestSignatureLeakFields();
-            TestConversionOperators();
-            TestEnumerateInRangeShape();
-            TestOperatorNameWhitelist();
-            TestAsyncDeclarationGates();
-            TestConstructedBaseTypeBackfill();
-            TestExtDuplicateDetection();
-            TestOverrideGenericArity();
-            TestNamespaceNotAType();
-            TestBareGenericDefinitionArity();
-            TestInitMappingBuiltinField();
-            TestExtNativeGates();
-            TestNamespaceSegmentPriority();
-            TestInterfaceFieldDeclaration();
-            TestDuplicateInterfaceImplementation();
-            TestConflictingInterfaceDefaults();
-            TestStaticOperatorDeclaration();
-            TestNamedImportResolution();
-            TestNamedImportFunctionAndField();
-            TestNamedGenericImport();
-            TestEnumCaseStructure();
-            TestLikeDelegation();
-            TestLayoutCycles();
-            TestFreeze();
-            return TestHarness.Summary("DeclarationResolver");
-        }
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("DeclarationResolver",
+        [
+            (nameof(TestTypeReferences), TestTypeReferences),
+            (nameof(TestGenericAndNullable), TestGenericAndNullable),
+            (nameof(TestGenericVariance), TestGenericVariance),
+            (nameof(TestArityLookup), TestArityLookup),
+            (nameof(TestNameLookupContexts), TestNameLookupContexts),
+            (nameof(TestInitMapping), TestInitMapping),
+            (nameof(TestInheritance), TestInheritance),
+            (nameof(TestInheritanceF2), TestInheritanceF2),
+            (nameof(TestModifierLegality), TestModifierLegality),
+            (nameof(TestStaticGenericBans), TestStaticGenericBans),
+            (nameof(TestContagion), TestContagion),
+            (nameof(TestFieldClosures), TestFieldClosures),
+            (nameof(TestInstantiationFillIn), TestInstantiationFillIn),
+            (nameof(TestSharedSafetyGates), TestSharedSafetyGates),
+            (nameof(TestGenericConstraints), TestGenericConstraints),
+            (nameof(TestExtRegistration), TestExtRegistration),
+            (nameof(TestWrapperApplications), TestWrapperApplications),
+            (nameof(TestProxyShapeChecking), TestProxyShapeChecking),
+            (nameof(TestProxyDispatchChains), TestProxyDispatchChains),
+            (nameof(TestDowngradeChains), TestDowngradeChains),
+            (nameof(TestNativeDeclarations), TestNativeDeclarations),
+            (nameof(TestEntryPointAnnotations), TestEntryPointAnnotations),
+            (nameof(TestTerminalAndInternalAnnotations), TestTerminalAndInternalAnnotations),
+            (nameof(TestSerializableFields), TestSerializableFields),
+            (nameof(TestAccessibility), TestAccessibility),
+            (nameof(TestAccessorDeclarations), TestAccessorDeclarations),
+            (nameof(TestOverrideModifiers), TestOverrideModifiers),
+            (nameof(TestDeclarationSiteAccess), TestDeclarationSiteAccess),
+            (nameof(TestSignatureLeak), TestSignatureLeak),
+            (nameof(TestSignatureLeakFields), TestSignatureLeakFields),
+            (nameof(TestConversionOperators), TestConversionOperators),
+            (nameof(TestEnumerateInRangeShape), TestEnumerateInRangeShape),
+            (nameof(TestOperatorNameWhitelist), TestOperatorNameWhitelist),
+            (nameof(TestAsyncDeclarationGates), TestAsyncDeclarationGates),
+            (nameof(TestConstructedBaseTypeBackfill), TestConstructedBaseTypeBackfill),
+            (nameof(TestExtDuplicateDetection), TestExtDuplicateDetection),
+            (nameof(TestOverrideGenericArity), TestOverrideGenericArity),
+            (nameof(TestNamespaceNotAType), TestNamespaceNotAType),
+            (nameof(TestBareGenericDefinitionArity), TestBareGenericDefinitionArity),
+            (nameof(TestInitMappingBuiltinField), TestInitMappingBuiltinField),
+            (nameof(TestExtNativeGates), TestExtNativeGates),
+            (nameof(TestNamespaceSegmentPriority), TestNamespaceSegmentPriority),
+            (nameof(TestInterfaceFieldDeclaration), TestInterfaceFieldDeclaration),
+            (nameof(TestDuplicateInterfaceImplementation), TestDuplicateInterfaceImplementation),
+            (nameof(TestConflictingInterfaceDefaults), TestConflictingInterfaceDefaults),
+            (nameof(TestStaticOperatorDeclaration), TestStaticOperatorDeclaration),
+            (nameof(TestNamedImportResolution), TestNamedImportResolution),
+            (nameof(TestNamedImportFunctionAndField), TestNamedImportFunctionAndField),
+            (nameof(TestNamedGenericImport), TestNamedGenericImport),
+            (nameof(TestEnumCaseStructure), TestEnumCaseStructure),
+            (nameof(TestLikeDelegation), TestLikeDelegation),
+            (nameof(TestLayoutCycles), TestLayoutCycles),
+            (nameof(TestFreeze), TestFreeze),
+        ], sectionTitle: "DeclarationResolver", memoryMiB: 2048);
 
         // 多源文件经全管线解析后组成编译单元，执行 P1 + P2
         private static (CompilationUnit Unit, DeclarationCollection Decls) ResolveUnit(params string[] sources)

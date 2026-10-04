@@ -3,10 +3,11 @@ using RigiCompiler.Middleware.Toolchain;
 
 namespace RigiCompiler.Tests;
 
-/// <summary>从执行入口的同一数组枚举；旧单块套件如实保持 suite 粒度。</summary>
+/// <summary>从执行 provider 枚举实际动作；方法组目录不冒称逐输入覆盖。</summary>
 public static class TestInventory
 {
-    internal sealed record Case(int Index, string Label, bool Slow = false, string? Gate = null, int ComputeWorkers = 1, int MemoryMiB = 512);
+    internal sealed record Case(int Index, string Label, bool Slow = false, string? Gate = null, int ComputeWorkers = 1, int MemoryMiB = 512,
+        int? TimeoutMinutes = null);
     internal static IEnumerable<Case>? Cases(string name) => name switch
     {
         "BilReader" => BilReaderTests.InventoryCases,
@@ -34,7 +35,8 @@ public static class TestInventory
         "E2e" => E2eCorpusTests.InventoryCases,
         "SemanticsFuzz" => SeededCases(Budget("RIGI_SEMFUZZ_CASES", 3000)),
         "StressFuzz" => SeededCases(Budget("RIGI_STRESSFUZZ_CASES", Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true" ? 600 : 3000)),
-        _ => null,
+        _ => LegacySuiteSpecs.Find(name) is { } spec
+            ? spec.Cases.Select((c, i) => new Case(i, c.Label, MemoryMiB: spec.MemoryMiB)) : null,
     };
     internal static int Budget(string variable, int fallback) =>
         int.TryParse(Environment.GetEnvironmentVariable(variable), out int count) && count > 0 ? count : fallback;
@@ -64,7 +66,7 @@ public static class TestInventory
         "VmPrimitive" => VmPrimitiveTests.Spec,
         "NativeE2E" => NativeE2ETests.ExecutionSpec,
         "E2e" => E2eCorpusTests.ExecutionSpec,
-        _ => null,
+        _ => LegacySuiteSpecs.Find(name),
     };
 
     private static IEnumerable<Case> SeededCases(int count) => Enumerable.Range(0, count).Select(i => new Case(i, $"seed-case-{i}"));

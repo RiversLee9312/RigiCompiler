@@ -16,16 +16,6 @@ namespace RigiCompiler.Tests
     //    与接口继承单向传染）。
     public static partial class BinderTests
     {
-        private static void TestGateFixes()
-        {
-            TestAsyncGateVariadicPacks();
-            TestGenericBackingAccessors();
-            TestPerCandidateConstraints();
-            TestAmbiguityWinnersAndPackSyntax();
-            TestSharedInterfaceContagion();
-            TestInstantiationFillInP3();
-            TestGenericBoundSharedSafeDerivation();
-        }
 
         // ===== bug g4：泛型填入点隐式限制检查（P3 侧挂点）=====
         //

@@ -10,24 +10,24 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class SmartCastTests
     {
-        public static int RunAll()
-        {
-            TestHarness.Reset();
-            TestIsBranchNarrowing();
-            TestIsNullableNarrowing();
-            TestNullEqualityNarrowing();
-            TestGuardPatterns();
-            TestAndOrNot();
-            TestAssignmentInvalidation();
-            TestConstFieldNarrowing();
-            TestLoopNarrowing();
-            TestSwitchCaseNarrowing();
-            TestNonTriggeringForms();
-            TestBranchMerging();
-            TestNullEqualityBinding();
-            TestLoweringMaterialization();
-            return TestHarness.Summary("SmartCast");
-        }
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SmartCast",
+        [
+            (nameof(TestIsBranchNarrowing), TestIsBranchNarrowing),
+            (nameof(TestIsNullableNarrowing), TestIsNullableNarrowing),
+            (nameof(TestNullEqualityNarrowing), TestNullEqualityNarrowing),
+            (nameof(TestGuardPatterns), TestGuardPatterns),
+            (nameof(TestAndOrNot), TestAndOrNot),
+            (nameof(TestAssignmentInvalidation), TestAssignmentInvalidation),
+            (nameof(TestConstFieldNarrowing), TestConstFieldNarrowing),
+            (nameof(TestLoopNarrowing), TestLoopNarrowing),
+            (nameof(TestSwitchCaseNarrowing), TestSwitchCaseNarrowing),
+            (nameof(TestNonTriggeringForms), TestNonTriggeringForms),
+            (nameof(TestBranchMerging), TestBranchMerging),
+            (nameof(TestNullEqualityBinding), TestNullEqualityBinding),
+            (nameof(TestLoweringMaterialization), TestLoweringMaterialization),
+        ], sectionTitle: "SmartCast", memoryMiB: 2048);
 
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies) BindUnit(
             params string[] sources)

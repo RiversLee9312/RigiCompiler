@@ -559,28 +559,26 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestSimpleClass();
-            TestClassWithModifiers();
-            TestInterface();
-            TestStruct();
-            TestWrapper();
-            TestGlobals();
-            TestMembers();
-            TestInheritance();
-            TestNestedTypes();
-            TestDeclarationGenericParameters();
-            TestEnumCases();
-            TestInitParameterMapping();
-            TestLikeAndExtension();
-            TestAnnotations();
-            TestNativeFunction();
-            TestWrapperProxy();
-
-            return TestHarness.Summary("TypeDeclaration");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TypeDeclaration",
+        [
+            (nameof(TestSimpleClass), TestSimpleClass),
+            (nameof(TestClassWithModifiers), TestClassWithModifiers),
+            (nameof(TestInterface), TestInterface),
+            (nameof(TestStruct), TestStruct),
+            (nameof(TestWrapper), TestWrapper),
+            (nameof(TestGlobals), TestGlobals),
+            (nameof(TestMembers), TestMembers),
+            (nameof(TestInheritance), TestInheritance),
+            (nameof(TestNestedTypes), TestNestedTypes),
+            (nameof(TestDeclarationGenericParameters), TestDeclarationGenericParameters),
+            (nameof(TestEnumCases), TestEnumCases),
+            (nameof(TestInitParameterMapping), TestInitParameterMapping),
+            (nameof(TestLikeAndExtension), TestLikeAndExtension),
+            (nameof(TestAnnotations), TestAnnotations),
+            (nameof(TestNativeFunction), TestNativeFunction),
+            (nameof(TestWrapperProxy), TestWrapperProxy),
+        ], sectionTitle: "TypeDeclaration");
     }
 }

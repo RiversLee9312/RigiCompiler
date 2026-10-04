@@ -106,19 +106,17 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestBasicTypeOf();
-            TestComplexOperands();
-            TestSuffixAfterTypeOf();
-            TestErrorCases();
-            TestStructuralAssertions();
-            TestPlaceOf();
-
-            return TestHarness.Summary("TypeOf");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TypeOf",
+        [
+            (nameof(TestBasicTypeOf), TestBasicTypeOf),
+            (nameof(TestComplexOperands), TestComplexOperands),
+            (nameof(TestSuffixAfterTypeOf), TestSuffixAfterTypeOf),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+            (nameof(TestPlaceOf), TestPlaceOf),
+        ], sectionTitle: "TypeOf");
 
         private static void TestPlaceOf()
         {

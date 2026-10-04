@@ -247,10 +247,12 @@ namespace RigiCompiler.Tests
                     failCount++;
                     ReportFuzzFailure(source, category, problem);
                 }
+                else passCount++;
             }
             catch (LexerException)
             {
                 // 非法输入的合法拒绝
+                passCount++;
             }
             catch (Exception ex)
             {
@@ -488,35 +490,41 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll()
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
+
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = BuildSpec();
+
+        // 先按原 RNG 消耗顺序生成全部输入，再按稳定全局序号分派；
+        // worker 调度顺序不能改变 seed、2500/2500/1000 配额或实际源码。
+        private static IReadOnlyList<(string Source, string Category)> BuildFuzzInputs()
         {
-            Console.WriteLine("\n╔════════════════════════════════════╗");
-            Console.WriteLine("║  Lexer Fuzz Tests                  ║");
-            Console.WriteLine("╚════════════════════════════════════╝\n");
-
-            passCount = 0;
-            failCount = 0;
-            fuzzFailureLog.Clear();
-
-            TestIdentifierCategorySnapshot();
-            TestFixedCases();
-            TestErrorCases();
-            TestPositions();
-            TestRandomFuzz();
-            TestParserIntegration();
-
-            // fuzz 失败详情限量输出（前 10 条）
-            foreach (var line in fuzzFailureLog.Take(10))
+            var rng = new Random(20260726);
+            var inputs = new List<(string, string)>();
+            for (int i = 0; i < 2500; i++) inputs.Add((RandomFromPool(rng, CharPool, 200), "纯随机"));
+            for (int i = 0; i < 2500; i++) inputs.Add((RandomFromFragments(rng), "结构化"));
+            for (int i = 0; i < 1000; i++) inputs.Add((Mutate(rng, ValidSeeds[rng.Next(ValidSeeds.Length)]), "变异"));
+            return inputs;
+        }
+        private static ParallelSuiteRunner.SuiteSpec BuildSpec()
+        {
+            var cases = new List<(string Label, Action Run)>
             {
-                Console.WriteLine(line);
-            }
-            if (fuzzFailureLog.Count > 10)
+                (nameof(TestIdentifierCategorySnapshot), TestIdentifierCategorySnapshot),
+                (nameof(TestFixedCases), TestFixedCases),
+                (nameof(TestErrorCases), TestErrorCases),
+                (nameof(TestPositions), TestPositions),
+                (nameof(TestParserIntegration), TestParserIntegration),
+            };
+            // 避免静态字段声明顺序影响目录初始化。
+            var inputs = BuildFuzzInputs();
+            for (int i = 0; i < inputs.Count; i++)
             {
-                Console.WriteLine($"  ...（其余 {fuzzFailureLog.Count - 10} 条省略）");
+                var input = inputs[i];
+                cases.Add(($"fuzz-{i:D4}-{input.Category}", () => FuzzOne(input.Source, input.Category)));
             }
-
-            Console.WriteLine($"=== Lexer Fuzz Tests Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
+            return LegacySuiteSpecs.Counted("LexerFuzz", cases,
+                () => { passCount = failCount = 0; fuzzFailureLog.Clear(); },
+                () => { foreach (var line in fuzzFailureLog.Take(10)) Console.WriteLine(line); return (passCount, failCount); });
         }
     }
 }

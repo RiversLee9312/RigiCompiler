@@ -593,36 +593,34 @@ namespace RigiCompiler.Tests
             }
         }
 
-        public static int RunAll()
-        {
-            TestHarness.Reset();
+        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-            TestLiteralInitializers();
-            TestSymbolReferences();
-            TestUnaryExpressions();
-            TestBinaryExpressions();
-            TestGroupExpressions();
-            TestErrorCases();
-            TestTypedDeclarationsWithInit();
-            TestCallExpressions();
-            TestMemberAccessChains();
-            TestNullFallbackParsing();
-            TestIndexExpressions();
-            TestNewExpressions();
-            TestGenericCallExpressions();
-            TestSuffixErrorCases();
-            TestTypeOperators();
-            TestTypeOperatorErrorCases();
-            TestEnumCaseReferences();
-            TestWrapperAccess();
-            TestBitwiseOperators();
-            TestLineContinuation();
-            TestM31ErrorCases();
-            TestCompoundAssignments();
-            TestIsEnumCase();
-            TestStructuralAssertions();
-
-            return TestHarness.Summary("Expression");
-        }
+        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Expression",
+        [
+            (nameof(TestLiteralInitializers), TestLiteralInitializers),
+            (nameof(TestSymbolReferences), TestSymbolReferences),
+            (nameof(TestUnaryExpressions), TestUnaryExpressions),
+            (nameof(TestBinaryExpressions), TestBinaryExpressions),
+            (nameof(TestGroupExpressions), TestGroupExpressions),
+            (nameof(TestErrorCases), TestErrorCases),
+            (nameof(TestTypedDeclarationsWithInit), TestTypedDeclarationsWithInit),
+            (nameof(TestCallExpressions), TestCallExpressions),
+            (nameof(TestMemberAccessChains), TestMemberAccessChains),
+            (nameof(TestNullFallbackParsing), TestNullFallbackParsing),
+            (nameof(TestIndexExpressions), TestIndexExpressions),
+            (nameof(TestNewExpressions), TestNewExpressions),
+            (nameof(TestGenericCallExpressions), TestGenericCallExpressions),
+            (nameof(TestSuffixErrorCases), TestSuffixErrorCases),
+            (nameof(TestTypeOperators), TestTypeOperators),
+            (nameof(TestTypeOperatorErrorCases), TestTypeOperatorErrorCases),
+            (nameof(TestEnumCaseReferences), TestEnumCaseReferences),
+            (nameof(TestWrapperAccess), TestWrapperAccess),
+            (nameof(TestBitwiseOperators), TestBitwiseOperators),
+            (nameof(TestLineContinuation), TestLineContinuation),
+            (nameof(TestM31ErrorCases), TestM31ErrorCases),
+            (nameof(TestCompoundAssignments), TestCompoundAssignments),
+            (nameof(TestIsEnumCase), TestIsEnumCase),
+            (nameof(TestStructuralAssertions), TestStructuralAssertions),
+        ], sectionTitle: "Expression");
     }
 }
