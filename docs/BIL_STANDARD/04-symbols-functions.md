@@ -135,7 +135,7 @@ wrapped(WRAPPER_TYPE_REF)
 - extension field；
 - wrapper getter/setter 链。
 
-BIL 的 `get.field` / `set.field` 在使用点始终引用逻辑字段 canonical symbol，不引用 Native offset。setter 体内对 backing 的一切读写（进入时隐含 `backing = value`、自动 setter 体、体内对 `value` 的多次读/写）统一引用保留字段符号 `..value`——实例 `Hero#..value@.i32`、静态 `Config#.static...value@.i32`（`.static.` 标记保留，名字段为 `..value`）、全局 `app::#..value@.i32`、cell 隐藏子类 `..cell..UUID#..value@.i32`。`..value` 是「当前 setter 所服务字段的 backing 存储」的约定别名（§5.1）；frontend 不为它发 `.field` 声明。getter 体保持引用原逻辑字段符号（如 `Hero#hp@.i32`）——只读性由此保证。
+BIL 的 `get.field` / `set.field` 在使用点始终引用逻辑字段 canonical symbol，不引用 Native offset。setter 体内对 backing 的一切读写（进入时隐含 `backing = value`、自动 setter 体、体内对 `value` 的多次读/写）统一引用保留字段符号 `..value`——实例 `Hero#..value@.i32`、静态 `Config#.static...value@.i32`（`.static.` 标记保留，名字段为 `..value`）、全局 `app::#..value@.i32`、cell 隐藏子类 `..cell..HASH#..value@.i32`。`..value` 是「当前 setter 所服务字段的 backing 存储」的约定别名（§5.1）；frontend 不为它发 `.field` 声明。getter 体保持引用原逻辑字段符号（如 `Hero#hp@.i32`）——只读性由此保证。
 
 #### 8.3.1 wrapper 应用标记
 
@@ -209,7 +209,7 @@ wrapper-proxy(PROXY_KIND)
 
 烘焙（特化合成、inner 链接、原始体替换、存储合成）整体归 Middleware；frontend 只发射 proxy 模板与应用标记，不在 BIL 文本中合成特化/原始体/路由 fn。
 
-`call???` 是 `core::Any` 的 native 内建方法（§22.5 hook），frontend 不为其产 fn 定义（内建无 body 先例，同 `native`）；降级调用点见 §15.5。
+`call???` 是 `core::Any` 的保留方法，在 `.intrinsics.rg` 有普通源码默认 `throw` 体，frontend 正常生成 BIL fn；VM 按 §22.5 方法 hook 优先序处理，Native 链末执行源码默认体。降级调用点见 §15.5。
 
 运算符、getter、setter 和 enum case 的实现可以拥有 method body，但其调用点在 BIL 中仍使用对应的语义指令；只有普通显式方法调用或规范要求的动态 fallback 使用 `invoke`。`getter(FIELD_SYMBOL)` / `setter(FIELD_SYMBOL)` 把该方法标为指定逻辑字段的访问器：setter 体内 backing 读写引用保留字段 `..value`（§8.3 / §13.3）；getter 体仍引用 `FIELD_SYMBOL` 本身。
 
@@ -464,7 +464,7 @@ fn(com.example::Service$..init.wrapper(level:.string)@.void) {
 
 - 类型声明带 `wrapped(W)`（Entity）、成员字段带 `wrapped(W)`（字段-Value）、实例方法带 Method wrapper，或继承闭包（含自身）存在带声明初始值的实例字段时，在 owner 类型上合成 `..init.wrapper`；体内按「闭包缝合」条款发 `new.wrapper.*`（基→本、outer→inner）并调用闭包全部 `..init.field.*`；
 - 方法带 Method wrapper 时：静态方法走 §8.7 companion；实例方法在 owner 的 `..init.wrapper` 内发 `new.wrapper.method`（或按 Middleware 约定在方法首次绑定前安装——以 §14.5 指令语义为准，frontend 按应用表发射）；
-- cell 子类（非 singleton）：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..UUID(...)` / `new.wrapped` 在变量初始化点传入这些实参。
+- cell 子类（非 singleton）：`value` 字段上每个 `wrapped(W)` 的应用实参提升为 cell 类型 `..init.wrapper` 的参数；`new ..cell..HASH(...)` / `new.wrapped` 在变量初始化点传入这些实参。
 - **cell 子类 init 元数约定**（编译器按「初值是否依赖外界」选择）：
   - **0 元 `init()`**：初值不依赖外界的场景——命名空间级全局 wrapped 字段的 cell 单例（字段初值表达式在 `init` 体内求值并写入 `value` 字段）；未初始化 `var` 的空 cell 构造点也用 0 元 `init()`（体为空块，源级 DA 保证读前已赋值）。
   - **1 元 `init(value)`**：初值依赖外界的场景——函数内 `const`/`var` 局部（有初始化器；被捕获的局部同此）、被捕获的参数（函数序言以实参值构造）、静态 wrapped 字段（有初始化器）；外界先算完初值表达式，经 `value` 实参传入。静态 wrapped 字段的「外界」是宿主 companion 的 `init`——companion `init` 求值初始化器后以 1 元 `init(value)` 构造 cell。

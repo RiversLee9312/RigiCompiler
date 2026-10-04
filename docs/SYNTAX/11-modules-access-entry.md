@@ -61,23 +61,28 @@ import core.collections.*                // 全部导入
 - `core` 命名空间内的 `IDisposable`（`stdlib/core/disposable.rg`，
   §6.2 确定性资源管理协议）；
 - `.bootstrap.rg`：**基元类型自举辅助成员**——内建数值类型
-  （`i32` 等）无法在自己的声明处携带这些实现，经 `ext` 以 Rigi 自举
-  （如 `EnumerateInRange`，§13.2），以及解构协议根 `core.Pair`（§18）；
+  （`i32` 等）的辅助实现经 `ext` 以 Rigi 自举
+  （如 `EnumerateInRange`，§13.2），并声明 `ComparisonResult`；
   另含 callable / 闭包运行时面（§5.2）：
   - `core.Func\<TRet, T0…>` / `core.Action\<T0…>` /
     `core.AsyncFunc\<TRet, T0…>` / `core.AsyncAction\<T0…>`（各 0–32 元数变种，
     abstract class + abstract `operator call`；Async 族为 `shared class`）；
   - `core.Cell\<T>` / `core.ReadonlyCell\<T>`——**抽象基类**（抽象
     `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、
-    无显式 init）；实际实例恒为编译器合成的隐藏子类 `..cell..UUID`
+    无显式 init）；实际实例恒为编译器合成的隐藏子类 `..cell..HASH`
     （统一 cell 存储，§5.2 / §14.3）；BIL 特权拼写 `.cell<T>`/
     `.readonly_cell<T>` 保留供 Middleware 激进优化识别。
 
+- `.intrinsics.rg`：语言级类型层级根、基元与特权泛型类型的源码声明，
+  以及解构协议根 `core.Pair`（§18）、`Any`/`Object` 的默认方法体，
+  和文件级私有 native `any_hash` / `any_to_string` 声明。
+
 **bootstrap 与 stdlib 的边界**：语言级类型层级根与基元类型
 （`Any`/`Object`/`ValueType`/`Enum`/`Wrapper` 与 §3.2 基本类型、
-§3.1.2 特权泛型类型）由编译器硬编码构造进符号图（`BootstrapSymbols`），
-从不写入 `stdlib/` 源——它们的层级关系、内建运算符键与 shared 推导是
-编译器语义的一部分，无法用 Rigi 声明表达。异常根 `core.Exception`
+§3.1.2 特权泛型类型）由 `.intrinsics.rg` 经源路径声明；
+`BootstrapSymbols` 解析这些声明并挂接编译器规定的 ABI、内建运算符键、
+层级关系与 shared 推导。源码声明能力不意味着这些内建契约可任意改写。
+仅从产物装载而没有源声明的路径按固定 manifest 建立符号壳。异常根 `core.Exception`
 不在硬编码之列：它由 `stdlib/core/exceptions.rg` 源码声明（`pub
 abstract class Exception`，protected `message` 字段 + abstract
 `getMessage()`，§8.1 同形），bootstrap 侧按名懒解析进符号图。
@@ -195,6 +200,6 @@ Native 参数由运行时创建独立拥有字节的 String/Array，根引用保
 var (key, value) = pair   // pair 必须为 core.Pair\<TKey, TValue> 的子类
 ```
 
-规则：解构名字必须恰好两个，按声明序绑定到 `key`/`value` 分量（类型取 `core.Pair` 构造的实参）；解构必须带初始化器，不支持类型标注；`const (k, v) = pair` 同样适用（分量局部只读）。`core.Pair` 是 `stdlib/.bootstrap.rg` 的自举 open class（§15.3），可继承——用户类型经继承它获得解构能力。
+规则：解构名字必须恰好两个，按声明序绑定到 `key`/`value` 分量（类型取 `core.Pair` 构造的实参）；解构必须带初始化器，不支持类型标注；`const (k, v) = pair` 同样适用（分量局部只读）。`core.Pair` 是 `stdlib/.intrinsics.rg` 的自举 open class（§15.3），可继承——用户类型经继承它获得解构能力。
 
 ---

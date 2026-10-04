@@ -79,6 +79,6 @@ Object:          [view typeid   | object pointer]
 - **定位**：这是"一视同仁地对所有 ValueType 开特例的连续缓冲区"，而不是给 `Array\<T>` 本身开特例——`Array\<T>` 保持普通泛型语义（装箱，见 §4）。缓冲区/数值密集场景应使用 `Span\<T>`。
 - **来源（官方后门）**：`spanOf\<T>(n)`（stdlib 公共面，native `span_alloc` 实现）直接取得连续原生内存，不经过 `Array\<T>` / `List\<T>`。`T extends ValueType` 由泛型约束在编译期强制（`Span\<class>` 为编译错误）。
 - **GC 可见性**：`T` 非 rich 时，对象无引用图边（元素不含托管引用）。`T` 为 rich 时，析构按 `elemSheet × length × stride` 逐元素走查内部引用——与数组析构同一机制（`RIGI_TYPE_ARRAY` 标志；Span 的 TypeSheet 由 C# 侧发射时带上该位）。
-- **`SharedSpan\<T>`**：`Span\<T>` 的 shared class 变体，对象布局相同，`typeFlags` 含 `SHARED`（原子 rc，走 microSGC）。元素约束收紧为「非 rich 或 shared rich ValueType」（编译期检查）。Mutex 等同步原语与更完整的并发支持由未来版本接入；本期仅提供类型与原子生命周期。
+- **`SharedSpan\<T>`**：`Span\<T>` 的 shared class 变体，对象布局相同，`typeFlags` 含 `SHARED`（原子 rc，走 microSGC）。元素约束收紧为「非 rich 或 shared rich ValueType」（编译期检查）。语言级异步 Mutex 已由 `core.coroutine.Mutex` 提供（§19.6）；SharedSpan 的 shared 属性保证共享安全的生命周期，不使任意元素操作自动原子化。需要复合并发读写时由调用方同步。
 
 ---

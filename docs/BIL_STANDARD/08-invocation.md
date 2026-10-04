@@ -69,7 +69,7 @@ invoke.indirect.noret OBJECT_VAR [ARG_0, ARG_1, ...]
 - 值实参（含 `.vargs.*`/`.kwargs.*` 包）紧随 typeid/包前缀之后；
 - 验证器按被调 `$$call` 的 fn 定义 hidden 条目数跳过前缀并校验前缀类型，再比对普通参数与值包（缺/错 typeid 前缀非法）。
 
-lambda 的 BIL 形态是普通 `new type(..lambda..UUID)` 构造 + `invoke.indirect`；BIL 没有 lambda 专属指令。
+lambda 的 BIL 形态是普通 `new type(..lambda..HASH)` 构造 + `invoke.indirect`；BIL 没有 lambda 专属指令。
 
 ### 15.4 调用派发链下一环（proxy 模板）
 
@@ -117,7 +117,7 @@ invoke.noret fn(..super) [$.this, HIDDEN_GENERIC_ARGS..., NORMAL_ARGS...]
 
 `call???` 的规范签名是 `RUNTIME.md` §14.2 泛型逻辑签名的实质化——`(symbol: .string, namedArgs: .array<core::Pair<.string, .any>>, unnamedArgs: .array<.any>): .any`（非泛型；实参的装箱/拆包转换沿用 §12.1 cast 语义）。降级调用点 `invoke` 的目标**恒为** `core::Any$call???`（vtable 正常解析继承）；实参规范序 = receiver、symbol 字符串资源、具名包构造、位置包构造；返回值为 `.any` 胖值，调用点按期望类型插入一次 §12.1 cast（不符抛 `core.CastException`）。
 
-frontend 判定降级资格（静态类型无声明方法且 wrapper 链含 `.proxy.*`）只读应用标记（§8.3.1）与 proxy 声明，不合成任何符号；被命中宿主的类别路由体由 Middleware 合成（`RUNTIME.md` §14.2）。`call???` 自身是 `core::Any` 的 native 内建方法，无 BIL fn 定义，行为见 §22.5。
+frontend 判定降级资格（静态类型无声明方法且 wrapper 链含 `.proxy.*`）只读应用标记（§8.3.1）与 proxy 声明，不合成任何符号；被命中宿主的类别路由体由 Middleware 合成（`RUNTIME.md` §14.2）。`call???` 自身在 `.intrinsics.rg` 有普通源码默认 `throw` 体，frontend 正常发射 BIL fn；VM 的 wrapper/method hook 优先序与未路由行为见 §22.5，Native 链末使用源码默认体。
 
 ### 15.6 canonical symbol 与参数包
 

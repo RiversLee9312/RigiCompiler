@@ -70,7 +70,7 @@ func{ @Timed (x: i32): i32 -> x }
 每个 lambda 在编译期生成一个**隐藏类**：
 
 - **命名空间**与声明该 lambda 的位置相同；
-- **类名**形如 `..lambda..UUID`（`UUID` 由编译器分配）——这是编译器生成的隐藏类型，用户源码永远写不出这个名字；
+- **类名**形如 `..lambda..HASH`（`HASH` 为编译器按稳定语法与宿主身份派生的摘要，见 `BIL_STANDARD.md` §5.1）——这是编译器生成的隐藏类型，用户源码永远写不出这个名字；
 - **基类**按 lambda 形态四选一（均声明在标准库 `core` 中，为 `abstract class`，各含一个 abstract `operator call`；泛型参数 `TRet` 在最前）：
 
 | 形态 | 基类 | shared |
@@ -95,7 +95,7 @@ func{ @Timed (x: i32): i32 -> x }
 **捕获**（与 §14.3 wrapper 值存储共用**统一 cell 存储**机制）：
 
 - lambda 在被求值时创建隐藏类对象；被捕获的外层变量通过构造函数以 cell 对象传入；
-- `core.Cell\<T>` / `core.ReadonlyCell\<T>` 是**抽象基类**（仅抽象 `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、无显式 init）；实际 cell 对象恒为编译器（P3）逐变量合成的隐藏子类 `..cell..UUID`（`..` 前缀用户不可名；与声明位置同命名空间；自持 `pub var value: T` 字段——const/ReadonlyCell 风味为 `pub const`；override `getValue`/`setValue` + `init()`/`init(value)`）；
+- `core.Cell\<T>` / `core.ReadonlyCell\<T>` 是**抽象基类**（仅抽象 `getValue`/`setValue`——ReadonlyCell 无 `setValue`；无 `value` 字段、无显式 init）；实际 cell 对象恒为编译器（P3）逐变量合成的隐藏子类 `..cell..HASH`（`..` 前缀用户不可名；与声明位置同命名空间；自持 `pub var value: T` 字段——const/ReadonlyCell 风味为 `pub const`；override `getValue`/`setValue` + `init()`/`init(value)`）；
 - 被捕获的变量（除 `this` 与 lambda 自身参数外）一律 Cell 化：
   - 可变（`var`）捕获 → 继承 `core.Cell\<T>` 的隐藏子类；
   - 不可变（`const`）捕获 → 继承 `core.ReadonlyCell\<T>` 的隐藏子类；

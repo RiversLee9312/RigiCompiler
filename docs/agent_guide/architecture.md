@@ -1,6 +1,6 @@
 # RigiCompiler 架构指南
 
-> 代码库结构与核心设计决策；改动代码前必读。开发约定见 [development.md](development.md)；本文件由 AGENTS.md §1/§3/§4 拆分而来。
+> 面向维护者及其 coding agents 的公共架构指南，说明代码库结构与核心设计决策；改动代码前必读。开发约定见 [DEVELOPMENT.md](../../DEVELOPMENT.md)，专题与规范见 [文档索引](../README.md)。
 
 标准库扩展的范围与分层见 [标准库 MVP 设计](../STDLIB.md)；该文档区分既有语义、建议基线和待定公共契约。
 
@@ -61,7 +61,7 @@ RigiCompiler/
 │   ├── TypeReferenceParserLayer.cs  # 类型引用（不含 rich/shared，见 §4.2）
 │   ├── VariableDeclarationParserLayer.cs
 │   ├── ExpressionParserLayer.cs # 表达式框架（识别 + 运算符 + 委托）
-│   ├── PathParserLayer.cs       # 符号路径（收窄为类型引用与 import 路径专用）
+│   ├── PathParserLayer.cs       # 静态符号路径（类型引用、import、namespace 与注解名；表达式路径由表达式层施工）
 │   ├── DeclarationParserLayer.cs / ImportParserLayer.cs / CodeBlockParserLayer.cs
 │   ├── GenericParametersParserLayer.cs  # 泛型形参列表
 │   ├── ParameterListParserLayer.cs      # 函数形参列表
@@ -75,7 +75,7 @@ RigiCompiler/
 │   ├── TryCatchFinallyParserLayer.cs    # try/多 catch/finally(e)
 │   ├── PropertyAccessorParserLayer.cs   # 属性访问器块 { get... set... }（§9.4）
 │   ├── NamespaceParserLayer.cs          # namespace 声明（§15.1）
-│   └── DeclarationParserLayer.cs        # 统一声明层：全局/成员/嵌套任何声明（P3）
+│   └── DeclarationParserLayer.cs        # 统一声明层：全局/成员/嵌套任何声明（语法阶段）
 ├── Lexer/                    # 词法分析
 │   ├── Lexer.cs                 # Tokenize(TextReader/string) 入口
 │   ├── Tokens.cs                # Token 定义（TokenType + Word/String/Notation/Comment/LineBreak/EndOfFile）
@@ -87,18 +87,23 @@ RigiCompiler/
 │   ├── Exceptions.cs            # LexerException / ParserException（用户源码错误）
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成
-│   ├── Commands.cs              # CLI 插件：compile/test/vm/native/module/help 六个 COMMAND 及其 --sub-cmd
+│   ├── Commands.cs              # CLI 插件：compile/test/vm/help；native 在 Middleware/Cli，module 在 Modules
+│   ├── Frontend.cs              # 每文件独立解析、按输入次序回放日志与错误
+│   ├── CompilerJobs.cs          # indexed worker 调度、共享预算和阶段 join
+│   ├── ResourceBudget.cs        # 严格 FIFO 加权资源授予，测试与编译共用
+│   ├── PerformanceMetrics.cs    # 默认关闭的阶段/子进程遥测
 │   └── Logger.cs                # 唯一日志出口：Verbose/Warning/Error 分级；verbose 默认关闭，
 │                                #   --verbose 开控制台 verbose，--log-to 全量 JSONL 落盘
+├── Modules/                  # module.yaml 独立模块、API/BIL 产物、构建缓存、hook 与发布事务
 ├── Semantic/                 # 中端 P1–P3 + 符号图 + 诊断
 │   ├── Diagnostics.cs           # 可恢复诊断模型：Diagnostic{Severity/Phase/Span?/Message}
-│   │                            #   + DiagnosticBag（全编译单元单实例、只追加、HasErrors 门槛）
+│   │                            #   + DiagnosticBag（编译单元主袋 + job 私袋，按输入次序合并；只追加、HasErrors 门槛）
 │   ├── CompilationUnit.cs       # 编译单元模型：多源文件 RootASTNode + DiagnosticBag + SymbolGraph
 │   ├── DeclarationCollector.cs  # P1 声明收集：符号壳 + DeclarationCollection/FileContext
 │   │                            #   + namespace 驻留合并 + import 登记 + ext 待注册 + 重复诊断
-│   ├── DeclarationResolver.cs   # P2 瘦入口：13 步顺序
+│   ├── DeclarationResolver.cs   # P2 瘦入口：有依赖顺序的阶段 visitor
 │   │                            #   启动各阶段 visitor + Freeze；语义规则见各 visitor 文件头
-│   │                            #   注释与 docs/legacy/PROGRESS_REPORT.md 编年史
+│   │                            #   注释与 docs/compiler/semantic/PIPELINE_AND_SYMBOLS.md 当前职责
 │   ├── Resolution/              # P2 visitor 化基建（协议同 Binding/ 三基类，阶段级
 │   │                            #   visitor——P2 遍历为「阶段 × 条目平铺」非 Binder 深递归）：
 │   │   ├── ResolverVisitor.cs      # CRTP 基类（静态 Visit 唯一入口 + Enter/Exit finally 配对）
@@ -126,13 +131,13 @@ RigiCompiler/
 │   │                            #   P2 声明侧与 P3 函数体内同一份判定（internal 单编译
 │   │                            #   单元恒可见）+ 统一诊断措辞
 │   ├── Binder.cs                # P3 瘦入口（visitor 化；语义规则见各 visitor 文件头
-│   │                            #   注释与 docs/legacy/PROGRESS_REPORT.md 编年史）
+│   │                            #   注释与 docs/compiler/semantic/PIPELINE_AND_SYMBOLS.md 当前职责）
 │   ├── Binding/                 # P3 visitor 化基建：
 │   │   ├── BinderVisitor.cs        # CRTP 三基类（通用/ExpressionVisitor 追加
 │   │   │                           #   expectedType 下传/BinderShellVisitor 壳填充）——
 │   │   │                           #   静态 Visit 唯一入口 + Enter/Exit 生命周期模板
-│   │   ├── BindEnvironment.cs      # 只读环境（unit/declarations/NameResolver/诊断落袋；
-│   │   │                           #   参数默认值记忆化表——懒绑定回调由 Driver 注入）
+│   │   ├── BindEnvironment.cs      # 共享只读输入 + job 局部合成 delta（unit/declarations/NameResolver/诊断落袋；
+│   │   │                           #   参数默认值记忆化表——Driver 串行准备，worker 使用 job delta）
 │   │   ├── BindContext.cs          # 函数级状态组合根（Frame/Accessor/
 │   │   │                           #   Labels/Flow/Locals 五成员；组件即方言）
 │   │   ├── BindFunctionFrame.cs    # 只读函数帧（Method/FileCtx/DeclaringType/
@@ -148,15 +153,13 @@ RigiCompiler/
 │   │   ├── Scope.cs                # 词法作用域链
 │   │   ├── Dispatchers.cs          # 类别分派唯一 switch（Expression/Statement/Block）
 │   │   ├── BoundAnalysis.cs        # GuaranteesReturn/值块终止/语句平铺枚举/TypeDisplay
-│   │   ├── BindingDriver.cs        # 声明骨架遍历 + 三阶段启动（①参数
-│   │   │                           #   默认值声明点绑定（记忆化按需，前向依赖
-│   │   │                           #   声明顺序无关）①.5 enum case 模板绑定（
-│   │   │                           #   init 选择 + 洞签名落定符号）②逐函数体
-│   │   │                           #   return 全路径检查 + init 映射赋值合成
-│   │   │                           #   （§9.3：无体产 body/有体前插）；
-│   │   │                           #   阶段 2.5/2.6 删除（合成体绑定取消）；
-│   │   │                           #   proxy 声明体在阶段 2 按模板态绑定（ProxyBodyState）；
-│   │   │                           #   降级调用点资格判定 + CallWildcard，无体合成）
+│   │   ├── BindingDriver.cs        # 串行准备参数默认值（按需记忆化，前向依赖不依声明顺序）与 enum init 选择/洞签名、
+│   │   │                           #   wrapper cell/默认构造/like/Serialization/companion 合成；
+│   │   │                           #   body job 独占 Context 与 Environment delta，嵌套 lambda 留在所属 job；
+│   │   │                           #   placeOf body 固定序提前绑定，按 ordinal join 后合并 body/诊断/generic use/合成；
+│   │   │                           #   return 全路径检查 + init 映射赋值（无体产 body/有体前插）；
+│   │   │                           #   proxy 声明体按 ProxyBodyState 模板态绑定，降级资格 + CallWildcard；
+│   │   │                           #   全局初始化按源声明序绑定，最后追加 lambda/cell 体并执行晚期检查
 │   │   ├── OverloadResolution.cs   # 重载解析设施（SYNTAX §4.2：结构过滤/
 │   │   │                           #   类型适用性/最具体胜出 + 平局打破；source-level
 │   │   │                           #   ranking 唯一落点 BIL §3.3；调用/init/索引读共用）
@@ -319,7 +322,7 @@ RigiCompiler/
 │   ├── BilEmitter.cs            # P4b 瘦入口
 │   ├── EmitVisitor.cs           # P4b CRTP 基类（签名带 BilBlock target 施工目标——
 │   │                            #   下行填充，三树中与协议贴合度最高）
-│   ├── EmitEnvironment.cs       # 模块级（Module/四类资源去重表跨 fn 共享，值为资源对象）
+│   ├── EmitEnvironment.cs       # 每函数 job 独占 Module/资源池；join 按 ordinal 重放驻留键并切片
 │   ├── EmitContext.cs           # 函数级组合根（Function + Temps/BlockIds）
 │   ├── TempVarTable.cs          # 临时变量表（.tN 工厂，自 EmittingFacility 收编）
 │   ├── BlockIdAllocator.cs      # 分支 block 编号分配器（if/loop/switch/seq/try）
@@ -357,7 +360,7 @@ RigiCompiler/
 │   │                            #   GetSelfInstruction 与 invoke 指令见
 │   │                            #   Compute/Data 指令文件）
 │   ├── BilFunction.cs           # Function/.args/.vars/Block（§9）+ BilBlockModifier 枚举
-│   ├── BilInstructions.cs       # 指令基类（Origin(object?) 占位 + WriteTo 排版协议）+
+│   ├── BilInstructions.cs       # 指令基类（Origin(object?) 可空调试附加值 + WriteTo 排版协议）+
 │   │                            #   操作数模型（§10；blk/res 持对象引用）
 │   ├── BilComputeInstructions.cs # §11–§12 指令（BilBinaryOp/BilUnaryOp/BilTypeCheckKind
 │   │                            #   + get.self）
@@ -384,12 +387,15 @@ RigiCompiler/
 │   ├── BilScalarLiteral.cs      # §19.1 标量资源字面量唯一解码点（转义/整族解析；
 │   │                            #   VM 与 Middleware Emit 共用）
 │   ├── BilVm.cs                 # VM 入口
-│   └── Vm/                      # VM 执行器（行为参考实现）：VmContext/VmExecutor/
-│                                #   VmCoroutine/VmTask/VmAlarm/VmException/VmHooks/
-│                                #   VmTypeOps + Values/ 值模型
+│   └── Vm/                      # VM（行为参考实现）：VmContext/VmDispatch（按职责 partial）/
+│                                #   VmCoroutine/VmAlarm/VmException/VmHooks/
+│                                #   VmTypeSheet/VmTypeOps/VmWrapperDispatch/VmDisposal + Values/ 值模型；
+│                                #   Task/Dispatcher/Executor 策略在 stdlib/core/coroutine.rg
 ├── Middleware/               # BIL → 原生可执行（架构 docs/compiler/middleware/
 │                             #   MIDDLEWARE_ARCHITECTURE.md；依赖方向 Middleware → Bil 单向，
-│                             #   唯一豁免第三方依赖：LLVMSharp + libLLVM 锁 LLVM 20）
+│                             #   后端托管依赖：LLVMSharp.Interop + libLLVM 20.1.2；
+│                             #   native 运行时还需 libuv/mimalloc，模块 YAML 依赖见 DEVELOPMENT）
+│   ├── NativeBuildOptions.cs    # executable/static-library/dynamic-library 请求、C 导出闭包与固定标量 ABI
 │   ├── MwContext.cs             # 会话中枢（每模块一个，贯穿各层，逐层挂载产物）
 │   ├── MwNotSupportedException.cs # 合法 BIL 超出现阶段实现面的受控失败（CLI 转退出码 2，
 │   │                            #   与 CompilerInternalException 严格区分）
@@ -406,14 +412,15 @@ RigiCompiler/
 │   │                            #   （ControlFlow/Call/Data/TypeOps/WrapperVisitors +
 │   │                            #   MW11a CoroutineVisitors：await/yield 直译）+
 │   │                            #   MirReachability + TryExpander.cs（BIL §16.7 try 十步展开）
-│   ├── Pipeline/                # IMwStage + MwPipeline（线性阶段序；MW10 插槽在
-│   │                            #   AccessorLowering 与 RcInjection 之间；MW11a
-│   │                            #   CoroutineSplit 在 SingletonLowering 之后）
+│   ├── Pipeline/                # IMwStage + MwPipeline：初始 Layout → MirBuild → 语言语义改写
+│   │                            #   （可达派发先消费 vtable 计划）；wrapper 在 Accessor 与 RC 之间，
+│   │                            #   CoroutineSplit 在 singleton/内建分派/self 归一之后、RC 之前
 │   ├── Passes/                  # MIR 改写（IndexOperator / Accessor 内部类隔离；
 │   │                            #   MW10 wrapper 烘焙五 pass：FieldProxyBaking /
 │   │                            #   MethodProxyBaking / ProxyBaking /
 │   │                            #   CallWildcardLowering / SingletonLowering +
-│   │                            #   ProxyBakeSupport / ProxyWildcardAbi；MW11a
+│   │                            #   ProxyBakeSupport / ProxyWildcardAbi；BuiltinToStringDispatch /
+│   │                            #   WrapperSelfParameter；
 │   │                            #   CoroutineSplitPass：async fn → stub + resume +
 │   │                            #   frame 合成类型；RcInjection CFG 分析内核，
 │   │                            #   非逐指令翻译）
@@ -423,29 +430,35 @@ RigiCompiler/
 │   │                            #   MW11a SyntheticTypePlanner（协程 frame 合成类型通道）；
 │   │                            #   TypeLayout：canonical → LLVM 唯一映射
 │   │                            #   （RUNTIME §2 胖引用 128-bit/16 字节对齐）+ 数组前缀；
-│   │                            #   TypeSheetAbi / CallAbi：字段序与调用约定。非翻译 visitor
+│   │                            #   TypeSheetAbi / CallAbi：字段序与调用约定；ConstructedCallCollector
+│   │                            #   沿实际调用/storage事实收集闭合形，TypeLayoutPlan 持纯布局决策。非翻译 visitor
 │   ├── Emit/                    # LlvmHost + ModuleBuilder 瘦驱动（MIR→LLVM）+
 │   │                            #   LlvmEmitEnvironment/Context + LlvmEmitDispatchers +
 │   │                            #   簇 CRTP（*Emitter；NativeCall / VirtualCall / New /
 │   │                            #   TypeId / Nullable / Wrapper + MW11a
-│   │                            #   CoroutineEmitter 协程五指令）+ LlvmBitcode /
-│   │                            #   RuntimeFaces / ExceptionEmitter / ObjectEmitter
+│   │                            #   CoroutineEmitter（Create/FailureLoad/Done/ResumeCall）+ LlvmBitcode /
+│   │                            #   ExceptionEmitter / ObjectEmitter；FatValueSlotAbi 生成 Cell/Func 槽适配
 │   ├── Toolchain/               # ToolchainResolver（--toolchain → RIGI_LLVM →
 │   │                            #   tools/.llvm/<rid> → PATH）+ ExternalProcess
-│   │                            #   外部进程封装
+│   │                            #   外部进程封装；LibuvResolver / MimallocResolver 静态库解析，
+│   │                            #   ToolchainIdentity / NativeLinkRecord / LinkerThreads 记录身份与线程参数
 │   ├── Cache/                  # runtime/object 完整目录原子缓存、稳定 key 文件锁与 whole-program 对象身份
-│   ├── Runtime/RigiRtBuilder.cs # EmbeddedResource → 实际预处理快照身份 → 同快照 bitcode 编译 →
-│   │                            #   clang -emit-llvm -c 编成 bitcode（unity build）
+│   ├── Runtime/               # RigiRtBuilder：EmbeddedResource → 实际预处理快照身份 →
+│   │                            #   同快照 clang -emit-llvm -c bitcode 编译（unity build）；
+│   │                            #   RuntimeFaces 维护普通运行时面，协程专用 helper 不走 String 编组
 │   └── Cli/NativeCommand.cs     # native COMMAND（--file/--out/--emit-obj/--emit-ll/
-│                                #   --toolchain）
+│                                #   --toolchain/--libuv-dir/--mimalloc-dir/--link；库请求另经 NativeBuildOptions）
 ├── rigi_rt/                  # 运行时 shim 库（C，EmbeddedResource 内嵌，clang 现场编
 │                             #   bitcode 合并进模块；架构同上文档）
 │   └── shim.c                   # MW1 最小面：rigi_string {data,len} UTF-8 / rigi_print /
 │                                #   rigi_print_err / rigi_string_concat / main → rigi_entry
+│   └── memtrack.c              # mi_malloc_aligned/mi_free 包装、16B 台账头/TLS 节拍聚合与退出零泄漏
+│   └── arc.c/.h                # 原子 RC、值语义/胖引用 ARC、对象头与 region 嵌套
 │   └── macrogc.c/.h             # MW12 Bacon-Rajan 收集器（显式 trace 栈）+ 候选账本 +
-│                                #   GC 线程/fence；split-heap：shared 全局账本（pin-before-sub）
-│                                #   + per-协程 local 账本属主协作收集（lgc_pass 族、挂出点小回收、
-│                                #   终止收干）+ 子图 promote walker；env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
+│                                #   专用 OS collector 线程/fence；local/shared 均原子、同全局账本
+│                                #   （pin-before-sub/PURPLE +1）；per-协程 lgc_pass 登记面停用封存，
+│                                #   保留终止/shutdown 收干与 promote detach + 子图 promote walker；
+│                                #   env：RIGI_RT_GC_THRESHOLD/OFF/TRACE
 │   └── gexc.c/.h                # MW12b §25.2 全局异常通道（undisposed 事件队列 +
 │                                #   注册表 + atexit flush）
 │   └── eh.c/.h                  # MW9a checked-flag 便携异常传输：TLS pending 槽三面
@@ -457,24 +470,28 @@ RigiCompiler/
 │                                #   teardown 过户，RUNTIME §28）
 │   └── worker.c/.h              # Worker 原语（线程/入队/park/同步 Mutex/定时器/TLS）
 │   └── failreg.c                # 未观察失败注册表
-├── tools/                    # 开发工具链脚本（不入 CI 主流程）：
+├── tools/                    # 工具链脚本（Fetch-Libuv/Mimalloc 在 CI publish 前预取）：
 │   ├── Fetch-LlvmToolchain.ps1  # 开发机 LLVM 工具链获取（钉 20.1.2 + SHA256 校验，
 │   │                            #   选择性提取 clang/lld/内建头文件 → tools/.llvm/ 缓存，
 │   │                            #   gitignored；CI 用 runner 预装 clang/lld 不跑本脚本，
-│   │                            #   见 MIDDLEWARE_ARCHITECTURE §2 链接器/rigi_rt 编译行）
+│   │                            #   见 docs/compiler/middleware/TOOLCHAIN_AND_CACHE.md §2）
 │   ├── Fetch-Libuv.ps1          # MW11b libuv 获取（钉 v1.52.1 源码 tarball + SHA256
 │   │                            #   校验，cmake 本地构建静态库 → tools/.libuv/<rid>/ 缓存，
 │   │                            #   gitignored；解析序 --libuv-dir → RIGI_LIBUV →
 │   │                            #   tools/.libuv → 编译器旁 .libuv，§2 获取链定稿）
+│   ├── Fetch-Mimalloc.ps1       # 钉版包与 SHA256，缓存 tools/.mimalloc/<rid>/；
+│   │                            #   --mimalloc-dir → RIGI_MIMALLOC → tools/.mimalloc → 编译器旁 .mimalloc；
+│   │                            #   native 缺失编译期拒绝（libuv 同纪律）
 │   ├── Watch-Command.ps1        # shell 层看门狗（development.md 测试策略节）：Job Object
 │   │                            #   KILL_ON_JOB_CLOSE 灭整树 + stdin 断开 + 超时退出码 124
 │   │                            #   + -CleanupOrphans 孤儿清扫；所有可能挂死的测试/产物
 │   │                            #   进程运行必须经它带超时拉起
 ├── stdlib/                   # 编译器自携标准库源（EmbeddedResource 内嵌，见 StdlibSources；
-│                             #   八源，与用户源同走 P1–P4）
-│   ├── .bootstrap.rg         # 基元自举源（EnumerateInRange + core.Pair\<TKey, TValue>
-│   │                            #   解构协议根 + lambda 对象模型四家族 + any_to_string
-│   │                            #   触达点，SYNTAX §18/§15.3/§3.8）
+│                             #   与用户源同走 P1–P4）
+│   ├── .bootstrap.rg         # 基元 ext 自举（EnumerateInRange）、ComparisonResult、
+│   │                            #   lambda 对象模型四家族与 Cell/ReadonlyCell（SYNTAX §15.3）
+│   ├── .intrinsics.rg        # 内建类型源码声明、Pair 解构协议根、Any/Object 默认方法体
+│   │                            #   与私有 any_hash/any_to_string（SYNTAX §18/§15.3/§3.8）
 │   └── core/                    # Console.rg（core.io::Console）+ collections.rg
 │                                #   （IEnumerable/IEnumerator 双接口 + RangeI32/
 │                                #   RangeEnumeratorI32 + List\<T>/Map\<K, V\> 最小集合面）
@@ -483,7 +500,8 @@ RigiCompiler/
 │                                #   CoroutineLocal\<TValue> 具体 shared class + sleep，
 │                                #   SYNTAX §15.3）+ time.rg（core.time）+ disposable.rg（core.IDisposable，
 │                                #   §6.2）+ exceptions.rg（RuntimeException/IOException/
-│                                #   CastException/NoSuchMethodException 四异常子类，§8.1）
+│                                #   CastException/NoSuchMethodException/DividedByZeroException/
+│                                #   OutOfBoundException/IllegalStateException 等异常子类，§8.1）
 │                                #   + global_exceptions.rg（core.UndisposedResourceException +
 │                                #   GlobalExceptionHandler 全局异常通道，§25.2/MW12b）
 │                                #   + serialization.rg（core.serialization：@Serializable/
@@ -511,7 +529,7 @@ RigiCompiler/
 │   │                            #   capability/EOS/broadcast/Receiver 电池）
 │   ├── BinderTests.Mw11d.cs     # MW11d 修饰器/with 约束 P3 正反例
 │   └── e2e/rigi/mw11dd_*.rg     # Messenger/Reader 负例语料（E2e 套件）
-└── docs/                     # 设计与规范文档（全部为权威参考）
+└── docs/                     # 语言/BIL/运行时规范、实现专题与历史档案（legacy 不作为当前实现依据）
 ```
 
 ### 3.1 关键文件
@@ -536,10 +554,13 @@ Values/Calls/Fields/Segments/Indexing 文件承载相应路径设施。
 | `docs/RUNTIME.md` | 运行时模型与类型系统（索引文档，正文在同名子目录） | ⭐⭐⭐ |
 | `docs/BIL_STANDARD.md` | BIL 中间语言规范（索引文档，正文在同名子目录） | ⭐⭐ |
 | `docs/legacy/PARSER_ROADMAP.md` / `docs/legacy/PROGRESS_REPORT.md` | Parser 路线图与进度（历史档案，不再更新） | ⭐⭐ |
-| `docs/compiler/syntax/EXPRESSION_ARCHITECTURE.md` | 表达式架构专项设计 | ⭐⭐ |
-| `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 语义分析与 BIL 生成架构（中端） | ⭐⭐⭐ |
+| `docs/compiler/syntax/README.md` | Lexer、Parser、AST 与表达式架构专题 | ⭐⭐ |
+| `docs/compiler/semantic/SEMANTIC_ARCHITECTURE.md` | 语义/Lowering 分专题索引，保留原 § 编号 | ⭐⭐⭐ |
 | `docs/legacy/SEMANTIC_ROADMAP.md` | 语义分析路线图（历史档案，不再更新） | ⭐⭐ |
-| `docs/compiler/vm/BIL_VM_DESIGN.md` | BIL VM 设计 | ⭐⭐⭐ |
+| `docs/compiler/vm/BIL_VM_DESIGN.md` | VM 值/派发、执行/生命周期、指令/Hook与验证专题索引 | ⭐⭐⭐ |
+| `Modules/ModuleCommand.cs` / `Modules/ModuleBuildService.cs` | module CLI 与依赖 DAG 构建 | ⭐⭐ |
+| `Modules/ModuleInterface.cs` / `Modules/ModuleInterfaceImporter.cs` | 无 AST 的版本化接口导出/导入 | ⭐⭐ |
+| `Modules/ModuleProductPublication.cs` / `Modules/ModuleBundle.cs` | 请求级产品事务与 ZIP 安装 | ⭐⭐ |
 | `Parser/Parser.cs` | 层栈式 Parser 的核心协议 | ⭐⭐⭐ |
 | `Lexer/Tokens.cs` / `Parser/Keywords.cs` / `AST/ASTNode.cs` | Token/关键字/AST 基类等核心数据结构 | ⭐⭐⭐ |
 
@@ -553,6 +574,13 @@ Place/Handle 的编译链入口为 `Semantic/Binding/Visitors/PlaceOfVisitor.cs`
 `.handle`（capability）的目标存活与释放：归零转移经属主通道、属主终止
 过户、GC 代理边（RUNTIME §28），不建立独立 MQ 注册表。
 该 Rigi 对象能力与 NativeRcHandle 的 native 互操作生命周期设施无关。
+
+
+### 3.2 独立模块、接口与发布
+
+`Modules/ModuleConfiguration`、`ModulePaths`、`ModuleResolver` 固定配置、路径与依赖身份；`ModuleSources`、`ModuleBuildContext` 决定各模块的源码、profile 和子环境。`ModuleBuildService` 在依赖完成后取得本模块缓存锁，仅编译自有源码，消费依赖 API/BIL。
+
+`ModuleBuildIdentity`、`ModuleArtifactCache`、`ModuleArtifactEnvelope` 维护内容身份与 receipt；`ModuleSymbolRegistry`、`ModuleInterfaceImporter`、`ModuleLateHelpers`、`ModuleApplicationLinker` 维护声明 ID、跨模块 helper 和最终链接；`ModuleHooks`、`ModuleProductPublication`、`ModuleNativePublication`、`ModuleBundle` 完成 hook、Native 产品、资源事务与可复现包。模块 CLI 由 `Core/CommandLine` 注册 `ModuleCommand`，具体操作、路径限制与事务边界见 [DEVELOPMENT.md](../../DEVELOPMENT.md) 的模块章节。
 
 ## 4. 核心设计决策（改动代码前必须理解）
 
@@ -591,123 +619,22 @@ var map: List\<Map\<String, i32>>        // 嵌套闭合写 >>
 
 ### 4.4 Parser 架构：层栈 + 状态机 + 施工目标协议
 
-Parser 主循环维护一个 Layer 栈，每个 token 交给栈顶 Layer 处理。核心协议在 `Parser/Parser.cs`：
-
-- `IParserLayer.ParseToken(token, context)` 返回 `ParserLayerResult`：
-  - `Continue`（单例）：本层继续消费，token 已被本层吃掉
-  - `PushLayer(layer, TokenDisposition)`：压入子 Layer（委托）
-  - `PopLayer(TokenDisposition)`：本层完成，弹栈
-- `TokenDisposition.Consume`：当前 token 已被本层消费，前进到下一个 token；
-  `TokenDisposition.Replay`：当前 token 原样交给新的栈顶 Layer 重新处理。
-- **每个 Layer 内部用状态机驱动**（`private enum State` + switch），状态转换处要写注释。
-- 模块化原则："Delegate, don't implement" —— 框架层（如 `ExpressionParserLayer`）负责识别、路由、运算符处理；具体语法结构委托给专门 Layer。每个 Layer 职责单一、可独立测试。
+完整驱动、Consume/Replay、施工目标与层分工统一维护在 [Parser 架构](../compiler/syntax/parser.md)；表达式起点、无优先级开关、路径与运算符组合见 [表达式 Parser](../compiler/syntax/expressions.md)。
 
 ### 4.7 ⚠️ Parser 架构规则（必须遵守）
 
-重构后的 Parser 分为**控制流系统**与 **AST 施工系统**，两者严格分离：
+[施工规则与上下文传递](../compiler/syntax/parser.md) 定义不回传 AST、明确施工目标、EOF、注释统一跳过、独立层测试及 allowBareReturn 传递。新增功能遵循该协议。
 
-1. **Layer 不返回 AST**。Layer 之间只传递控制权，不传递任何 AST 数据；
-   `PopLayer` 只表示控制权归还。禁止任何形式的回传替代机制
-   （回调、Context 字段、父层引用、全局临时字段、事件/委托等）。
-2. **Layer 创建时必须获得施工目标**。构造函数接收明确、强类型的目标
-   （具体施工节点，或 ExpressionRootASTNode/CodeBlockASTNode/RootASTNode 等附加目标），
-   子层原地填充目标或向目标附加子节点；数据流严格单向（父→子）。
-3. **Push/Pop 使用 TokenDisposition**（Consume/Replay），禁止布尔值；
-   `Continue` 只表示"本层消费当前 token 并继续"，不支持 Replay。
-4. **表达式位置统一使用 ExpressionRootASTNode** 作为稳定挂载点：
-   一次性 `Attach`、禁止替换、禁止附加已有父节点的表达式；
-   可选表达式用 null Root 表示，禁止"非 null 但为空的 Root"；
-   `ASTNode.Parent` 只能设置一次。
-5. **子 Layer 禁止修改施工目标之外的 AST**（父节点、兄弟节点、
-   经 Context 获得的全局位置、其他 Layer 正在施工的节点）。
-6. **EOF 是正式 Token**（`EndOfFileToken`）：由 Lexer 在输出 token 列表末尾
-   追加（Parser 对绕过 Lexer 的调用方保持追加兼容），只由
-   RootParserLayer 消费；非 Root 层遇 EOF：结构完整 → Pop(Replay) 上交，
-   不完整 → 抛 "Unexpected end of file"。禁止用换行伪装 EOF。
-7. **新 Layer 必须有独立测试**（`TestRootParserLayer` 驱动，见 development.md 测试策略）。
-8. **注释由 Parser 主循环统一跳过**：CommentToken 不参与语法，
-   分发时直接跳过；各 Layer 不再自行处理注释。
-
-解析成功后 `ASTIntegrityValidator` 自动验证 AST 不变量：遍历只走
-`[ChildAstNode]` 标注的成员（`[AstCarrier]` 对象深入其公共字段），校验每个
-子节点的 Parent 指向持有者，另含 Root 均已填充、节点无共享、Parent 链无环、
-switch default 规则、**每节点 Span 合法（非空、sourceName 非空、
-End 不早于 Start）**、**类型审计（装 ASTNode 的字段/自动属性必须带
-[ChildAstNode]/[ParentAstNode] 标注）**；失败抛 `CompilerInternalException`（内部编译器错误，
-与用户语法错误区分）。节点类型一律用 CLR 类型判断（无 ASTNodeType 枚举）。
-「归属后知」的场景必须用创建时归属即定的结构承载
-（ExpressionStatementASTNode 双 Root 槽、LoopStatementASTNode.RangeTo）
-或延迟一次性 AttachTo（注解），**禁止任何形式的 Parent 重挂**。
-
-**Span 施工**：每个 AST 节点都有源码范围 `ASTNode.Span`（`CharRange?`）。
-约定：层目标节点由 Parser 主循环按 token 流计算 span，层弹出时经
-`ISpanReceiver.ReceiveSpan` 回填（一律 `target.Span ??= span` 只填空）——
-新 Layer 若有施工目标，应实现 `ISpanReceiver`；层内自建节点由所在层显式设置
-（创建记 Start，完成经 `ParserLayerContext.GetPreviousLocation()` 封 End）；
-`ExpressionRootASTNode` 未显式设置时透明继承内容表达式的 span。
-**Span 统一为左闭右开 `[Start, End)`**：Start 指向首个字符，
-End 指向最后一个字符的下一位置（token 与 AST 节点一致；EOF 为零宽范围）；
-语句/声明的 span 不拖尾换行符到下一行（终态层不消费换行）。
-Validator 与 AstJsonlSerializer 的 [ChildAstNode] 反射统一走
-`AST/ASTVisitor.cs` 的 `AstStructureReflection`，禁止再写第三份反射下钻。
-
-**JSONL 往返**：`AstJsonlSerializer`（v2：carrier 记录化、字段名键控）
-与 `AstJsonlDeserializer`（完整反序列化，产物强制过 Validator）构成往返；
-消费方按字段名取值，不依赖字段顺序。
-
-**allowBareReturn 传染**：lambda 是裸 return 边界（SYNTAX §5.1）——
-`CodeBlockParserLayer` 构造标记 `allowBareReturn`（默认 true）为 false 时，
-遇无 @标签 return 抛 ParserException。lambda 体一律下传 false；标记沿施工链
-向所有嵌套代码块与表达式深处传染（If/Switch/Loop/TryCatch/Seq/
-VariableDeclaration/ArgumentList/TypeOf/Expression 各层逐一传递）——
-**新 Layer 若创建 CodeBlockParserLayer 或 ExpressionParserLayer，必须同样
-接收并传递该标记**；if/switch 表达式分支体不是 lambda 边界，继承父上下文标记。
+[AST 归属、Span、完整性与 JSONL](../compiler/syntax/ast.md) 定义一次性 Parent/Attach、ExpressionRoot、禁止共享与环、反射标注审计、Required、Span 回填和往返；节点与载体清单也集中于该页。
 
 ### 4.5 ⚠️ 简洁优先：新增代码前必须自问的三个问题
 
-新增任何 AST 节点、Layer、状态或辅助方法之前，逐条回答：
-
-1. **这个真的有必要存在吗？** 不服务当前需求的字段、状态、抽象一律不写。
-2. **有没有更简洁更优雅的方法？** 能用现有状态机多一个分支解决的，不要新建一层。
-3. **可不可以复用已有的轮子？** 先翻一遍 `Parser/` 下已有的 Layer，不要自己造轮子。
-
-项目内已验证的复用范例：
-
-| 特性 | 复用方式 | 没有做的事 |
-|------|----------|-----------|
-| `throw` / `yield` / `return` / `break` / `continue` | `CodeBlockParserLayer` 的内联子状态 | 各建一个 Layer |
-| `await` | `ExpressionParserLayer.IsPrefixUnaryOperator` 加一个关键字 | 新建 AwaitParserLayer |
-| `seq` 语句形态 + 表达式形态 | 共用同一套 `CodeBlockParserLayer` 基建 | 两套独立实现 |
-| class/interface/struct/wrapper/enum 声明 | 扩展既有 `DeclarationParserLayer` 骨架 | 新建 ClassDeclarationParserLayer |
-
-只有当职责确实独立、且需要被多个父层复用时，才新建 Layer。
+三问、已有层的复用范例及新建 Layer 的职责边界集中在 [Parser 复用与增量设计](../compiler/syntax/parser.md)。通用开发工作流见 [DEVELOPMENT.md](../../DEVELOPMENT.md)。
 
 ### 4.6 Lexer 的特点
 
-Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个 token：`Word "3"`、`Notation "."`、`Word "14"` —— 由 `LiteralParserLayer` 的状态机组合成浮点字面量。不要在 Lexer 里加语义判断。
+字符驱动、词法层、Token 契约、斜杠/引号分流、字符标量、多行文本解码、插值帧、EOF 与位置计量统一维护在 [Lexer 架构](../compiler/syntax/lexer.md)；源码范围细节见 [AST](../compiler/syntax/ast.md)。
 
-- 斜杠家族（`/`、`//`、`/*`）由专门的 `SlashLexerLayer` 分流；
-- `EndOfFileToken` 由 `Lexer.Tokenize` 在输出末尾追加；输入结束时以
-  虚拟换行冲刷帧（FlushLayers）弹栈，未闭合字符串/块注释即 LexerException；
-- 位置计量：`CharRange.sourceName` 是源名唯一来源
-  （`CharPosition` 不携带）；`CharPosition.offset` 是 0 起始字符索引；
-  行/列 1 起始，换行算当前行最后一列；token 头跳过空白字符；
-  EOF 冲刷帧占一个末尾虚拟位置，保证冲刷 token 的 End 正确；
-- **token 范围为左闭右开 [Start, End)**：End 是最后一个字符的下一位置；
-- 块注释不吞字符、不吞换行（按行分段，换行以 LineBreakToken 入流）；
-  行尾归一只把 `\r\n`/`\r` 归一为 `\n`；
-- 复合赋值（`+=`/`*=` 等）不合并 token（与 `>=` 同策略，Parser 遇 op+`=` 重组为
-  CompoundAssignmentExpressionASTNode）；字符字面量 `'` 已实现
-  （CharLexerLayer + CharToken + CharLiteralASTNode，转义复用 StringEscape）；
-  多行字符串 `"""` 已实现（SYNTAX §3.3：
-  Swift 风格严格多行，QuoteLexerLayer 分流 `"`/`""`/`"""`，转义表 StringEscape 单源）；
-- **字符串插值词法帧机制（SYNTAX §3.8）**：字符串层遇未转义的 `${`
-  （挂起 `$` 延迟判定，`\$` 不算引导）产出文本段 + InterpolationStartToken
-  并**压基础层**正常词法；驱动按 **token 层**大括号计数配平（字符串/字符/
-  注释内容不产生记号 token，天然豁免），归零把 `}` 改发 InterpolationEndToken
-  并弹回字符串层；嵌套插值经帧栈递归，EOF 帧未闭合先于冲刷报错。
-  多行层段 token 以原文暂存保序，闭界确定缩进基准后统一回填解码内容。
-  段 token 的 span 不含引号与引导 `$`（首段/段尾修正）。
 
 ### 4.8 测试资源与进程边界
 
@@ -717,7 +644,7 @@ Lexer 只做简单字符识别，不理解语义。例如 `3.14` 会输出三个
 
 完整源码 E2e、多轮 BilVmStress 与 NativeE2E 各输入独立执行。默认截止策略由任务选择和 ID 解码共用，直接 case 客户端复用同一策略；显式调用方覆盖优先。有限重型窗口只覆盖 legacy NativeE2E 的 whole-program O2 和 Binder/BilEmitter/Lowerer 无参数完整整组；完整 BilEmitter 的七十五分钟窗口为共享预算满载时的正常整套成本留余量，其余普通 case 保留轻型截止。完成回调只输出单行进度，最终结果按输入序归并，不能以进度行替代最终结果。
 
-Semantics fuzz 稀疏批次仍按固定种子从全局 0 推进生成前缀，只执行所选序号；Stress 按原全局 i 调用 `Generate(i)`。确定性检查仍按原 i 模 60，默认预算、CI 预算和慢门控不变。Lexer fuzz 未拆分时保持 suite 粒度。native/VM 并发 profile 至少保留四 Compute Worker；可在较少 CPU slots 上独占共享，GC/IO 线程不计入 Compute 数。
+Semantics fuzz 稀疏批次仍按固定种子从全局 0 推进生成前缀，只执行所选序号；Stress 按原全局 i 调用 `Generate(i)`。确定性检查仍按原 i 模 60，默认预算、CI 预算和慢门控不变。LexerFuzz 先按固定种子生成全部输入，再按稳定全局序号以最多 100 例小批进入隔离 worker；目录与执行共用 provider，不能改随机序列或原预算。native/VM 并发 profile 至少保留四 Compute Worker；可在较少 CPU slots 上独占共享，GC/IO 线程不计入 Compute 数。
 
 `tools/PerfBaseline/ProcessIsolation.cs` 是性能工具、case client 与 legacy worker 的共用受管启动实现。Linux 独立 setsid session/group，负 pgid 清理后代；Windows 使用 `CreateProcessW` 与 STARTUPINFOEX 的 Job/stdio 白名单，旧系统回退 CREATE_SUSPENDED→AssignJob→ResumeThread。只有 child 端 stdio 可继承，属性值活到 DeleteAttributeList，挂起期间固定 root 进程句柄，正常结束也杀剩余后代。根等待、管道排空与请求临时根清理按顺序执行。Linux 无法约束主动 setsid 逃组，Windows 实测由可用 Windows/CI 环境承担，Linux 构建不能替代该验证。
 
@@ -734,7 +661,10 @@ P2 依赖检查、P3 预合成/global cell 提升/全局初始化、P4b 声明�
 `RIGI_RESOURCE_LEASE_MEMORY_MIB` 标记内部上限，清除父进程测试内存配置，
 不再次扣除外层父宿主预留；GC/实际 cgroup/affinity 上限仍参与取最小值。
 共享预算仅属于当前进程，不能将父 lease 与 child 内部阶段 lease 混同。
-不可枚举的 P2/Binder/BilEmitter/Lowerer/SmartCast/StdlibSources 整组及其定向组
+显式旧 DeclarationResolver（P2）/Binder/BilEmitter/Lowerer/SmartCast/StdlibSources
+整组兼容 ID，以及其中支持的旧定向组 ID（解码后 `Indices.Count == 0`），
 声明较重的编译内存 profile：旧测试方法的多个命名局部图可同时存活，预算
 依据该生命周期，而非单个新编译的工作集。单 E2e 编译仍使用自己的 profile；
 二者都经同一共享预算授予，child GC 上限仍是所得 lease 的一半。
+
+默认入口已按真实方法组枚举调度，不应把整个套件称为不可枚举；默认组与单 E2e 编译使用各自的 profile。

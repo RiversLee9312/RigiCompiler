@@ -16,13 +16,13 @@
 
 1. [架构概览](#架构概览)
 2. [实现优先级](#实现优先级)
-3. [基础组件](#基础组件)
-4. [表达式解析器](#表达式解析器)
-5. [语句解析器](#语句解析器)
-6. [类型声明解析器](#类型声明解析器)
-7. [函数解析器](#函数解析器)
-8. [类型系统解析器](#类型系统解析器)
-9. [高级特性](#高级特性)
+3. [基础组件](#p0---核心基础-必须首先实现)
+4. [表达式解析器](#p1---表达式系统-次优先)
+5. [语句解析器](#p2---语句系统)
+6. [类型声明解析器](#p3---类型声明系统)
+7. [函数解析器](#p4---函数和成员系统)
+8. [类型系统解析器](#2-类型引用解析器-typereferenceparserlayercs)
+9. [高级特性](#p6---高级特性)
 10. [测试策略](#测试策略)
 11. [实现检查清单](#实现检查清单)
 
@@ -1803,10 +1803,10 @@ public class PerformanceTests
 
 ## 参考资源
 
-- [SYNTAX.md](../../SYNTAX.md) - Rigi 完整语法规范
-- [FRONTEND_TYPES.md](./FRONTEND_TYPES.md) - 前端数据类型说明
-- [BIL_STANDARD.md](../../BIL_STANDARD.md) - BIL 中间表示标准
-- [RUNTIME.md](../../RUNTIME.md) - 运行时模型
+- [SYNTAX.md](../SYNTAX.md) - Rigi 完整语法规范
+- [FRONTEND_TYPES.md](../compiler/syntax/FRONTEND_TYPES.md) - 前端数据类型说明
+- [BIL_STANDARD.md](../BIL_STANDARD.md) - BIL 中间表示标准
+- [RUNTIME.md](../RUNTIME.md) - 运行时模型
 
 ---
 

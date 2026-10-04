@@ -75,17 +75,19 @@ pub interface IDisposable {
 
 `native` 函数（`SYNTAX.md` §4.6）把 Rigi 调用路由到运行时原生方法面。原生方法面由一个 C 编写的 shim 库提供，库标识为 `rigi_rt`：它把 libc 风格的 C 函数包装为 Rigi 调用约定下的可调用入口，并负责 Rigi 值（如 `String` 的 native 表示）与 C 类型之间的转换。
 
-- **调用约定**：fastcall；精确的寄存器/栈分配、胖值槽传递与 `String` 布局规则由 Middleware 定义。
-- **第一版原生方法面**只有五个函数，不提供可变参数：
+- **调用约定**：目标平台默认 C ABI；精确的寄存器/栈分配、胖值槽传递与 `String` 布局规则由 Middleware 定义。
+- **基础原生方法面**包括以下接口，不提供可变参数；这不是当前全部原生注册键的清单：
   - `print(text: String)`：把字符串写入标准输出；
   - `printErr(text: String)`：把字符串写入标准错误；
-  - `any_to_string(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。它只经标准库 `.bootstrap.rg` 的文件级私有 native 全局声明暴露：`Any` 上声明 open `toString(): String`（全类型承诺，自带实现），`Object` 提供 open `override` 默认实现；二者的实现体由编译器合成为「装箱接收者后调用 `any_to_string`」的小函数，用户代码不直接调用 `any_to_string`。用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
-  - `any_hash(value: Any): i64`：`SYNTAX.md` §3.8.1 的 `hash` 内建承载（Map 键判等）——`String` 按内容哈希（FNV-1a 64 over data 字节）、标量按值（payload 8 字节 FNV-1a）、对象与堆值按 payload（堆指针）FNV-1a（身份，不直接返回裸指针）、`null` 固定 `0`。同一进程内同值必同哈希；VM hook 已统一为同一 FNV-1a 64（review-20260910），标量/字符串数值两宿主一致，对象身份值两宿主不可比（地址 vs 宿主对象序号）；哈希不保证分布均匀，允许碰撞。与 `any_to_string` 同构：只经标准库 `.bootstrap.rg` 的文件级私有 native 全局声明暴露（`Any` open `hash(): i64` 全类型承诺 + `Object` open `override` 默认实现，实现体由编译器合成为「装箱接收者后调用 `any_hash`」的小函数），用户代码不直接调用 `any_hash`；用户类型 `override hash` 后经普通虚派发执行自身实现，不再命中原生面。
+  - `any_to_string(value: Any): String`：`SYNTAX.md` §3.8 的 `toString` 内建承载——内建基本类型（数值/`bool`/`char`）返回标准文本（`String` 的 `toString` 即自身，不经此路由）；未覆写 `toString` 的对象返回其类型 canonical 名。它只经标准库 `.intrinsics.rg` 的文件级私有 native 全局声明暴露：`Any` 上声明 open `toString(): String`（全类型承诺，自带实现），`Object` 提供 open `override` 默认实现；二者的实现体在 `.intrinsics.rg` 按普通 Rigi 方法声明，调用 `any_to_string(this)`，接收者的装箱转换由正常 Lowering 处理，用户代码不直接调用 `any_to_string`。用户类型 `override` 后经普通虚派发执行自身实现，不再命中原生面。
+  - `any_hash(value: Any): i64`：`SYNTAX.md` §3.8.1 的 `hash` 内建承载（Map 键判等）——`String` 按内容哈希（FNV-1a 64 over data 字节）、标量按值（payload 8 字节 FNV-1a）、对象与堆值按 payload（堆指针）FNV-1a（身份，不直接返回裸指针）、`null` 固定 `0`。同一进程内同值必同哈希；VM hook 已统一为同一 FNV-1a 64（review-20260910），标量/字符串数值两宿主一致，对象身份值两宿主不可比（地址 vs 宿主对象序号）；哈希不保证分布均匀，允许碰撞。与 `any_to_string` 同构：只经标准库 `.intrinsics.rg` 的文件级私有 native 全局声明暴露（`Any` open `hash(): i64` 全类型承诺 + `Object` open `override` 默认实现，实现体在 `.intrinsics.rg` 中按普通 Rigi 方法声明，调用 `any_hash(this)`，经正常绑定与 BIL 发射，接收者装箱由正常 Lowering 处理），用户代码不直接调用 `any_hash`；用户类型 `override hash` 后经普通虚派发执行自身实现，不再命中原生面。
   - `alloc_array(typeid, size)`：分配元素零值初始化的 `Array\<T>`（T 由泛型 hidden typeid 物化，传参形态见 §10）。它只经标准库的私有 native 声明暴露：`Array\<T>` 的合法构造入口是 stdlib 的 `arrayOf\<T>(size)` 与 `arrayOfElements\<T>(elements...)`（后者在 Rigi 层把元素逐项放入），用户代码不直接调用 `alloc_array`。两个入口签名分离（长度 vs 元素包），不存在 `i32` 长度与 `i32` 元素的重载混淆。T 为 enum struct 时 `arrayOf` 由 frontend 在泛型实例化点拒绝（`BIL_STANDARD.md` §14.3「enum 无零值」）。**元素读写语义（Q6，`SYNTAX.md` §13.2）**：`a[i]` 读取语义上走 `getAtIndex`（返回 `T?`），实现上由编译器直发 `BIL_STANDARD.md` §13.6 `get.array`——界内得 `Nullable\<T\>` 包装的元素、**越界读取得 `null` 而非 trap**；`a[i] = v` 写入仍收非空 `T`，越界写入抛可捕获 `core.OutOfBoundException`（MW9b 起；此前为运行时 trap/abort）。
   - `timer_create` / `alarm_wait`：`sleep` 与 `Timer` 的时钟底座（§19.3/§19.4/§19.5）。`sleep` 构造内部 `SleepAlarm`，不另暴露 `make_sleep_alarm`。用户代码不直接调用。
 - **GC 类设施（如 GCAlarm）不属于本表面，也不进 stdlib 与 VM**：BIL 明确规定不得对 GC 机制与实现作任何假设（`BIL_STANDARD.md` §1.1/§22.1），此类设施是 Middleware 的内部实现细节，没有任何跨层可见形态。
 - **BIL VM 不链接原生库**：VM 对 `(lib, symbol)` 命中 `BIL_STANDARD.md` §22.5 内建 hook 表的 native 调用直接执行内建行为，因此在没有 Middleware 与 `rigi_rt` 实现的环境下也能完整执行程序。
-- 标准库在 Rigi 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `rigi_rt`；格式化、插值等逻辑全部在 Rigi 层演进，不进入原生方法面。
+- 标准库在 Rigi 层封装原生方法面（如 `core.io::Console.println` 调用 `print`），用户代码不直接依赖 `rigi_rt`；高层格式化与插值编排在 Rigi 层演进，标量标准文本转换使用私有 native 原语（如 `i64_to_string`/`f64_to_string`）。
+
+当前原生面还包括文本/标准流、Place/Handle/Span、文件系统、Worker/协程/同步、定时器/事件/时钟、CoroutineLocal、数学/随机与全局异常原语；完整 VM 注册键及方法 Hook 优先序见 [VM Hook 目录](../compiler/vm/INSTRUCTIONS_AND_HOOKS.md)。参数与返回 ABI 由标准库的具体 native 声明和 Middleware 实现确定，不能把基础表误当成可执行接口的全集。
 
 ### 26.1 NativeRcHandle 与跨协程搬运
 

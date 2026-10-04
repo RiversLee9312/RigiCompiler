@@ -143,7 +143,7 @@ pub wrapper Timed {
     // 实际执行的完整 BIL 方法符号（虚/接口派发后的实现槽，而非
     // 调用点静态符号）：普通方法如 Service$fetch(id:.i32)@.string；
     // 经 Base 静态类型调用 Child.work 时为 Child$work()@.i32；
-    // lambda 场景为 ..lambda..UUID$$call(x:.i32)@.i32。
+    // lambda 场景为 ..lambda..HASH$$call(x:.i32)@.i32。
     operator .proxy.call(.name: String, args: named Any...): Any {
         return inner(.name, args)
     }

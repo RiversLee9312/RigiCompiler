@@ -83,14 +83,14 @@ call???<TResult, named TNamedArgs..., TUnnamedArgs...>(
 ): TResult
 ```
 
-- `call???` 是 bootstrap 内建方法：bootstrap 声明 + VM 内建 hook 实现（`BIL_STANDARD.md` §22.5 方法 hook，按方法符号命中）。默认实现（请求未被任何 wrapper 路由时）由该 hook 提供，直接抛 `core.NoSuchMethodException`，含可按配置启用的 log 代码——**不是**编译器生成的 body。
-- 方法、getter、setter、operator 在 lowering 后本质上都是方法请求。运行时只保留这一个 slot；对已有声明成员的命中烘焙，以及 `call???` 按 canonical `symbol` 判定类别并转入 `.proxy.*`、`.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*` 的类别路由体，均由 Middleware 合成，不另外设置 `get???`、`set???`、`opr???`。类别路由作为 Middleware 插入点的架构预留（`SYNTAX.md` §14.7 末条语义不变，执行主体为 Middleware）。
+- `call???` 在 `.intrinsics.rg` 中声明普通源码默认体，直接抛 `core.NoSuchMethodException`；frontend 正常绑定并发射 BIL fn，Native 链末使用该体。VM 先尝试 wildcard wrapper 路由，再按方法符号命中内建 hook（`BIL_STANDARD.md` §22.5），提供同样的未路由失败行为。可配置日志是派发链诊断的设计扩展；当前该方法 hook 不写日志。
+- 方法、getter、setter、operator 在 lowering 后本质上都是方法请求。运行时只保留这一个 slot；对已有声明成员的命中烘焙，以及 `call???` 按 canonical `symbol` 判定类别并转入 `.proxy.*`、`.proxy.get.*`、`.proxy.set.*` 或 `.proxy.opr.*` 的类别路由体，均由 Middleware 合成，不另外设置 `get???`、`set???`、`opr???`。当前 `ProxyBakingPass.BuildRouter` 已合成精确 canonical 字符串匹配分支：先处理实际 getter/setter，再处理已有方法与 operator 的原始实现或 proxy 链。字段分支目前限于普通实例字段，跳过 static 与带 Value wrapper 的字段；未命中抛 `NoSuchMethodException`。frontend 的未声明调用降级仍只针对普通方法，不能据此推导任意 getter/setter/operator 自动降级或任意字符串请求受支持（`SYNTAX.md` §14.7；实现范围见 [Wrapper 烘焙](../compiler/middleware/WRAPPER_BAKING.md)）。
 - 跨模块编译调用方时，若被调用成员已有普通实现则走正常 vtable slot；需要 fallback 时交给 `call???`，而 `call???` 自身仍经 vtable 解决继承。
 - 给已有方法增加 specific proxy 后，只需重编译被修饰模块并由 Middleware 重新烘焙，使原 vtable slot 指向新的 wrapped body；调用方无需因 wrapper 变化而重编译。
 
 **未声明普通方法的降级规则**（对应 `SYNTAX.md` §14.7）：静态类型无匹配声明方法且 wrapper 链中存在 `.proxy.*` 时，frontend 发射对 `core::Any$call???` 的普通 `invoke`（携带 canonical symbol）；实参按统一胖值 ABI 传递，返回值在调用点按期望类型转换，不符抛 `core.CastException`。frontend **不**合成任何 router / 降级链符号。
 
-上文的 `call???` 泛型签名是**逻辑签名**——`call???` 的规范签名实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any>>, unnamedArgs: Array\<Any>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。frontend 降级调用点发射 `invoke core::Any$call???`；被 wrapper 命中的宿主上的类别路由体由 Middleware 按 vtable 语义合成（链末落到 `Any.call???` 的 VM hook 默认实现）。
+上文的 `call???` 泛型签名是**逻辑签名**——`call???` 的规范签名实质化为非泛型胖值签名 `(symbol: String, namedArgs: Array\<Pair\<String, Any>>, unnamedArgs: Array\<Any>): Any`（`BIL_STANDARD.md` §15.4）。泛型 typeid 包不单独传递：每个 `Any` 胖值自描述 typeid（§2），wildcard proxy 体可在包元素上直接做 `is`/`as` 检查；`TResult` 的角色由调用点的 cast 物化承担（`BIL_STANDARD.md` §12.1，不符抛 `core.CastException`）。frontend 降级调用点发射 `invoke core::Any$call???`；被 wrapper 命中的宿主上的类别路由体由 Middleware 按 vtable 语义合成（Native 链末落到 `Any.call???` 源码默认体，VM 按 wildcard/method hook 优先序处理）。
 
 ### 14.3 canonical symbol ABI
 

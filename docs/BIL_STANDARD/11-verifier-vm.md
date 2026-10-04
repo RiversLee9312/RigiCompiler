@@ -26,7 +26,7 @@
 - local symbol 不重复；
 - external symbol 签名完整；
 - 方法 body 与声明一一对应（`native` 声明除外：`native` 方法不得存在方法 body，且必须恰好各带一个 `symbol("...")` 与 `lib("...")` 修饰符）；
-- `core::Any$call???` 为预定义内建方法符号（§15.5 / §22.5）——无 LocalSymbols/ExternalSymbols 声明、无 fn 定义，可被 `invoke` 引用；
+- `core::Any$call???` 为保留内建方法符号（§15.5 / §22.5），`.intrinsics.rg` 的普通源码声明与默认体正常进入符号段及 fn 定义；验证器还允许对预定义目标的引用，不能据此推导实际产物没有声明或 fn；
 - proxy 模板 fn（名以 `.proxy.` 开头，§5.1）必须声明在 wrapper 类型内，且与 `wrapper-proxy` 修饰符双向一致（见 §21.8）；
 - `..init.wrapper`（§9.7）：每 owner 至多一个；返回 `.void`；实例方法；必须 `priv` + `compiler-generated`；
 - `..init.field.<名>`（§9.7）：返回 `.void` 的零参实例方法；必须 `priv` + `compiler-generated`；与基类同族同名方法构成虚派发族（字段 override，见 `SYNTAX.md` §9.2.1）；
@@ -223,7 +223,7 @@ VM 必须把 `get.field`、`set.field`、`get.array`、`set.array` 视为独立�
 
 ### 22.5 native 函数的内建 hook
 
-VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻找方法 body，而是按 `(lib, symbol)` 查询内建 hook 表并执行对应的内建行为。标准内建 hook 表：
+VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻找方法 body，而是按 `(lib, symbol)` 查询内建 hook 表并执行对应的内建行为。下表列出关键标准内建 hook 的参数与行为，不是完整实现注册清单：
 
 | lib / 键 | symbol | 参数 | 行为 |
 |---|---|---|---|
@@ -231,7 +231,7 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 | `rigi_rt` | `printErr` | `text: .string` | 将字符串写入标准错误 |
 | `rigi_rt` | `alloc_array` | 泛型 hidden `.typeid`（经 `.generic.T` 物化）+ `size: .i32` | 分配并返回元素零值初始化的 `.array<T>`；T 为 enum struct 按宿主错误（§14.3 无零值）。仅供 stdlib `arrayOf`/`arrayOfElements` 系列的私有 native 声明调用，用户代码不可直达 |
 | `rigi_rt` | `timer_create` | `owner/delay/repeat/callback/ctx: .i64` | 创建时钟底座句柄：`sleep`/`Timer` 经 stdlib `SleepAlarm`/`Timer` init 调用。旧 `make_sleep_alarm` 面已删除 |
-| `rigi_rt` | `any_to_string` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名。仅供 stdlib `.bootstrap.rg` 的私有 native 全局声明调用，用户代码不可直达 |
+| `rigi_rt` | `any_to_string` | `value: .any` | 返回值的字符串表示（`SYNTAX.md` §3.8）：内建数值/`bool`/`char` 为标准文本；未覆写 `toString` 的对象为其类型 canonical 名。仅供 stdlib `.intrinsics.rg` 的私有 native 全局声明调用，用户代码不可直达 |
 | `rigi_rt` | `i64_to_string` | `value: .i64` | 标量标准文本（StringOut）；`any_to_string` 的格式化底座 |
 | `rigi_rt` | `f64_to_string` | `value: .f64` | 同上（Ryu 最短往返 + .NET 默认呈现） |
 | `rigi_rt` | `f32_to_string` | `value: .f32` | 同上 |
@@ -239,6 +239,17 @@ VM 执行到对 `native` 方法声明的 `invoke` / `invoke.noret` 时，不寻�
 | `rigi_rt` | `char_to_string` | `value: .char` | 同上（`.char` 是 32 位 Unicode 标量，按标量编 UTF-8 1–4 字节文本；补充平面标量为 4 字节序列） |
 | （方法 hook） | `core::Any$call???` | 见 §15.5 胖值签名 | 按 `symbol` 路由 wrapper 请求；无路由命中抛 `core::NoSuchMethodException` |
 
-`String` 的 `toString` 即值自身，不产生 native 调用。`toString` 成员方法（`core::Any$toString` / `core::Object$toString`）不再直接 hook：它们是 open 普通方法，默认实现体由编译器合成为「装箱接收者后 `invoke` `.bootstrap.rg` 的 `priv` 全局 native `any_to_string`」的小 fn——hook 经该全局函数触达；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中本表（无 `(lib, symbol)` 对），无 BIL fn 定义。命中表之外的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错。该表只随 BIL 标准修订扩充；Middleware 的原生链接不受此表约束。
+`String` 的 `toString` 即值自身，不产生 native 调用。`toString` 成员方法（`core::Any$toString` / `core::Object$toString`）不再直接 hook：它们是 open 普通方法，默认实现来自 `.intrinsics.rg` 的普通源码体，调用同文件 `priv` 全局 native `any_to_string`——hook 经该全局函数触达；覆写了 `toString` 的类型经虚派发执行自身实现，不命中本表。`call???` 按方法符号命中独立方法 Hook 表（无 `(lib, symbol)` 对）；其源码默认 throw 体仍正常发射 BIL，VM 在 wrapper wildcard 路由之后、普通函数体执行之前命中方法 Hook。真正未注册的 `(lib, symbol)` 组合 VM 无法解释，必须拒绝执行并报错；“未注册”由运行期 Hook 注册表判断，不能仅据上方精简表判断。新增标准接口须同步本节分类、stdlib 声明与双宿主行为契约；Middleware 的原生链接不受 VM 注册表约束。
+
+
+标准 Hook 的实现覆盖以下接口族：文本/标量格式化与原始标准流、
+数组/Span、Place/Handle、stdin 与文件系统、Worker/Coroutine/native-resource
+句柄、同步 Mutex/TLS、Timer/Event/时钟、CoroutineLocal、数学/系统随机以及
+GlobalExceptionHandler。完整 native 键目录与方法键见
+[VM 指令与宿主 Hook](../compiler/vm/INSTRUCTIONS_AND_HOOKS.md)，注册源为
+`Bil/Vm/VmHooks.cs::CreateStandard`。方法 Hook 还包括 Task/Task<T> 的
+`startCold` 与 Mutex 的 `enter/release` 引擎桥；调度策略和 Task/Mutex
+的普通判定逻辑留在标准库 Rigi 代码。GCAlarm/原生 GC 物理机制不属于 BIL
+可见 Hook 语义，不能据这些句柄桥假定 VM 模拟 Native ARC/GC 布局。
 
 ---

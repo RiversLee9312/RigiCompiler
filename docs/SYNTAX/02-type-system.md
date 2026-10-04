@@ -125,7 +125,7 @@ Rigi 不要求每一个源码类型节点都一一对应一个普通 Native 对�
 
 - `Box\<T extends ValueType>` 在语法类型层级中属于 `Object`，可以进入 `Object`/`Any` 多态位置并满足相应约束；但它不是普通 class，不生成 Box 对象头、Box identity 或独立的 `Box\<T>` TypeSheet。Box 槽中的 typeid 始终是底层实际 ValueType `T` 的 typeid，Native 表示与复制/销毁规则见 `RUNTIME.md` §4。
 - `Span\<T extends ValueType>` 是**内建 class**（Object 分支，引用语义）：连续原生缓冲区后门，不按普通泛型容器的 16 字节元素槽布局；复制与传参共享同一 buffer。索引、步长与 GC 扫描均使用内建 lowering（见 `RUNTIME.md` §5）。
-- `SharedSpan\<T>` 是 `Span\<T>` 的 shared class 变体，布局相同；元素约束收紧为「非 rich 或 shared rich ValueType」。Mutex 等同步原语由未来版本接入。
+- `SharedSpan\<T>` 是 `Span\<T>` 的 shared class 变体，布局相同；元素约束收紧为「非 rich 或 shared rich ValueType」。语言级异步 Mutex 已由 `core.coroutine.Mutex` 提供（RUNTIME §19.6 的运行时协议）；共享生命周期并不使元素读写自动原子化，调用方须按需同步。
 - `String` 是**非 rich ValueType**：它不持有托管引用，`refMap` 恒为空，因此可以自由出现在全局/静态字段与 async 边界上（见 §3.1.1），无需任何 shared 标注。它的字符数据位于编译器与运行时管理的特权裸缓冲区中，不是普通 Object 字段。
   - `String.length: i64` 是 UTF-8 编码后的**字节数**，VM 与 native 口径一致。
   - `String.characterCount: i64` 是 Unicode 标量值数量；它不是 UTF-16 码元数，也不是用户感知的字素簇数量。例如 `"序列化测试"` 为 15/5，`"👨‍👩‍👧"` 为 18/5，`"🇨🇳"` 为 8/2（依次为 length/characterCount）。
@@ -165,7 +165,7 @@ Handle 的类型身份，不得把 facade 擦除成该存储。此机制操作 R
 | `String` | 字符串（非 rich 值类型，值语义深拷贝，见 §3.1.2） | ValueType |
 | `Type\<T>` | 运行时类型（typeid 的封装） | ValueType |
 | `Span\<T extends ValueType>` | 连续、无装箱的缓冲区对象（内建 class，引用语义，见 RUNTIME.md §5） | Object |
-| `SharedSpan\<T extends ValueType>` | Span 的 shared class 变体（元素须非 rich 或 shared rich；Mutex 未来） | Object |
+| `SharedSpan\<T extends ValueType>` | Span 的 shared class 变体（元素须非 rich 或 shared rich；元素并发读写需同步） | Object |
 
 ### 3.3 字面量
 
@@ -491,7 +491,7 @@ pub func isSerializable(typeName: String): bool
 
 - **内建基本类型**（数值 / `bool` / `char` / `String`）的 `toString` 由内建实现提供：`String` 即自身；数值为标准十进制文本；`bool` 为 `"true"` / `"false"`；`char` 为单字符字符串。
 - **未覆写的类型**由默认实现提供（`Object` 上的 open `override` 方法——它 override `Any.toString`，内建提供），返回该类型的 canonical 名（如 `"com.example::User"`）。
-- `Any`/`Object` 的默认实现体是编译器合成的小函数：把接收者装箱为 `Any` 后调用 `any_to_string`。`any_to_string` 是标准库 `.bootstrap.rg` 里的文件级私有（`priv`）全局 `native` 函数（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_to_string")`），是 toString 机制唯一的 native 触达点——用户代码不可直接调用它。
+- `Any`/`Object` 的默认实现体声明在标准库 `.intrinsics.rg`，按普通 Rigi 方法绑定并发射 BIL，调用 `any_to_string(this)`；需要转换到 `Any` 的接收者按正常 Lowering 规则装箱。`any_to_string` 是同文件里的文件级私有（`priv`）全局 `native` 函数（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_to_string")`），是 toString 机制唯一的 native 触达点——用户代码不可直接调用它。
 - 值类型调用 `toString` 时按 `RUNTIME.md` §4 装箱后进行虚派发；装箱与派发是 `BIL_STANDARD.md` §22 划给 VM/Middleware 的实现细节，源码层只需知道调用承诺成立。
 
 字符串插值（§3.3）以 `toString` 定义：`${}` 内表达式的静态类型不是 `String` 时，先调用其 `toString()` 再参与拼接；拼接即 `String` 的内建 `+` 运算，按源码顺序从左到右结合。每个插值段只求值一次。
@@ -513,11 +513,11 @@ var text = "count: ${count}, ok: ${(count > 0)}"   // "count: 3, ok: true"
 
 - **`String`** 按内容哈希——内容相同的两个 `String` 哈希相等；
 - **标量**（数值 / `bool` / `char`）按值哈希；
-- **对象**（引用类型默认）按实例身份哈希——同一实例两次调用相等，不同实例（即使 `toString` 相同）哈希不同；
+- **对象**（引用类型默认）按实例身份哈希——同一实例两次调用相等，不同实例（即使 `toString` 相同）也可能发生哈希碰撞；
 - **`null`** 固定为 `0`。
 
-只承诺**同一宿主内**同值必同哈希；VM 宿主与原生宿主的哈希数值不要求一致（跨进程、跨宿主都不可持久化或比较哈希数值）。哈希不保证分布均匀，允许碰撞。典型用途是关联数组键判等：`core.collections.Map` 的键相等 = `==`（**equals-or-hash 判等链**，用户裁定）——键类型声明了 `operator equals` 走它（运行期最派生），未声明的类型走 `Any` 承诺的默认 `equals`（双虚调 `hash` 比较），hash 碰撞即判等，**绝不走 `toString`**。因此把 `hash()` 恶意或错误地实现为常量，会令所有此类型的键互相覆盖；需要容忍哈希碰撞的键类型必须实现 `operator equals`。默认 `hash` 对对象是身份哈希，不同身份的对象键互不覆盖；值语义 `struct`/需要按字段判等的 `class` 键请 `override hash` 或实现 `operator equals`。
+承诺**同一宿主内**同值必同哈希；当前 VM 与 Native 对标量载荷和 String 字节使用同式 FNV-1a 64，二者数值一致。对象身份分别基于宿主对象身份与原生地址，两宿主的对象身份哈希不可比较；跨进程对象身份哈希不可持久化。哈希不保证分布均匀，允许碰撞。典型用途是关联数组键判等：`core.collections.Map` 的键相等 = `==`（**equals-or-hash 判等链**，用户裁定）——键类型声明了 `operator equals` 走它（运行期最派生），未声明的类型走 `Any` 承诺的默认 `equals`（双虚调 `hash` 比较），hash 碰撞即判等，**绝不走 `toString`**。因此把 `hash()` 恶意或错误地实现为常量，会令所有此类型的键互相覆盖；需要容忍哈希碰撞的键类型必须实现 `operator equals`。默认 `hash` 对对象是身份哈希，不保证不同身份哈希相异；仅依赖默认 hash 判等的对象键仍可能因碰撞互相覆盖。值语义 `struct`/需要按字段判等的 `class` 键请 `override hash` 或实现 `operator equals`。
 
-与 `toString` 机制同构：`Any`/`Object` 的默认实现体是编译器合成的小函数，装箱接收者后调用 `.bootstrap.rg` 的文件级私有全局 `native` 函数 `any_hash`（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_hash")`）——用户代码不可直接调用它；用户类型 `override hash` 后经普通虚派发执行自身实现。
+与 `toString` 机制同构：`Any`/`Object` 的默认实现体声明在 `.intrinsics.rg`，按普通 Rigi 方法绑定并发射 BIL，接收者经正常装箱转换后调用同文件的私有全局 `native` 函数 `any_hash`（`@NativeLibrary("rigi_rt")` / `@NativeSymbol("any_hash")`）——用户代码不可直接调用它；用户类型 `override hash` 后经普通虚派发执行自身实现。
 
 ---

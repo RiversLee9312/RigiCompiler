@@ -68,7 +68,7 @@
 - `.nullable<T>` 对应 `Nullable\<T>`；
 - `.cell<T>` 对应标准库 `core::Cell\<T>`（抽象基类，抽象 `getValue`/`setValue`）的特权拼写，与 `.array<T>`、`.nullable<T>` 同类；
 - `.readonly_cell<T>` 对应标准库 `core::ReadonlyCell\<T>`（抽象基类，仅抽象 `getValue`）的特权拼写；
-- `.cell` / `.readonly_cell` 的 `T` 递归按类型构造规则解析；用途为闭包捕获与 wrapper 值统一 cell 存储（`SYNTAX.md` §5.2 / §14.3）；**基类抽象化后 BIL 中不再被直接 `new`**——实际 cell 对象恒为 `..cell..UUID` 隐藏子类实例（`.type` 声明 `extends .cell<T>` / `.readonly_cell<T>`）；读写经普通 `invoke` 虚派发 `getValue`/`setValue`，无专用指令；
+- `.cell` / `.readonly_cell` 的 `T` 递归按类型构造规则解析；用途为闭包捕获与 wrapper 值统一 cell 存储（`SYNTAX.md` §5.2 / §14.3）；**基类抽象化后 BIL 中不再被直接 `new`**——实际 cell 对象恒为 `..cell..HASH` 隐藏子类实例（`.type` 声明 `extends .cell<T>` / `.readonly_cell<T>`）；读写经普通 `invoke` 虚派发 `getValue`/`setValue`，无专用指令；
 - 特权拼写的定位 = Middleware 激进优化识别点（消除 cell 间接/直读槽位等）；验证规则不变——即使不做特判、按普通类烘焙也可正确工作；
 - 共享安全性为 passthrough：`.cell<T>` / `.readonly_cell<T>` 的共享安全性等同于 `T`（与 Box 同例，需特殊判定，不按普通 class 闭包表）；
 - `.typeid<TBound>` 是 BIL 中具类型边界的运行时类型句柄，对应源码 `Type\<TBound>` 的语义；
