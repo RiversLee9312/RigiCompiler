@@ -10,25 +10,25 @@ namespace RigiCompiler.Tests
     /// 2. 与 import / 顶层声明组合（模块系统完整文件头）
     /// 3. 错误用例（空路径、路径后多余 token）
     ///
-    /// 驱动方式：TestHarness.ParseRoot 完整入口（namespace 是顶层声明）。
+    /// 驱动方式：CompilerTestTools.ParseRoot 完整入口（namespace 是顶层声明）。
     /// </summary>
     public class NamespaceTests
     {
         // ===== 1. 基本形态 =====
         public static void TestBasicNamespace()
         {
-            TestHarness.Section("Basic Namespace");
+            CompilerTestTools.Section("Basic Namespace");
 
             TestNamespace("namespace com.example.myapp", "namespace com.example.myapp");
             TestNamespace("namespace core", "namespace core");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 与 import / 顶层声明组合 =====
         public static void TestNamespaceCombinations()
         {
-            TestHarness.Section("Namespace Combinations");
+            CompilerTestTools.Section("Namespace Combinations");
 
             TestNamespace(
                 "namespace com.example.myapp\n" +
@@ -41,25 +41,25 @@ namespace RigiCompiler.Tests
                 "namespace com.example.myapp; import core.collections.List; " +
                 "import core.collections.Map; pub func main() {}");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 错误用例 =====
         public static void TestNamespaceErrors()
         {
-            TestHarness.Section("Namespace Errors");
+            CompilerTestTools.Section("Namespace Errors");
 
-            TestHarness.CheckParseError("namespace（缺少命名空间路径）",
-                () => TestHarness.ParseRoot("namespace"),
+            CaseAssertions.CheckParseError("namespace（缺少命名空间路径）",
+                () => CompilerTestTools.ParseRoot("namespace"),
                 "requires a namespace path");
-            TestHarness.CheckParseError("namespace com.example extra（路径后多余 token）",
-                () => TestHarness.ParseRoot("namespace com.example extra"),
+            CaseAssertions.CheckParseError("namespace com.example extra（路径后多余 token）",
+                () => CompilerTestTools.ParseRoot("namespace com.example extra"),
                 "Unexpected token in namespace declaration");
-            TestHarness.CheckParseError("namespace com.{example}（路径中不允许 {} 列表）",
-                () => TestHarness.ParseRoot("namespace com.{example}"),
+            CaseAssertions.CheckParseError("namespace com.{example}（路径中不允许 {} 列表）",
+                () => CompilerTestTools.ParseRoot("namespace com.{example}"),
                 "Unexpected token in namespace declaration");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助方法 =====
@@ -69,19 +69,19 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var root = TestHarness.ParseRoot(source);
-                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Root(root), expected);
+                var root = CompilerTestTools.ParseRoot(source);
+                CaseAssertions.Check(source.Replace("\n", "\\n"), AstDescribe.Root(root), expected);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Namespace",
+
+        internal static TestSuiteData Spec { get; } = new("Namespace",
         [
             (nameof(TestBasicNamespace), TestBasicNamespace),
             (nameof(TestNamespaceCombinations), TestNamespaceCombinations),

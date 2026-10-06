@@ -51,7 +51,7 @@ namespace RigiCompiler.Tests
                 .Where(t => t.Symbol == "app::Counter")
                 .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                 .ToList();
-            TestHarness.CheckTrue("backing 字段行（backing readable writable compiler-generated）",
+            CaseAssertions.CheckTrue("backing 字段行（backing readable writable compiler-generated）",
                 counterMembers.Any(d => d.Kind == BilMemberKind.Field
                     && d.Symbol == "app::Counter#value@.i32"
                     && d.Modifiers.Any(m => m is BilAccessibilityModifier
@@ -64,18 +64,18 @@ namespace RigiCompiler.Tests
 
             // 访问器声明由字段槽驱动：字段声明后按 get→set 顺序紧跟
             var fieldIndex = counterMembers.FindIndex(d => d.Symbol == "app::Counter#value@.i32");
-            TestHarness.CheckTrue("getter/setter 声明紧跟字段（get→set 顺序）",
+            CaseAssertions.CheckTrue("getter/setter 声明紧跟字段（get→set 顺序）",
                 fieldIndex >= 0 && counterMembers.Count > fieldIndex + 2
                 && counterMembers[fieldIndex + 1].Symbol == "app::Counter$.get.value@.i32"
                 && counterMembers[fieldIndex + 2].Symbol == "app::Counter$.set.value@.i32");
-            TestHarness.CheckTrue("getter 声明形态（getter(FIELD) + pub）",
+            CaseAssertions.CheckTrue("getter 声明形态（getter(FIELD) + pub）",
                 counterMembers.Any(d => d.Kind == BilMemberKind.Method
                     && d.Symbol == "app::Counter$.get.value@.i32"
                     && d.Modifiers.Any(m => m is BilAccessorModifier
                         { Kind: BilAccessorKind.Getter } a && a.FieldSymbol == "app::Counter#value@.i32")
                     && d.Modifiers.Any(m => m is BilAccessibilityModifier
                         { Accessibility: BilAccessibility.Public })));
-            TestHarness.CheckTrue("setter 声明形态（setter(FIELD) + priv 落定）",
+            CaseAssertions.CheckTrue("setter 声明形态（setter(FIELD) + priv 落定）",
                 counterMembers.Any(d => d.Kind == BilMemberKind.Method
                     && d.Symbol == "app::Counter$.set.value@.i32"
                     && d.Modifiers.Any(m => m is BilAccessorModifier
@@ -84,7 +84,7 @@ namespace RigiCompiler.Tests
                         { Accessibility: BilAccessibility.Private })));
 
             // 全局自动访问器：§8.4.1 段内裸条目（不包裹在 .type 中）
-            TestHarness.CheckTrue("全局访问器字段裸条目（backing readable writable compiler-generated）",
+            CaseAssertions.CheckTrue("全局访问器字段裸条目（backing readable writable compiler-generated）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Field
                     && d.Symbol == "app::#height@.i32"
@@ -93,7 +93,7 @@ namespace RigiCompiler.Tests
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Writable })
                     && d.Modifiers.Any(m => m is BilKeywordModifier
                         { Keyword: BilKeyword.CompilerGenerated })));
-            TestHarness.CheckTrue("全局 getter/setter 裸条目（getter(FIELD)/setter(FIELD)）",
+            CaseAssertions.CheckTrue("全局 getter/setter 裸条目（getter(FIELD)/setter(FIELD)）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Method
                     && d.Symbol == "app::$.get.height@.i32"
@@ -111,7 +111,7 @@ namespace RigiCompiler.Tests
                 .Where(t => t.Symbol == "app::Ratio")
                 .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                 .ToList();
-            TestHarness.CheckTrue("computed 字段行（computed readable，无 writable/compiler-generated）",
+            CaseAssertions.CheckTrue("computed 字段行（computed readable，无 writable/compiler-generated）",
                 ratioMembers.Any(d => d.Kind == BilMemberKind.Field
                     && d.Symbol == "app::Ratio#doubled@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Computed })
@@ -119,7 +119,7 @@ namespace RigiCompiler.Tests
                     && !d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Writable })
                     && !d.Modifiers.Any(m => m is BilKeywordModifier
                         { Keyword: BilKeyword.CompilerGenerated })));
-            TestHarness.CheckTrue("computed 仅 getter 声明（无 setter）",
+            CaseAssertions.CheckTrue("computed 仅 getter 声明（无 setter）",
                 ratioMembers.Any(d => d.Symbol == "app::Ratio$.get.doubled@.i32")
                 && !ratioMembers.Any(d => d.Symbol.Contains("set.doubled")));
 
@@ -186,7 +186,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（override 投影）", module);
 
             // open 类型修饰投影（§8.2）
-            TestHarness.CheckTrue("open class 类型声明（pub open）",
+            CaseAssertions.CheckTrue("open class 类型声明（pub open）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>().Any(t =>
                     t.Symbol == "shapes::Base" && t.Kind == BilTypeKind.Class
                     && t.Modifiers.Any(m => m is BilAccessibilityModifier
@@ -196,7 +196,7 @@ namespace RigiCompiler.Tests
             var squareMembers = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol == "shapes::Square")
                 .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>());
-            TestHarness.CheckTrue("override 方法声明（pub override）",
+            CaseAssertions.CheckTrue("override 方法声明（pub override）",
                 squareMembers.Any(d => d.Symbol == "shapes::Square$area()@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Override })
                     && d.Modifiers.Any(m => m is BilAccessibilityModifier
@@ -204,24 +204,24 @@ namespace RigiCompiler.Tests
             var baseMembers = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol == "shapes::Base")
                 .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>());
-            TestHarness.CheckTrue("基类 open 方法无 override 修饰",
+            CaseAssertions.CheckTrue("基类 open 方法无 override 修饰",
                 baseMembers.Any(d => d.Symbol == "shapes::Base$area()@.i32"
                     && !d.Modifiers.Any(m => m is BilKeywordModifier
                         { Keyword: BilKeyword.Override })));
             // abstract：类型与方法双侧投影；abstract 方法无 fn 定义
-            TestHarness.CheckTrue("abstract class 类型声明（pub abstract）",
+            CaseAssertions.CheckTrue("abstract class 类型声明（pub abstract）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>().Any(t =>
                     t.Symbol == "shapes::Concept"
                     && t.Modifiers.Any(m => m is BilKeywordModifier
                         { Keyword: BilKeyword.Abstract })));
-            TestHarness.CheckTrue("abstract 方法声明（pub abstract）",
+            CaseAssertions.CheckTrue("abstract 方法声明（pub abstract）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "shapes::Concept")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                     .Any(d => d.Symbol == "shapes::Concept$id()@.i32"
                         && d.Modifiers.Any(m => m is BilKeywordModifier
                             { Keyword: BilKeyword.Abstract })));
-            TestHarness.CheckTrue("abstract 方法无 fn 定义",
+            CaseAssertions.CheckTrue("abstract 方法无 fn 定义",
                 !module.Functions.Any(f => f.Symbol.Contains("Concept$id")));
         }
 
@@ -240,16 +240,16 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（局部访问器 backing）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（局部访问器 backing）", module);
-            TestHarness.CheckTrue("LocalSymbols 含 ..cell.. 隐藏子类",
+            CaseAssertions.CheckTrue("LocalSymbols 含 ..cell.. 隐藏子类",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Any(t => t.Symbol.StartsWith("..cell..")));
             var text = BilWriter.Write(module);
-            TestHarness.CheckTrue("main 读写经 Cell getValue/setValue",
+            CaseAssertions.CheckTrue("main 读写经 Cell getValue/setValue",
                 text.Contains("setValue") && text.Contains("getValue"));
             // getValue 用户体含 add（value + 1）——整模块文本中 cell getValue 段
-            TestHarness.CheckTrue("getValue override fn 存在",
+            CaseAssertions.CheckTrue("getValue override fn 存在",
                 module.Functions.Any(f => f.Symbol.Contains("$getValue()")));
-            TestHarness.CheckTrue("getValue 用户体含 add（value+1）",
+            CaseAssertions.CheckTrue("getValue 用户体含 add（value+1）",
                 text.Contains("add") && text.Contains("getValue"));
 
             // 被 lambda 捕获的访问器局部：读写经 cell 引用
@@ -266,7 +266,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（访问器局部捕获）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（访问器局部捕获）", module2);
             var text2 = BilWriter.Write(module2);
-            TestHarness.CheckTrue("捕获路径含 setValue + invoke.indirect",
+            CaseAssertions.CheckTrue("捕获路径含 setValue + invoke.indirect",
                 text2.Contains("setValue") && text2.Contains("invoke.indirect"));
 
             // 自动访问器
@@ -297,9 +297,9 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（方法泛型 T 访问器捕获）", module4);
             var cell4 = module4.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..cell.."));
-            TestHarness.CheckTrue("访问器 cell generic(T)",
+            CaseAssertions.CheckTrue("访问器 cell generic(T)",
                 cell4.GenericParameters.Count == 1 && cell4.GenericParameters[0] == "T");
-            TestHarness.CheckTrue("构造转发 $.generic.T",
+            CaseAssertions.CheckTrue("构造转发 $.generic.T",
                 text4.Contains("new type(..cell..UUID<.generic<$.generic.T>>)")
                 && text4.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
         }

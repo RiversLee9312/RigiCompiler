@@ -19,13 +19,17 @@ Rigi 采用具化泛型、协程、`rich`/`shared` 类型声明修饰与 wrapper
 在包含 `.git` 与 `RigiCompiler.csproj` 的仓库根执行。需要 .NET 10 SDK；版本选择见 `global.json`。
 
 ```powershell
-dotnet build
+dotnet build RigiCompiler.sln
 dotnet run help
-dotnet run -- test                 # 发现当前测试套件
-dotnet run -- test --all            # CoreCLR 开发回路
+dotnet run -- test                 # 转发独立 TUnit 宿主，显示兼容套件菜单
+dotnet run -- test --all            # 转发 TUnit CoreCLR 全量；提交门槛见开发指南
 ```
 
 `dotnet run help` 与 `dotnet run -- help` 都有效；独立的 `--` 是 .NET CLI 参数分隔符。下方带编译器选项的例子使用它，防止 .NET 把程序参数当作自己的选项；发布版直接运行 `rigic help`。
+
+全部测试由独立 `Tests/TUnit/RigiCompiler.Tests.csproj` 发现执行，编译器不包含测试代码。`rigic test` 只转发到测试宿主，保留编号、标签、inventory 和 `--all` 兼容入口；单独发布编译器时，如需测试须另发布同版本宿主并设置 `RIGI_TEST_HOST`。提交门槛在 Windows/Linux 分别发布编译器和测试宿主，各执行一次 TUnit NativeAOT 全量，包含闭合泛型与协议契约。
+
+CI 在每个平台使用 16 个独立 runner 按 suite/稳定 ID 精确分片，provider 全目录只执行一遍，框架契约仅在片 0 执行；最终汇总 JSON/TRX 证明完整覆盖，缺片或失败不能通过。本机提交仍串行运行两个平台的单进程全量，外层看门狗为 24 小时；CI 既有 Stress 600 与本机默认 3000 种子预算保持不变，具体命令与证据协议见 [开发指南](DEVELOPMENT.md#23-发布release--nativeaot)。
 
 模块工作流从 `module.yaml` 管理源码、依赖和 profile：
 
@@ -44,7 +48,7 @@ Native 完整链接需要 clang/lld、libuv 与 mimalloc；Native 模块工作�
 - [文档索引](docs/README.md)：语言、BIL、运行时、标准库以及各编译阶段的专题入口。
 - [架构指南](docs/agent_guide/architecture.md)：代码组织与横跨各层的设计约束。
 - 源码主目录：`Lexer/`、`Parser/`、`AST/`、`Semantic/`、`Lowering/`、`Bil/`、`Middleware/`、`Modules/`、`Core/`。
-- `stdlib/` 是内嵌标准库源码，`rigi_rt/` 是 Native C 运行时；`Tests/` 和独立 `Tests/TUnit/` 共同承载测试，`tools/` 提供开发工具。
+- `stdlib/` 是内嵌标准库源码，`rigi_rt/` 是 Native C 运行时；`Tests/` 的全部 provider、断言与工具只编入独立 `Tests/TUnit/` 项目，`tools/` 提供开发工具。
 
 ## 许可
 

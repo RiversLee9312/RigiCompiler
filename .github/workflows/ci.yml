@@ -1,17 +1,26 @@
-# CI：每次提交 / Pull Request 在 Windows/Linux 双平台（均 amd64 最新镜像）
-# 执行 NativeAOT 发布，并用发布产物跑全量测试（任意失败非零退出码，CI 即失败）。
-# 注意：NativeAOT 不支持跨 OS 交叉编译，故按平台分别发布（见 docs/agent_guide/development.md §2.3）。
+# CI：main 提交与 Pull Request 在 Windows/Linux 双平台分别发布编译器和 TUnit。
+# 每个平台 16 个独立 runner 精确分区，全目录只执行一遍；片 0 包含协议与闭合泛型发现。
+# NativeAOT 不支持跨 OS 交叉编译，发布与提交门槛见 DEVELOPMENT.md §2.3。
 name: build-and-test
 
 on:
   push:
+    branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-test:
+  aot-shard:
+    timeout-minutes: 360
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
+        os: [windows-latest, ubuntu-latest]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         include:
           - os: windows-latest   # amd64 Windows 最新镜像（自带 VS C++ 工具链，AOT 前置满足）
             rid: win-x64
@@ -36,7 +45,22 @@ jobs:
       # NativeAOT Linux 前置：clang + zlib 开发包（Windows 镜像自带 C++ 工具链，无需处理）
       - name: Install NativeAOT prerequisites (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y clang lld zlib1g-dev
+
+      # executable 模块也需为标准库构建静态依赖；普通 runner shell 不保证有 lib.exe PATH。
+      - name: Locate native module archiver (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw '未找到 VS C++ 工具链' }
+          $archiver = Get-ChildItem -LiteralPath (Join-Path $installation 'VC/Tools/MSVC') -Directory |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Get-Item -LiteralPath (Join-Path $_.FullName 'bin/Hostx64/x64/lib.exe') -ErrorAction SilentlyContinue } |
+            Select-Object -First 1
+          if (-not $archiver) { throw '未找到 x64 lib.exe' }
+          "RIGI_AR=$($archiver.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       # libuv 静态库缓存（MW11b 事件底座；runner 预装 cmake，双平台同一脚本，
       # pwsh 为 GitHub Actions 内建 shell）。须在 publish 之前：NativeE2E 的
@@ -55,22 +79,55 @@ jobs:
       - name: Publish NativeAOT (${{ matrix.rid }})
         run: dotnet publish RigiCompiler.csproj -c Release -r ${{ matrix.rid }} -o publish
 
-      # 用 AOT 发布产物跑既有全量门禁；语料随 publish 分发，与 checkout/CWD 无关
-      - name: Run all tests (AOT binary)
-        env:
-          RIGI_TEST_RIGIC: ${{ github.workspace }}/publish/${{ matrix.exe }}
-          RIGI_TEST_CORPUS_ONLY_OUTPUT: '1'
-        run: ./publish/${{ matrix.exe }} test --all
-
-      # 与 legacy 全量串行，避免两个不共享预算的测试宿主叠加。
-      - name: Run TUnit pilot, budget and scheduling contracts
-        env:
-          RIGI_TEST_RIGIC: ${{ github.workspace }}/publish/${{ matrix.exe }}
-          RIGI_TEST_CORPUS_ONLY_OUTPUT: '1'
-        run: dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --minimum-expected-tests 37 --report-trx --results-directory TestResults --report-trx-filename pilot.trx
-
       - name: Publish TUnit NativeAOT (${{ matrix.rid }})
         run: dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r ${{ matrix.rid }} -o publish-tests
 
-      - name: Run closed generic discovery (AOT test host)
-        run: ./publish-tests/${{ matrix.test-exe }} --treenode-filter '/*/*/*/*[Category=Generic]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename generic-aot.trx
+      # 本片独立导出完整预期 inventory；正式 provider 按 suite/稳定 ID 轮转且不拆 seed 批次。
+      # 仅片 0 执行 36 契约，逐片及最终汇总都核对精确身份；minimum=1 只作非零补充。
+      - name: Run TUnit AOT shard ${{ matrix.shard }}/16
+        shell: pwsh
+        env:
+          RIGI_TEST_RIGIC: ${{ github.workspace }}/publish/${{ matrix.exe }}
+          RIGI_TEST_HOST: ${{ github.workspace }}/publish-tests/${{ matrix.test-exe }}
+          RIGI_TEST_CORPUS_ONLY_OUTPUT: '1'
+          RIGI_TEST_RESULTS: ${{ github.workspace }}/TestResults/case-results.json
+          RIGI_TEST_CI_RID: ${{ matrix.rid }}
+        run: |
+          if ($IsWindows) {
+            & ./tools/Watch-Command.ps1 -Command $env:RIGI_TEST_HOST -ArgumentList '--ci-shard ${{ matrix.shard }} 16' -TimeoutSeconds 19800
+          } else {
+            # runner 工作区及默认 /tmp 在原生 Linux 文件系统，worker CWD 来自独立临时根。
+            & bash -c 'timeout --signal=INT --kill-after=30s 19800s "$RIGI_TEST_HOST" --ci-shard ${{ matrix.shard }} 16 </dev/null'
+            exit $LASTEXITCODE
+          }
+
+      # 失败/取消时也保留证据；汇总会拒绝 running/failed、缺文件或旧身份，不能假绿。
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rigi-ci-${{ matrix.rid }}-${{ matrix.shard }}
+          path: TestResults/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-and-test:
+    if: always()
+    needs: aot-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download this run's shard evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rigi-ci-*
+          path: TestResults/shards
+      - name: Verify complete Windows and Linux AOT coverage
+        shell: pwsh
+        env:
+          RIGI_CI_SHARD_JOB_RESULT: ${{ needs.aot-shard.result }}
+        run: |
+          # 即使片失败也先核验现有证据，诊断缺片/失败原因；最终仍要求所有片 job 成功。
+          & ./tools/Verify-CiShards.ps1 -ResultsRoot ./TestResults/shards -ExpectedSha $env:GITHUB_SHA -ExpectedRunId $env:GITHUB_RUN_ID -ExpectedAttempt $env:GITHUB_RUN_ATTEMPT -ShardCount 16
+          if ($env:RIGI_CI_SHARD_JOB_RESULT -ne 'success') { throw '至少一个 AOT 分片 job 未成功' }

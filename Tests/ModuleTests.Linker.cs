@@ -33,12 +33,12 @@ public static partial class ModuleTests
         var consumer = new BilModule(); consumer.ExternalSymbols.Add(Member("$provided()@.i32"));
         var before = BilWriter.Write(provider);
         var linked = BilModuleLinker.Link([consumer, provider]);
-        TestHarness.CheckTrue("external 契约由兼容 local 定义满足", linked.ExternalSymbols.Count == 0 && linked.LocalSymbols.Count == 1);
+        CaseAssertions.CheckTrue("external 契约由兼容 local 定义满足", linked.ExternalSymbols.Count == 0 && linked.LocalSymbols.Count == 1);
         BilTestHarness.CheckBilValid("独立链接普通函数通过 verifier", linked);
-        TestHarness.CheckTrue("链接不修改 provider cachedmodel", BilWriter.Write(provider) == before);
-        TestHarness.CheckTrue("重复 local 事务拒绝且不修改", LinkReject(() => BilModuleLinker.Link([provider, provider])) && BilWriter.Write(provider) == before);
+        CaseAssertions.CheckTrue("链接不修改 provider cachedmodel", BilWriter.Write(provider) == before);
+        CaseAssertions.CheckTrue("重复 local 事务拒绝且不修改", LinkReject(() => BilModuleLinker.Link([provider, provider])) && BilWriter.Write(provider) == before);
         consumer.ExternalSymbols.Clear(); consumer.ExternalSymbols.Add(Member("$provided()@.i32", BilKeyword.Async));
-        TestHarness.CheckTrue("async ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([consumer, provider])));
+        CaseAssertions.CheckTrue("async ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([consumer, provider])));
         var local = new BilTypeDeclaration("sample::Box", BilTypeKind.Class, new BilAccessibilityModifier(BilAccessibility.Public));
         local.GenericParameters.Add("T"); local.GenericVariances.Add(BilGenericVariance.Out);
         local.Members.Add(Member("sample::Box$read()@.i32"));
@@ -49,12 +49,12 @@ public static partial class ModuleTests
         required.Members.Add(Member("sample::Box$read()@.i32"));
         var declaration = new BilModule(); declaration.LocalSymbols.Add(local);
         var import = new BilModule(); import.ExternalSymbols.Add(required);
-        TestHarness.CheckTrue("local 允许额外 private 实现", BilModuleLinker.Link([import, declaration]).ExternalSymbols.Count == 0);
+        CaseAssertions.CheckTrue("local 允许额外 private 实现", BilModuleLinker.Link([import, declaration]).ExternalSymbols.Count == 0);
         required.GenericVariances[0] = BilGenericVariance.In;
-        TestHarness.CheckTrue("GP variance ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([import, declaration])));
+        CaseAssertions.CheckTrue("GP variance ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([import, declaration])));
         required.GenericVariances[0] = BilGenericVariance.Out;
         required.ExtendsType = "sample::Other";
-        TestHarness.CheckTrue("base ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([declaration, import])));
+        CaseAssertions.CheckTrue("base ABI 不相容拒绝", LinkReject(() => BilModuleLinker.Link([declaration, import])));
     }
     private static void TestTypedResources()
     {
@@ -69,10 +69,10 @@ public static partial class ModuleTests
         BilTestHarness.CheckBilValid("碰撞 R_0 load/hint 链接后 verifier", linked);
         var one = (LoadInstruction)linked.Functions[0].Blocks[0].Instructions[1];
         var two = (LoadInstruction)linked.Functions[1].Blocks[0].Instructions[0];
-        TestHarness.CheckTrue("相同 R0 分别指向自己的 typed resource", one.Resource != two.Resource
+        CaseAssertions.CheckTrue("相同 R0 分别指向自己的 typed resource", one.Resource != two.Resource
             && ((BilScalarResource)one.Resource).LiteralText == "11" && ((BilScalarResource)two.Resource).LiteralText == "22");
-        TestHarness.CheckTrue("保留 instruction Origin", ReferenceEquals(one.Origin, marker));
-        TestHarness.CheckTrue("collection 字面 R_0 不替换", ((BilCollectionResource)linked.Resources[2]).Elements[0] == "\"R_0\"");
+        CaseAssertions.CheckTrue("保留 instruction Origin", ReferenceEquals(one.Origin, marker));
+        CaseAssertions.CheckTrue("collection 字面 R_0 不替换", ((BilCollectionResource)linked.Resources[2]).Elements[0] == "\"R_0\"");
         var catchModule = new BilModule();
         for (var i = 0; i < 2; i++)
         {
@@ -91,7 +91,7 @@ public static partial class ModuleTests
         for (var i = 0; i < 2; i++)
         {
             var attempt = (TryInstruction)cloned.Functions[i].Blocks[0].Instructions[0];
-            TestHarness.CheckTrue("两函数重复 blockId catch handler 身份 " + i,
+            CaseAssertions.CheckTrue("两函数重复 blockId catch handler 身份 " + i,
                 ReferenceEquals(((BilCatchTableResource)attempt.CatchTable).Entries[0].Handler, cloned.Functions[i].Blocks[2])
                 && !ReferenceEquals(attempt.Body, catchModule.Functions[i].Blocks[1]));
         }
@@ -102,7 +102,7 @@ public static partial class ModuleTests
             [switchSource.Blocks[1]], switchSource.Blocks[2], new("breakid")) { Origin = marker });
         var switched = BilModuleLinker.Link([catchModule]);
         var select = (SwitchInstruction)switched.Functions[0].Blocks[0].Instructions[1];
-        TestHarness.CheckTrue("Switch typed Table/ItemBlocks/default/Origin完整克隆",
+        CaseAssertions.CheckTrue("Switch typed Table/ItemBlocks/default/Origin完整克隆",
             ((BilSwitchTableResource)select.Table).Elements[0] == "\"R_0\"" && select.Table.Name != "Switch"
             && ReferenceEquals(select.ItemBlocks[0], switched.Functions[0].Blocks[1])
             && ReferenceEquals(select.DefaultBlock, switched.Functions[0].Blocks[2]) && ReferenceEquals(select.Origin, marker));
@@ -112,15 +112,15 @@ public static partial class ModuleTests
         enumExt.Members.Add(new BilCaseDeclaration("E.C", discriminantResource: "Other"));
         var a = new BilModule(); a.Resources.Add(new BilScalarResource("R_0", BilScalarType.I32, "3")); a.LocalSymbols.Add(enumLocal);
         var b = new BilModule(); b.Resources.Add(new BilScalarResource("Other", BilScalarType.I32, "03")); b.ExternalSymbols.Add(enumExt);
-        TestHarness.CheckTrue("enum discriminant 比较实际整数", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
+        CaseAssertions.CheckTrue("enum discriminant 比较实际整数", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
         b.Resources[0] = new BilScalarResource("Other", BilScalarType.U64, "3");
-        TestHarness.CheckTrue("enum unsigned 实际整数相同", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
+        CaseAssertions.CheckTrue("enum unsigned 实际整数相同", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
         enumLocal.Members.Clear(); enumLocal.Members.Add(new BilCaseDeclaration("E.C")); enumLocal.Members.Add(new BilCaseDeclaration("E.D"));
         enumExt.Members.Clear(); enumExt.Members.Add(new BilCaseDeclaration("E.D")); enumExt.Members.Add(new BilCaseDeclaration("E.C"));
-        TestHarness.CheckTrue("auto case 重排实际ABI不同拒绝", LinkReject(() => BilModuleLinker.Link([b, a])));
+        CaseAssertions.CheckTrue("auto case 重排实际ABI不同拒绝", LinkReject(() => BilModuleLinker.Link([b, a])));
         enumExt.Members.Clear(); enumExt.Members.Add(new BilCaseDeclaration("E.C", discriminantResource: "Other"));
         b.Resources[0] = new BilScalarResource("Other", BilScalarType.U8, "0");
-        TestHarness.CheckTrue("auto 与 explicit 同实际值等价", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
+        CaseAssertions.CheckTrue("auto 与 explicit 同实际值等价", BilModuleLinker.Link([b, a]).ExternalSymbols.Count == 0);
     }
     private static void TestReaderCatchBinding()
     {
@@ -149,12 +149,12 @@ public static partial class ModuleTests
         for (int i = 0; i < 2; i++)
         {
             var attempt = (TryInstruction)linked.Functions[i].Blocks[0].Instructions[2];
-            TestHarness.CheckTrue("Writer/Reader共享catch文本表按所属函数绑定 " + i,
+            CaseAssertions.CheckTrue("Writer/Reader共享catch文本表按所属函数绑定 " + i,
                 ReferenceEquals(((BilCatchTableResource)attempt.CatchTable).Entries[0].Handler, linked.Functions[i].Blocks[2]));
             var run = RigiCompiler.Bil.BilVm.Run(linked, entryPoint: linked.Functions[i].Symbol);
-            TestHarness.CheckTrue("Writer→Reader→Link→VM各catch执行真实不同body " + i,
+            CaseAssertions.CheckTrue("Writer→Reader→Link→VM各catch执行真实不同body " + i,
                 run.Exception == null && run.ReturnValue is RigiCompiler.Bil.Vm.VmI32 n && n.Value == 11 + i * 11, run.Exception?.ToString() ?? "");
         }
-        TestHarness.CheckTrue("Reader/link不修改输入字节", BilWriter.Write(module) == text && BilWriter.Write(parsed) == text);
+        CaseAssertions.CheckTrue("Reader/link不修改输入字节", BilWriter.Write(module) == text && BilWriter.Write(parsed) == text);
     }
 }

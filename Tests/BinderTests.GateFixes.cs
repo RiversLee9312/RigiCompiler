@@ -25,7 +25,7 @@ namespace RigiCompiler.Tests
         // 违规只诊断不拒绝（可恢复模型，避免级联误诊）。
         private static void TestInstantiationFillInP3()
         {
-            TestHarness.Section("P3 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
+            CompilerTestTools.Section("P3 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
 
             const string prelude =
                 "class LocalUser {\n" +
@@ -40,13 +40,13 @@ namespace RigiCompiler.Tests
             // new 表达式填入点（g4 原始形态的函数体内等价）
             var (u1, _) = BindUnit(prelude +
                 "func main() { const w = new Wrap\\<LocalUser>(new LocalUser(\"x\")) }\n");
-            TestHarness.CheckSemanticError("new 填入点非 rich struct 持 Object", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("new 填入点非 rich struct 持 Object", u1.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v' " +
                 "(via type argument of 'Wrap<LocalUser>')");
 
             // 隐式限制违规不拒绝（可恢复）：同一函数体内后续语句正常绑定，
             // 不产生「缺初始化器」级联误诊
-            TestHarness.CheckTrue("隐式限制违规无级联误诊",
+            CaseAssertions.CheckTrue("隐式限制违规无级联误诊",
                 !u1.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("requires a type annotation or an initializer")));
 
@@ -65,7 +65,7 @@ namespace RigiCompiler.Tests
             // 局部标注填入点（TypeReferences.Resolve 同通道）
             var (u2, _) = BindUnit(prelude +
                 "func main() { var w: Wrap\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("局部标注填入点", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("局部标注填入点", u2.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v'");
 
             // 泛型调用显式实参填入点（CallFacility.ResolveGenericArguments）
@@ -74,7 +74,7 @@ namespace RigiCompiler.Tests
                 "func main() {\n" +
                 "    const w = id\\<Wrap\\<LocalUser>>(new Wrap\\<LocalUser>(new LocalUser(\"x\")))\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("泛型调用显式实参填入点", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型调用显式实参填入点", u3.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v'");
 
             // 内建构造透明：Box 实参递归到内层用户构造
@@ -83,7 +83,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("Box\\<Wrap\\<i32>> 嵌套合法", ok2);
             var (u4, _) = BindUnit(prelude +
                 "func main() { var b: Box\\<Wrap\\<LocalUser>> }\n");
-            TestHarness.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u4.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v'");
 
             // async 闸门 2/3 经实参收口（P3 标注填入点，stdlib Task 在场）
@@ -91,7 +91,7 @@ namespace RigiCompiler.Tests
                 "class LocalUser { }\n" +
                 "class AC\\<T> { async func f(x: T) { } }\n" +
                 "func main() { var c: AC\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("async 闸门 2 经实参收口（P3）", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("async 闸门 2 经实参收口（P3）", u5.Diagnostics,
                 "Parameter 'x' of async function 'f' must be a shared-safe type: " +
                 "'LocalUser' (via instantiation 'AC<LocalUser>')");
         }
@@ -100,7 +100,7 @@ namespace RigiCompiler.Tests
         // ===== bug A2：shared interface 与接口传染矩阵（§3.1.1/§4.5）=====
         private static void TestSharedInterfaceContagion()
         {
-            TestHarness.Section("P2/P3 Shared Interface Contagion (§3.1.1/§4.5, bug A2)");
+            CompilerTestTools.Section("P2/P3 Shared Interface Contagion (§3.1.1/§4.5, bug A2)");
 
             // 正例：shared interface 声明 async 成员 + 经接口类型 await 调用
             // （修复前闸门 1 误拒：'Worker' 不在共享安全白名单）
@@ -118,10 +118,10 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("shared interface 经接口 await 调用无诊断", unit);
             var awaitDecl = (BoundLocalDeclarationStatement)BodyOf(bodies, "main").Body.Statements[1];
-            TestHarness.CheckTrue("await 结果类型 = i32（Task\\<i32> 解包）",
+            CaseAssertions.CheckTrue("await 结果类型 = i32（Task\\<i32> 解包）",
                 ReferenceEquals(awaitDecl.Local.Type, unit.Symbols.Bootstrap.Int32));
             var ifaceCall = (BoundInstanceCallExpression)((BoundAwaitExpression)awaitDecl.Initializer!).Operand;
-            TestHarness.CheckTrue("经接口绑定 async 接口方法（Owner = Worker）",
+            CaseAssertions.CheckTrue("经接口绑定 async 接口方法（Owner = Worker）",
                 ifaceCall.Method.IsAsync
                 && ifaceCall.Method.Owner is { Kind: TypeKind.Interface, Name: "Worker", IsShared: true });
 
@@ -130,7 +130,7 @@ namespace RigiCompiler.Tests
                 "pub interface Worker {\n" +
                 "    async func run(x: i32): i32\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("非 shared 接口含 async 成员", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 shared 接口含 async 成员", unit2.Diagnostics,
                 "'Worker': an interface declaring 'async' members must be 'shared'");
 
             // 负例：非 shared class 实现 shared 接口
@@ -139,7 +139,7 @@ namespace RigiCompiler.Tests
                 "pub class W implements Worker {\n" +
                 "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("非 shared class 实现 shared 接口", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 shared class 实现 shared 接口", unit3.Diagnostics,
                 "'W': interface 'Worker' is 'shared', so the implementing type must also be 'shared'");
 
             // 正例：shared class 实现非 shared 接口（反向收紧不管）
@@ -154,7 +154,7 @@ namespace RigiCompiler.Tests
             var (unit5, _) = BindUnit(
                 "pub shared interface IBase { }\n" +
                 "pub interface IChild : IBase { }\n");
-            TestHarness.CheckSemanticError("派生接口未标 shared", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("派生接口未标 shared", unit5.Diagnostics,
                 "'IChild': base interface 'IBase' is 'shared', so the derived interface must also be 'shared'");
 
             // 链式传染：shared 沿接口继承链逐段传染 + 实现端收口
@@ -162,7 +162,7 @@ namespace RigiCompiler.Tests
                 "pub shared interface IA { }\n" +
                 "pub shared interface IB : IA { }\n" +
                 "pub interface IC : IB { }\n");
-            TestHarness.CheckSemanticError("链式传染（IC 未标 shared）", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("链式传染（IC 未标 shared）", unit6.Diagnostics,
                 "'IC': base interface 'IB' is 'shared', so the derived interface must also be 'shared'");
             var (unit7, _) = BindUnit(
                 "pub shared interface IA { }\n" +
@@ -174,7 +174,7 @@ namespace RigiCompiler.Tests
         // ===== async 闸门 2/5 可变参数包（§4.5）=====
         private static void TestAsyncGateVariadicPacks()
         {
-            TestHarness.Section("P3 Async Gates Variadic Pack Fixes (§4.5)");
+            CompilerTestTools.Section("P3 Async Gates Variadic Pack Fixes (§4.5)");
 
             // 正例：位置值包元素共享安全（i32）→ 无诊断
             // （修复前包整体按 Array\<Any\> 判定，任何带包 async 调用误报）
@@ -202,9 +202,9 @@ namespace RigiCompiler.Tests
                 "class LocalUser { }\n" +
                 "async func collect\\<TArgs...>(xs: TArgs...) { }\n" +
                 "func f() { collect(new LocalUser()) }\n");
-            TestHarness.CheckSemanticError("闸门 2 包展开实参非共享安全", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("闸门 2 包展开实参非共享安全", unit4.Diagnostics,
                 "argument of async function 'collect' must be a shared-safe type: 'LocalUser'");
-            TestHarness.CheckSemanticError("闸门 5 包推导类型非共享安全", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("闸门 5 包推导类型非共享安全", unit4.Diagnostics,
                 "type argument of async function 'collect' must be a shared-safe type: 'LocalUser'");
 
             // 正例：泛型可变包推导类型共享安全（i32/String）
@@ -217,7 +217,7 @@ namespace RigiCompiler.Tests
         // ===== 泛型 backing 字段访问器（§9.4.1 + S9a 值层契约）=====
         private static void TestGenericBackingAccessors()
         {
-            TestHarness.Section("P3 Generic Backing Accessors");
+            CompilerTestTools.Section("P3 Generic Backing Accessors");
 
             // 正例：泛型 backing 自动访问器端到端（P1–P3）——自动 getter
             // 合成 return value（backing 读，类型 T）、自动 setter 体首
@@ -234,12 +234,12 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（泛型 backing 自动访问器）", unit);
             var getterBody = bodies.Single(b => b.Method.Kind == MethodKind.Getter
                 && b.Method.Name == "item");
-            TestHarness.Check("自动 getter 合成体（return value，T）",
+            CaseAssertions.Check("自动 getter 合成体（return value，T）",
                 BoundDescribe.Body(getterBody),
                 "Body(item, [], [Return(InstField(item, This(Box<T>), T))])");
             var setterBody = bodies.Single(b => b.Method.Kind == MethodKind.Setter
                 && b.Method.Name == "item");
-            TestHarness.Check("自动 setter 合成体（隐含赋值，T）",
+            CaseAssertions.Check("自动 setter 合成体（隐含赋值，T）",
                 BoundDescribe.Body(setterBody),
                 "Body(item, [], [Assign(InstField(..value, This(Box<T>), T), Param(value,T))])");
 
@@ -252,14 +252,14 @@ namespace RigiCompiler.Tests
                 "        pub get(_: _) { }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("返回 T 的空体 getter 报缺 return", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("返回 T 的空体 getter 报缺 return", unit2.Diagnostics,
                 "Function 'item' must return a value on all code paths");
         }
 
         // ===== 显式泛型实参逐候选约束检查（§3.6）=====
         private static void TestPerCandidateConstraints()
         {
-            TestHarness.Section("P3 Per-candidate Constraint Checks (§3.6)");
+            CompilerTestTools.Section("P3 Per-candidate Constraint Checks (§3.6)");
 
             // 首拒次收：首候选（声明序在前）约束拒绝 i32，次候选无约束
             // 接受——调用成功并命中次候选（修复前只对 matching[0] 检查，
@@ -272,7 +272,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（首拒次收调用成功）", unit);
             var call = (BoundCallExpression)((BoundLocalDeclarationStatement)
                 BodyOf(bodies, "main").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("命中无约束的次候选（2 形参 + 显式泛型实参）",
+            CaseAssertions.CheckTrue("命中无约束的次候选（2 形参 + 显式泛型实参）",
                 call.Method.Parameters.Count == 2 && call.TypeArguments.Count == 1);
 
             // 全部候选约束拒绝：对首候选回放一次诊断（不逐候选重复）
@@ -282,9 +282,9 @@ namespace RigiCompiler.Tests
                 "func pick\\<T extends Animal>(x: T): i32 { return 1 }\n" +
                 "func pick\\<T extends Dog>(x: T, y: i32 = 0): i32 { return 2 }\n" +
                 "func main() { var v = pick\\<i32>(5) }\n");
-            TestHarness.CheckSemanticError("全部候选约束拒绝即诊断", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("全部候选约束拒绝即诊断", unit2.Diagnostics,
                 "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
-            TestHarness.CheckTrue("约束诊断不逐候选重复",
+            CaseAssertions.CheckTrue("约束诊断不逐候选重复",
                 unit2.Diagnostics.Diagnostics.Count(d => d.Message.Contains("constraint")) == 1);
 
             // 约束满足的多候选正常 ranking（平局打破：填充默认值更少者胜）
@@ -297,14 +297,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（约束满足多候选）", unit3);
             var call3 = (BoundCallExpression)((BoundLocalDeclarationStatement)
                 BodyOf(bodies3, "main").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("填充默认值更少的候选胜出（1 形参）",
+            CaseAssertions.CheckTrue("填充默认值更少的候选胜出（1 形参）",
                 call3.Method.Parameters.Count == 1);
         }
 
         // ===== 歧义诊断 winners 子集 + 空泛型包 Syntax 契约 =====
         private static void TestAmbiguityWinnersAndPackSyntax()
         {
-            TestHarness.Section("P3 Ambiguity Winners & Generic Pack Syntax");
+            CompilerTestTools.Section("P3 Ambiguity Winners & Generic Pack Syntax");
 
             // 歧义消息只列真正平局的 winners（修复前列全部 applicable，
             // 被占优淘汰的 m(Base, Base) 误导定位）
@@ -318,10 +318,10 @@ namespace RigiCompiler.Tests
                 "func f(l: Leaf) { m(l, l) }\n");
             var ambiguous = unit.Diagnostics.Diagnostics
                 .Single(d => d.Message.Contains("ambiguous"));
-            TestHarness.CheckTrue("歧义消息列出平局 winners",
+            CaseAssertions.CheckTrue("歧义消息列出平局 winners",
                 ambiguous.Message.Contains("m(Mid, Base)")
                 && ambiguous.Message.Contains("m(Base, Mid)"));
-            TestHarness.CheckTrue("歧义消息不含被占优候选",
+            CaseAssertions.CheckTrue("歧义消息不含被占优候选",
                 !ambiguous.Message.Contains("m(Base, Base)"));
 
             // 空泛型包推导产物的 Syntax 非空契约（修复前空包以 null! 占位；
@@ -332,7 +332,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（空泛型包）", unit2);
             var call2 = (BoundCallExpression)((BoundLocalDeclarationStatement)
                 BodyOf(bodies2, "main").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("空包 Syntax 以调用节点承载",
+            CaseAssertions.CheckTrue("空包 Syntax 以调用节点承载",
                 call2.GenericPack != null
                 && ReferenceEquals(call2.GenericPack.Syntax, call2.Syntax)
                 && call2.GenericPack.TypeArguments.Count == 0);
@@ -341,7 +341,7 @@ namespace RigiCompiler.Tests
         // ===== W8：IsSharedSafe 沿 GP extends 界链递归推导 =====
         private static void TestGenericBoundSharedSafeDerivation()
         {
-            TestHarness.Section("P3 GateFixes: GP 界链 shared-safe 推导（W8）");
+            CompilerTestTools.Section("P3 GateFixes: GP 界链 shared-safe 推导（W8）");
 
             // 正例：T extends U、U extends shared class → async 闸门通过
             // （参数 T 走闸门 5 界链；参数 T? 走 Nullable\<GP\> 按界推导）
@@ -369,7 +369,7 @@ namespace RigiCompiler.Tests
                 "class Host\\<U extends Local> {\n" +
                 "    pub async func send\\<T extends U>(x: T) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W8 反例：非 shared 界链闸门 5",
+            CaseAssertions.CheckSemanticError("W8 反例：非 shared 界链闸门 5",
                 bad.Diagnostics,
                 "Generic parameter 'T' of async function 'send' must have a shared-safe " +
                 "constraint bound: 'Local'");
@@ -379,7 +379,7 @@ namespace RigiCompiler.Tests
                 "class Host\\<U extends Local> {\n" +
                 "    pub async func sendNull\\<T extends U>(x: T?) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W8 反例：Nullable\\<非 shared 界链\\> 闸门 2",
+            CaseAssertions.CheckSemanticError("W8 反例：Nullable\\<非 shared 界链\\> 闸门 2",
                 badNull.Diagnostics,
                 "Parameter 'x' of async function 'sendNull' must be a shared-safe type");
 
@@ -387,20 +387,20 @@ namespace RigiCompiler.Tests
             var self = new GenericParameterSymbol("T");
             self.Constraints.Add(new GenericConstraintInfo(
                 GenericConstraintKind.Extends, self));
-            TestHarness.CheckTrue("W8 环界 T extends T 不发散且非 shared-safe",
+            CaseAssertions.CheckTrue("W8 环界 T extends T 不发散且非 shared-safe",
                 !self.IsSharedSafe());
 
             var a = new GenericParameterSymbol("T");
             var b = new GenericParameterSymbol("U");
             a.Constraints.Add(new GenericConstraintInfo(GenericConstraintKind.Extends, b));
             b.Constraints.Add(new GenericConstraintInfo(GenericConstraintKind.Extends, a));
-            TestHarness.CheckTrue("W8 环界 T extends U extends T 不发散",
+            CaseAssertions.CheckTrue("W8 环界 T extends U extends T 不发散",
                 !a.IsSharedSafe() && !b.IsSharedSafe());
 
             // 语法侧 T extends T 报同列表引用，不挂起
             var (cycleSyntax, _) = BindUnit(
                 "func loop\\<T extends T>(x: T): T { return x }\n");
-            TestHarness.CheckSemanticError("W8 语法环界 T extends T 报同列表引用",
+            CaseAssertions.CheckSemanticError("W8 语法环界 T extends T 报同列表引用",
                 cycleSyntax.Diagnostics,
                 "Constraint bound of 'T' cannot reference generic parameter 'T'");
         }

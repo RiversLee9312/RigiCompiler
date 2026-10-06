@@ -12,7 +12,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 调用实参：位置/具名/混合/空 =====
         public static void TestCallArguments()
         {
-            TestHarness.Section("Call Arguments");
+            CompilerTestTools.Section("Call Arguments");
 
             TestExpr("var v = foo(1, x)", "Path(foo(Int(1,I32), Path(x, [])), [])");
             TestExpr("var v = foo(name = 42)", "Path(foo(name:Int(42,I32)), [])");
@@ -20,59 +20,59 @@ namespace RigiCompiler.Tests
             TestExpr("var v = foo()", "Path(foo(), [])");
             TestExpr("var v = foo(loopedRefEnabled=true)", "Path(foo(loopedRefEnabled:Bool(True)), [])");
             TestExpr("var v = foo(value:Serializable)", "Path(foo(Path(value, [:Serializable])), [])");
-            TestHarness.CheckParseError("loopedRefEnabled 冒号具名语法拒绝",
-                () => TestHarness.ParseRoot("var v = foo(loopedRefEnabled: true)"), "");
+            CaseAssertions.CheckParseError("loopedRefEnabled 冒号具名语法拒绝",
+                () => CompilerTestTools.ParseRoot("var v = foo(loopedRefEnabled: true)"), "");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. new 构造参数 =====
         public static void TestNewArguments()
         {
-            TestHarness.Section("New Arguments");
+            CompilerTestTools.Section("New Arguments");
 
             TestExpr("var v = new User(id = 42)", "New(User, [id:Int(42,I32)])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 索引实参 =====
         public static void TestIndexArguments()
         {
-            TestHarness.Section("Index Arguments");
+            CompilerTestTools.Section("Index Arguments");
 
             TestExpr("var v = a[0]", "Path(a[Int(0,I32)], [])");
             TestExpr("var v = a[0, 1]", "Path(a[Int(0,I32), Int(1,I32)], [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. 括号内续行（SYNTAX §1.1，M31）=====
         public static void TestLineContinuation()
         {
-            TestHarness.Section("Line Continuation Inside Brackets");
+            CompilerTestTools.Section("Line Continuation Inside Brackets");
 
             TestExpr("var v = foo(1,\n2)", "Path(foo(Int(1,I32), Int(2,I32)), [])");
             TestExpr("var v = a[0,\n1]", "Path(a[Int(0,I32), Int(1,I32)], [])");
             // 空实参列表也允许换行
             TestExpr("var v = foo(\n)", "Path(foo(), [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Argument List Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Argument List Error Cases (expect ParserException)");
 
             // 空索引不合法（M31）：foo() 允许空参，a[] 不允许
-            TestHarness.CheckParseError("var v = a[]",
-                () => TestHarness.ParseRoot("var v = a[]"), "Index argument list cannot be empty");
+            CaseAssertions.CheckParseError("var v = a[]",
+                () => CompilerTestTools.ParseRoot("var v = a[]"), "Index argument list cannot be empty");
             // 实参列表必须由闭合括号结束，EOF 是不完整结构
-            TestHarness.CheckParseError("var v = foo(1",
-                () => TestHarness.ParseRoot("var v = foo(1"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var v = foo(1",
+                () => CompilerTestTools.ParseRoot("var v = foo(1"), "Unexpected end of file");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // 辅助：解析变量声明并比对初始化表达式的 AST 描述串（label 中 \n 转义显示）
@@ -80,19 +80,18 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(code.Replace("\n", "\\n"),
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(code.Replace("\n", "\\n"),
                     AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("ArgumentList",
+        internal static TestSuiteData Spec { get; } = new("ArgumentList",
         [
             (nameof(TestCallArguments), TestCallArguments),
             (nameof(TestNewArguments), TestNewArguments),

@@ -61,7 +61,7 @@ namespace RigiCompiler.Tests
                 "    return (x + 0)\n" +
                 "}\n");
             CheckOk("T() 对 i32 产出零值", i32);
-            TestHarness.Check("i32 零值打印 0", i32.Stdout, "0\n");
+            CaseAssertions.Check("i32 零值打印 0", i32.Stdout, "0\n");
             CheckI32("0+0", i32, 0);
 
             var flag = Run(
@@ -83,7 +83,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("T() 对 String 产出空串", text);
-            TestHarness.Check("空串打印空行", text.Stdout, "\n");
+            CaseAssertions.Check("空串打印空行", text.Stdout, "\n");
             CheckI32("空串 length=0", text, 0);
 
             // g6：class 界有可访问零参 init → 放行，运行期按 typeid 跑 init
@@ -115,9 +115,9 @@ namespace RigiCompiler.Tests
                 "    var o = new t()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("零参无匹配 init 抛异常",
+            CaseAssertions.CheckTrue("零参无匹配 init 抛异常",
                 zeroArg.Exception != null, zeroArg.Exception?.ToString() ?? "未抛");
-            TestHarness.CheckTrue("零参无匹配 init 消息",
+            CaseAssertions.CheckTrue("零参无匹配 init 消息",
                 zeroArg.Exception != null
                 && zeroArg.Exception.Message.Contains("不匹配任何 init"),
                 zeroArg.Exception?.Message ?? "");
@@ -245,7 +245,7 @@ namespace RigiCompiler.Tests
                 "    return b.v\n" +
                 "}\n");
             CheckOk("W2：BoxFactory 方法级泛型 + 裸名 count", result);
-            TestHarness.Check("W2 stdout 为 7:8:0:hi", result.Stdout, "7:8:0:hi\n");
+            CaseAssertions.Check("W2 stdout 为 7:8:0:hi", result.Stdout, "7:8:0:hi\n");
             CheckI32("W2 返回 wrap 的 v", result, 8);
         }
 
@@ -265,7 +265,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("bug_g1：Holder\\<i32?> 内嵌可空实参", bugG1);
-            TestHarness.Check("bug_g1 stdout 为 -1", bugG1.Stdout, "-1\n");
+            CaseAssertions.Check("bug_g1 stdout 为 -1", bugG1.Stdout, "-1\n");
             CheckI32("bug_g1 main 返回 0", bugG1, 0);
 
             // 内层可空 + 外层可空：Holder\<i32?>?（可空后缀各归其主）
@@ -330,7 +330,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("bug_g8：T → T? return 装箱视图", g8);
-            TestHarness.Check("bug_g8 stdout 为 3", g8.Stdout, "3\n");
+            CaseAssertions.Check("bug_g8 stdout 为 3", g8.Stdout, "3\n");
             CheckI32("bug_g8 main 返回 0", g8, 0);
 
             var g10 = Run(
@@ -345,7 +345,7 @@ namespace RigiCompiler.Tests
                 "    return a\n" +
                 "}\n");
             CheckOk("bug_g10：if?/?. 于 GP 可空", g10);
-            TestHarness.Check("bug_g10 stdout 为 a=-1 / 7 / null",
+            CaseAssertions.Check("bug_g10 stdout 为 a=-1 / 7 / null",
                 g10.Stdout, "a=-1\n7\nnull\n");
             CheckI32("bug_g10 main 返回 a=-1", g10, -1);
         }
@@ -372,7 +372,7 @@ namespace RigiCompiler.Tests
             var (bad, _, _) = BilTestHarness.EmitBilUnit(
                 "pub func bad\\<T, U>(x: T): U? { return x }\n" +
                 "pub func main(): i32 { return 0 }\n");
-            TestHarness.CheckTrue("W8 反例：无约束 T → U? 全管线报错",
+            CaseAssertions.CheckTrue("W8 反例：无约束 T → U? 全管线报错",
                 bad.Diagnostics.HasErrors
                 && bad.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("Cannot return 'T' from function returning 'Nullable<U>'")),
@@ -413,7 +413,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("bug_s1：嵌套 struct 字段链写穿", result);
-            TestHarness.Check("chain=7 whole=8 this=9 flat=9",
+            CaseAssertions.Check("chain=7 whole=8 this=9 flat=9",
                 result.Stdout, "7\n8\n9\n9\n");
         }
 
@@ -456,7 +456,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("bug_s1b：值类型 receiver 方法调用写回", result);
-            TestHarness.Check("place-call/this-call/compound/replace 全 = 2",
+            CaseAssertions.Check("place-call/this-call/compound/replace 全 = 2",
                 result.Stdout, "2\n2\n2\n2\n");
         }
 
@@ -479,7 +479,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("bug_g9：class 内嵌 struct 字段写", result);
-            TestHarness.Check("box=2", result.Stdout, "2\n");
+            CaseAssertions.Check("box=2", result.Stdout, "2\n");
         }
 
         // 三层嵌套 + 复合赋值 + 引用/值混合边界（写回在 class 中间停止）
@@ -518,7 +518,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("三层嵌套 + 混合边界字段写穿", result);
-            TestHarness.Check("三层 42/50；class 中间停止写回 5",
+            CaseAssertions.Check("三层 42/50；class 中间停止写回 5",
                 result.Stdout, "42\n50\n5\n");
         }
 
@@ -556,7 +556,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("W6：静态/全局字段根嵌套 struct 链写穿", result);
-            TestHarness.Check("static 7/8/9/10；global 11",
+            CaseAssertions.Check("static 7/8/9/10；global 11",
                 result.Stdout, "7\n8\n9\n10\n11\n");
         }
 
@@ -600,7 +600,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("#05 冷 Task 捕获 AtomicMap await", result);
-            TestHarness.Check("#05 in-task=1", result.Stdout, "in-task=1\n");
+            CaseAssertions.Check("#05 in-task=1", result.Stdout, "in-task=1\n");
             CheckI32("#05 返回 0", result, 0);
         }
 
@@ -654,7 +654,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("#02 嵌套枚举器 for-in", result);
-            TestHarness.Check("#02 sum=7", result.Stdout, "sum=7\n");
+            CaseAssertions.Check("#02 sum=7", result.Stdout, "sum=7\n");
             CheckI32("#02 返回 0", result, 0);
         }
 
@@ -740,7 +740,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("W6：wrapped 静态字段根链写穿", result);
-            TestHarness.Check("wrapped static 7/8", result.Stdout, "7\n8\n");
+            CaseAssertions.Check("wrapped static 7/8", result.Stdout, "7\n8\n");
         }
     }
 }

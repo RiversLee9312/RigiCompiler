@@ -13,8 +13,9 @@ public static partial class ModuleTests
     private static string InterfaceProbeFolder([CallerFilePath] string sourcePath = "")
     {
         var repository = Path.GetDirectoryName(Path.GetDirectoryName(sourcePath))!;
-        // 发布资产测试不依赖仓库存在；原仓库可用时保留真实 raw/artifact。
-        var root = Directory.Exists(repository) ? Path.Combine(repository, "playground", "module-validation-20261001", "interface-fixture")
+        // CallerFilePath 的构建路径在 Linux 可指向 /mnt/c；原子发布不能回到仓库的 drvfs。
+        // Linux 使用隔离 worker 的原生文件系统临时根；Windows 仓库可用时保留 raw/artifact。
+        var root = !OperatingSystem.IsLinux() && Directory.Exists(repository) ? Path.Combine(repository, "playground", "module-validation-20261001", "interface-fixture")
             : Path.Combine(Path.GetTempPath(), "rigi-module-interface-" + Environment.ProcessId);
         return Path.Combine(root, "run-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N"));
     }
@@ -36,7 +37,7 @@ public static partial class ModuleTests
     private static void TestInterfaceRoundTrip()
     {
         var (std, _) = CompileInterfaceProbe("stdlib@1.0.0", StdlibSources.ParseAll().ToArray(), [], true);
-        TestHarness.CheckTrue("可信std provider确实输出BIL/API配对", std.ReadBil().Functions.Count > 100 && std.InterfaceBytes.Length > 10000);
+        CaseAssertions.CheckTrue("可信std provider确实输出BIL/API配对", std.ReadBil().Functions.Count > 100 && std.InterfaceBytes.Length > 10000);
         var folder = InterfaceProbeFolder();
         Directory.CreateDirectory(folder);
         File.WriteAllBytes(Path.Combine(folder, "stdlib.interface.json"), std.InterfaceBytes);
@@ -47,23 +48,23 @@ public static partial class ModuleTests
         File.WriteAllBytes(Path.Combine(folder, "provider.interface.json"), provider.InterfaceBytes);
         File.WriteAllBytes(Path.Combine(folder, "provider.bil"), provider.BilBytes);
         File.Delete(providerFile);
-        var (app, unit) = CompileInterfaceProbe("app@1.0.0", [TestHarness.ParseRoot(
+        var (app, unit) = CompileInterfaceProbe("app@1.0.0", [CompilerTestTools.ParseRoot(
             "import api.*\npub func main(): i32 { var holder = new Holder\\<i32>(identity\\<i32>(result()))\n return holder.value }\n", "source/app.rg")], [std, provider]);
-        TestHarness.CheckTrue("consumer真实只绑定自身source且provider文件已移走", unit.SourceFiles.Count == 1 && !File.Exists(providerFile)
+        CaseAssertions.CheckTrue("consumer真实只绑定自身source且provider文件已移走", unit.SourceFiles.Count == 1 && !File.Exists(providerFile)
             && unit.Symbols.Bootstrap.DeclarationSource == null);
         var imported = unit.Symbols.GetNamespace(["api"]).Types.Single(t => t.Name == "Holder");
-        TestHarness.CheckTrue("开放GP导入保持owner声明单例", ReferenceEquals(imported.Fields.Single(f => f.Name == "value").FieldType, imported.GenericParameters[0])
+        CaseAssertions.CheckTrue("开放GP导入保持owner声明单例", ReferenceEquals(imported.Fields.Single(f => f.Name == "value").FieldType, imported.GenericParameters[0])
             && imported.SourceFile == null && imported.DeclarationSpan?.sourceName == "source/provider.rg");
-        TestHarness.CheckTrue("private源lookup不泄露provider实现", !unit.Symbols.GetNamespace(["api"]).Methods.Any(m => m.Name == "seed"));
+        CaseAssertions.CheckTrue("private源lookup不泄露provider实现", !unit.Symbols.GetNamespace(["api"]).Methods.Any(m => m.Name == "seed"));
         var linked = BilModuleLinker.Link([std.ReadBil(), provider.ReadBil(), app.ReadBil()]);
         BilTestHarness.CheckBilValid("无provider AST的真正独立接口/BIL链接", linked);
         var result = BilVm.Run(linked);
-        TestHarness.CheckTrue("artifact-only std+provider+app真实VM泛型体返回37", result.Exception == null && result.ReturnValue is VmI32 { Value: 37 }, result.Exception?.ToString() ?? "");
+        CaseAssertions.CheckTrue("artifact-only std+provider+app真实VM泛型体返回37", result.Exception == null && result.ReturnValue is VmI32 { Value: 37 }, result.Exception?.ToString() ?? "");
         var graph = SymbolGraph.CreateArtifactOnly("shape@1.0.0"); ModuleInterfaceImporter.Import(graph, std);
-        TestHarness.CheckTrue("CallWildcard与Pair在consumer P1前即就绪", graph.Bootstrap.CallWildcard.Parameters.Count == 3
+        CaseAssertions.CheckTrue("CallWildcard与Pair在consumer P1前即就绪", graph.Bootstrap.CallWildcard.Parameters.Count == 3
             && graph.GetNamespace(["core"]).Types.Any(t => t.Name == "Pair" && !t.IsBuiltin));
         var span = graph.Bootstrap.SpanDefinition;
-        TestHarness.CheckTrue("artifact-only Span固定界与实例方法", span.GenericParameters[0].Constraints.Count == 1
+        CaseAssertions.CheckTrue("artifact-only Span固定界与实例方法", span.GenericParameters[0].Constraints.Count == 1
             && ReferenceEquals(span.GenericParameters[0].Constraints[0].Bound, graph.Bootstrap.ValueType) && span.Methods.Count != 0);
         ModuleArtifact Tamper(Action<JsonObject> action)
         {
@@ -73,9 +74,9 @@ public static partial class ModuleTests
             return std with { InterfaceBytes = Encoding.UTF8.GetBytes(root.ToJsonString()), ApiHash = hash };
         }
         var alias = Tamper(root => root["payload"]!["declarations"]!.AsArray().Single(n => n!["tag"]!.GetValue<string>() == "type" && n["builtin"]!.GetValue<bool>() && n["name"]!.GetValue<string>() == "i32")!["alias"] = ".i64");
-        TestHarness.CheckTrue("可信接口i32 alias篡改拒绝", Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), alias)));
+        CaseAssertions.CheckTrue("可信接口i32 alias篡改拒绝", Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), alias)));
         var map = Tamper(root => root["payload"]!["declarations"]!.AsArray().Single(n => n!["tag"]!.GetValue<string>() == "type" && n["builtin"]!.GetValue<bool>() && n["name"]!.GetValue<string>() == "Map")!["gps"]!.AsArray().RemoveAt(1));
-        TestHarness.CheckTrue("可信接口Map元数篡改拒绝", Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), map)));
+        CaseAssertions.CheckTrue("可信接口Map元数篡改拒绝", Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), map)));
         JsonObject Declaration(JsonObject root, string tag, string name) => root["payload"]!["declarations"]!.AsArray()
             .Single(n => n!["tag"]!.GetValue<string>() == tag && n["name"]!.GetValue<string>() == name
                 && (name != "Span" || n["builtin"]!.GetValue<bool>())
@@ -98,10 +99,10 @@ public static partial class ModuleTests
             ("接口和BIL不同native ABI", r => Declaration(r, "method", "any_hash")["nativeLibrary"] = "fake-runtime")
         ];
         foreach (var (label, change) in invalid)
-            TestHarness.CheckTrue("无AST严格接口拒绝 " + label, Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), Tamper(change))));
+            CaseAssertions.CheckTrue("无AST严格接口拒绝 " + label, Reject(() => ModuleInterfaceImporter.Import(SymbolGraph.CreateArtifactOnly("bad@1.0.0"), Tamper(change))));
         TestHandleBindingForgery(std.ReadBil());
         var ordinary = SymbolGraph.CreateArtifactOnly("ordinary@1.0.0");
-        TestHarness.CheckTrue("同名stdlib接口无resolver信任不能自授ABI能力", Reject(() => ModuleInterfaceImporter.Import(ordinary, std with { CompilerOwned = false }))
+        CaseAssertions.CheckTrue("同名stdlib接口无resolver信任不能自授ABI能力", Reject(() => ModuleInterfaceImporter.Import(ordinary, std with { CompilerOwned = false }))
             && ordinary.Bootstrap.Any.Methods.Count == 0 && ordinary.ImportedSymbols.Values.All(s => !s.IsCompilerLibrary));
         ModuleArtifact OrdinaryMap(bool shared, bool constraint)
         {
@@ -119,9 +120,9 @@ public static partial class ModuleTests
         }
         var mapGraph = SymbolGraph.CreateArtifactOnly("ordinary-map@1.0.0");
         ModuleInterfaceImporter.Import(mapGraph, OrdinaryMap(false, true));
-        TestHarness.CheckTrue("ordinary单Map无metadata不能覆盖bootstrap约束", mapGraph.Bootstrap.MapDefinition.GenericParameters.All(g => g.Constraints.Count == 0 && !g.RequiresSharedSafe));
+        CaseAssertions.CheckTrue("ordinary单Map无metadata不能覆盖bootstrap约束", mapGraph.Bootstrap.MapDefinition.GenericParameters.All(g => g.Constraints.Count == 0 && !g.RequiresSharedSafe));
         var sharedGraph = SymbolGraph.CreateArtifactOnly("ordinary-shared-map@1.0.0");
-        TestHarness.CheckTrue("ordinary单Map shared伪造拒绝且manifest未变", Reject(() => ModuleInterfaceImporter.Import(sharedGraph, OrdinaryMap(true, false)))
+        CaseAssertions.CheckTrue("ordinary单Map shared伪造拒绝且manifest未变", Reject(() => ModuleInterfaceImporter.Import(sharedGraph, OrdinaryMap(true, false)))
             && sharedGraph.Bootstrap.MapDefinition.GenericParameters.All(g => g.Constraints.Count == 0 && !g.RequiresSharedSafe));
     }
     private static void TestHandleBindingForgery(BilModule trusted)
@@ -131,7 +132,7 @@ public static partial class ModuleTests
         var counterfeit = new BilModule();
         var fake = native.Symbol.Replace("__m_" + ModuleOrigin.Hash("stdlib@1.0.0"), "__m_" + ModuleOrigin.Hash("user@1.0.0"), StringComparison.Ordinal);
         counterfeit.LocalSymbols.Add(new BilSimpleMemberDeclaration(native.Kind, fake, native.Modifiers.ToArray()));
-        TestHarness.CheckTrue("普通用户同logical同native符号不获Handle入口权限", BilVerifier.Verify(counterfeit)
+        CaseAssertions.CheckTrue("普通用户同logical同native符号不获Handle入口权限", BilVerifier.Verify(counterfeit)
             .Any(e => e.Message.Contains("Handle native 机制入口", StringComparison.Ordinal)));
         var original = trusted.Functions.Single(f => BilCompilerSymbols.Logical(f.Symbol).StartsWith("core::$handle_load(", StringComparison.Ordinal));
         var caller = new BilFunction(original.Symbol.Replace("__m_" + ModuleOrigin.Hash("stdlib@1.0.0"), "__m_" + ModuleOrigin.Hash("user@1.0.0"), StringComparison.Ordinal));
@@ -139,7 +140,7 @@ public static partial class ModuleTests
         trusted.Functions.Add(caller);
         var declaration = trusted.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Single(m => m.Symbol == original.Symbol);
         trusted.LocalSymbols.Add(new BilSimpleMemberDeclaration(declaration.Kind, caller.Symbol, declaration.Modifiers.ToArray()));
-        TestHarness.CheckTrue("其他模块同logical helper不能冒可信Handle调用者", BilVerifier.Verify(trusted)
+        CaseAssertions.CheckTrue("其他模块同logical helper不能冒可信Handle调用者", BilVerifier.Verify(trusted)
             .Any(e => e.Context == caller.Symbol && e.Message.Contains("Handle 隐藏机制不能", StringComparison.Ordinal)));
     }
 }

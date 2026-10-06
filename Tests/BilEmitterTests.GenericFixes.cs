@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using RigiCompiler.Bil;
 
 namespace RigiCompiler.Tests
@@ -21,7 +21,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（泛型类 getAtIndex）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（Box<.i32> 继承定义级 getAtIndex）", module);
-            TestHarness.CheckTrue("Box$$getAtIndex 声明存在",
+            CaseAssertions.CheckTrue("Box$$getAtIndex 声明存在",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                     .Any(m => m.Symbol.Contains("Box$$getAtIndex")));
@@ -64,16 +64,16 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（$.generic.TItem 已声明）", module);
 
             var makeFn = module.Functions.First(f => f.Symbol.Contains("$make("));
-            TestHarness.CheckTrue("make .args 含 .generic.TItem",
+            CaseAssertions.CheckTrue("make .args 含 .generic.TItem",
                 makeFn.Args.Any(a => a.Name == ".generic.TItem" && a.TypeRef == ".typeid"));
 
             var mixFn = module.Functions.First(f => f.Symbol.Contains("$mix("));
-            TestHarness.CheckTrue("mix 同时持有类级 TItem 与方法级 U",
+            CaseAssertions.CheckTrue("mix 同时持有类级 TItem 与方法级 U",
                 mixFn.Args.Any(a => a.Name == ".generic.TItem")
                 && mixFn.Args.Any(a => a.Name == ".generic.U"));
 
             var innerFn = module.Functions.First(f => f.Symbol.Contains(".Inner$id("));
-            TestHarness.CheckTrue("嵌套类方法帧含外层 T",
+            CaseAssertions.CheckTrue("嵌套类方法帧含外层 T",
                 innerFn.Args.Any(a => a.Name == ".generic.T" && a.TypeRef == ".typeid"));
         }
     }

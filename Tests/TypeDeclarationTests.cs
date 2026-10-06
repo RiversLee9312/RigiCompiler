@@ -28,7 +28,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 简�?class 声明 =====
         public static void TestSimpleClass()
         {
-            TestHarness.Section("Simple Class Declaration");
+            CompilerTestTools.Section("Simple Class Declaration");
 
             TestDecl("class Animal {}",
                 "class Animal");
@@ -36,13 +36,13 @@ namespace RigiCompiler.Tests
             TestDecl("class Dog {}",
                 "class Dog");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 带修饰符�?class =====
         public static void TestClassWithModifiers()
         {
-            TestHarness.Section("Class with Modifiers");
+            CompilerTestTools.Section("Class with Modifiers");
 
             TestDecl("pub class Animal {}",
                 "pub class Animal");
@@ -59,13 +59,13 @@ namespace RigiCompiler.Tests
             TestDecl("pub singleton class Config {}",
                 "pub singleton class Config");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. interface 声明 =====
         public static void TestInterface()
         {
-            TestHarness.Section("Interface Declaration");
+            CompilerTestTools.Section("Interface Declaration");
 
             TestDecl("interface Drawable {}",
                 "interface Drawable");
@@ -73,13 +73,13 @@ namespace RigiCompiler.Tests
             TestDecl("pub interface Comparable {}",
                 "pub interface Comparable");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. struct 声明 =====
         public static void TestStruct()
         {
-            TestHarness.Section("Struct Declaration");
+            CompilerTestTools.Section("Struct Declaration");
 
             TestDecl("struct Point {}",
                 "struct Point");
@@ -96,13 +96,13 @@ namespace RigiCompiler.Tests
             TestDecl("pub shared rich struct SharedEntry {}",
                 "pub shared rich struct SharedEntry");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. wrapper 声明 =====
         public static void TestWrapper()
         {
-            TestHarness.Section("Wrapper Declaration");
+            CompilerTestTools.Section("Wrapper Declaration");
 
             TestDecl("wrapper Logged {}",
                 "wrapper Logged");
@@ -110,13 +110,13 @@ namespace RigiCompiler.Tests
             TestDecl("pub wrapper Cached {}",
                 "pub wrapper Cached");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 全局字段与全局函数（复用同一�?DeclarationParserLayer�?====
         public static void TestGlobals()
         {
-            TestHarness.Section("Global Fields / Functions");
+            CompilerTestTools.Section("Global Fields / Functions");
 
             TestDecl("var counter: i32", "var counter: i32");
             TestDecl("pub const MAX: i32", "pub const MAX: i32");
@@ -124,13 +124,13 @@ namespace RigiCompiler.Tests
             TestDecl("func add(a: i32, b: i32): i32 {}", "func add(a: i32,b: i32): i32 {}");
             TestDecl("pub static func helper()", "pub static func helper()");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 类成员（字段/方法/init/operator 全部复用同一路径�?====
         public static void TestMembers()
         {
-            TestHarness.Section("Type Members");
+            CompilerTestTools.Section("Type Members");
 
             TestDecl("class A { pub var name: String }",
                 "class A {pub var name: String}");
@@ -152,13 +152,13 @@ namespace RigiCompiler.Tests
             TestDecl("class A { pub var x: i32\n priv var y: i32\n pub func f() {} }",
                 "class A {pub var x: i32, priv var y: i32, pub func f() {}}");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 8. 继承与接�?=====
         public static void TestInheritance()
         {
-            TestHarness.Section("Inheritance / Interfaces");
+            CompilerTestTools.Section("Inheritance / Interfaces");
 
             TestDecl("class Dog : Animal {}", "class Dog : Animal");
             TestDecl("class C implements Drawable {}", "class C implements Drawable");
@@ -168,13 +168,13 @@ namespace RigiCompiler.Tests
                 "class C : Shape implements A,B");
             TestDecl("pub interface I : Base {}", "pub interface I : Base");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 9. 嵌套类型（递归复用本层，与顶层同一路径�?====
         public static void TestNestedTypes()
         {
-            TestHarness.Section("Nested Types");
+            CompilerTestTools.Section("Nested Types");
 
             TestDecl("class Outer { class Inner {} }",
                 "class Outer {class Inner}");
@@ -188,13 +188,13 @@ namespace RigiCompiler.Tests
             TestDecl("class A { class B { class C {} } }",
                 "class A {class B {class C}}");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 10. 声明上的泛型参数（复�?GenericParametersParserLayer，SYNTAX §3.6�?====
         public static void TestDeclarationGenericParameters()
         {
-            TestHarness.Section("Generic Parameters on Declarations");
+            CompilerTestTools.Section("Generic Parameters on Declarations");
 
             // 类型声明
             TestDecl("class Container\\<TElement> {}",
@@ -238,13 +238,13 @@ namespace RigiCompiler.Tests
             TestDecl("class Cache\\<out TElement extends Comparable> {}",
                 "class Cache\\<out TElement, TElement extends Comparable>");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 11. enum struct �?[case 列表]（SYNTAX §12�?====
         public static void TestEnumCases()
         {
-            TestHarness.Section("Enum Struct Case List");
+            CompilerTestTools.Section("Enum Struct Case List");
 
             // 固定 case（规�?Direction 示例形态）
             TestDecl(
@@ -306,13 +306,13 @@ namespace RigiCompiler.Tests
             TestError("enum struct E {}[A -> 0, B]", "all have explicit discriminants");
             TestError("enum struct E {}[A -> -1]", "Expected non-negative integer as enum discriminant");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 12. init 参数映射（_ -> field，SYNTAX §9.3�?====
         public static void TestInitParameterMapping()
         {
-            TestHarness.Section("Init Parameter Mapping");
+            CompilerTestTools.Section("Init Parameter Mapping");
 
             // 规范 §9.3 示例形态：_ 映射 / 带默认�?/ 显式参数�?
             TestDecl(
@@ -364,13 +364,13 @@ namespace RigiCompiler.Tests
             // 错误�?> 后缺字段�?
             TestError("class A { init(_ -> ) }", "Expected field name after '->' in init parameter mapping");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 13. like 委托（�?.6）与 ext 扩展成员（�?.4�?====
         public static void TestLikeAndExtension()
         {
-            TestHarness.Section("like Delegation / ext Extension");
+            CompilerTestTools.Section("like Delegation / ext Extension");
 
             // like 委托（规�?§9.6 示例形态）
             TestDecl(
@@ -403,13 +403,13 @@ namespace RigiCompiler.Tests
             TestError("ext func String.123(): String {}", "Expected member name after '.'");
             TestError("pub ext var String.123: bool", "Expected member name after '.'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 14. @ 注解（wrapper 应用，SYNTAX §14.5，P5�?====
         public static void TestAnnotations()
         {
-            TestHarness.Section("@ Annotations (Wrapper Applications)");
+            CompilerTestTools.Section("@ Annotations (Wrapper Applications)");
 
             // 编译器内�?wrapper：wrapper 类型标识（�?4.2/14.3/14.4�?
             TestDecl("@WrapperTarget(.Entity)\npub wrapper Logged {}",
@@ -430,13 +430,13 @@ namespace RigiCompiler.Tests
             TestDecl("@core.WrapperTarget(.Method)\npub wrapper Timed {}",
                 "@core.WrapperTarget(EnumCase(.Method)) pub wrapper Timed");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 14b. native 函数（SYNTAX §4.6，M43�?====
         public static void TestNativeFunction()
         {
-            TestHarness.Section("Native Functions");
+            CompilerTestTools.Section("Native Functions");
 
             // 顶层 native 函数：无体声明（换行收尾�?
             TestDecl("pub native func fflush(): i32",
@@ -450,13 +450,13 @@ namespace RigiCompiler.Tests
             TestDecl("class C {\n@NativeLibrary(\"rigi_rt\")\n@NativeSymbol(\"print\")\npriv static native func print(text: String)\n}",
                 "class C {@NativeLibrary(Str(\"rigi_rt\")) @NativeSymbol(Str(\"print\")) priv static native func print(text: String)}");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 15. wrapper proxy 成员�?proxy.*，SYNTAX §14.2/§14.6，P5�?====
         public static void TestWrapperProxy()
         {
-            TestHarness.Section("Wrapper Proxy Members");
+            CompilerTestTools.Section("Wrapper Proxy Members");
 
             // specific 方法代理（�?4.2 示例形态）
             TestDecl(
@@ -530,7 +530,7 @@ namespace RigiCompiler.Tests
             // 错误：wildcard �?* 必须收尾�? 后再遇点按「期�?(」拒绝）
             TestError("wrapper W { operator .proxy.*.f() {} }", "Expected '(' in declaration");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助 =====
@@ -540,28 +540,28 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var root = TestHarness.ParseRoot(code);
-                TestHarness.Check(Label(code), AstDescribe.Root(root), expectedDesc);
+                var root = CompilerTestTools.ParseRoot(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Root(root), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
         // 辅助：期望解析失败（ParserException/LexerException，消息含片段�?
         private static void TestError(string code, string expectedMessagePart)
         {
-            TestHarness.CheckParseError(Label(code), () => TestHarness.ParseRoot(code), expectedMessagePart);
+            CaseAssertions.CheckParseError(Label(code), () => CompilerTestTools.ParseRoot(code), expectedMessagePart);
         }
 
         // 多行源码�?label 转义显示
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TypeDeclaration",
+
+        internal static TestSuiteData Spec { get; } = new("TypeDeclaration",
         [
             (nameof(TestSimpleClass), TestSimpleClass),
             (nameof(TestClassWithModifiers), TestClassWithModifiers),

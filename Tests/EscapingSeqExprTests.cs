@@ -16,15 +16,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class EscapingSeqExprTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "EscapingSeqExpr", Cases, sectionTitle: "EscapingSeqExpr");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -40,7 +38,7 @@ namespace RigiCompiler.Tests
         // §21.4 拦「$.s1 在赋值前被读取」，修复后过验证且 VM 输出正确
         private static void TestEscapingSeqVarInitEndToEnd()
         {
-            TestHarness.Section("逃逸型 seq 表达式：变量初始化端到端");
+            CompilerTestTools.Section("逃逸型 seq 表达式：变量初始化端到端");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -63,10 +61,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("逃逸型 seq 变量初始化无诊断", unit);
             BilTestHarness.CheckBilValid("逃逸型 seq BIL 过验证器", module);
             var result = BilVm.Run(module);
-            TestHarness.CheckTrue("VM 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue("VM 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
-            TestHarness.Check("VM 输出 first/second", result.Stdout, "first\nsecond\n");
-            TestHarness.CheckTrue("main 返回 0",
+            CaseAssertions.Check("VM 输出 first/second", result.Stdout, "first\nsecond\n");
+            CaseAssertions.CheckTrue("main 返回 0",
                 result.ReturnValue is VmI32 exitCode && exitCode.Value == 0,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -75,7 +73,7 @@ namespace RigiCompiler.Tests
         // 外层标签（跨 mid/outer 两个值块，route 逐层 relay）
         private static void TestEscapingSeqAcrossTwoValueBlocks()
         {
-            TestHarness.Section("逃逸型 seq 表达式：跨两个值块的 return@");
+            CompilerTestTools.Section("逃逸型 seq 表达式：跨两个值块的 return@");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named outer {\n" +
@@ -100,9 +98,9 @@ namespace RigiCompiler.Tests
             CheckNoErrors("跨两个值块 return@ 无诊断", unit);
             BilTestHarness.CheckBilValid("跨两个值块 return@ BIL 过验证器", module);
             var result = BilVm.Run(module);
-            TestHarness.CheckTrue("VM 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue("VM 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
-            TestHarness.Check("VM 输出 deep-first/deep-second", result.Stdout,
+            CaseAssertions.Check("VM 输出 deep-first/deep-second", result.Stdout,
                 "deep-first\ndeep-second\n");
         }
 
@@ -110,7 +108,7 @@ namespace RigiCompiler.Tests
         // expectedType 缺失）仍报 P3 定型错误
         private static void TestEscapingSeqRequiresTypeAnnotation()
         {
-            TestHarness.Section("逃逸型 seq 表达式：负例不退化");
+            CompilerTestTools.Section("逃逸型 seq 表达式：负例不退化");
             var (unit, _) = BindUnit(
                 "func f(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -124,7 +122,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return result\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("逃逸型 seq 无类型标注仍拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("逃逸型 seq 无类型标注仍拒绝", unit.Diagnostics,
                 "a type annotation is required");
         }
 
@@ -135,7 +133,7 @@ namespace RigiCompiler.Tests
                 "func f(): i32 {\n" +
                 "    return seq { var x = 1 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("落穿不产值 seq 仍拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("落穿不产值 seq 仍拒绝", unit.Diagnostics,
                 "seq expression must produce a value");
         }
 
@@ -144,7 +142,7 @@ namespace RigiCompiler.Tests
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies) BindUnit(
             params string[] sources)
         {
-            var roots = sources.Select(TestHarness.ParseRoot).ToArray();
+            var roots = sources.Select(CompilerTestTools.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
@@ -153,7 +151,7 @@ namespace RigiCompiler.Tests
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
         }

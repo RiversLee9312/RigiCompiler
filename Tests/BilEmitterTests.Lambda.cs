@@ -57,7 +57,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无捕获 lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("无捕获 lambda 验证器零错误", module);
             AssertLambdaClass(module, "无捕获", "core::Func<.i32, .i32>", hasCaptureField: false);
-            TestHarness.CheckTrue("无捕获 lambda 文本含 new type + invoke.indirect",
+            CaseAssertions.CheckTrue("无捕获 lambda 文本含 new type + invoke.indirect",
                 text.Contains("new type(..lambda..UUID)")
                 && text.Contains("invoke.indirect "));
             BilTestHarness.CheckFnShape("无捕获 lambda main 形状", module, "$main()@.i32",
@@ -88,16 +88,16 @@ namespace RigiCompiler.Tests
             AssertCellSubclassDeclaration(module, "var 捕获", readOnly: false, elementType: ".i32");
             // TypeSymbol 结构：名以 ..cell.. 开头、CellStorage 非 null、基类 Cell
             var cellClass = CellClassOfCapturedLocal(source, "x");
-            TestHarness.CheckTrue("var 捕获 TypeSymbol 为 cell 隐藏子类（Cell 基类）",
+            CaseAssertions.CheckTrue("var 捕获 TypeSymbol 为 cell 隐藏子类（Cell 基类）",
                 cellClass != null
                 && cellClass.Name.StartsWith("..cell..", StringComparison.Ordinal)
                 && cellClass.CellStorage != null
                 && cellClass.BaseType is { ConstructedFrom: { Name: "Cell" } });
-            TestHarness.CheckTrue("var 捕获 .vars 含 cell 隐藏子类",
+            CaseAssertions.CheckTrue("var 捕获 .vars 含 cell 隐藏子类",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "x" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
-            TestHarness.CheckTrue("var 捕获文本：new cell / setValue / invoke.indirect",
+            CaseAssertions.CheckTrue("var 捕获文本：new cell / setValue / invoke.indirect",
                 text.Contains("new type(..cell..UUID)")
                 && text.Contains("invoke.noret fn(core::Cell$setValue")
                 && text.Contains("invoke.indirect $f "));
@@ -129,11 +129,11 @@ namespace RigiCompiler.Tests
             AssertLambdaClass(module, "const 捕获", "core::Func<.i32>", hasCaptureField: true,
                 captureTypeFragment: "..cell..");
             AssertCellSubclassDeclaration(module, "const 捕获", readOnly: true, elementType: ".i32");
-            TestHarness.CheckTrue("const 捕获 .vars 含 cell 隐藏子类",
+            CaseAssertions.CheckTrue("const 捕获 .vars 含 cell 隐藏子类",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "c" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
-            TestHarness.CheckTrue("const 捕获 $$call 走 ReadonlyCell$getValue",
+            CaseAssertions.CheckTrue("const 捕获 $$call 走 ReadonlyCell$getValue",
                 text.Contains("invoke fn(core::ReadonlyCell$getValue()@.generic<$.generic.T>)"));
         }
 
@@ -153,16 +153,16 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("this 捕获 lambda 验证器零错误", module);
             AssertLambdaClass(module, "this 捕获", "core::Func<.i32>", hasCaptureField: true,
                 captureTypeFragment: "@Counter");
-            TestHarness.CheckTrue("this 捕获字段名为 .capture.this",
+            CaseAssertions.CheckTrue("this 捕获字段名为 .capture.this",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol.StartsWith("..lambda.."))
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                     .Any(m => m.Kind == BilMemberKind.Field
                         && m.Symbol.Contains("#.capture.this@Counter")));
-            TestHarness.CheckTrue("this 捕获构造传 $.this + invoke.indirect",
+            CaseAssertions.CheckTrue("this 捕获构造传 $.this + invoke.indirect",
                 text.Contains("new type(..lambda..UUID) $.t0 [$.this]")
                 && text.Contains("invoke.indirect $f "));
-            TestHarness.CheckTrue("this 捕获 init set.field 宿主 $.this",
+            CaseAssertions.CheckTrue("this 捕获 init set.field 宿主 $.this",
                 text.Contains("set.field $c0 $.this field(..lambda..UUID#.capture.this@Counter)"));
         }
 
@@ -180,17 +180,17 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("嵌套 lambda 验证器零错误", module);
             var lambdaTypes = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol.StartsWith("..lambda..")).ToList();
-            TestHarness.CheckTrue("嵌套 lambda 恰两个隐藏类", lambdaTypes.Count == 2);
-            TestHarness.CheckTrue("嵌套外层 extends Func<Func<i32>>",
+            CaseAssertions.CheckTrue("嵌套 lambda 恰两个隐藏类", lambdaTypes.Count == 2);
+            CaseAssertions.CheckTrue("嵌套外层 extends Func<Func<i32>>",
                 lambdaTypes.Any(t => t.ExtendsType == "core::Func<core::Func<.i32>>"));
-            TestHarness.CheckTrue("嵌套内层 extends Func<i32>",
+            CaseAssertions.CheckTrue("嵌套内层 extends Func<i32>",
                 lambdaTypes.Any(t => t.ExtendsType == "core::Func<.i32>"));
-            TestHarness.CheckTrue("嵌套两层均含 .capture.x cell 字段",
+            CaseAssertions.CheckTrue("嵌套两层均含 .capture.x cell 字段",
                 lambdaTypes.All(t => t.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Kind == BilMemberKind.Field
                         && m.Symbol.Contains("#.capture.x@")
                         && m.Symbol.Contains("..cell.."))));
-            TestHarness.CheckTrue("嵌套调用两次 invoke.indirect",
+            CaseAssertions.CheckTrue("嵌套调用两次 invoke.indirect",
                 Regex.Matches(text, @"invoke\.indirect \$").Count >= 2);
         }
 
@@ -207,7 +207,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("void lambda 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("void lambda 验证器零错误", module);
             AssertLambdaClass(module, "void", "core::Action", hasCaptureField: false);
-            TestHarness.CheckTrue("void lambda 语句调用 invoke.indirect.noret",
+            CaseAssertions.CheckTrue("void lambda 语句调用 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret $act []"));
             BilTestHarness.CheckFnShape("void lambda main 形状", module, "$main()@.i32",
                 ".vars { ..lambda..UUID act, ..lambda..UUID .t0, .i32 .t1 }\n" +
@@ -231,21 +231,21 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("async lambda 验证器零错误", module);
             var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..lambda.."));
-            TestHarness.CheckTrue("async lambda extends AsyncFunc<.string, .i32>",
+            CaseAssertions.CheckTrue("async lambda extends AsyncFunc<.string, .i32>",
                 lambda.ExtendsType == "core::AsyncFunc<.string, .i32>");
-            TestHarness.CheckTrue("async lambda 类型带 shared",
+            CaseAssertions.CheckTrue("async lambda 类型带 shared",
                 lambda.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Shared));
-            TestHarness.CheckTrue("async 调用结果 Task<.string>",
+            CaseAssertions.CheckTrue("async 调用结果 Task<.string>",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "t"
                         && v.TypeRef == "core.coroutine::Task<.string>"));
-            TestHarness.CheckTrue("async $$call 声明带 async",
+            CaseAssertions.CheckTrue("async $$call 声明带 async",
                 lambda.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Symbol.Contains("$$call")
                         && m.Modifiers.OfType<BilKeywordModifier>()
                             .Any(k => k.Keyword == BilKeyword.Async)));
-            TestHarness.CheckTrue("async 调用点 invoke.indirect（有结果）",
+            CaseAssertions.CheckTrue("async 调用点 invoke.indirect（有结果）",
                 text.Contains("invoke.indirect $f "));
         }
 
@@ -259,7 +259,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("显式 Func 标注全管线无诊断", unit);
             BilTestHarness.CheckBilValid("显式 Func 标注验证器零错误", module);
-            TestHarness.CheckTrue("显式标注 f 类型 = core::Func<.i32, .i32>",
+            CaseAssertions.CheckTrue("显式标注 f 类型 = core::Func<.i32, .i32>",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "f" && v.TypeRef == "core::Func<.i32, .i32>"));
             BilTestHarness.CheckFnShape("显式 Func 标注 main 形状（new + cast）", module,
@@ -272,7 +272,7 @@ namespace RigiCompiler.Tests
                 "load res(#0) $.t2\n" +
                 "invoke.indirect $f $.t3 [$.t2]\n" +
                 "ret $.t3\n");
-            TestHarness.CheckTrue("显式标注文本含 cast type(core::Func",
+            CaseAssertions.CheckTrue("显式标注文本含 cast type(core::Func",
                 text.Contains("cast $.t0 $.t1 type(core::Func<.i32, .i32>)"));
         }
 
@@ -297,7 +297,7 @@ namespace RigiCompiler.Tests
                 "set.var $.t1 $f\n" +
                 "invoke.indirect $f $.t2 []\n" +
                 "ret $.t2\n");
-            TestHarness.CheckTrue("参数捕获文本含 $.c.p",
+            CaseAssertions.CheckTrue("参数捕获文本含 $.c.p",
                 text.Contains("$.c.p"));
         }
 
@@ -395,13 +395,13 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("泛型上下文 lambda 验证器零错误", module);
             var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..lambda.."));
-            TestHarness.CheckTrue("泛型上下文隐藏类带 generic(T)",
+            CaseAssertions.CheckTrue("泛型上下文隐藏类带 generic(T)",
                 lambda.GenericParameters.Count == 1
                 && lambda.GenericParameters[0] == "T");
-            TestHarness.CheckTrue("泛型上下文 extends Func<T, T>",
+            CaseAssertions.CheckTrue("泛型上下文 extends Func<T, T>",
                 lambda.ExtendsType
                 == "core::Func<.generic<$.generic.T>, .generic<$.generic.T>>");
-            TestHarness.CheckTrue("构造点 type 操作数转发 typeid",
+            CaseAssertions.CheckTrue("构造点 type 操作数转发 typeid",
                 text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
             BilTestHarness.CheckFnShape("泛型上下文 wrap 形状", module,
                 "$wrap(x:.generic<$.generic.T>)@core::Func<.generic<$.generic.T>,.generic<$.generic.T>>",
@@ -432,16 +432,16 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol.StartsWith("..cell.."));
             var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..lambda.."));
-            TestHarness.CheckTrue("cell 子类 generic(T)",
+            CaseAssertions.CheckTrue("cell 子类 generic(T)",
                 cell.GenericParameters.Count == 1 && cell.GenericParameters[0] == "T");
-            TestHarness.CheckTrue("cell extends .cell<T>",
+            CaseAssertions.CheckTrue("cell extends .cell<T>",
                 cell.ExtendsType == ".cell<.generic<$.generic.T>>");
-            TestHarness.CheckTrue("lambda 隐藏类 generic(T)",
+            CaseAssertions.CheckTrue("lambda 隐藏类 generic(T)",
                 lambda.GenericParameters.Count == 1 && lambda.GenericParameters[0] == "T");
-            TestHarness.CheckTrue("构造 cell/lambda 均转发 $.generic.T",
+            CaseAssertions.CheckTrue("构造 cell/lambda 均转发 $.generic.T",
                 text.Contains("new type(..cell..UUID<.generic<$.generic.T>>)")
                 && text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
-            TestHarness.CheckTrue("读写经 Cell getValue/setValue",
+            CaseAssertions.CheckTrue("读写经 Cell getValue/setValue",
                 text.Contains("getValue") && text.Contains("setValue"));
             BilTestHarness.CheckFnShape("方法泛型 T cell 捕获 wrap 形状", module,
                 "$wrap(x:.generic<$.generic.T>)@.generic<$.generic.T>",
@@ -477,15 +477,15 @@ namespace RigiCompiler.Tests
                 .Where(t => t.Symbol.StartsWith("..lambda..")).ToList();
             var cells = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol.StartsWith("..cell..")).ToList();
-            TestHarness.CheckTrue("两层 lambda 均 generic(T)",
+            CaseAssertions.CheckTrue("两层 lambda 均 generic(T)",
                 lambdas.Count == 2
                 && lambdas.All(l => l.GenericParameters.Count == 1
                     && l.GenericParameters[0] == "T"));
-            TestHarness.CheckTrue("捕获 cell 至少一枚且 generic(T)",
+            CaseAssertions.CheckTrue("捕获 cell 至少一枚且 generic(T)",
                 cells.Count >= 1
                 && cells.All(c => c.GenericParameters.Count == 1
                     && c.GenericParameters[0] == "T"));
-            TestHarness.CheckTrue("嵌套构造转发 $.generic.T",
+            CaseAssertions.CheckTrue("嵌套构造转发 $.generic.T",
                 text.Contains("new type(..lambda..UUID<.generic<$.generic.T>>)"));
         }
 
@@ -500,9 +500,9 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             CheckNoErrors("方法泛型参数捕获全管线无诊断", unit);
             BilTestHarness.CheckBilValid("方法泛型参数捕获验证器零错误", module);
-            TestHarness.CheckTrue("参数 prologue 构造 cell<.generic.T>",
+            CaseAssertions.CheckTrue("参数 prologue 构造 cell<.generic.T>",
                 text.Contains("new type(..cell..UUID<.generic<$.generic.T>>)"));
-            TestHarness.CheckTrue(".vars 含 .c.x cell",
+            CaseAssertions.CheckTrue(".vars 含 .c.x cell",
                 module.Functions.First(f => f.Symbol.StartsWith("$wrap("))
                     .Vars.Any(v => v.Name == ".c.x"
                         && v.TypeRef.StartsWith("..cell..")
@@ -521,10 +521,10 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("语句位置 void 间接调用全管线无诊断", unit);
             BilTestHarness.CheckBilValid("语句位置 void 间接调用验证器零错误", module);
-            TestHarness.CheckTrue("act 静态类型 core::Action",
+            CaseAssertions.CheckTrue("act 静态类型 core::Action",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "act" && v.TypeRef == "core::Action"));
-            TestHarness.CheckTrue("语句位置 act() 发 invoke.indirect.noret",
+            CaseAssertions.CheckTrue("语句位置 act() 发 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret $act []"));
         }
 
@@ -540,7 +540,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("括号形态 (act)() 语句位置全管线无诊断", unit);
             BilTestHarness.CheckBilValid("括号形态 (act)() 验证器零错误", module);
-            TestHarness.CheckTrue("括号形态 (act)() 发 invoke.indirect.noret",
+            CaseAssertions.CheckTrue("括号形态 (act)() 发 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret $act []"));
         }
 
@@ -556,7 +556,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("(getHandler())() 语句位置全管线无诊断", unit);
             BilTestHarness.CheckBilValid("(getHandler())() 验证器零错误", module);
-            TestHarness.CheckTrue("(getHandler())() 发 invoke.indirect.noret",
+            CaseAssertions.CheckTrue("(getHandler())() 发 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret"));
         }
 
@@ -578,7 +578,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("handlers[0]() 语句位置全管线无诊断", unit);
             BilTestHarness.CheckBilValid("handlers[0]() 验证器零错误", module);
-            TestHarness.CheckTrue("handlers[0]() 发 invoke.indirect.noret",
+            CaseAssertions.CheckTrue("handlers[0]() 发 invoke.indirect.noret",
                 text.Contains("invoke.indirect.noret"));
         }
 
@@ -609,20 +609,20 @@ namespace RigiCompiler.Tests
                     .Any(m => m.Kind == BilMemberKind.Field
                         && m.Symbol.Contains("#.capture.i@")
                         && m.Symbol.Contains("..cell..")));
-            TestHarness.CheckTrue("for 捕获隐藏类含 .capture.i cell 字段",
+            CaseAssertions.CheckTrue("for 捕获隐藏类含 .capture.i cell 字段",
                 capturing != null && capturing.ExtendsType == "core::Func<.i32>");
             AssertCellSubclassDeclaration(module, "for 捕获", readOnly: true, elementType: ".i32");
-            TestHarness.CheckTrue("for 捕获 .vars 含 cell 化循环变量 i",
+            CaseAssertions.CheckTrue("for 捕获 .vars 含 cell 化循环变量 i",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "i" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
             // cell 构造落在 loop Body 块内（每迭代 new）
             var bodyBlock = module.Functions.First(f => f.Symbol == "$main()@.i32")
                 .Blocks.First(b => b.Id.Contains("body"));
-            TestHarness.CheckTrue("for 捕获 cell 构造在 loop Body 块内",
+            CaseAssertions.CheckTrue("for 捕获 cell 构造在 loop Body 块内",
                 BilTestHarness.NormalizeLambdaUuids(RenderBlockText(bodyBlock))
                     .Contains("new type(..cell..UUID)"));
-            TestHarness.CheckTrue("for 捕获 invoke.indirect 可用",
+            CaseAssertions.CheckTrue("for 捕获 invoke.indirect 可用",
                 text.Contains("invoke.indirect $f "));
         }
 
@@ -650,12 +650,12 @@ namespace RigiCompiler.Tests
                         && m.Symbol.Contains("#.capture.i@")
                         && m.Symbol.Contains("..cell..")))
                 .ToList();
-            TestHarness.CheckTrue("嵌套 for 捕获 i 的恰两个隐藏类", capturingI.Count == 2);
-            TestHarness.CheckTrue("嵌套 for 外层 extends Func<Func<i32>>",
+            CaseAssertions.CheckTrue("嵌套 for 捕获 i 的恰两个隐藏类", capturingI.Count == 2);
+            CaseAssertions.CheckTrue("嵌套 for 外层 extends Func<Func<i32>>",
                 capturingI.Any(t => t.ExtendsType == "core::Func<core::Func<.i32>>"));
-            TestHarness.CheckTrue("嵌套 for 内层 extends Func<i32>",
+            CaseAssertions.CheckTrue("嵌套 for 内层 extends Func<i32>",
                 capturingI.Any(t => t.ExtendsType == "core::Func<.i32>"));
-            TestHarness.CheckTrue("嵌套 for 捕获两次 invoke.indirect",
+            CaseAssertions.CheckTrue("嵌套 for 捕获两次 invoke.indirect",
                 Regex.Matches(text, @"invoke\.indirect \$").Count >= 2);
         }
 
@@ -679,16 +679,16 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("catch 捕获 lambda 验证器零错误", module);
             AssertCellSubclassDeclaration(module, "catch 捕获", readOnly: true,
                 elementType: "MyError");
-            TestHarness.CheckTrue("catch 捕获 .vars 含 cell 化 e",
+            CaseAssertions.CheckTrue("catch 捕获 .vars 含 cell 化 e",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "e" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
             var catchBlock = module.Functions.First(f => f.Symbol == "$main()@.i32")
                 .Blocks.First(b => b.Id.Contains("catch"));
             var catchText = BilTestHarness.NormalizeLambdaUuids(RenderBlockText(catchBlock));
-            TestHarness.CheckTrue("catch 体头 cast + new cell",
+            CaseAssertions.CheckTrue("catch 体头 cast + new cell",
                 catchText.Contains("cast $") && catchText.Contains("new type(..cell..UUID)"));
-            TestHarness.CheckTrue("catch 捕获 invoke.indirect 可用",
+            CaseAssertions.CheckTrue("catch 捕获 invoke.indirect 可用",
                 text.Contains("invoke.indirect.noret $act ")
                 || text.Contains("invoke.indirect $act "));
         }
@@ -708,23 +708,23 @@ namespace RigiCompiler.Tests
             CheckNoErrors("finally(e) 捕获全管线无诊断", unit);
             BilTestHarness.CheckBilValid("finally(e) 捕获验证器零错误", module);
             var main = module.Functions.First(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("finally 捕获 e 为 cell 类型",
+            CaseAssertions.CheckTrue("finally 捕获 e 为 cell 类型",
                 main.Vars.Any(v => v.Name == "e" && v.TypeRef.StartsWith("..cell..",
                     StringComparison.Ordinal)));
             // ExceptionSlot 是普通 .sN（Nullable），非 e 自身
             var tryInst = main.Blocks.SelectMany(b => b.Instructions)
                 .OfType<TryInstruction>().First();
             var slotName = tryInst.ExceptionSlot.Name;
-            TestHarness.CheckTrue("finally 捕获 ExceptionSlot 与 e 分离（.sN）",
+            CaseAssertions.CheckTrue("finally 捕获 ExceptionSlot 与 e 分离（.sN）",
                 slotName.StartsWith(".s", StringComparison.Ordinal) && slotName != "e");
-            TestHarness.CheckTrue("finally 捕获 slot 类型为 nullable Exception",
+            CaseAssertions.CheckTrue("finally 捕获 slot 类型为 nullable Exception",
                 main.Vars.Any(v => v.Name == slotName
                     && v.TypeRef == ".nullable<core::Exception>"));
             var finallyBlock = main.Blocks.First(b => b.Id.Contains("finally"));
-            TestHarness.CheckTrue("finally 体头 new cell(slot)",
+            CaseAssertions.CheckTrue("finally 体头 new cell(slot)",
                 BilTestHarness.NormalizeLambdaUuids(RenderBlockText(finallyBlock))
                     .Contains("new type(..cell..UUID)"));
-            TestHarness.CheckTrue("finally 捕获 invoke.indirect 可用",
+            CaseAssertions.CheckTrue("finally 捕获 invoke.indirect 可用",
                 text.Contains("invoke.indirect.noret $act ")
                 || text.Contains("invoke.indirect $act "));
         }
@@ -750,15 +750,15 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("using const 捕获验证器零错误", module);
             AssertCellSubclassDeclaration(module, "using const 捕获", readOnly: true,
                 elementType: "Res");
-            TestHarness.CheckTrue("using const 捕获 .vars 含 cell 化 r",
+            CaseAssertions.CheckTrue("using const 捕获 .vars 含 cell 化 r",
                 module.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "r" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
-            TestHarness.CheckTrue("using const 捕获 new cell + dispose getValue",
+            CaseAssertions.CheckTrue("using const 捕获 new cell + dispose getValue",
                 text.Contains("new type(..cell..UUID)")
                 && text.Contains("invoke fn(core::ReadonlyCell$getValue")
                 && text.Contains("dispose"));
-            TestHarness.CheckTrue("using const 捕获 invoke.indirect 可用",
+            CaseAssertions.CheckTrue("using const 捕获 invoke.indirect 可用",
                 text.Contains("invoke.indirect $f "));
 
             // var 风味（源写 var → Cell 风味；using 资源仍禁重赋值）
@@ -777,13 +777,13 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("using var 捕获全管线无诊断", unit2);
             BilTestHarness.CheckBilValid("using var 捕获验证器零错误", module2);
-            TestHarness.CheckTrue("using var 捕获 .vars 含 cell 化 r",
+            CaseAssertions.CheckTrue("using var 捕获 .vars 含 cell 化 r",
                 module2.Functions.First(f => f.Symbol == "$main()@.i32")
                     .Vars.Any(v => v.Name == "r" && v.TypeRef.StartsWith("..cell..",
                         StringComparison.Ordinal)));
-            TestHarness.CheckTrue("using var 捕获 dispose 经 getValue 读 receiver",
+            CaseAssertions.CheckTrue("using var 捕获 dispose 经 getValue 读 receiver",
                 text2.Contains("getValue") && text2.Contains("dispose"));
-            TestHarness.CheckTrue("using var 捕获 invoke.indirect 可用",
+            CaseAssertions.CheckTrue("using var 捕获 invoke.indirect 可用",
                 text2.Contains("invoke.indirect $f "));
         }
 
@@ -811,7 +811,7 @@ namespace RigiCompiler.Tests
             // 隐藏类声明含 ..init.wrapper(w0) 成员
             var lambdaType = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..lambda.."));
-            TestHarness.CheckTrue("lambda 隐藏类声明含 ..init.wrapper 成员",
+            CaseAssertions.CheckTrue("lambda 隐藏类声明含 ..init.wrapper 成员",
                 lambdaType.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Symbol.Contains("..init.wrapper(w0:.string)")));
 
@@ -835,7 +835,7 @@ namespace RigiCompiler.Tests
                 "invoke.indirect $f $.t3 [$.t2]\n" +
                 "ret $.t3\n");
 
-            TestHarness.CheckTrue("lambda Method wrapper 文本含 new.wrapped 与 new.wrapper.method",
+            CaseAssertions.CheckTrue("lambda Method wrapper 文本含 new.wrapped 与 new.wrapper.method",
                 text.Contains("new.wrapped type(..lambda..UUID)")
                 && text.Contains("new.wrapper.method fn(..lambda..UUID$$call"));
         }
@@ -847,18 +847,18 @@ namespace RigiCompiler.Tests
         {
             var lambda = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .FirstOrDefault(t => t.Symbol.StartsWith("..lambda.."));
-            TestHarness.CheckTrue($"{label} LocalSymbols 含 ..lambda..UUID class",
+            CaseAssertions.CheckTrue($"{label} LocalSymbols 含 ..lambda..UUID class",
                 lambda != null && lambda.Kind == BilTypeKind.Class);
             if (lambda == null) return;
-            TestHarness.CheckTrue($"{label} extends {extendsType}",
+            CaseAssertions.CheckTrue($"{label} extends {extendsType}",
                 lambda.ExtendsType == extendsType);
-            TestHarness.CheckTrue($"{label} 含 operator(call) 成员",
+            CaseAssertions.CheckTrue($"{label} 含 operator(call) 成员",
                 lambda.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Kind == BilMemberKind.Method
                         && m.Symbol.Contains("$$call")
                         && m.Modifiers.OfType<BilOperatorModifier>()
                             .Any(op => op.Name == "call")));
-            TestHarness.CheckTrue($"{label} 含 init 成员",
+            CaseAssertions.CheckTrue($"{label} 含 init 成员",
                 lambda.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(m => m.Kind == BilMemberKind.Method
                         && m.Symbol.Contains("$init")
@@ -869,14 +869,14 @@ namespace RigiCompiler.Tests
                     && m.Symbol.Contains("#.capture.")).ToList();
             if (hasCaptureField)
             {
-                TestHarness.CheckTrue($"{label} 含 .capture 字段",
+                CaseAssertions.CheckTrue($"{label} 含 .capture 字段",
                     captureFields.Count >= 1
                     && (captureTypeFragment == null
                         || captureFields.Any(f => f.Symbol.Contains(captureTypeFragment))));
             }
             else
             {
-                TestHarness.CheckTrue($"{label} 无 .capture 字段", captureFields.Count == 0);
+                CaseAssertions.CheckTrue($"{label} 无 .capture 字段", captureFields.Count == 0);
             }
         }
 
@@ -890,33 +890,33 @@ namespace RigiCompiler.Tests
                 : $".cell<{elementType}>";
             var cells = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol.StartsWith("..cell..")).ToList();
-            TestHarness.CheckTrue($"{label} LocalSymbols 含 ..cell.. 隐藏子类",
+            CaseAssertions.CheckTrue($"{label} LocalSymbols 含 ..cell.. 隐藏子类",
                 cells.Count >= 1);
             var cell = cells.FirstOrDefault(t => t.ExtendsType == expectedExtends);
-            TestHarness.CheckTrue($"{label} cell 子类 extends {expectedExtends}",
+            CaseAssertions.CheckTrue($"{label} cell 子类 extends {expectedExtends}",
                 cell != null);
             if (cell == null) return;
             var members = cell.Members.OfType<BilSimpleMemberDeclaration>().ToList();
             var valueField = members.FirstOrDefault(m =>
                 m.Kind == BilMemberKind.Field && m.Symbol.Contains("#value@"));
-            TestHarness.CheckTrue($"{label} cell 子类含 pub {(readOnly ? "const" : "var")} value",
+            CaseAssertions.CheckTrue($"{label} cell 子类含 pub {(readOnly ? "const" : "var")} value",
                 valueField != null
                 && valueField.Symbol.EndsWith($"#value@{elementType}", StringComparison.Ordinal)
                 && valueField.Modifiers.OfType<BilAccessibilityModifier>()
                     .Any(a => a.Accessibility == BilAccessibility.Public)
                 && valueField.Modifiers.OfType<BilKeywordModifier>().Any(k =>
                     k.Keyword == (readOnly ? BilKeyword.Const : BilKeyword.Var)));
-            TestHarness.CheckTrue($"{label} cell 子类 override getValue",
+            CaseAssertions.CheckTrue($"{label} cell 子类 override getValue",
                 members.Any(m => m.Kind == BilMemberKind.Method
                     && m.Symbol.Contains("$getValue()")
                     && m.Modifiers.OfType<BilKeywordModifier>()
                         .Any(k => k.Keyword == BilKeyword.Override)));
             if (readOnly)
             {
-                TestHarness.CheckTrue($"{label} ReadonlyCell 无 setValue/空 init",
+                CaseAssertions.CheckTrue($"{label} ReadonlyCell 无 setValue/空 init",
                     !members.Any(m => m.Symbol.Contains("$setValue"))
                     && !members.Any(m => m.Symbol.Contains("$init()@")));
-                TestHarness.CheckTrue($"{label} ReadonlyCell 含 init(value)",
+                CaseAssertions.CheckTrue($"{label} ReadonlyCell 含 init(value)",
                     members.Any(m => m.Kind == BilMemberKind.Method
                         && m.Symbol.Contains("$init(value:")
                         && m.Modifiers.OfType<BilKeywordModifier>()
@@ -924,7 +924,7 @@ namespace RigiCompiler.Tests
             }
             else
             {
-                TestHarness.CheckTrue($"{label} Cell 含 init()/init(value)/override setValue",
+                CaseAssertions.CheckTrue($"{label} Cell 含 init()/init(value)/override setValue",
                     members.Any(m => m.Symbol.Contains("$init()@")
                         && m.Modifiers.OfType<BilKeywordModifier>()
                             .Any(k => k.Keyword == BilKeyword.Init))
@@ -942,7 +942,7 @@ namespace RigiCompiler.Tests
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.Add(TestHarness.ParseRoot(source, BilTestHarness.UserSourceName));
+            roots.Add(CompilerTestTools.ParseRoot(source, BilTestHarness.UserSourceName));
             var unit = new CompilationUnit(roots.ToArray());
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);

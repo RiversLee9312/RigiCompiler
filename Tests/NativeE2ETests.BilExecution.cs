@@ -27,8 +27,8 @@ namespace RigiCompiler.Tests
             try
             {
                 var vm = BilVm.Run(BilReader.Read(bilText));
-                TestHarness.CheckTrue(label + "：VM 有异常", vm.Exception != null);
-                TestHarness.CheckTrue(label + "：VM 消息含关键字",
+                CaseAssertions.CheckTrue(label + "：VM 有异常", vm.Exception != null);
+                CaseAssertions.CheckTrue(label + "：VM 消息含关键字",
                     vm.Exception != null && vm.Exception.Message.Contains(keyword),
                     vm.Exception?.Message ?? "");
 
@@ -37,7 +37,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -45,11 +45,11 @@ namespace RigiCompiler.Tests
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var nativeOut, out var nativeErr, environment: MemtrackEnv);
-                TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
+                CaseAssertions.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit}");
-                TestHarness.CheckTrue(label + "：native stderr 含关键字",
+                CaseAssertions.CheckTrue(label + "：native stderr 含关键字",
                     nativeErr.Contains(nativeNeedle ?? keyword), nativeErr);
-                TestHarness.Check(label + "：stdout 一致",
+                CaseAssertions.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
             }
             finally
@@ -137,7 +137,7 @@ namespace RigiCompiler.Tests
             {
                 // VM 侧（行为参考实现）
                 var vm = BilVm.Run(BilReader.Read(bilText));
-                TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+                CaseAssertions.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
                 var expectedExit = vm.ReturnValue is VmI32 value ? value.Value : 0;
 
@@ -147,7 +147,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -160,9 +160,9 @@ namespace RigiCompiler.Tests
                     // 继承测试宿主可能无效/未知的句柄，不如统一口径；
                     // 不读 stdin 的既有用例不受影响
                     closeStdin: true);
-                TestHarness.Check(label + "：stdout 一致",
+                CaseAssertions.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
-                TestHarness.CheckTrue(label + "：退出码一致",
+                CaseAssertions.CheckTrue(label + "：退出码一致",
                     runExit == expectedExit, $"native={runExit} vm={expectedExit} stderr={nativeErr}");
             }
             finally
@@ -190,7 +190,7 @@ namespace RigiCompiler.Tests
 
                 // 现场出最小外部库（复用工具链解析，无外部依赖）
                 var clang = ToolchainResolver.ResolveClang(null);
-                TestHarness.CheckTrue(label + "：clang 可用", clang != null);
+                CaseAssertions.CheckTrue(label + "：clang 可用", clang != null);
                 if (clang == null)
                 {
                     return;
@@ -200,7 +200,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(cPath, cSource, new UTF8Encoding(false));
                 var cExit = ExternalProcess.Run(clang,
                     new[] { cPath, "-c", "-o", objPath }, out _, out var cErr);
-                TestHarness.CheckTrue(label + "：C 源编译成功", cExit == 0, cErr);
+                CaseAssertions.CheckTrue(label + "：C 源编译成功", cExit == 0, cErr);
                 if (cExit != 0)
                 {
                     return;
@@ -210,7 +210,7 @@ namespace RigiCompiler.Tests
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath,
                     "--out", exePath, "--link", objPath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -227,11 +227,11 @@ namespace RigiCompiler.Tests
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var nativeOut, out var nativeErr, environment: runEnv);
-                TestHarness.Check(label + "：stdout 符合预期",
+                CaseAssertions.Check(label + "：stdout 符合预期",
                     NormalizeNewlines(nativeOut), expectedStdout);
-                TestHarness.CheckTrue(label + "：退出码符合预期",
+                CaseAssertions.CheckTrue(label + "：退出码符合预期",
                     runExit == expectedExit, $"native={runExit} 期望={expectedExit} stderr={nativeErr}");
-                TestHarness.Check(label + "：无资源泄漏或运行时诊断", NormalizeNewlines(nativeErr), "");
+                CaseAssertions.Check(label + "：无资源泄漏或运行时诊断", NormalizeNewlines(nativeErr), "");
             }
             finally
             {

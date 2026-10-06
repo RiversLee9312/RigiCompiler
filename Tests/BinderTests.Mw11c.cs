@@ -10,7 +10,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestMw11cCoroutineShapes()
         {
-            TestHarness.Section("P3 MW11c coroutine 形状（编译级正例）");
+            CompilerTestTools.Section("P3 MW11c coroutine 形状（编译级正例）");
 
             // 冷 Task 两元数构造（SYNTAX §4.5）：只存 body 不执行
             var coldTask = BindUnitWithStdlib(
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
                 "    const t = new Task(func{async () -> { }})\n" +
                 "    t.state = .Runnable\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Task.state 用户写入被拒（priv set）",
+            CaseAssertions.CheckSemanticError("Task.state 用户写入被拒（priv set）",
                 stateWrite.Unit.Diagnostics, "state");
         }
     }

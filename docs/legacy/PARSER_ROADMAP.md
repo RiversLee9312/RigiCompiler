@@ -6,7 +6,7 @@
 
 > ⚠️ **阅读须知**：正文为原始计划记录，各组件的「状态」标记与代码草图反映的是
 > 大扫除（M23）前的设计（如 Layer 回传结果、targetNode 回填等已被禁止的模式），
-> 请勿照搬；现行架构以 `../../../AGENTS.md` §4 与 `EXPRESSION_ARCHITECTURE.md` 为准。
+> 请勿照搬；现行架构见 [Parser 驱动与施工协议](../compiler/syntax/parser.md) 和 [表达式 Parser](../compiler/syntax/expressions.md)。
 
 本文档详细描述 Rigi Parser 的完整实现路线图，包括所有需要实现的 ParserLayer 组件、它们的依赖关系、优先级以及详细的实现指导。
 
@@ -1804,7 +1804,7 @@ public class PerformanceTests
 ## 参考资源
 
 - [SYNTAX.md](../SYNTAX.md) - Rigi 完整语法规范
-- [FRONTEND_TYPES.md](../compiler/syntax/FRONTEND_TYPES.md) - 前端数据类型说明
+- [前端专题索引](../compiler/syntax/README.md) - Lexer、Parser 与语法树的现行数据类型和架构说明
 - [BIL_STANDARD.md](../BIL_STANDARD.md) - BIL 中间表示标准
 - [RUNTIME.md](../RUNTIME.md) - 运行时模型
 

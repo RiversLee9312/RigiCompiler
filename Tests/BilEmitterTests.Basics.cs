@@ -16,14 +16,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断", unit);
             BilTestHarness.CheckBilValid("验证器零错误（hello world）", module);
             var sourceMetadata = module.Metadata.Where(entry => entry.Key == "module").ToArray();
-            TestHarness.CheckTrue("Metadata 恰一条 module = \"hello\"",
+            CaseAssertions.CheckTrue("Metadata 恰一条 module = \"hello\"",
                 sourceMetadata.Length == 1
                 && sourceMetadata[0].Type == BilScalarType.String
                 && sourceMetadata[0].LiteralText == "\"hello\"");
             // 自携 intrinsics 还登记两个可信 helper；保留完整元数据集合与 native ABI 校验。
             var helpers = module.Metadata.Where(entry => entry.Key.StartsWith(
                 BilCompilerHelpers.MetadataPrefix, System.StringComparison.Ordinal)).ToArray();
-            TestHarness.CheckTrue("Metadata 仅额外包含两个准确的可信 stdlib helper 绑定",
+            CaseAssertions.CheckTrue("Metadata 仅额外包含两个准确的可信 stdlib helper 绑定",
                 module.Metadata.Count == 3 && helpers.Length == 2
                 && helpers.Select(entry => entry.Key).Order(System.StringComparer.Ordinal).SequenceEqual(
                     new[] { BilCompilerHelpers.MetadataPrefix + "any_hash", BilCompilerHelpers.MetadataPrefix + "any_to_string" })
@@ -34,22 +34,22 @@ namespace RigiCompiler.Tests
                     == "\"core::$any_to_string(value:.any)@.string\""
                 && BilCompilerHelpers.Resolve(module, "any_hash") == "core::$any_hash(value:.any)@.i64"
                 && BilCompilerHelpers.Resolve(module, "any_to_string") == "core::$any_to_string(value:.any)@.string");
-            TestHarness.CheckTrue("Resources 含 \"Hello, world!\" 标量资源",
+            CaseAssertions.CheckTrue("Resources 含 \"Hello, world!\" 标量资源",
                 module.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String
                     && s.LiteralText == "\"Hello, world!\""));
-            TestHarness.CheckTrue("LocalSymbols 含 core.io::Console 类型与 println 静态方法声明",
+            CaseAssertions.CheckTrue("LocalSymbols 含 core.io::Console 类型与 println 静态方法声明",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "core.io::Console")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
                     .Any(d => d.Kind == BilMemberKind.StaticMethod
                         && d.Symbol == "core.io::Console$.static.println(text:.string)@.void"));
-            TestHarness.CheckTrue("module.Functions 含 main 与 println 两个 fn",
+            CaseAssertions.CheckTrue("module.Functions 含 main 与 println 两个 fn",
                 module.Functions.Any(f => f.Symbol == "$main()@.i32")
                 && module.Functions.Any(f => f.Symbol
                     == "core.io::Console$.static.println(text:.string)@.void"));
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("main 恰一个 entrypoint block",
+            CaseAssertions.CheckTrue("main 恰一个 entrypoint block",
                 main.Blocks.Count(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint)) == 1);
         }
 
@@ -62,22 +62,22 @@ namespace RigiCompiler.Tests
 
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var invoke = main.Blocks[0].Instructions.First(i => i is InvokeNoResultInstruction);
-            TestHarness.CheckTrue("invoke.noret 的 Origin 是 LoweredCallStatement",
+            CaseAssertions.CheckTrue("invoke.noret 的 Origin 是 LoweredCallStatement",
                 invoke.Origin is LoweredCallStatement,
                 invoke.Origin?.GetType().Name ?? "<null>");
             var lowered = invoke.Origin as LoweredCallStatement;
-            TestHarness.CheckTrue("LoweredCallStatement.Origin 是 BoundCallStatement",
+            CaseAssertions.CheckTrue("LoweredCallStatement.Origin 是 BoundCallStatement",
                 lowered?.Origin is BoundCallStatement,
                 lowered?.Origin.GetType().Name ?? "<null>");
             var bound = lowered?.Origin as BoundCallStatement;
-            TestHarness.CheckTrue("BoundCallStatement.Syntax 非空", bound?.Syntax != null);
-            TestHarness.CheckTrue("Syntax.Span 非空", bound?.Syntax.Span != null);
-            TestHarness.Check("Syntax.Span.sourceName 是用户文件名",
+            CaseAssertions.CheckTrue("BoundCallStatement.Syntax 非空", bound?.Syntax != null);
+            CaseAssertions.CheckTrue("Syntax.Span 非空", bound?.Syntax.Span != null);
+            CaseAssertions.Check("Syntax.Span.sourceName 是用户文件名",
                 bound?.Syntax.Span?.sourceName ?? "<null>", BilTestHarness.UserSourceName);
 
             // load 的 Origin 是字面量 LoweredNode（值经 Origin.Syntax 回取）
             var load = main.Blocks[0].Instructions.First(i => i is LoadInstruction);
-            TestHarness.CheckTrue("load 的 Origin 是 LoweredLiteralExpression",
+            CaseAssertions.CheckTrue("load 的 Origin 是 LoweredLiteralExpression",
                 load.Origin is LoweredLiteralExpression,
                 load.Origin?.GetType().Name ?? "<null>");
         }
@@ -97,12 +97,12 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（@EntryPoint 发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（@EntryPoint 双入口合法）", module);
-            TestHarness.CheckTrue("命名空间 main 带 entrypoint 修饰符",
+            CaseAssertions.CheckTrue("命名空间 main 带 entrypoint 修饰符",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "app::$main()@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier k
                         && k.Keyword == BilKeyword.Entrypoint)));
-            TestHarness.CheckTrue("静态成员 run 带 entrypoint 修饰符",
+            CaseAssertions.CheckTrue("静态成员 run 带 entrypoint 修饰符",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "app::App")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
             var (unit2, module2, _) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 { return 0 }\n");
             CheckNoErrors("全管线无诊断（裸 main 约定保留）", unit2);
-            TestHarness.CheckTrue("裸 main 约定仍投影 entrypoint",
+            CaseAssertions.CheckTrue("裸 main 约定仍投影 entrypoint",
                 module2.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "$main()@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier k
@@ -134,30 +134,30 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("merged 验证器零错误", result.Merged);
 
             var slices = result.Slices;
-            TestHarness.CheckTrue("切片含 app 命名空间",
+            CaseAssertions.CheckTrue("切片含 app 命名空间",
                 slices.Any(s => s.Key == "app"));
-            TestHarness.CheckTrue("切片含 core.io 命名空间",
+            CaseAssertions.CheckTrue("切片含 core.io 命名空间",
                 slices.Any(s => s.Key == "core.io"));
             var appSlice = slices.Single(s => s.Key == "app").Value;
-            TestHarness.CheckTrue("app 切片含 app::main 声明与 fn",
+            CaseAssertions.CheckTrue("app 切片含 app::main 声明与 fn",
                 appSlice.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol == "app::$main()@.i32")
                 && appSlice.Functions.Any(f => f.Symbol == "app::$main()@.i32"));
-            TestHarness.CheckTrue("app 切片模块名带命名空间后缀",
+            CaseAssertions.CheckTrue("app 切片模块名带命名空间后缀",
                 appSlice.Metadata.Any(m => m.Key == "module"
                     && m.LiteralText == "\"hello.app\""));
             // app::main 引用了 "sliced" 字符串资源（跨切片共享回填：
             // 切片单文件自足——BilReader 要求 res 在本文件可解析）
-            TestHarness.CheckTrue("app 切片回填了引用的字符串资源",
+            CaseAssertions.CheckTrue("app 切片回填了引用的字符串资源",
                 appSlice.Resources.Any(r => r is BilScalarResource s
                     && s.Type == BilScalarType.String && s.LiteralText == "\"sliced\""));
             // 合并语义：各切片符号/fn 之和 == merged（切片是 partition）
             var sliceSymbolCount = slices.Sum(s => s.Value.LocalSymbols.Count);
             var sliceFunctionCount = slices.Sum(s => s.Value.Functions.Count);
-            TestHarness.CheckTrue("切片符号数之和 == merged 符号数",
+            CaseAssertions.CheckTrue("切片符号数之和 == merged 符号数",
                 sliceSymbolCount == result.Merged.LocalSymbols.Count,
                 $"{sliceSymbolCount} != {result.Merged.LocalSymbols.Count}");
-            TestHarness.CheckTrue("切片 fn 数之和 == merged fn 数",
+            CaseAssertions.CheckTrue("切片 fn 数之和 == merged fn 数",
                 sliceFunctionCount == result.Merged.Functions.Count,
                 $"{sliceFunctionCount} != {result.Merged.Functions.Count}");
             // 切片序列化 → BilReader 单文件可解析（自足性端到端）
@@ -165,7 +165,7 @@ namespace RigiCompiler.Tests
             {
                 if (slice.LocalSymbols.Count == 0 && slice.Functions.Count == 0) continue;
                 var roundtrip = BilReader.Read(BilWriter.Write(slice));
-                TestHarness.CheckTrue($"切片 {ns} 序列化往返 fn 数一致",
+                CaseAssertions.CheckTrue($"切片 {ns} 序列化往返 fn 数一致",
                     roundtrip.Functions.Count == slice.Functions.Count);
             }
         }
@@ -193,7 +193,7 @@ namespace RigiCompiler.Tests
             // receiverCache 的 null 初值）
             // + R_34 = "same"——"same" 不重复登记；return 0 与基线 i32 0
             // 同键去重
-            TestHarness.CheckTrue("相同字面量只登记一个资源",
+            CaseAssertions.CheckTrue("相同字面量只登记一个资源",
                 module.Resources.Count(r => r is BilScalarResource s
                     && s.LiteralText == "\"same\"") == 1,
                 string.Join(", ", module.Resources.Select(r => r.Name)));
@@ -201,7 +201,7 @@ namespace RigiCompiler.Tests
             var loads = main.Blocks[0].Instructions.Where(i => i is LoadInstruction).ToList();
             var same = module.Resources.OfType<BilScalarResource>()
                 .Single(r => r.LiteralText == "\"same\"");
-            TestHarness.CheckTrue("两处引用同一资源（去重）",
+            CaseAssertions.CheckTrue("两处引用同一资源（去重）",
                 loads.Count(l => l.Operands[0] is BilResourceOperand ro
                     && ReferenceEquals(ro.Resource, same)) == 2,
                 "same=" + same.Name + " loads=" + loads.Count);
@@ -423,7 +423,7 @@ namespace RigiCompiler.Tests
 
         private static void TestUnsupportedNodes()
         {
-            var root = TestHarness.ParseRoot("func f() { }\n");
+            var root = CompilerTestTools.ParseRoot("func f() { }\n");
             var unit = new CompilationUnit(root);
             var method = new MethodSymbol("future", MethodKind.Regular);
             var boundBody = new BoundBlock(root, new List<BoundStatement>());
@@ -431,7 +431,7 @@ namespace RigiCompiler.Tests
                 new LoweredBlock(boundBody,
                     new List<LoweredStatement> { new FutureLoweredStatement(boundBody) }));
             var module = BilEmitter.Emit(unit, new[] { body }, "future");
-            TestHarness.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
                 "not supported by minimal emission");
             // 夹具修补：手工 MethodSymbol 未经 P1 收集，模块缺其声明——补上
             // 以聚焦「坏函数体跳过」本身的结构健康
@@ -453,7 +453,7 @@ namespace RigiCompiler.Tests
             foreach (var host in new[] { "Any", "Object" })
             {
                 var symbol = "core::" + host + "$toString()@.string";
-                TestHarness.CheckTrue(host + " 源码 toString 声明与实现",
+                CaseAssertions.CheckTrue(host + " 源码 toString 声明与实现",
                     module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                         d.Symbol == symbol && !d.Modifiers.OfType<BilKeywordModifier>()
                             .Any(m => m.Keyword == BilKeyword.Native))
@@ -464,7 +464,7 @@ namespace RigiCompiler.Tests
             // 全局函数 canonical 带 $ 名段，同 $main 形态）
             var anyToString = module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
                 .FirstOrDefault(d => d.Symbol == "core::$any_to_string(value:.any)@.string");
-            TestHarness.CheckTrue("any_to_string 以 priv native 全局声明落地",
+            CaseAssertions.CheckTrue("any_to_string 以 priv native 全局声明落地",
                 anyToString != null
                 && anyToString.Modifiers.OfType<BilAccessibilityModifier>()
                     .First().Accessibility == BilAccessibility.Private

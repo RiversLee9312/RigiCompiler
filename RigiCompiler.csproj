@@ -39,12 +39,11 @@
   <ItemGroup>
     <Compile Remove="playground/**/*.cs" />
     <Compile Remove="tools/PerfBaseline/**/*.cs" />
-    <Compile Remove="Tests/TUnit/**/*.cs" />
+    <Compile Remove="Tests/**/*.cs" />
+    <InternalsVisibleTo Include="RigiCompiler.Tests" />
     <!-- 性能工具与 case worker 共用同一份灭树设施。 -->
     <Compile Include="tools/PerfBaseline/ProcessIsolation.cs" />
     <Compile Include="tools/PerfBaseline/MachineResources.cs" />
-    <Content Include="Tests/e2e/rigi/**/*.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Tests/native/rigi/**/*.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="tools/stress/mq.rg" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="rigi_rt/**/*.h" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

@@ -44,7 +44,7 @@ namespace RigiCompiler.Tests
             module.Functions.Add(main);
             var result = BilVm.Run(module);
             CheckOk("new .array 不再把单 i32 当长度", result);
-            TestHarness.CheckTrue("元素是 2 不是零（长度特权已拆除；Q6 包 Nullable）",
+            CaseAssertions.CheckTrue("元素是 2 不是零（长度特权已拆除；Q6 包 Nullable）",
                 result.ReturnValue is VmNullable { HasValue: true, Value: VmI32 { Value: 2 } });
 
             var (unit, _, _) = BilTestHarness.EmitBilUnit(
@@ -52,7 +52,7 @@ namespace RigiCompiler.Tests
                 "    var a = new Array\\<i32>(3)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("源码 new Array<T>(n) 不接受长度参数",
+            CaseAssertions.CheckTrue("源码 new Array<T>(n) 不接受长度参数",
                 unit.Diagnostics.HasErrors
                 && unit.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("Too many arguments for 'init'", StringComparison.Ordinal)),
@@ -84,7 +84,7 @@ namespace RigiCompiler.Tests
                 "    return a.length\n" +
                 "}\n");
             CheckOk("arrayOfElements<String>", result);
-            TestHarness.Check("arrayOfElements stdout", result.Stdout, "Hello, world!\n");
+            CaseAssertions.Check("arrayOfElements stdout", result.Stdout, "Hello, world!\n");
             CheckI32("arrayOfElements.length", result, 2);
         }
 
@@ -95,7 +95,7 @@ namespace RigiCompiler.Tests
             var module = WrapperHostModule();
             var result = BilVm.Run(module);
             CheckOk("wrapper 安装", result);
-            TestHarness.CheckTrue("返回宿主", result.ReturnValue is VmObject host
+            CaseAssertions.CheckTrue("返回宿主", result.ReturnValue is VmObject host
                 && host.TypeRef == "Host"
                 && host.TryReadHidden(VmContext.HiddenEntityKey("Wrap"), out var stored)
                 && stored is VmObject wrapper

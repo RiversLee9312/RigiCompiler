@@ -44,58 +44,58 @@ namespace RigiCompiler.Tests
             var stub = StubOf(ctx, "$nap(");
             var resume = ResumeOf(ctx, stub);
             var allInsts = resume.Blocks.SelectMany(b => b.Instructions).ToList();
-            TestHarness.CheckTrue("① lowering 层指令全消除",
+            CaseAssertions.CheckTrue("① lowering 层指令全消除",
                 !allInsts.OfType<MirYieldAlarm>().Any()
                 && !allInsts.OfType<MirYieldBare>().Any(),
                 string.Join(",", allInsts.Select(i => i.GetType().Name).Distinct()));
-            TestHarness.CheckTrue("① PollingAlarm sheet 经 getid.type 物化 + MirTypeCheck 分流",
+            CaseAssertions.CheckTrue("① PollingAlarm sheet 经 getid.type 物化 + MirTypeCheck 分流",
                 allInsts.OfType<MirGetTypeId>().Any(g => g.TypeRef
                     == CoroutineSplitPass.PollingAlarmCanonical)
                 && allInsts.OfType<MirTypeCheck>().Any(c =>
                     c.Kind == MirTypeCheckKind.Is && c.IsIndirect));
             var yieldBlock = resume.Blocks.Single(b => b.Id.EndsWith(".yield1",
                 StringComparison.Ordinal) && b.Terminator is MirCondBranch);
-            TestHarness.CheckTrue("① 挂起段：state 常量化存 frame + 分流条件分支",
+            CaseAssertions.CheckTrue("① 挂起段：state 常量化存 frame + 分流条件分支",
                 yieldBlock.Instructions.OfType<MirSetField>().Any(
                     s => s.FieldSymbol.Contains("#state@"))
                 && yieldBlock.Terminator is MirCondBranch);
             var eventBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.event"));
             // L8：handle 直读改为 ensureHandle 调用（用户直继子类懒建
             // 默认底座）；登记仍走 rigi_alarm_wait 闸内握手
-            TestHarness.CheckTrue("① event 分支：ensureHandle 取底座 + rigi_alarm_wait 登记",
+            CaseAssertions.CheckTrue("① event 分支：ensureHandle 取底座 + rigi_alarm_wait 登记",
                 eventBlock.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("EventAlarm$ensureHandle("))
                 && eventBlock.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("rigi_alarm_wait(")));
             var signaledBlock = resume.Blocks.Single(b => b.Id.Contains(".yield1.signaled"));
-            TestHarness.CheckTrue("① 已触发分支：自重排（publish）+ ret SUSPENDED",
+            CaseAssertions.CheckTrue("① 已触发分支：自重排（publish）+ ret SUSPENDED",
                 signaledBlock.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("$publishNative("))
                 && signaledBlock.Terminator is MirRet);
-            TestHarness.CheckTrue("① switch 两项 + 恢复块落 pollgate（不重调面）",
+            CaseAssertions.CheckTrue("① switch 两项 + 恢复块落 pollgate（不重调面）",
                 resume.Blocks[0].Terminator is MirSwitch swAlarm
                 && swAlarm.ItemTargets.Count == 2
                 && BlockOf(resume, "mw.state.1").Terminator is MirBranch brAlarm
                 && brAlarm.Target.Contains(".pollgate"));
             var pollGate = BlockOf(resume,
                 ((MirBranch)BlockOf(resume, "mw.state.1").Terminator).Target);
-            TestHarness.CheckTrue("① pollgate：poll_pending 判位 + 分支",
+            CaseAssertions.CheckTrue("① pollgate：poll_pending 判位 + 分支",
                 pollGate.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("rigi_poll_pending("))
                 && pollGate.Terminator is MirCondBranch);
             var probeBlock = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.probe"));
-            TestHarness.CheckTrue("① probe 块：$mw.poll_probe 直调 + 三路 switch",
+            CaseAssertions.CheckTrue("① probe 块：$mw.poll_probe 直调 + 三路 switch",
                 probeBlock.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical == CoroutineSplitPass.PollProbeCanonical)
                 && probeBlock.Terminator is MirSwitch swProbe
                 && swProbe.ItemTargets.Count == 3);
             var pollWait = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.wait"));
-            TestHarness.CheckTrue("① 未就绪：poll_schedule 退避 + ret SUSPENDED",
+            CaseAssertions.CheckTrue("① 未就绪：poll_schedule 退避 + ret SUSPENDED",
                 pollWait.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("rigi_poll_schedule("))
                 && pollWait.Terminator is MirRet);
             var pollReady = resume.Blocks.Single(b => b.Id.Contains(".pollgate1.ready"));
-            TestHarness.CheckTrue("① 就绪：poll_clear + 落原后继",
+            CaseAssertions.CheckTrue("① 就绪：poll_clear + 落原后继",
                 pollReady.Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.Contains("rigi_poll_clear("))
                 && pollReady.Terminator is MirBranch brReady
@@ -106,24 +106,24 @@ namespace RigiCompiler.Tests
             // 转 i32；异常垫尾 = ret -1 且 pending 不取（无 TakePending）
             var probe = ctx.Mir!.Functions.Single(f => f.Symbol.Canonical
                 == CoroutineSplitPass.PollProbeCanonical);
-            TestHarness.CheckTrue("② probe fn 标记与形态（alarm→i32）",
+            CaseAssertions.CheckTrue("② probe fn 标记与形态（alarm→i32）",
                 probe.IsPollProbe && !probe.IsCoroutineResume
                 && probe.ReturnType.Key == "i32"
                 && probe.Parameters.Count == 1
                 && probe.Parameters[0].Name == CoroutineSplitPass.ProbeParamName
                 && probe.Parameters[0].Type.Canonical
                     == CoroutineSplitPass.PollingAlarmCanonical);
-            TestHarness.CheckTrue("② probe entry：isReady 虚派发目标 + bool 分支",
+            CaseAssertions.CheckTrue("② probe entry：isReady 虚派发目标 + bool 分支",
                 probe.Blocks[0].Instructions.OfType<MirCall>().Any(c =>
                     c.Target.Canonical == CoroutineSplitPass.PollProbeIsReadyCanonical)
                 && probe.Blocks[0].Terminator is MirCondBranch);
-            TestHarness.CheckTrue("② probe alarm 参数借用（全 fn 无其 acquire/release）",
+            CaseAssertions.CheckTrue("② probe alarm 参数借用（全 fn 无其 acquire/release）",
                 !probe.Blocks.SelectMany(b => b.Instructions).OfType<MirAcquireSlot>()
                     .Any(a => a.Local == CoroutineSplitPass.ProbeParamName)
                 && !probe.Blocks.SelectMany(b => b.Instructions).OfType<MirReleaseSlot>()
                     .Any(r => r.Local == CoroutineSplitPass.ProbeParamName));
             var probePad = BlockOf(probe, RcInjectionPass.PropagateBlockId);
-            TestHarness.CheckTrue("② probe 垫尾：ret -1 + pending 不取（无 TakePending）",
+            CaseAssertions.CheckTrue("② probe 垫尾：ret -1 + pending 不取（无 TakePending）",
                 probePad.Terminator is MirRet
                 && !probePad.Instructions.OfType<MirTakePending>().Any()
                 && probePad.Instructions.OfType<MirLoadResource>().Any(l =>
@@ -147,7 +147,7 @@ namespace RigiCompiler.Tests
                 "    var t = arm(f)\n" +
                 "    return 0\n" +
                 "}\n", "coro.alarm2.bil");
-            TestHarness.CheckTrue("③ isReady override 可达边收编",
+            CaseAssertions.CheckTrue("③ isReady override 可达边收编",
                 ctx.Mir!.Functions.Any(f => f.Symbol.Canonical.Contains("Flip$isReady")),
                 string.Join(",", ctx.Mir.Functions.Select(f => f.Symbol.Canonical)
                     .Where(c => c.Contains("isReady"))));
@@ -179,21 +179,21 @@ namespace RigiCompiler.Tests
             var stub = StubOf(ctx, "$work(");
             var resumeCanonical = "$mw.resume." + stub.Symbol.Canonical;
             var frameCanonical = "$mw.frame." + stub.Symbol.Canonical;
-            TestHarness.CheckTrue("Emit① rigi_coroutine_create 声明与调用（i64 双参）",
+            CaseAssertions.CheckTrue("Emit① rigi_coroutine_create 声明与调用（i64 双参）",
                 ll.Contains("declare i64 @rigi_coroutine_create(i64, i64)")
                 && ll.Contains("call i64 @rigi_coroutine_create("), ll);
-            TestHarness.CheckTrue("Emit① resume fn 以 i32(ptr) C ABI 发射",
+            CaseAssertions.CheckTrue("Emit① resume fn 以 i32(ptr) C ABI 发射",
                 ll.Contains("define internal i32 @\"" + resumeCanonical + "\"(ptr"), ll);
-            TestHarness.CheckTrue("Emit① resume entry 读 state + switch 分发",
+            CaseAssertions.CheckTrue("Emit① resume entry 读 state + switch 分发",
                 ll.Contains("switch i32"), ll);
-            TestHarness.CheckTrue("Emit① frame sheet 全局已发射",
+            CaseAssertions.CheckTrue("Emit① frame sheet 全局已发射",
                 ll.Contains(GenericAbi.EscapeGlobalName("typesheet.", frameCanonical)), ll);
-            TestHarness.CheckTrue("Emit① Rigi 桥方法调用（registerWaiter/publish）",
+            CaseAssertions.CheckTrue("Emit① Rigi 桥方法调用（registerWaiter/publish）",
                 ll.Contains("$registerWaiter(") && ll.Contains("$publishNative("), ll);
-            TestHarness.CheckTrue("Emit① 导出符号包装恒发射（外部链接）",
+            CaseAssertions.CheckTrue("Emit① 导出符号包装恒发射（外部链接）",
                 ll.Contains("define void @rigi_dispatcher_entry()")
                 && ll.Contains("define void @rigi_dispatch_publish(i64"), ll);
-            TestHarness.CheckTrue("Emit① rigi_entry：Dispatcher workerLoop drain 段",
+            CaseAssertions.CheckTrue("Emit① rigi_entry：Dispatcher workerLoop drain 段",
                 ll.Contains("$workerLoop(")
                 && ll.Contains("declare void @rigi_main_worker_shutdown()"), ll);
 
@@ -207,10 +207,10 @@ namespace RigiCompiler.Tests
             using var llvmLease1758 = LlvmHost.Enter();
             using var module2 = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll2 = module2.PrintToString();
-            TestHarness.CheckTrue("Emit② resume 垫尾调 rigi_failure_record",
+            CaseAssertions.CheckTrue("Emit② resume 垫尾调 rigi_failure_record",
                 ll2.Contains("declare i64 @rigi_failure_record(")
                 && ll2.Contains("call i64 @rigi_failure_record("), ll2);
-            TestHarness.CheckTrue("Emit② rigi_entry 未观察失败走注册表",
+            CaseAssertions.CheckTrue("Emit② rigi_entry 未观察失败走注册表",
                 ll2.Contains("declare i32 @rigi_failure_take_unobserved(ptr)")
                 && ll2.Contains("call i32 @rigi_failure_take_unobserved("), ll2);
 
@@ -229,15 +229,15 @@ namespace RigiCompiler.Tests
             using var llvmLease1779 = LlvmHost.Enter();
             using var module3 = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll3 = module3.PrintToString();
-            TestHarness.CheckTrue("Emit③ rigi_alarm_wait 声明与调用",
+            CaseAssertions.CheckTrue("Emit③ rigi_alarm_wait 声明与调用",
                 ll3.Contains("declare i32 @rigi_alarm_wait(i64, i64)")
                 && ll3.Contains("call i32 @rigi_alarm_wait("), ll3);
-            TestHarness.CheckTrue("Emit③ probe fn 以普通 MIR 形态发射（无 C ABI 特判）",
+            CaseAssertions.CheckTrue("Emit③ probe fn 以普通 MIR 形态发射（无 C ABI 特判）",
                 ll3.Contains("define internal i32 @\""
                     + CoroutineSplitPass.PollProbeCanonical + "\"("), ll3);
-            TestHarness.CheckTrue("Emit③ probe 垫尾 ret -1（pending 不取）",
+            CaseAssertions.CheckTrue("Emit③ probe 垫尾 ret -1（pending 不取）",
                 ll3.Contains("i32 -1"), ll3);
-            TestHarness.CheckTrue("Emit③ 两分类 sheet 全局已发射",
+            CaseAssertions.CheckTrue("Emit③ 两分类 sheet 全局已发射",
                 ll3.Contains("typesheet." + CoroutineSplitPass.PollingAlarmCanonical)
                 && ll3.Contains("typesheet." + CoroutineSplitPass.EventAlarmCanonical), ll3);
         }
@@ -247,7 +247,7 @@ namespace RigiCompiler.Tests
             var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, fileName);
-            TestHarness.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue(fileName + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var mir = MirBuilder.Build(new MwContext(gate.Module!));
             return mir.Functions.Single(f => f.IsEntrypoint);

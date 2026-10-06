@@ -184,11 +184,11 @@ namespace RigiCompiler.Tests
                 "    service.fetchUserById(42)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("降级未路由抛 NoSuchMethodException",
+            CaseAssertions.CheckTrue("降级未路由抛 NoSuchMethodException",
                 thrown.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("NoSuchMethodException"),
                 thrown.Exception?.ToString() ?? "<null>");
-            TestHarness.CheckTrue("异常消息带请求 symbol",
+            CaseAssertions.CheckTrue("异常消息带请求 symbol",
                 thrown.Exception?.Message.Contains("Service$fetchUserById") == true,
                 thrown.Exception?.Message ?? "<null>");
             var caught = Run(service +

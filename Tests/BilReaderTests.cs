@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
@@ -12,15 +12,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilReaderTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilReader", Cases, sectionTitle: "BilReader");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -35,13 +33,14 @@ namespace RigiCompiler.Tests
             ("TestRoundTripTypeOf", TestRoundTripTypeOf),
             ("TestRoundTripDirectModule", TestRoundTripDirectModule),
             ("TestParseError", TestParseError),
+            ("bil.reader.scalar-roundtrip", RoundTripScalar),
         };
 
         // EmitBilUnit 编译源码并发射 BIL，Writer/Reader 往返后文本一致
         private static void RoundTrip(string label, string source)
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-            TestHarness.CheckTrue(label + " 编译无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label + " 编译无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => $"{d.Phase}: {d.Message}")));
             if (unit.Diagnostics.HasErrors)
             {
@@ -56,7 +55,7 @@ namespace RigiCompiler.Tests
             var parsed = BilReader.Read(text1);
             BilTestHarness.CheckBilValid(label + " Reader 解析后可验证", parsed);
             var text2 = BilWriter.Write(parsed);
-            TestHarness.CheckTrue(label + " round-trip 文本一致", text1 == text2,
+            CaseAssertions.CheckTrue(label + " round-trip 文本一致", text1 == text2,
                 FirstDiff(text1, text2));
         }
 
@@ -79,7 +78,6 @@ namespace RigiCompiler.Tests
         // ===== 基础：字面量/cast/invoke/new/字段访问/struct 值拷贝 =====
         private static void TestRoundTripBasics()
         {
-            RoundTripScalar();
 
             RoundTrip("类与 init",
                 "pub class Box {\n" +
@@ -310,10 +308,10 @@ namespace RigiCompiler.Tests
             var text1 = BilWriter.Write(module);
             var parsed = BilReader.Read(text1);
             var text2 = BilWriter.Write(parsed);
-            TestHarness.CheckTrue("手工 BilModule round-trip 文本一致", text1 == text2,
+            CaseAssertions.CheckTrue("手工 BilModule round-trip 文本一致", text1 == text2,
                 FirstDiff(text1, text2));
             // §16.5 推广：if/call/try 携带末尾 breakid 操作数的往返
-            TestHarness.CheckTrue("if/call/try 带 breakid 往返",
+            CaseAssertions.CheckTrue("if/call/try 带 breakid 往返",
                 text1.Contains("if $flag blk(if0-then) blk(if0-else) $.b1")
                 && text1.Contains("call blk(seq0) $.b3")
                 && text2.Contains("if $flag blk(if0-then) blk(if0-else) $.b1")
@@ -502,11 +500,11 @@ namespace RigiCompiler.Tests
                 BilReader.Read("BIL \"1.1\"\n\nMetadata {\n    module = string \"x\"\n}\n\n" +
                     "Resources {\n}\n\nLocalSymbols {\n    .type A = bogus pub {\n    }\n}\n" +
                     "ExternalSymbols {\n}\n");
-                TestHarness.CheckTrue("非法类型种类应抛 BilParseException", false);
+                CaseAssertions.CheckTrue("非法类型种类应抛 BilParseException", false);
             }
             catch (BilParseException ex)
             {
-                TestHarness.CheckTrue("非法类型种类异常带行号与消息",
+                CaseAssertions.CheckTrue("非法类型种类异常带行号与消息",
                     ex.Line > 0 && ex.Message.Contains("bogus"),
                     $"line={ex.Line} msg={ex.Message}");
             }
@@ -518,11 +516,11 @@ namespace RigiCompiler.Tests
                     "fn($main()@.i32) {\n    .args {\n        .return = .i32\n    }\n\n" +
                     "    .vars {\n    }\n\n    .block entry entrypoint {\n" +
                     "        unknownopcode $x\n    }\n}\n");
-                TestHarness.CheckTrue("未知指令应抛 BilParseException", false);
+                CaseAssertions.CheckTrue("未知指令应抛 BilParseException", false);
             }
             catch (BilParseException ex)
             {
-                TestHarness.CheckTrue("未知指令异常带行号", ex.Line == 24,
+                CaseAssertions.CheckTrue("未知指令异常带行号", ex.Line == 24,
                     $"line={ex.Line} msg={ex.Message}");
             }
         }

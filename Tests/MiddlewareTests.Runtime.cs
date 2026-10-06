@@ -31,18 +31,18 @@ namespace RigiCompiler.Tests
             };
             var macros = new[] { "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE" };
             var actual = RigiRtBuilder.BuildUnitySource(sources, macros);
-            TestHarness.Check("特性宏先于 include 且宏体与 -D 一致", actual,
+            CaseAssertions.Check("特性宏先于 include 且宏体与 -D 一致", actual,
                 "#define _POSIX_C_SOURCE 200809L\n#define _DEFAULT_SOURCE 1\n" +
                 "#include \"arc.c\"\n#include \"fs.c\"\n");
-            TestHarness.Check("有值宏只移除第一个等号", RigiRtBuilder.BuildUnitySource(
+            CaseAssertions.Check("有值宏只移除第一个等号", RigiRtBuilder.BuildUnitySource(
                 Array.Empty<(string FileName, string Text)>(), new[] { "-DCONDITION=a==b" }),
                 "#define CONDITION a==b\n");
-            TestHarness.Check("显式空宏保持空宏体", RigiRtBuilder.BuildUnitySource(
+            CaseAssertions.Check("显式空宏保持空宏体", RigiRtBuilder.BuildUnitySource(
                 Array.Empty<(string FileName, string Text)>(), new[] { "-DEMPTY=" }),
                 "#define EMPTY \n");
-            TestHarness.Check("无特性宏仍只包含 C 编译单元", RigiRtBuilder.BuildUnitySource(
+            CaseAssertions.Check("无特性宏仍只包含 C 编译单元", RigiRtBuilder.BuildUnitySource(
                 sources, Array.Empty<string>()), "#include \"arc.c\"\n#include \"fs.c\"\n");
-            TestHarness.CheckTrue("有值宏前导不得包含分隔等号",
+            CaseAssertions.CheckTrue("有值宏前导不得包含分隔等号",
                 !actual.Contains("#define _POSIX_C_SOURCE =", StringComparison.Ordinal));
         }
 
@@ -57,17 +57,17 @@ namespace RigiCompiler.Tests
             var targetParts = host.Split('-');
             targetParts[1] = targetParts[1] == "pc" ? "unknown" : "pc";
             var other = string.Join('-', targetParts);
-            TestHarness.CheckTrue("宿主目标与对照目标不同", host != other);
+            CaseAssertions.CheckTrue("宿主目标与对照目标不同", host != other);
             var hostArgs = RigiRtBuilder.BuildCompileArgs(host, null, "unity.c", "rigi_rt.bc");
             var otherArgs = RigiRtBuilder.BuildCompileArgs(other, null, "unity.c", "rigi_rt.bc");
-            TestHarness.Check("clang 参数明确指定 LLVM 目标", hostArgs[0], "--target=" + host);
+            CaseAssertions.Check("clang 参数明确指定 LLVM 目标", hostArgs[0], "--target=" + host);
             var hostKey = RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", hostArgs);
             var otherKey = RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", otherArgs);
-            TestHarness.CheckTrue("相同源码不同目标不可复用缓存", hostKey != otherKey);
+            CaseAssertions.CheckTrue("相同源码不同目标不可复用缓存", hostKey != otherKey);
             var changedArgs = new List<string>(hostArgs) { "-fno-builtin" };
-            TestHarness.CheckTrue("编译参数改变不可复用缓存", hostKey !=
+            CaseAssertions.CheckTrue("编译参数改变不可复用缓存", hostKey !=
                 RigiRtBuilder.ComputeCacheIdentity(sources, unity, "clang-sha", changedArgs));
-            TestHarness.CheckTrue("clang 内容改变不可复用缓存", hostKey !=
+            CaseAssertions.CheckTrue("clang 内容改变不可复用缓存", hostKey !=
                 RigiRtBuilder.ComputeCacheIdentity(sources, unity, "other-sha", hostArgs));
 
             var clang = RigiCompiler.Middleware.Toolchain.ToolchainResolver.ResolveClang(null);
@@ -86,11 +86,11 @@ namespace RigiCompiler.Tests
                 var args = RigiRtBuilder.BuildCompileArgs(host, null, source, bitcode);
                 var exit = RigiCompiler.Middleware.Toolchain.ExternalProcess.Run(clang, args,
                     out _, out var stderr, workingDirectory: root);
-                TestHarness.CheckTrue("clang 实编宿主目标 bitcode", exit == 0);
+                CaseAssertions.CheckTrue("clang 实编宿主目标 bitcode", exit == 0);
                 if (exit == 0)
                 {
                     LlvmBitcode.ValidateRuntimeTarget(bitcode, host);
-                    TestHarness.CheckTrue("真实 bitcode triple/layout 等于宿主 TargetMachine", true);
+                    CaseAssertions.CheckTrue("真实 bitcode triple/layout 等于宿主 TargetMachine", true);
                     var libuv = RigiCompiler.Middleware.Toolchain.LibuvResolver.Resolve(null);
                     if (libuv != null)
                     {
@@ -98,24 +98,24 @@ namespace RigiCompiler.Tests
                         var cached = prepared.Path;
                         Console.WriteLine("  rigi_rt 实际缓存: " + cached + " rebuilt=" + rebuilt);
                         LlvmBitcode.ValidateRuntimeTarget(cached, host);
-                        TestHarness.CheckTrue("真实运行时缓存 bitcode 目标相容", true);
+                        CaseAssertions.CheckTrue("真实运行时缓存 bitcode 目标相容", true);
                         using var hit = RigiRtBuilder.PrepareBitcode(clang, host, out var rebuiltAgain, libuv);
                         if (prepared.Identity != null && hit.Identity != null)
                         {
-                            TestHarness.Check("相同目标与参数命中同一缓存", hit.Identity, prepared.Identity);
-                            TestHarness.CheckTrue("命中无需再次编译", !rebuiltAgain);
+                            CaseAssertions.Check("相同目标与参数命中同一缓存", hit.Identity, prepared.Identity);
+                            CaseAssertions.CheckTrue("命中无需再次编译", !rebuiltAgain);
                         }
                         else
                         {
                             LlvmBitcode.ValidateRuntimeTarget(hit.Path, host);
-                            TestHarness.CheckTrue("未知身份正常 fresh compile", rebuiltAgain);
+                            CaseAssertions.CheckTrue("未知身份正常 fresh compile", rebuiltAgain);
                             Console.WriteLine("  [SKIP] runtime 身份未知：不把 uncached 路径比较计为缓存命中");
                         }
                     }
                     var rejected = false;
                     try { LlvmBitcode.ValidateRuntimeTarget(bitcode, other); }
                     catch (InvalidOperationException) { rejected = true; }
-                    TestHarness.CheckTrue("真实目标不符在链接之前拒绝", rejected);
+                    CaseAssertions.CheckTrue("真实目标不符在链接之前拒绝", rejected);
                 }
                 else Console.WriteLine("  clang stderr: " + stderr);
             }
@@ -127,7 +127,7 @@ namespace RigiCompiler.Tests
 
         private static void TestExternalProcessDeadline()
         {
-            TestHarness.CheckTrue("LLVM 全局名保留不同泛型形状的身份",
+            CaseAssertions.CheckTrue("LLVM 全局名保留不同泛型形状的身份",
                 GenericAbi.EscapeGlobalName("typesheet.", "A<B,C>")
                 != GenericAbi.EscapeGlobalName("typesheet.", "A<B.C>"));
             var probe = Path.GetTempFileName();
@@ -135,13 +135,13 @@ namespace RigiCompiler.Tests
             {
                 File.WriteAllText(probe, "trusted-tool");
                 var digest = RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe);
-                TestHarness.Check("工具链摘要钉值验证",
+                CaseAssertions.Check("工具链摘要钉值验证",
                     RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe, digest), digest);
                 File.WriteAllText(probe, "tampered-tool");
                 var rejected = false;
                 try { RigiCompiler.Middleware.Toolchain.ToolchainResolver.Fingerprint(probe, digest); }
                 catch (InvalidOperationException) { rejected = true; }
-                TestHarness.CheckTrue("篡改工具链在执行前拒绝", rejected);
+                CaseAssertions.CheckTrue("篡改工具链在执行前拒绝", rejected);
             }
             finally { File.Delete(probe); }
             var windows = OperatingSystem.IsWindows();
@@ -150,7 +150,7 @@ namespace RigiCompiler.Tests
                 : new[] { "-c", "printf 'output\\n'; printf 'error\\n' >&2; exit 7" };
             var code = RigiCompiler.Middleware.Toolchain.ExternalProcess.Run(shell, args,
                 out var output, out var error, timeoutMilliseconds: 10_000);
-            TestHarness.CheckTrue("外部进程保留退出码和双路输出",
+            CaseAssertions.CheckTrue("外部进程保留退出码和双路输出",
                 code == 7 && output.Trim() == "output" && error.Trim() == "error");
             var timer = System.Diagnostics.Stopwatch.StartNew();
             var timedOut = false;
@@ -161,7 +161,7 @@ namespace RigiCompiler.Tests
                         : new[] { "-c", "sleep 30" }, out _, out _, timeoutMilliseconds: 150);
             }
             catch (InvalidOperationException ex) { timedOut = ex.Message.Contains("150ms"); }
-            TestHarness.CheckTrue("外部进程超时受控退出且不无限等待读管道",
+            CaseAssertions.CheckTrue("外部进程超时受控退出且不无限等待读管道",
                 timedOut && timer.ElapsedMilliseconds < 10_000);
         }
 
@@ -177,12 +177,12 @@ namespace RigiCompiler.Tests
                 "@W\\<Array\\<i64>>(core.collections.arrayOf\\<i64>(1))\nclass ArrayHost { }\n" +
                 "pub func main(): i32 { var n = new NumberHost()\n var s = new StringHost()\n" +
                 "var r = new RichHost()\n var a = new ArrayHost()\n return 0 }\n");
-            TestHarness.CheckTrue("GP wrapper 实参语义合法", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("GP wrapper 实参语义合法", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
             if (unit.Diagnostics.HasErrors) return;
             BilTestHarness.CheckBilValid("GP wrapper 四种实参 BIL 合法", bil);
             var vm = RigiCompiler.Bil.BilVm.Run(bil);
-            TestHarness.CheckTrue("GP wrapper 四种实参 VM 合法",
+            CaseAssertions.CheckTrue("GP wrapper 四种实参 VM 合法",
                 vm.Exception == null && vm.ReturnValue is RigiCompiler.Bil.Vm.VmI32 { Value: 0 });
             var context = new MwContext(bil);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -190,7 +190,7 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var calls = module.PrintToString().Split('\n').Where(line =>
                 line.Contains("call void @\"W$init(", StringComparison.Ordinal)).ToArray();
-            TestHarness.CheckTrue("GP init 的整数/String/rich struct/数组实参均按胖值 ABI 传递",
+            CaseAssertions.CheckTrue("GP init 的整数/String/rich struct/数组实参均按胖值 ABI 传递",
                 calls.Length == 4 && calls.All(line => line.Contains("{ i64, i64 }", StringComparison.Ordinal)),
                 string.Join("\n", calls));
         }
@@ -203,10 +203,10 @@ namespace RigiCompiler.Tests
             var (_, module, _) = BilTestHarness.EmitBilUnit(source);
             var collected = ConstructedTypeCollector.Collect(new MwContext(module));
             foreach (var type in new[] { "i32", "i64", "u32", "u16", "u64", "i8" })
-                TestHarness.CheckTrue("实际调用闭合 Cell<" + type + ">",
+                CaseAssertions.CheckTrue("实际调用闭合 Cell<" + type + ">",
                     collected.Contains("core::Cell<core::" + type + ">"),
                     string.Join(", ", collected.Where(t => t.StartsWith("core::Cell<"))));
-            TestHarness.CheckTrue("未调用 grow 不扩张构造闭包",
+            CaseAssertions.CheckTrue("未调用 grow 不扩张构造闭包",
                 !collected.Contains("Box<Box<core::i32>>"));
             var (_, inherited, _) = BilTestHarness.EmitBilUnit(
                 "pub open class Base\\<T> { pub var value:T\n pub init(_ -> value) }\n" +
@@ -214,15 +214,15 @@ namespace RigiCompiler.Tests
                 "pub func main():i32 { const d = new Derived(27)\n return 0 }\n");
             var inheritedContext = new MwContext(inherited);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(inheritedContext);
-            TestHarness.CheckTrue("普通子类保留闭合泛型基类身份",
+            CaseAssertions.CheckTrue("普通子类保留闭合泛型基类身份",
                 inheritedContext.Layout!.Find("Derived")?.BasePlan?.Symbol.Canonical == "Base<core::i32>");
             var derived = inheritedContext.Layout.Find("Derived")!;
             var template = inheritedContext.Layout.Find("Base")!;
-            TestHarness.CheckTrue("闭合基类不改变继承字段与隐藏typeid偏移",
+            CaseAssertions.CheckTrue("闭合基类不改变继承字段与隐藏typeid偏移",
                 template.Fields.All(field => derived.Fields.Any(inheritedField => inheritedField.Symbol == field.Symbol
                     && inheritedField.Offset == field.Offset && inheritedField.Size == field.Size
                     && inheritedField.IsHiddenTypeId == field.IsHiddenTypeId)));
-            TestHarness.CheckTrue("派生字段排在完整基类布局之后",
+            CaseAssertions.CheckTrue("派生字段排在完整基类布局之后",
                 derived.Fields.Single(field => field.Symbol.Contains("#marker@")).Offset >= template.Size);
         }
 

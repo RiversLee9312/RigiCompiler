@@ -12,7 +12,7 @@ namespace RigiCompiler.Tests
         // ===== 使用点访问控制（S8e，SYNTAX §16.1：pub/protected/internal/priv）=====
         private static void TestAccessControl()
         {
-            TestHarness.Section("P3 Access Control");
+            CompilerTestTools.Section("P3 Access Control");
 
             // pub 跨文件可见（类型引用 + 构造 + 成员调用全链路）
             var (unit, _) = BindUnit(
@@ -39,7 +39,7 @@ namespace RigiCompiler.Tests
                 "    var h: Hidden\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("priv 顶层类跨文件（函数体内类型标注）",
+            CaseAssertions.CheckSemanticError("priv 顶层类跨文件（函数体内类型标注）",
                 unit3.Diagnostics, "'Hidden' is inaccessible due to its accessibility level");
 
             // protected 成员：子类（跨文件）体内可见（裸名经基类链解析）
@@ -70,7 +70,7 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "namespace pkg2\n" +
                 "pub func use(a: pkg1.A): i32 { return a.s() }\n");
-            TestHarness.CheckSemanticError("protected 异包非子类拒绝", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("protected 异包非子类拒绝", unit6.Diagnostics,
                 "'s' is inaccessible due to its accessibility level");
 
             // internal 跨文件放行（当前单编译单元即模块，§16.1）
@@ -86,7 +86,7 @@ namespace RigiCompiler.Tests
                 "    pub static func make(): Locked { return new Locked() }\n" +
                 "}\n" +
                 "pub func f(): Locked { return new Locked() }\n");
-            TestHarness.CheckSemanticError("priv init 跨类 new 拦截", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("priv init 跨类 new 拦截", unit8.Diagnostics,
                 "'init' is inaccessible due to its accessibility level");
 
             // priv 字段跨类读拒绝（无访问器字段读写位均查字段可见性）
@@ -97,7 +97,7 @@ namespace RigiCompiler.Tests
                 "pub class Spy {\n" +
                 "    pub func read(d: Data): i32 { return d.secret }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("priv 字段跨类读拒绝", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("priv 字段跨类读拒绝", unit9.Diagnostics,
                 "'secret' is inaccessible due to its accessibility level");
 
             // priv 字段跨类写拒绝
@@ -108,7 +108,7 @@ namespace RigiCompiler.Tests
                 "pub class Spy {\n" +
                 "    pub func write(d: Data) { d.secret = 1 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("priv 字段跨类写拒绝", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("priv 字段跨类写拒绝", unit10.Diagnostics,
                 "'secret' is inaccessible due to its accessibility level");
 
             // ===== M81 裁决：ext 可见性按声明位置（§4.4/§16.1）=====
@@ -124,7 +124,7 @@ namespace RigiCompiler.Tests
                 "pub class Host { }\n" +
                 "ext func Host.localHelp(): i32 { return 1 }\n",
                 "pub func use(h: Host): i32 { return h.localHelp() }\n");
-            TestHarness.CheckSemanticError("priv ext 跨文件拒绝", unit12.Diagnostics,
+            CaseAssertions.CheckSemanticError("priv ext 跨文件拒绝", unit12.Diagnostics,
                 "'localHelp' is inaccessible due to its accessibility level");
 
             // pub ext 跨文件可见
@@ -147,7 +147,7 @@ namespace RigiCompiler.Tests
                 "    var secret: i32\n" +
                 "}\n" +
                 "pub ext func Host.leak(): i32 { return this.secret }\n");
-            TestHarness.CheckSemanticError("ext 体不获目标 priv 成员特权", unit15.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 体不获目标 priv 成员特权", unit15.Diagnostics,
                 "'secret' is inaccessible due to its accessibility level");
 
             // any_to_string（.bootstrap.rg 的 priv 全局 native，§3.8 toString
@@ -155,7 +155,7 @@ namespace RigiCompiler.Tests
             // 私有挡住
             var (unit16, _) = BindUnitWithStdlib(
                 "pub func f(): String { return core.any_to_string(\"x\") }\n");
-            TestHarness.CheckSemanticError("any_to_string 用户不可直达", unit16.Diagnostics,
+            CaseAssertions.CheckSemanticError("any_to_string 用户不可直达", unit16.Diagnostics,
                 "'any_to_string' is inaccessible due to its accessibility level");
 
             // ===== bug S5：priv 类型经 pub 返回值泄漏（推断路径）=====
@@ -171,10 +171,10 @@ namespace RigiCompiler.Tests
                 "    const h = make()\n" +
                 "    return h.n()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("签名泄漏声明点拦截（P2）", unit17.Diagnostics,
+            CaseAssertions.CheckSemanticError("签名泄漏声明点拦截（P2）", unit17.Diagnostics,
                 "Inconsistent accessibility: return type 'Hidden' is less accessible " +
                 "than function 'make'");
-            TestHarness.CheckSemanticError("推断局部使用点拦截（P3）", unit17.Diagnostics,
+            CaseAssertions.CheckSemanticError("推断局部使用点拦截（P3）", unit17.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // 合法对照：同文件推断 priv 类型（make 同为默认 private，
@@ -198,7 +198,7 @@ namespace RigiCompiler.Tests
         // 可见容器）；同一泄漏链在函数体内只报一次（BindContext 驻留去重）
         private static void TestUseSiteAccessibilityF1()
         {
-            TestHarness.Section("P3 Use-Site Accessibility (F1)");
+            CompilerTestTools.Section("P3 Use-Site Accessibility (F1)");
 
             const string HiddenLib =
                 "class Hidden {\n" +
@@ -213,7 +213,7 @@ namespace RigiCompiler.Tests
                 "    var h: Hidden? = null\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-A 标注 Nullable<Hidden> 递归", va1.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-A 标注 Nullable<Hidden> 递归", va1.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // V-A：推断类型 Box\<Hidden\> 递归实参（c6b；诊断命名 Hidden 而非 Box）
@@ -232,7 +232,7 @@ namespace RigiCompiler.Tests
                 "    const bx = h.bx\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-A 推断 Box<Hidden> 递归", va2.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-A 推断 Box<Hidden> 递归", va2.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // V-B：语句位直链 hd.h.n()（实例调用形态中间段；修复前无钩子）
@@ -247,9 +247,9 @@ namespace RigiCompiler.Tests
                 "    hd.h.n()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-B 直链 hd.h.n()", vb1.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-B 直链 hd.h.n()", vb1.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
-            TestHarness.CheckTrue("V-B 直链只报一次", CountInaccessible(vb1) == 1,
+            CaseAssertions.CheckTrue("V-B 直链只报一次", CountInaccessible(vb1) == 1,
                 $"实际 {CountInaccessible(vb1)} 条");
 
             // V-B：具化调用结果 b.get().n()（路径链段级收口）
@@ -268,7 +268,7 @@ namespace RigiCompiler.Tests
                 "    b.get().n()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-B 具化 get() 结果", vb2.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-B 具化 get() 结果", vb2.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // V-B：if? 回退合成结果 (c.hn if? c.h).n()
@@ -283,7 +283,7 @@ namespace RigiCompiler.Tests
                 "    const c = new PairHolder()\n" +
                 "    return (c.hn if? c.h).n()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-B if? 合成结果", vb3.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-B if? 合成结果", vb3.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // V-B：await 解包结果（Task\<HiddenS\> 经 pub 字段泄出）
@@ -302,7 +302,7 @@ namespace RigiCompiler.Tests
                 "    const c = new TaskHolder()\n" +
                 "    return (await c.t).n()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-B await 解包结果", vb4.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-B await 解包结果", vb4.Diagnostics,
                 "'HiddenS' is inaccessible due to its accessibility level");
 
             // V4：seq using 推断资源类型
@@ -320,7 +320,7 @@ namespace RigiCompiler.Tests
                 "    seq using(const r = c.hd) { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V4 seq using 推断资源", v4.Diagnostics,
+            CaseAssertions.CheckSemanticError("V4 seq using 推断资源", v4.Diagnostics,
                 "'HiddenRes' is inaccessible due to its accessibility level");
 
             // c6：多步推断链同一泄漏只报一次（const a 报、const b 静默）
@@ -336,9 +336,9 @@ namespace RigiCompiler.Tests
                 "    const b = a\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("c6 推断链报一次", c6.Diagnostics,
+            CaseAssertions.CheckSemanticError("c6 推断链报一次", c6.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
-            TestHarness.CheckTrue("c6 推断链不重复报", CountInaccessible(c6) == 1,
+            CaseAssertions.CheckTrue("c6 推断链不重复报", CountInaccessible(c6) == 1,
                 $"实际 {CountInaccessible(c6)} 条");
 
             // 显式泛型实参构造类型递归（f\<Box\<Hidden\>\> 写出点恒报）
@@ -353,7 +353,7 @@ namespace RigiCompiler.Tests
                 "    const b = id\\<Box\\<Hidden>>(null)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-A 显式泛型实参递归", ga.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-A 显式泛型实参递归", ga.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // 合法对照（c10）：priv 实现经 pub 视图动态派发——视图类型 pub，
@@ -404,7 +404,7 @@ namespace RigiCompiler.Tests
         // 只读补跑可见性与构造类型填入点检查（不落「无法解析」类诊断）。
         private static void TestProbedTypeChecksF2()
         {
-            TestHarness.Section("P3 Probed Type Checks (is/supers/with, F2/V3)");
+            CompilerTestTools.Section("P3 Probed Type Checks (is/supers/with, F2/V3)");
 
             const string HiddenLib =
                 "class Hidden {\n" +
@@ -421,9 +421,9 @@ namespace RigiCompiler.Tests
                 "    if (a is Hidden) { return 1 }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-D is 私有类型补查", p17c.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-D is 私有类型补查", p17c.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
-            TestHarness.CheckTrue("V-D is 私有类型只报一次", CountInaccessible(p17c) == 1,
+            CaseAssertions.CheckTrue("V-D is 私有类型只报一次", CountInaccessible(p17c) == 1,
                 $"实际 {CountInaccessible(p17c)} 条");
 
             // supers 试探同门
@@ -434,7 +434,7 @@ namespace RigiCompiler.Tests
                 "    if (a supers Hidden) { return 1 }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-D supers 私有类型补查", sup.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-D supers 私有类型补查", sup.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // typeOf 裸名类型形态同门
@@ -444,7 +444,7 @@ namespace RigiCompiler.Tests
                 "    const t = typeOf(Hidden)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V-D typeOf 私有类型补查", tof.Diagnostics,
+            CaseAssertions.CheckSemanticError("V-D typeOf 私有类型补查", tof.Diagnostics,
                 "'Hidden' is inaccessible due to its accessibility level");
 
             // p17e：is 试探命中布局违规构造 Wrap\<User>（修复前静默）
@@ -455,7 +455,7 @@ namespace RigiCompiler.Tests
                 "    if (a is Wrap\\<User>) { return 1 }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V3 is 布局违规构造补查", p17e.Diagnostics,
+            CaseAssertions.CheckSemanticError("V3 is 布局违规构造补查", p17e.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v' " +
                 "(via type argument of 'Wrap<User>')");
 
@@ -467,7 +467,7 @@ namespace RigiCompiler.Tests
                 "    if (a is Cage\\<i32>) { return 1 }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("V3 is 显式约束违规补查", con.Diagnostics,
+            CaseAssertions.CheckSemanticError("V3 is 显式约束违规补查", con.Diagnostics,
                 "Type argument 'i32' does not satisfy the 'Extends Animal' constraint of 'T'");
 
             // 合法对照：同文件私有类型 is/typeOf（同文件可见）+ 合法构造
@@ -495,7 +495,7 @@ namespace RigiCompiler.Tests
         // ===== 访问器绑定（S8e，SYNTAX §9.4/§9.4.1）=====
         private static void TestAccessors()
         {
-            TestHarness.Section("P3 Accessors");
+            CompilerTestTools.Section("P3 Accessors");
 
             // 类字段 backing 访问器：外部读写绑定——节点形态不变是本设计要点
             // （读 = InstField 字段访问节点、写 = Assign 赋值语句节点，不转调用）
@@ -513,10 +513,10 @@ namespace RigiCompiler.Tests
                 "func read(c: Counter): i32 { return c.value }\n" +
                 "func write(c: Counter, x: i32) { c.value = x }\n");
             CheckNoErrors("无诊断（backing 访问器读写）", unit);
-            TestHarness.Check("读带访问器字段 → InstField（形态不变）",
+            CaseAssertions.Check("读带访问器字段 → InstField（形态不变）",
                 BoundDescribe.Body(BodyOf(bodies, "read")),
                 "Body(read, [], [Return(InstField(value, Param(c,Counter), i32))])");
-            TestHarness.Check("写带访问器字段 → Assign（形态不变）",
+            CaseAssertions.Check("写带访问器字段 → Assign（形态不变）",
                 BoundDescribe.Body(BodyOf(bodies, "write")),
                 "Body(write, [], [Assign(InstField(value, Param(c,Counter), i32), " +
                 "Param(x,i32))])");
@@ -528,22 +528,22 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Name == "Counter");
             var getterBody = bodies.Single(b => b.Method.Kind == MethodKind.Getter
                 && b.Method.Name == "value");
-            TestHarness.Check("backing getter 体（value → backing 读）",
+            CaseAssertions.Check("backing getter 体（value → backing 读）",
                 BoundDescribe.Body(getterBody),
                 "Body(value, [], [Return(InstField(value, This(Counter), i32))])");
             var setterBody = bodies.Single(b => b.Method.Kind == MethodKind.Setter
                 && b.Method.Name == "value");
-            TestHarness.Check("backing setter 体首隐含赋值合成",
+            CaseAssertions.Check("backing setter 体首隐含赋值合成",
                 BoundDescribe.Body(setterBody),
                 "Body(value, [], [Assign(InstField(..value, This(Counter), i32), " +
                 "Param(value,i32))])");
             // 结构性事实：访问器符号挂字段三槽，读写绑定与声明同一字段符号
             var valueField = counterType.Fields.Single(f => f.Name == "value");
-            TestHarness.CheckTrue("访问器符号挂字段 Getter/Setter 槽",
+            CaseAssertions.CheckTrue("访问器符号挂字段 Getter/Setter 槽",
                 ReferenceEquals(valueField.Getter, getterBody.Method)
                 && ReferenceEquals(valueField.Setter, setterBody.Method));
             var readReturn = (BoundReturnStatement)BodyOf(bodies, "read").Body.Statements[0];
-            TestHarness.CheckTrue("读侧字段符号引用相等",
+            CaseAssertions.CheckTrue("读侧字段符号引用相等",
                 ReferenceEquals(((BoundFieldAccessExpression)readReturn.Value!).Field,
                     valueField));
 
@@ -562,20 +562,20 @@ namespace RigiCompiler.Tests
                 "pub func readH(): i32 { return height }\n" +
                 "pub func writeD(x: i32) { depth = x }\n");
             CheckNoErrors("无诊断（全局访问器）", unit2);
-            TestHarness.Check("全局访问器字段读 → Field（形态不变）",
+            CaseAssertions.Check("全局访问器字段读 → Field（形态不变）",
                 BoundDescribe.Body(BodyOf(bodies2, "readH")),
                 "Body(readH, [], [Return(Field(height,i32))])");
-            TestHarness.Check("全局访问器字段写 → Assign（形态不变）",
+            CaseAssertions.Check("全局访问器字段写 → Assign（形态不变）",
                 BoundDescribe.Body(BodyOf(bodies2, "writeD")),
                 "Body(writeD, [], [Assign(Field(depth,i32), Param(x,i32))])");
             var autoGetter = bodies2.Single(b => b.Method.Kind == MethodKind.Getter
                 && b.Method.Name == "height");
-            TestHarness.Check("自动 getter 合成体（return value）",
+            CaseAssertions.Check("自动 getter 合成体（return value）",
                 BoundDescribe.Body(autoGetter),
                 "Body(height, [], [Return(Field(height,i32))])");
             var autoSetter = bodies2.Single(b => b.Method.Kind == MethodKind.Setter
                 && b.Method.Name == "height");
-            TestHarness.Check("自动 setter 合成体（仅隐含赋值）",
+            CaseAssertions.Check("自动 setter 合成体（仅隐含赋值）",
                 BoundDescribe.Body(autoSetter),
                 "Body(height, [], [Assign(Field(..value,i32), Param(value,i32))])");
 
@@ -588,7 +588,7 @@ namespace RigiCompiler.Tests
                 "    pub init() { }\n" +
                 "}\n" +
                 "func f(b: Box) { b.ro = 1 }\n");
-            TestHarness.CheckSemanticError("仅 get 字段写", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 get 字段写", unit3.Diagnostics,
                 "'ro' has no setter");
 
             // 仅 set 字段读 → has no getter
@@ -600,7 +600,7 @@ namespace RigiCompiler.Tests
                 "    pub init() { }\n" +
                 "}\n" +
                 "func g(b: Box): i32 { return b.wo }\n");
-            TestHarness.CheckSemanticError("仅 set 字段读", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 set 字段读", unit4.Diagnostics,
                 "'wo' has no getter");
 
             // priv set 跨类写 → setter is inaccessible（访问器自身可见性在
@@ -617,9 +617,9 @@ namespace RigiCompiler.Tests
                 "    b.v = 3\n" +
                 "    return b.v\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("priv set 跨类写", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("priv set 跨类写", unit5.Diagnostics,
                 "'v' setter is inaccessible due to its accessibility level");
-            TestHarness.CheckTrue("pub get 同读无次生诊断（错误恰一条）",
+            CaseAssertions.CheckTrue("pub get 同读无次生诊断（错误恰一条）",
                 unit5.Diagnostics.Diagnostics.Count(
                     d => d.Severity == DiagnosticSeverity.Error) == 1,
                 string.Join("; ", unit5.Diagnostics.Diagnostics.Select(d => d.Message)));
@@ -634,7 +634,7 @@ namespace RigiCompiler.Tests
                 "        }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("getter 体内写 value", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("getter 体内写 value", unit6.Diagnostics,
                 "Cannot assign to 'value' in a getter");
 
             // smart cast：带访问器的 const 字段 is/null 判等后不收窄（§9.4.1：
@@ -657,9 +657,9 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（访问器收窄规则）", unit7);
-            TestHarness.CheckTrue("带访问器 const 字段不收窄",
+            CaseAssertions.CheckTrue("带访问器 const 字段不收窄",
                 !BoundDescribe.Body(BodyOf(bodies7, "use")).Contains("SmartCast"));
-            TestHarness.CheckTrue("无访问器 const 字段收窄（对照）",
+            CaseAssertions.CheckTrue("无访问器 const 字段收窄（对照）",
                 BoundDescribe.Body(BodyOf(bodies7, "use2")).Contains(
                     "SmartCast(InstField(plain, This(Box), String?), String)"));
 
@@ -676,12 +676,12 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（backing 访问器字段初始化器）", unit8);
             var meterInit = bodies8.Single(b => b.Method.Kind == MethodKind.Init
                 && b.Method.Owner?.Name == "Meter");
-            TestHarness.Check("合成默认构造空体（初值在 ..init.field.*）",
+            CaseAssertions.Check("合成默认构造空体（初值在 ..init.field.*）",
                 BoundDescribe.Body(meterInit),
                 "Body(init, [], [])");
             var meterInitField = bodies8.Single(b => b.Method.Name == "..init.field.value"
                 && b.Method.Owner?.Name == "Meter");
-            TestHarness.Check("..init.field.value 赋值形态（经 setter 应用）",
+            CaseAssertions.Check("..init.field.value 赋值形态（经 setter 应用）",
                 BoundDescribe.Body(meterInitField),
                 "Body(..init.field.value, [], [Assign(InstField(value, This(Meter), i32), Int(150,i32))])");
 
@@ -693,7 +693,7 @@ namespace RigiCompiler.Tests
                 "        pub get(value: _) { return value }\n" +
                 "    } = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("仅 get 字段带初始化器", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 get 字段带初始化器", unit9.Diagnostics,
                 "Field 'ro' has an initializer but no setter");
             var (unit10, _) = BindUnit(
                 "pub class Box {\n" +
@@ -701,7 +701,7 @@ namespace RigiCompiler.Tests
                 "        pub get(value: _) { return value }\n" +
                 "    } = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("const 仅 get 字段带初始化器", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("const 仅 get 字段带初始化器", unit10.Diagnostics,
                 "Field 'ro' has an initializer but no setter");
 
             // 局部访问器（M107 路线 C）：正例见 TestLocalAccessors
@@ -710,7 +710,7 @@ namespace RigiCompiler.Tests
         // ===== 局部变量访问器（M107 路线 C，SYNTAX §9.4 栈上形态）=====
         private static void TestLocalAccessors()
         {
-            TestHarness.Section("P3 Local Accessors");
+            CompilerTestTools.Section("P3 Local Accessors");
 
             // backing 读写：cell 化 + Getter/Setter 槽
             var (unit, bodies) = BindUnitWithStdlib(
@@ -724,8 +724,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("backing 局部访问器无诊断", unit);
             var local = BodyOf(bodies, "f").Locals.First(l => l.Name == "local");
-            TestHarness.CheckTrue("backing 局部 cell 化", local.CellStorage != null);
-            TestHarness.CheckTrue("backing 局部 Getter/Setter 槽",
+            CaseAssertions.CheckTrue("backing 局部 cell 化", local.CellStorage != null);
+            CaseAssertions.CheckTrue("backing 局部 Getter/Setter 槽",
                 local.Getter != null && local.Setter != null && local.HasBackingStorage);
 
             // 计算形态
@@ -739,7 +739,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("计算形态局部访问器无诊断", unit2);
             var doubled = BodyOf(bodies2, "f").Locals.First(l => l.Name == "doubled");
-            TestHarness.CheckTrue("计算形态无 backing",
+            CaseAssertions.CheckTrue("计算形态无 backing",
                 doubled.Getter != null && !doubled.HasBackingStorage);
 
             // 自动访问器
@@ -763,7 +763,7 @@ namespace RigiCompiler.Tests
                 "    } = 1\n" +
                 "    return c\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("const 局部不得有 setter", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("const 局部不得有 setter", unit4.Diagnostics,
                 "Const local 'c' cannot declare a setter");
 
             // 无体计算形态（parser 要求 (_: _) 必带体，源码不可达——自动
@@ -771,7 +771,7 @@ namespace RigiCompiler.Tests
             {
                 var roots = new List<RootASTNode>();
                 roots.AddRange(StdlibSources.ParseAll());
-                var user = TestHarness.ParseRoot(
+                var user = CompilerTestTools.ParseRoot(
                     "pub func f(): i32 {\n" +
                     "    var x: i32 {\n" +
                     "        get\n" +
@@ -786,7 +786,7 @@ namespace RigiCompiler.Tests
                 var decls5b = DeclarationCollector.Collect(unit5b);
                 DeclarationResolver.Resolve(unit5b, decls5b);
                 Binder.Bind(unit5b, decls5b);
-                TestHarness.CheckSemanticError("无体计算 getter", unit5b.Diagnostics,
+                CaseAssertions.CheckSemanticError("无体计算 getter", unit5b.Diagnostics,
                     "Computed getter of 'x' must have a body");
             }
 
@@ -799,7 +799,7 @@ namespace RigiCompiler.Tests
                 "    x = 1\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("仅 get 不可写", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 get 不可写", unit6.Diagnostics,
                 "'x' has no setter");
 
             // 仅 set 读
@@ -810,7 +810,7 @@ namespace RigiCompiler.Tests
                 "    } = 0\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("仅 set 不可读", unit7.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 set 不可读", unit7.Diagnostics,
                 "'x' has no getter");
 
             // pub/priv 修饰符
@@ -822,9 +822,9 @@ namespace RigiCompiler.Tests
                 "    } = 0\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("局部访问器禁 pub", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("局部访问器禁 pub", unit8.Diagnostics,
                 "Local variable accessor cannot have modifier 'pub'");
-            TestHarness.CheckSemanticError("局部访问器禁 priv", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("局部访问器禁 priv", unit8.Diagnostics,
                 "Local variable accessor cannot have modifier 'priv'");
 
             // 访问器体内引用外层局部
@@ -840,7 +840,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("访问器体内引用外层局部", unit9);
             var xLocal = BodyOf(bodies9, "f").Locals.First(l => l.Name == "x");
-            TestHarness.CheckTrue("外层引用触发捕获条目",
+            CaseAssertions.CheckTrue("外层引用触发捕获条目",
                 xLocal.CellStorage is { AccessorCaptures.Count: > 0 });
 
             // getter 副作用：写外层局部（可观测 cell 捕获）
@@ -857,7 +857,7 @@ namespace RigiCompiler.Tests
                 "    return log\n" +
                 "}\n");
             CheckNoErrors("getter 副作用写外层", unit10);
-            TestHarness.CheckTrue("副作用访问器 cell + 捕获",
+            CaseAssertions.CheckTrue("副作用访问器 cell + 捕获",
                 BodyOf(bodies10, "f").Locals.First(l => l.Name == "x").CellStorage
                     is { AccessorCaptures.Count: > 0 });
 
@@ -873,7 +873,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("方法泛型 T 局部访问器 cell 化无诊断", unit11);
             var yAcc = BodyOf(bodies11, "wrap").Locals.First(l => l.Name == "y");
-            TestHarness.CheckTrue("访问器 cell 子类共享 generic(T)",
+            CaseAssertions.CheckTrue("访问器 cell 子类共享 generic(T)",
                 yAcc.CellStorage != null
                 && yAcc.CellStorage.CellClass.GenericParameters.Count == 1
                 && yAcc.CellStorage.CellClass.GenericParameters[0].Name == "T");
@@ -890,14 +890,14 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("方法泛型 T 访问器被 lambda 捕获无诊断", unit12);
             var yCap = BodyOf(bodies12, "wrap").Locals.First(l => l.Name == "y");
-            TestHarness.CheckTrue("访问器与捕获共享同一 cell",
+            CaseAssertions.CheckTrue("访问器与捕获共享同一 cell",
                 yCap.CellStorage != null && yCap.Getter != null);
         }
 
         // ===== override 配套（S8e，SYNTAX §9.2.1；P3 侧正例 + new abstract）=====
         private static void TestOverride()
         {
-            TestHarness.Section("P3 Override");
+            CompilerTestTools.Section("P3 Override");
 
             // 正例：open 基类 + override
             var (unit, _) = BindUnit(
@@ -952,13 +952,13 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "func f(s: Square): i32 { return s.area() }\n");
             CheckNoErrors("经具体类调用 override 方法", unit4b);
-            TestHarness.Check("override 调用绑定形态",
+            CaseAssertions.Check("override 调用绑定形态",
                 BoundDescribe.Body(BodyOf(bodies4b, "f")),
                 "Body(f, [], [Return(InstCall(area, Param(s,Square), [], i32))])");
             var squareType = unit4b.Symbols.GlobalNamespace.Types
                 .Single(t => t.Name == "Square");
             var areaReturn = (BoundReturnStatement)BodyOf(bodies4b, "f").Body.Statements[0];
-            TestHarness.CheckTrue("调用符号即 Square 的 override（非基类成员）",
+            CaseAssertions.CheckTrue("调用符号即 Square 的 override（非基类成员）",
                 ReferenceEquals(((BoundInstanceCallExpression)areaReturn.Value!).Method,
                     squareType.Methods.Single(m => m.Name == "area")));
 
@@ -970,7 +970,7 @@ namespace RigiCompiler.Tests
                 "pub class Sub : Base {\n" +
                 "    pub override func nope(): i32 { return 3 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无目标 override", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("无目标 override", unit5.Diagnostics,
                 "'nope': no inherited member to override");
 
             // 负例：目标非 open/abstract（静默继承成员不可覆写）
@@ -981,7 +981,7 @@ namespace RigiCompiler.Tests
                 "pub class Sub : Base {\n" +
                 "    pub override func m(): i32 { return 2 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("目标非 open", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("目标非 open", unit6.Diagnostics,
                 "'m': inherited member is not 'open' or 'abstract'");
 
             // 负例：同名同签名隐藏继承成员未显式 override
@@ -992,7 +992,7 @@ namespace RigiCompiler.Tests
                 "pub class Sub : Base {\n" +
                 "    pub func m(): i32 { return 2 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("隐藏无 override", unit7.Diagnostics,
+            CaseAssertions.CheckSemanticError("隐藏无 override", unit7.Diagnostics,
                 "'m' hides an inherited member; declare it 'override'");
 
             // 负例：abstract 方法必须在 abstract 类内
@@ -1000,7 +1000,7 @@ namespace RigiCompiler.Tests
                 "pub class C {\n" +
                 "    pub abstract func m(): i32\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("abstract 在非 abstract 类", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("abstract 在非 abstract 类", unit8.Diagnostics,
                 "'m': abstract method requires an abstract class");
 
             // 负例：接口外的无体方法必须 abstract 或 native
@@ -1008,7 +1008,7 @@ namespace RigiCompiler.Tests
                 "pub class C {\n" +
                 "    pub func m(): i32\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无体非 abstract/native", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("无体非 abstract/native", unit9.Diagnostics,
                 "'m' must have a body or be marked 'abstract'");
 
             // 负例：具体类未实现基类链上的 abstract 成员（两级链）
@@ -1018,7 +1018,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub abstract class B : A { }\n" +
                 "pub class C : B { }\n");
-            TestHarness.CheckSemanticError("未实现基类链 abstract 成员", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("未实现基类链 abstract 成员", unit10.Diagnostics,
                 "'C' does not implement abstract member 'm'");
 
             // 负例：具体类未实现无体接口成员
@@ -1027,7 +1027,7 @@ namespace RigiCompiler.Tests
                 "    func m(): i32\n" +
                 "}\n" +
                 "pub class C implements I { }\n");
-            TestHarness.CheckSemanticError("未实现无体接口成员", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("未实现无体接口成员", unit11.Diagnostics,
                 "'C' does not implement abstract member 'm'");
 
             // new abstract 类是编译错误（§9.2.1，P3 构造点）
@@ -1036,13 +1036,13 @@ namespace RigiCompiler.Tests
                 "    pub func m(): i32 { return 1 }\n" +
                 "}\n" +
                 "pub func f(): A { return new A() }\n");
-            TestHarness.CheckSemanticError("new abstract 类", unit12.Diagnostics,
+            CaseAssertions.CheckSemanticError("new abstract 类", unit12.Diagnostics,
                 "Cannot construct an instance of abstract type 'A'");
 
             // 异常根 core.Exception 已抽象化（用户裁定）：直接构造被拒
             var (unit13, _) = BindUnitWithStdlib(
                 "pub func f(): core.Exception { return new core.Exception() }\n");
-            TestHarness.CheckSemanticError("new core.Exception 拒绝", unit13.Diagnostics,
+            CaseAssertions.CheckSemanticError("new core.Exception 拒绝", unit13.Diagnostics,
                 "Cannot construct an instance of abstract type 'Exception'");
         }
     }

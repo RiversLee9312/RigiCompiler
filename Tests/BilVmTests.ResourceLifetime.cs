@@ -28,7 +28,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("using 清理", result);
-            TestHarness.Check("using 逆序 dispose", result.Stdout, "body\nb\na\n");
+            CaseAssertions.Check("using 逆序 dispose", result.Stdout, "body\nb\na\n");
             CheckI32("using 返回", result, 0);
         }
 

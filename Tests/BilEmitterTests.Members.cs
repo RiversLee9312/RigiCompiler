@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -68,16 +68,16 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器接受合法 ..super", module);
             var f = module.Functions.Single(fn => fn.Symbol == "B$f(x:.i32)@.i32");
             var fInvoke = f.Blocks[0].Instructions.OfType<InvokeInstruction>().Single();
-            TestHarness.CheckTrue("super 返回调用发 ..super 且 $.this 首参",
+            CaseAssertions.CheckTrue("super 返回调用发 ..super 且 $.this 首参",
                 fInvoke.Method.Symbol == BilSpellings.SuperReservedFunction
                 && fInvoke.Arguments[0].Name == ".this");
             var ping = module.Functions.Single(fn => fn.Symbol == "B$ping()@.void");
-            TestHarness.CheckTrue("void super 发 invoke.noret ..super",
+            CaseAssertions.CheckTrue("void super 发 invoke.noret ..super",
                 ping.Blocks[0].Instructions.OfType<InvokeNoResultInstruction>().Any(invoke =>
                     invoke.Method.Symbol == BilSpellings.SuperReservedFunction
                     && invoke.Arguments[0].Name == ".this"));
             var init = module.Functions.Single(fn => fn.Symbol == "B$init(n:.i32)@.void");
-            TestHarness.CheckTrue("init super 发 ..super",
+            CaseAssertions.CheckTrue("init super 发 ..super",
                 init.Blocks[0].Instructions.OfType<InvokeNoResultInstruction>().Any(invoke =>
                     invoke.Method.Symbol == BilSpellings.SuperReservedFunction));
         }
@@ -101,7 +101,7 @@ namespace RigiCompiler.Tests
 
             // init/operator/ext 声明形态（§8.4）——init 是 Counter .type
             // 的成员（类型成员嵌在类型声明内）；ext operator 是顶层裸条目
-            TestHarness.CheckTrue("init 声明形态（普通 canonical + init 修饰符）",
+            CaseAssertions.CheckTrue("init 声明形态（普通 canonical + init 修饰符）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "Counter")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
@@ -110,7 +110,7 @@ namespace RigiCompiler.Tests
                         && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Init })
                         && d.Modifiers.Any(m => m is BilAccessibilityModifier
                             { Accessibility: BilAccessibility.Public })));
-            TestHarness.CheckTrue("ext operator 声明形态（$$名 + ext + operator(名)）",
+            CaseAssertions.CheckTrue("ext operator 声明形态（$$名 + ext + operator(名)）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Method
                     && d.Symbol == "core::i32$$EnumerateInRange(end:.i32)" +
@@ -121,13 +121,13 @@ namespace RigiCompiler.Tests
 
             // .this 进 .args（§9.2：.return 后、普通参数前；§7.3）
             var addFn = module.Functions.Single(f => f.Symbol == "Counter$add(n:.i32)@.i32");
-            TestHarness.CheckTrue("add 的 .args = [.return, .this, n]",
+            CaseAssertions.CheckTrue("add 的 .args = [.return, .this, n]",
                 addFn.Args.Count == 3
                 && addFn.Args[0].Name == ".return"
                 && addFn.Args[1].Name == ".this" && addFn.Args[1].TypeRef == "Counter"
                 && addFn.Args[2].Name == "n");
             var initFn = module.Functions.Single(f => f.Symbol == "Counter$init(v:.i32)@.void");
-            TestHarness.CheckTrue("init 的 .args = [.return(.void), .this, v]",
+            CaseAssertions.CheckTrue("init 的 .args = [.return(.void), .this, v]",
                 initFn.Args.Count == 3
                 && initFn.Args[0].TypeRef == ".void"
                 && initFn.Args[1].Name == ".this");
@@ -175,7 +175,7 @@ namespace RigiCompiler.Tests
                 .OfType<InvokeInstruction>().Single();
             var paramInvoke = paramFn.Blocks[0].Instructions
                 .OfType<InvokeInstruction>().Single();
-            TestHarness.CheckTrue("T receiver 与接口变量 invoke 同一方法符号",
+            CaseAssertions.CheckTrue("T receiver 与接口变量 invoke 同一方法符号",
                 ifaceInvoke.Method.Symbol == paramInvoke.Method.Symbol
                 && ifaceInvoke.Method.Symbol == "Sized$size()@.i32");
             BilTestHarness.CheckFnShape("运算符位置仍发 add", module,
@@ -221,7 +221,7 @@ namespace RigiCompiler.Tests
 
             // 用户类型 operator 声明形态（§8.4：$$名 canonical + operator(名)
             // 修饰符，类型成员嵌在 .type 声明内）
-            TestHarness.CheckTrue("getAtIndex/setAtIndex 声明形态（$$名 + operator(名)）",
+            CaseAssertions.CheckTrue("getAtIndex/setAtIndex 声明形态（$$名 + operator(名)）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "Bag")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())

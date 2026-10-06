@@ -29,7 +29,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("子类 wrapper 拦截继承方法", result);
-            TestHarness.Check("proxied + 改写", result.Stdout, "proxied\nr=11\n");
+            CaseAssertions.Check("proxied + 改写", result.Stdout, "proxied\nr=11\n");
         }
 
         private static void TestSubclassWrapperWildcardInherited()
@@ -57,7 +57,7 @@ namespace RigiCompiler.Tests
                 "    return c.ping(1)\n" +
                 "}\n");
             CheckOk("子类 wrapper 通配拦截继承方法", result);
-            TestHarness.Check("wild 日志", result.Stdout, "wild\n");
+            CaseAssertions.Check("wild 日志", result.Stdout, "wild\n");
             CheckI32("原样转发", result, 1);
         }
 
@@ -91,7 +91,7 @@ namespace RigiCompiler.Tests
                 "    return new Child().ping(10)\n" +
                 "}\n");
             CheckOk("多层 wrapper 拦截继承方法", result);
-            TestHarness.Check("outer→inner 序", result.Stdout, "outer\ninner\n");
+            CaseAssertions.Check("outer→inner 序", result.Stdout, "outer\ninner\n");
             CheckI32("内层改写生效", result, 11);
         }
 
@@ -126,7 +126,7 @@ namespace RigiCompiler.Tests
                 "    return new Child().ping(3)\n" +
                 "}\n");
             CheckOk("基类 wrapper 重申 + 子类追加", result);
-            TestHarness.Check("Logged 外 Extra 内", result.Stdout, "logged\nextra\n");
+            CaseAssertions.Check("Logged 外 Extra 内", result.Stdout, "logged\nextra\n");
             CheckI32("Extra 改写", result, 4);
         }
 
@@ -160,7 +160,7 @@ namespace RigiCompiler.Tests
                 "    return ((c.ping(1) * 10) + c.other())\n" +
                 "}\n");
             CheckOk("specific 优先于 wildcard（继承成员）", result);
-            TestHarness.Check("ping=specific other=wild", result.Stdout, "specific\nwild\n");
+            CaseAssertions.Check("ping=specific other=wild", result.Stdout, "specific\nwild\n");
             CheckI32("2*10+7", result, 27);
         }
 
@@ -186,7 +186,7 @@ namespace RigiCompiler.Tests
                 "    return b.ping(1)\n" +
                 "}\n");
             CheckOk("经基类静态类型仍走子类 wrapper", result);
-            TestHarness.Check("实际类型 Child 的 wrapper", result.Stdout, "via-child\n");
+            CaseAssertions.Check("实际类型 Child 的 wrapper", result.Stdout, "via-child\n");
             CheckI32("改写 6", result, 6);
         }
 
@@ -208,7 +208,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("wrapper place 语句位 void 运行", result);
-            TestHarness.Check("bump + ok", result.Stdout, "bump INFO\nok\n");
+            CaseAssertions.Check("bump + ok", result.Stdout, "bump INFO\nok\n");
         }
 
         private static void TestOverrideStillIntercepted()
@@ -235,7 +235,7 @@ namespace RigiCompiler.Tests
                 "    return new Child().ping(1)\n" +
                 "}\n");
             CheckOk("子类 override 仍走 wrapper", result);
-            TestHarness.Check("wrap 日志", result.Stdout, "wrap\n");
+            CaseAssertions.Check("wrap 日志", result.Stdout, "wrap\n");
             CheckI32("override 体 101", result, 101);
         }
 
@@ -269,7 +269,7 @@ namespace RigiCompiler.Tests
                 "    return b.work()\n" +
                 "}\n");
             CheckOk("bug O1 基类静态类型 + 子类 @Trace override", result);
-            TestHarness.Check("经基类引用也有 trace", result.Stdout, "trace\n");
+            CaseAssertions.Check("经基类引用也有 trace", result.Stdout, "trace\n");
             CheckI32("override 体 2", result, 2);
         }
 
@@ -298,7 +298,7 @@ namespace RigiCompiler.Tests
                 "    return w.work()\n" +
                 "}\n");
             CheckOk("bug O1 接口静态类型 + 实现 @Trace", result);
-            TestHarness.Check("经接口引用也有 trace", result.Stdout, "trace\n");
+            CaseAssertions.Check("经接口引用也有 trace", result.Stdout, "trace\n");
             CheckI32("实现体 3", result, 3);
         }
 
@@ -335,7 +335,7 @@ namespace RigiCompiler.Tests
                 "    return m.work()\n" +
                 "}\n");
             CheckOk("bug O1 多层链中间层静态类型", result);
-            TestHarness.Check("末端 override 的 trace", result.Stdout, "trace\n");
+            CaseAssertions.Check("末端 override 的 trace", result.Stdout, "trace\n");
             CheckI32("末端体 3", result, 3);
         }
 
@@ -367,7 +367,7 @@ namespace RigiCompiler.Tests
                 "    return b.work()\n" +
                 "}\n");
             CheckOk("虚调用 .name = 实现槽 Child$work", result);
-            TestHarness.Check(".name 为 Child$work 而非 Base$work",
+            CaseAssertions.Check(".name 为 Child$work 而非 Base$work",
                 result.Stdout, "Child$work()@.i32\n");
             CheckI32("override 体 2", result, 2);
         }
@@ -397,7 +397,7 @@ namespace RigiCompiler.Tests
                 "    return w.work()\n" +
                 "}\n");
             CheckOk("接口调用 .name = 实现槽 Job$work", result);
-            TestHarness.Check(".name 为 Job$work 而非 Work$work",
+            CaseAssertions.Check(".name 为 Job$work 而非 Work$work",
                 result.Stdout, "Job$work()@.i32\n");
             CheckI32("实现体 3", result, 3);
         }
@@ -423,7 +423,7 @@ namespace RigiCompiler.Tests
                 "    return new Service().fetch(41)\n" +
                 "}\n");
             CheckOk("非虚 .name = 声明符号", result);
-            TestHarness.Check(".name 为 Service$fetch",
+            CaseAssertions.Check(".name 为 Service$fetch",
                 result.Stdout, "Service$fetch(x:.i32)@.i32\n");
             CheckI32("fetch 42", result, 42);
         }
@@ -453,7 +453,7 @@ namespace RigiCompiler.Tests
                 "    return b.work()\n" +
                 "}\n");
             CheckOk("未 override .name = 基类实现槽", result);
-            TestHarness.Check(".name 为 Base$work（实际执行体）",
+            CaseAssertions.Check(".name 为 Base$work（实际执行体）",
                 result.Stdout, "Base$work()@.i32\n");
             CheckI32("基类体 1", result, 1);
         }
@@ -488,7 +488,7 @@ namespace RigiCompiler.Tests
                 "    return b.ping()\n" +
                 "}\n");
             CheckOk("Entity wildcard symbol = 实现槽 Child$ping", result);
-            TestHarness.Check("symbol 为 Child$ping 而非 Base$ping",
+            CaseAssertions.Check("symbol 为 Child$ping 而非 Base$ping",
                 result.Stdout, "Child$ping()@.i32\n");
             CheckI32("override 体 2", result, 2);
         }
@@ -511,7 +511,7 @@ namespace RigiCompiler.Tests
                 "    return b.work()\n" +
                 "}\n");
             CheckOk("无 wrapper 经基类静态类型回归", result);
-            TestHarness.Check("无 trace", result.Stdout, "");
+            CaseAssertions.Check("无 trace", result.Stdout, "");
             CheckI32("override 体 2", result, 2);
         }
 
@@ -542,7 +542,7 @@ namespace RigiCompiler.Tests
                 "    return new Child().work()\n" +
                 "}\n");
             CheckOk("super 绕过 Method wrapper", result);
-            TestHarness.Check("仅外层一次 trace", result.Stdout, "trace\n");
+            CaseAssertions.Check("仅外层一次 trace", result.Stdout, "trace\n");
             CheckI32("super 1 + 10", result, 11);
         }
 
@@ -572,7 +572,7 @@ namespace RigiCompiler.Tests
                 "    return new Child().work()\n" +
                 "}\n");
             CheckOk("bug O2 子类实例装基类方法 wrapper", result);
-            TestHarness.Check("未 override 也 trace", result.Stdout, "trace\n");
+            CaseAssertions.Check("未 override 也 trace", result.Stdout, "trace\n");
             CheckI32("基类体 1", result, 1);
         }
 
@@ -603,7 +603,7 @@ namespace RigiCompiler.Tests
                 "    return new Hero().hp\n" +
                 "}\n");
             CheckOk("bug O7 基类 init 读命中继承 wrapper", result);
-            TestHarness.Check("init 读 + 主调读各 audit 一次",
+            CaseAssertions.Check("init 读 + 主调读各 audit 一次",
                 result.Stdout, "audit\naudit\n");
             CheckI32("字段初值 10 先于 init 体（10+1=11）", result, 11);
         }
@@ -659,7 +659,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("访问器调用经实体 wildcard 重路由不崩", result);
-            TestHarness.Check("完整输出（初值经 setter、init 读经 getter+get 链）",
+            CaseAssertions.Check("完整输出（初值经 setter、init 读经 getter+get 链）",
                 result.Stdout,
                 "[Audit] Entity$..init.field.name()@.void\n" +
                 "[Audit] Entity$..init.field.hp()@.void\n" +

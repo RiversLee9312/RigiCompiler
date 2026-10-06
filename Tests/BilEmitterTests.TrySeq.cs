@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             // 结构性事实：§16.7 五操作数形状（breakid 为 §16.5 推广末位）
             var tryInstruction = f.Blocks[0].Instructions.Single(i => i is TryInstruction);
-            TestHarness.CheckTrue("try 五操作数（body/slot/表/finally/breakid）",
+            CaseAssertions.CheckTrue("try 五操作数（body/slot/表/finally/breakid）",
                 tryInstruction.Operands.Count == 5
                 && tryInstruction.Operands[0] is BilBlockOperand
                 && tryInstruction.Operands[1] is BilVariableOperand
@@ -71,11 +71,11 @@ namespace RigiCompiler.Tests
             // catch-table——按本用例条目内容过滤，不再全模块唯一）
             var catchTable = module.Resources.OfType<BilCatchTableResource>()
                 .Single(t => t.Entries.Any(e => e.Render().Contains("DerivedError")));
-            TestHarness.Check("catch-table 元素（保序）",
+            CaseAssertions.Check("catch-table 元素（保序）",
                 string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(DerivedError) -> blk(try0-catch0)\n" +
                 "type(MyError) -> blk(try0-catch1)");
-            TestHarness.CheckTrue("catch-table 多行形态（§19.5）",
+            CaseAssertions.CheckTrue("catch-table 多行形态（§19.5）",
                 BilWriter.Write(module).Contains("catch-table {\n"));
         }
 
@@ -145,7 +145,7 @@ namespace RigiCompiler.Tests
             // breakid 为 §16.5 推广的 region-exit capability 末位操作数）
             var callInstruction = module2.Functions.Single(f => f.Symbol == "$se()@.i32")
                 .Blocks[0].Instructions.Single(i => i is CallBlockInstruction);
-            TestHarness.CheckTrue("call 双操作数 blk + breakid（§16.1/§16.5）",
+            CaseAssertions.CheckTrue("call 双操作数 blk + breakid（§16.1/§16.5）",
                 callInstruction.Operands.Count == 2
                 && callInstruction.Operands[0] is BilBlockOperand
                 && callInstruction.Operands[1].Render() == "$.b0");
@@ -213,7 +213,7 @@ namespace RigiCompiler.Tests
                 "break $.b0\n" +
                 "}\n");
             var exprBlocks = exprFn.Blocks;
-            TestHarness.CheckTrue("表达式 using call blk 与 nested try 结构",
+            CaseAssertions.CheckTrue("表达式 using call blk 与 nested try 结构",
                 exprBlocks.Any(b => b.Instructions.Any(i => i is CallBlockInstruction))
                 && exprBlocks.Count(i => i.Instructions.Any(x => x is TryInstruction)) >= 2);
             var disposeReceivers = exprBlocks.SelectMany(b => b.Instructions)
@@ -221,7 +221,7 @@ namespace RigiCompiler.Tests
                 .Where(i => i.Method.Symbol.Contains("dispose"))
                 .Select(i => i.Arguments[0].Render())
                 .ToList();
-            TestHarness.Check("表达式 using BIL dispose 逆序", string.Join(",", disposeReceivers),
+            CaseAssertions.Check("表达式 using BIL dispose 逆序", string.Join(",", disposeReceivers),
                 "$b,$a");
         }
     }

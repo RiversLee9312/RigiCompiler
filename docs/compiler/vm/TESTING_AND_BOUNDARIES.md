@@ -7,8 +7,15 @@
 以**执行断言**测试形态（`../../legacy/SEMANTIC_ROADMAP.md` §S14）：跑出结果/异常与预期比对，
 持续验证 §21.9「VM 可执行性」。
 
-基建：`Tests/` 已有 BilVm 测试套件（登记 TestRunner）；harness 提供
-「源码 → 编译 → BIL → 运行」端到端 helper，捕获 stdout/stderr/异常。
+基建：`Tests/` 的 BilVm provider 由独立 TUnit 宿主发现，每个动作在同宿主
+隔离 worker 中执行。`CompilerTestTools`、`BilTestHarness` 与 VM 测试工具提供
+「源码 → 编译 → BIL → 运行」端到端 helper，捕获 stdout/stderr/异常；
+`CaseAssertions` 在请求 scope 记录真实断言，入口和资源协议见
+[DEVELOPMENT.md](../../../DEVELOPMENT.md)。
+
+CI 按 suite/稳定 ID 将 provider 精确分配给独立 runner，最终证明全目录互斥且完整；
+分片不拆 VM 单方法的共享生命周期。同一机器的独立全量宿主仍串行，
+每个 runner 内的 CPU/内存授予继续由共享资源预算控制。
 
 **时序不变性纪律**（真并发 Executor 的必然要求）：
 

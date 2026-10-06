@@ -27,7 +27,7 @@ namespace RigiCompiler.Tests
     {
         public static void TestVariableDeclaration()
         {
-            TestHarness.Section("AST JSONL: var x = 42");
+            CompilerTestTools.Section("AST JSONL: var x = 42");
             var docs = new List<JsonDocument>();
             try
             {
@@ -35,40 +35,40 @@ namespace RigiCompiler.Tests
                 CheckStructure("var x = 42", lines);
 
                 var decl = OfType(lines, "VariableDeclarationASTNode").ToList();
-                TestHarness.CheckTrue("出现 VariableDeclarationASTNode（via=Declarations[0]）",
+                CaseAssertions.CheckTrue("出现 VariableDeclarationASTNode（via=Declarations[0]）",
                     decl.Count == 1 && decl[0].GetProperty("via").GetString() == "Declarations[0]");
-                TestHarness.CheckTrue("VariableDeclaration fields：Name=x, IsConst=false",
+                CaseAssertions.CheckTrue("VariableDeclaration fields：Name=x, IsConst=false",
                     decl.Count == 1 &&
                     FieldString(decl[0], "Name") == "x" &&
                     decl[0].GetProperty("fields").TryGetProperty("IsConst", out var constEl) &&
                     constEl.GetBoolean() == false);
 
                 var literal = OfType(lines, "IntLiteralASTNode").ToList();
-                TestHarness.CheckTrue("IntLiteralASTNode fields：Value=42, IntType=I32（enum 渲染为名字）",
+                CaseAssertions.CheckTrue("IntLiteralASTNode fields：Value=42, IntType=I32（enum 渲染为名字）",
                     literal.Count == 1 &&
                     literal[0].GetProperty("fields").TryGetProperty("Value", out var valueEl) &&
                     valueEl.GetDecimal() == 42 &&
                     FieldString(literal[0], "IntType") == "I32");
 
-                TestHarness.CheckTrue("private 字段下钻：字面量经 via=literal 挂载",
+                CaseAssertions.CheckTrue("private 字段下钻：字面量经 via=literal 挂载",
                     lines.Any(l => l.GetProperty("via").GetString() == "literal"));
-                TestHarness.CheckTrue("ExpressionRoot 的 private expression 字段下钻（via=expression）",
+                CaseAssertions.CheckTrue("ExpressionRoot 的 private expression 字段下钻（via=expression）",
                     lines.Any(l => l.GetProperty("via").GetString() == "expression"));
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("var x = 42", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue("var x = 42", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         public static void TestBinaryExpression()
         {
-            TestHarness.Section("AST JSONL: var r = 1 + (2 * 3)");
+            CompilerTestTools.Section("AST JSONL: var r = 1 + (2 * 3)");
             var docs = new List<JsonDocument>();
             try
             {
@@ -76,64 +76,64 @@ namespace RigiCompiler.Tests
                 CheckStructure("var r = 1 + (2 * 3)", lines);
 
                 var binaries = OfType(lines, "BinaryExpressionASTNode").ToList();
-                TestHarness.CheckTrue("两个 BinaryExpressionASTNode", binaries.Count == 2);
-                TestHarness.CheckTrue("Operator 字段 + 与 * 都出现",
+                CaseAssertions.CheckTrue("两个 BinaryExpressionASTNode", binaries.Count == 2);
+                CaseAssertions.CheckTrue("Operator 字段 + 与 * 都出现",
                     binaries.Any(b => FieldString(b, "Operator") == "+") &&
                     binaries.Any(b => FieldString(b, "Operator") == "*"));
-                TestHarness.CheckTrue("via=Left / via=Right 都出现",
+                CaseAssertions.CheckTrue("via=Left / via=Right 都出现",
                     lines.Any(l => l.GetProperty("via").GetString() == "Left") &&
                     lines.Any(l => l.GetProperty("via").GetString() == "Right"));
-                TestHarness.CheckTrue("括号分组 GroupExpressionASTNode 出现",
+                CaseAssertions.CheckTrue("括号分组 GroupExpressionASTNode 出现",
                     OfType(lines, "GroupExpressionASTNode").Any());
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("var r = 1 + (2 * 3)", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue("var r = 1 + (2 * 3)", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         public static void TestImport()
         {
-            TestHarness.Section("AST JSONL v2: import core.collections.List");
+            CompilerTestTools.Section("AST JSONL v2: import core.collections.List");
             var docs = new List<JsonDocument>();
             try
             {
                 var lines = Dump("import core.collections.List\n", docs);
                 CheckStructure("import", lines);
 
-                TestHarness.CheckTrue("ImportASTNode 出现", OfType(lines, "ImportASTNode").Any());
-                TestHarness.CheckTrue("carrier 行出现（type=ImportItem, via=importedSymbols[0]）",
+                CaseAssertions.CheckTrue("ImportASTNode 出现", OfType(lines, "ImportASTNode").Any());
+                CaseAssertions.CheckTrue("carrier 行出现（type=ImportItem, via=importedSymbols[0]）",
                     lines.Any(l => l.GetProperty("type").GetString() == "ImportItem" &&
                                    l.GetProperty("via").GetString() == "importedSymbols[0]"));
-                TestHarness.CheckTrue("v2：via 不再出现 (ImportItem.symbolNode) 复合串",
+                CaseAssertions.CheckTrue("v2：via 不再出现 (ImportItem.symbolNode) 复合串",
                     lines.All(l => !(l.GetProperty("via").GetString() ?? "").Contains("(")));
-                TestHarness.CheckTrue("carrier 内节点经 via=symbolNode 挂载（parent 为 carrier 行 id）",
+                CaseAssertions.CheckTrue("carrier 内节点经 via=symbolNode 挂载（parent 为 carrier 行 id）",
                     lines.Any(l => l.GetProperty("type").GetString() == "SymbolASTNode" &&
                                    l.GetProperty("via").GetString() == "symbolNode" &&
                                    l.GetProperty("parent").GetInt32() ==
                                        OfType(lines, "ImportItem").First().GetProperty("id").GetInt32()));
-                TestHarness.CheckTrue("Symbol 渲染为点分字符串 core.collections.List",
+                CaseAssertions.CheckTrue("Symbol 渲染为点分字符串 core.collections.List",
                     OfType(lines, "SymbolASTNode").Any(l => FieldString(l, "symbol") == "core.collections.List"));
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("import core.collections.List", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue("import core.collections.List", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         public static void TestImportAllForm()
         {
-            TestHarness.Section("AST JSONL v2: import core.collections.*（carrier importAll 字段）");
+            CompilerTestTools.Section("AST JSONL v2: import core.collections.*（carrier importAll 字段）");
             var docs = new List<JsonDocument>();
             try
             {
@@ -141,62 +141,62 @@ namespace RigiCompiler.Tests
                 CheckStructure("import core.collections.*", lines);
 
                 var carriers = OfType(lines, "ImportItem").ToList();
-                TestHarness.CheckTrue("carrier 行恰好一条（via=importedSymbols[0]）",
+                CaseAssertions.CheckTrue("carrier 行恰好一条（via=importedSymbols[0]）",
                     carriers.Count == 1 &&
                     carriers[0].GetProperty("via").GetString() == "importedSymbols[0]");
-                TestHarness.CheckTrue("carrier 行 span 恒为 null",
+                CaseAssertions.CheckTrue("carrier 行 span 恒为 null",
                     carriers.Count == 1 &&
                     carriers[0].GetProperty("span").ValueKind == JsonValueKind.Null);
-                TestHarness.CheckTrue("carrier fields 含 importAll=true（v1 中丢失的标量，v2 恢复）",
+                CaseAssertions.CheckTrue("carrier fields 含 importAll=true（v1 中丢失的标量，v2 恢复）",
                     carriers.Count == 1 &&
                     carriers[0].GetProperty("fields").TryGetProperty("importAll", out var allEl) &&
                     allEl.GetBoolean());
-                TestHarness.CheckTrue("carrier 行 parent 为宿主 ImportASTNode 的 id",
+                CaseAssertions.CheckTrue("carrier 行 parent 为宿主 ImportASTNode 的 id",
                     carriers.Count == 1 &&
                     carriers[0].GetProperty("parent").GetInt32() ==
                         OfType(lines, "ImportASTNode").First().GetProperty("id").GetInt32());
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("import core.collections.*", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue("import core.collections.*", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         public static void TestGenericTypeReference()
         {
-            TestHarness.Section("AST JSONL: var list: List\\<i32>");
+            CompilerTestTools.Section("AST JSONL: var list: List\\<i32>");
             var docs = new List<JsonDocument>();
             try
             {
                 var lines = Dump("var list: List\\<i32>\n", docs);
                 CheckStructure("var list: List\\<i32>", lines);
 
-                TestHarness.CheckTrue("TypeReferenceASTNode 出现（via=TypeAnnotation）",
+                CaseAssertions.CheckTrue("TypeReferenceASTNode 出现（via=TypeAnnotation）",
                     OfType(lines, "TypeReferenceASTNode").Any(l => l.GetProperty("via").GetString() == "TypeAnnotation"));
-                TestHarness.CheckTrue("泛型 Symbol 渲染为 List\\<i32>",
+                CaseAssertions.CheckTrue("泛型 Symbol 渲染为 List\\<i32>",
                     OfType(lines, "SymbolASTNode").Any(l => FieldString(l, "symbol") == "List\\<i32>"));
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("var list: List\\<i32>", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue("var list: List\\<i32>", false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 foreach (var d in docs) d.Dispose();
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 往返无损（M32）=====
 
         public static void TestRoundTrip()
         {
-            TestHarness.Section("AST JSONL 往返无损（Parse → Serialize → Deserialize → Serialize）");
+            CompilerTestTools.Section("AST JSONL 往返无损（Parse → Serialize → Deserialize → Serialize）");
 
             CheckRoundTrip("显式 shared 泛型约束",
                 "pub shared class Container\\<shared T, shared out U> {}\n");
@@ -268,16 +268,16 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // {"file":...} 元记录（多文件 dump 分隔行）应被跳过
         public static void TestMetaRecordSkip()
         {
-            TestHarness.Section("AST JSONL 反序列化：{\"file\":...} 元记录跳过");
+            CompilerTestTools.Section("AST JSONL 反序列化：{\"file\":...} 元记录跳过");
             try
             {
-                var ast = TestHarness.ParseRoot("var x = 42\n");
+                var ast = CompilerTestTools.ParseRoot("var x = 42\n");
                 var first = new StringWriter();
                 AstJsonlSerializer.Serialize(ast, first);
 
@@ -286,21 +286,21 @@ namespace RigiCompiler.Tests
                 var second = new StringWriter();
                 AstJsonlSerializer.Serialize(restored, second);
 
-                TestHarness.Check("带元记录前缀的 JSONL 往返一致",
+                CaseAssertions.Check("带元记录前缀的 JSONL 往返一致",
                     second.ToString(), first.ToString());
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue("{\"file\":...} 元记录跳过", false,
+                CaseAssertions.CheckTrue("{\"file\":...} 元记录跳过", false,
                     $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // 反向用例：非法输入抛 CompilerInternalException（带行号/原因），不接受部分成功
         public static void TestDeserializeErrors()
         {
-            TestHarness.Section("AST JSONL 反序列化：非法输入拒绝");
+            CompilerTestTools.Section("AST JSONL 反序列化：非法输入拒绝");
 
             CheckDeserializeError("缺 id 键的行",
                 "{\"parent\":null,\"via\":null,\"type\":\"RootASTNode\",\"span\":null,\"fields\":{}}",
@@ -328,7 +328,7 @@ namespace RigiCompiler.Tests
                 "{\"id\":3,\"parent\":2,\"via\":\"TypeAnnotation\",\"type\":\"IntLiteralASTNode\",\"span\":null,\"fields\":{}}",
                 "cannot hold");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -358,7 +358,7 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var ast = TestHarness.ParseRoot(code);
+                var ast = CompilerTestTools.ParseRoot(code);
                 var first = new StringWriter();
                 AstJsonlSerializer.Serialize(ast, first);
 
@@ -366,14 +366,14 @@ namespace RigiCompiler.Tests
                 var second = new StringWriter();
                 AstJsonlSerializer.Serialize(restored, second);
 
-                TestHarness.Check(label + "：两次序列化逐行一致",
+                CaseAssertions.Check(label + "：两次序列化逐行一致",
                     second.ToString(), first.ToString());
-                TestHarness.CheckTrue(label + "：往返后顶层声明数一致",
+                CaseAssertions.CheckTrue(label + "：往返后顶层声明数一致",
                     restored.Declarations.Count == ast.Declarations.Count);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -383,16 +383,16 @@ namespace RigiCompiler.Tests
             try
             {
                 AstJsonlDeserializer.Deserialize(new StringReader(jsonl));
-                TestHarness.CheckTrue(label, false, "应失败但成功了");
+                CaseAssertions.CheckTrue(label, false, "应失败但成功了");
             }
             catch (CompilerInternalException ex)
             {
-                TestHarness.CheckTrue(label + "（正确失败）",
+                CaseAssertions.CheckTrue(label + "（正确失败）",
                     ex.Message.Contains(expectedMessagePart), ex.Message);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue(label, false, $"unexpected {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -408,7 +408,7 @@ namespace RigiCompiler.Tests
         // carrier 行 span 恒为 null（v2，M32）
         private static void CheckStructure(string label, List<JsonElement> lines)
         {
-            TestHarness.CheckTrue($"{label}：首行是 RootASTNode（id=1, parent/via 为 null）",
+            CaseAssertions.CheckTrue($"{label}：首行是 RootASTNode（id=1, parent/via 为 null）",
                 lines.Count > 0 &&
                 lines[0].GetProperty("id").GetInt32() == 1 &&
                 lines[0].GetProperty("parent").ValueKind == JsonValueKind.Null &&
@@ -469,12 +469,12 @@ namespace RigiCompiler.Tests
                     }
                 }
             }
-            TestHarness.CheckTrue($"{label}：每行 id/parent/via/type/span/fields 六键齐全", keysComplete);
-            TestHarness.CheckTrue($"{label}：id 从 1 连续自增（行数 == 记录数）", idsSequential);
-            TestHarness.CheckTrue($"{label}：parent 均引用已出现的 id（根为 null）", parentsValid);
-            TestHarness.CheckTrue($"{label}：非根行 via 非空", viaValid);
-            TestHarness.CheckTrue($"{label}：fields 不含 Parent", fieldsExcludeParent);
-            TestHarness.CheckTrue($"{label}：节点行 span 非空且首尾不颠倒；carrier 行 span 为 null", spanValid);
+            CaseAssertions.CheckTrue($"{label}：每行 id/parent/via/type/span/fields 六键齐全", keysComplete);
+            CaseAssertions.CheckTrue($"{label}：id 从 1 连续自增（行数 == 记录数）", idsSequential);
+            CaseAssertions.CheckTrue($"{label}：parent 均引用已出现的 id（根为 null）", parentsValid);
+            CaseAssertions.CheckTrue($"{label}：非根行 via 非空", viaValid);
+            CaseAssertions.CheckTrue($"{label}：fields 不含 Parent", fieldsExcludeParent);
+            CaseAssertions.CheckTrue($"{label}：节点行 span 非空且首尾不颠倒；carrier 行 span 为 null", spanValid);
         }
 
         private static IEnumerable<JsonElement> OfType(List<JsonElement> lines, string type)
@@ -493,9 +493,9 @@ namespace RigiCompiler.Tests
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("AstJsonlSerializer",
+
+        internal static TestSuiteData Spec { get; } = new("AstJsonlSerializer",
         [
             (nameof(TestVariableDeclaration), TestVariableDeclaration),
             (nameof(TestBinaryExpression), TestBinaryExpression),

@@ -50,7 +50,7 @@ public static partial class ModuleTests
         File.WriteAllBytes(Path.Combine(folder, "source-direct.bil"), direct.BilBytes);
         File.WriteAllBytes(Path.Combine(folder, "provider.interface.json"), provider.InterfaceBytes);
         File.WriteAllBytes(Path.Combine(folder, "provider.bil"), provider.BilBytes); File.Delete(providerFile);
-        var (app, unit) = CompileInterfaceProbe("factory-app@1.0.0", [TestHarness.ParseRoot("""
+        var (app, unit) = CompileInterfaceProbe("factory-app@1.0.0", [CompilerTestTools.ParseRoot("""
             import factories.*
             pub func main(): i32 {
                 var a = read()
@@ -62,37 +62,37 @@ public static partial class ModuleTests
             }
             """, "source/app.rg")], [std, provider]);
         var generic = unit.Symbols.GetNamespace(["factories"]).Methods.Single(m => m.Name == "generic");
-        TestHarness.CheckTrue("default factory无provider AST且GP复用owner单例", generic.Parameters[1].DefaultValue == null
+        CaseAssertions.CheckTrue("default factory无provider AST且GP复用owner单例", generic.Parameters[1].DefaultValue == null
             && generic.Parameters[1].HasDefaultValue && generic.Parameters[1].DefaultFactory is { } factory
             && ReferenceEquals(factory.GenericParameters.Single(), generic.GenericParameters.Single()) && factory.SourceFile == null);
         var choice = unit.Symbols.GetNamespace(["factories"]).Types.Single(t => t.Name == "Choice");
-        TestHarness.CheckTrue("zero-hole与非zero-hole case有准确providerfactory", choice.Cases.All(c => c.SourceFile == null && c.CaseFactory != null)
+        CaseAssertions.CheckTrue("zero-hole与非zero-hole case有准确providerfactory", choice.Cases.All(c => c.SourceFile == null && c.CaseFactory != null)
             && choice.Cases.Single(c => c.Name == "Zero").CaseFactory!.Parameters.Count == 0
             && choice.Cases.Single(c => c.Name == "Hole").CaseFactory!.Parameters.Count == 2
             && choice.Cases.Single(c => c.Name == "Hole").FixedArgumentFactories is [not null, null]);
         var linked = BilModuleLinker.Link([std.ReadBil(), provider.ReadBil(), app.ReadBil()]);
         BilTestHarness.CheckBilValid("provider默认/enum工厂链接 typed BIL", linked);
         var run = BilVm.Run(linked);
-        TestHarness.CheckTrue("源码移走后default每次求值+泛型default+enum固定洞真实VM70", !File.Exists(providerFile)
+        CaseAssertions.CheckTrue("源码移走后default每次求值+泛型default+enum固定洞真实VM70", !File.Exists(providerFile)
             && run.Exception == null && run.ReturnValue is VmI32 { Value: 70 }, run.Exception?.ToString() ?? run.ReturnValue?.ToString() ?? "");
-        var (orderedApp, _) = CompileInterfaceProbe("order-app@1.0.0", [TestHarness.ParseRoot(orderSource, "source/app.rg")], [std, provider]);
+        var (orderedApp, _) = CompileInterfaceProbe("order-app@1.0.0", [CompilerTestTools.ParseRoot(orderSource, "source/app.rg")], [std, provider]);
         var orderedRun = BilVm.Run(BilModuleLinker.Link([std.ReadBil(), provider.ReadBil(), orderedApp.ReadBil()]));
         File.WriteAllBytes(Path.Combine(folder, "ordered-app.bil"), orderedApp.BilBytes);
-        TestHarness.CheckTrue("case固定/洞副作用保持source与artifact init声明序12", directRun.Exception == null && directRun.ReturnValue is VmI32 { Value: 12 }
+        CaseAssertions.CheckTrue("case固定/洞副作用保持source与artifact init声明序12", directRun.Exception == null && directRun.ReturnValue is VmI32 { Value: 12 }
             && orderedRun.Exception == null && orderedRun.ReturnValue is VmI32 { Value: 12 }, orderedRun.Exception?.ToString() ?? orderedRun.ReturnValue?.ToString() ?? "");
-        var (staticApp, _) = CompileInterfaceProbe("static-app@1.0.0", [TestHarness.ParseRoot("import factories.*\npub func main(): i32 { return Box.read() }", "source/app.rg")], [std, provider]);
+        var (staticApp, _) = CompileInterfaceProbe("static-app@1.0.0", [CompilerTestTools.ParseRoot("import factories.*\npub func main(): i32 { return Box.read() }", "source/app.rg")], [std, provider]);
         var staticBil = BilModuleLinker.Link([std.ReadBil(), provider.ReadBil(), staticApp.ReadBil()]);
         File.WriteAllText(Path.Combine(folder, "static-linked.bil"), BilWriter.Write(staticBil));
         BilTestHarness.CheckBilValid("泛型宿主static default不要求宿主typeid", staticBil);
-        TestHarness.CheckTrue("provider源码移走后Box定义名static默认值VM7", BilVm.Run(staticBil).ReturnValue is VmI32 { Value: 7 });
-        var (instanceApp, instanceUnit) = CompileInterfaceProbe("instance-app@1.0.0", [TestHarness.ParseRoot("import factories.*\npub func main(): i32 { return new Host\\<String>().method\\<i32>(\"x\", 5) }", "source/app.rg")], [std, provider]);
+        CaseAssertions.CheckTrue("provider源码移走后Box定义名static默认值VM7", BilVm.Run(staticBil).ReturnValue is VmI32 { Value: 7 });
+        var (instanceApp, instanceUnit) = CompileInterfaceProbe("instance-app@1.0.0", [CompilerTestTools.ParseRoot("import factories.*\npub func main(): i32 { return new Host\\<String>().method\\<i32>(\"x\", 5) }", "source/app.rg")], [std, provider]);
         var method = instanceUnit.Symbols.GetNamespace(["factories"]).Types.Single(t => t.Name == "Host").Methods.Single(m => m.Name == "method");
-        TestHarness.CheckTrue("instance default owner+method GP有序同一对象", method.Parameters[2].DefaultFactory!.GenericParameters
+        CaseAssertions.CheckTrue("instance default owner+method GP有序同一对象", method.Parameters[2].DefaultFactory!.GenericParameters
             .SequenceEqual(method.Owner!.GenericParameters.Concat(method.GenericParameters)));
         var instanceBil = BilModuleLinker.Link([std.ReadBil(), provider.ReadBil(), instanceApp.ReadBil()]);
         File.WriteAllText(Path.Combine(folder, "instance-linked.bil"), BilWriter.Write(instanceBil));
         BilTestHarness.CheckBilValid("instance两层GP default真实typed BIL", instanceBil);
-        TestHarness.CheckTrue("provider移走instance Host<String>.method<i32>默认值VM11", BilVm.Run(instanceBil).ReturnValue is VmI32 { Value: 11 });
+        CaseAssertions.CheckTrue("provider移走instance Host<String>.method<i32>默认值VM11", BilVm.Run(instanceBil).ReturnValue is VmI32 { Value: 11 });
         var root = System.Text.Json.Nodes.JsonNode.Parse(provider.InterfaceBytes)!.AsObject();
         var declarations = root["payload"]!["declarations"]!.AsArray();
         var genericRecord = declarations.Single(n => n!["tag"]!.GetValue<string>() == "method" && n["name"]!.GetValue<string>() == "generic")!;
@@ -102,7 +102,7 @@ public static partial class ModuleTests
         root["apiHash"] = hash;
         var tampered = provider with { InterfaceBytes = System.Text.Encoding.UTF8.GetBytes(root.ToJsonString()), ApiHash = hash };
         var graph = SymbolGraph.CreateArtifactOnly("bad-factory@1.0.0"); Modules.ModuleInterfaceImporter.Import(graph, std);
-        TestHarness.CheckTrue("defaultfactory自声明同名T而非alias原owner拒绝", Reject(() => Modules.ModuleInterfaceImporter.Import(graph, tampered)));
+        CaseAssertions.CheckTrue("defaultfactory自声明同名T而非alias原owner拒绝", Reject(() => Modules.ModuleInterfaceImporter.Import(graph, tampered)));
         foreach (var change in new[] { "type", "name", "index" })
         {
             var invalid = System.Text.Json.Nodes.JsonNode.Parse(provider.InterfaceBytes)!.AsObject();
@@ -119,7 +119,7 @@ public static partial class ModuleTests
             invalid["apiHash"] = invalidHash;
             var invalidArtifact = provider with { InterfaceBytes = System.Text.Encoding.UTF8.GetBytes(invalid.ToJsonString()), ApiHash = invalidHash };
             var isolated = SymbolGraph.CreateArtifactOnly("bad-hole@1.0.0"); Modules.ModuleInterfaceImporter.Import(isolated, std);
-            TestHarness.CheckTrue("enum hole ABI 篡改拒绝 " + change, Reject(() => Modules.ModuleInterfaceImporter.Import(isolated, invalidArtifact)));
+            CaseAssertions.CheckTrue("enum hole ABI 篡改拒绝 " + change, Reject(() => Modules.ModuleInterfaceImporter.Import(isolated, invalidArtifact)));
         }
     }
 }

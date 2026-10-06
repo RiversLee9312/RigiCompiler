@@ -24,7 +24,8 @@ dotnet run -- module --run --root app -- first "two words"
 
 - `rigic.exe`（Windows）或 `rigic`（Linux）：NativeAOT 编译器。
 - 与该发布产物配套的 `libLLVM.dll` / `libLLVM.so*` 等原生资产：原样保留 `dotnet publish` 输出，不要从其他版本拼接，也不要只复制可执行文件。
-- `Tests/`、`tools/stress/` 和 `rigi_rt/` 等发布内容：测试语料、压力源、C fixture 头文件和 Native 库产品的公开头契约。标准库及运行时 C 源本身已内嵌；保留完整目录还能在安装后运行发布验收。
+- `tools/stress/` 和 `rigi_rt/` 等编译器发布内容：可选压力工具源与 Native 库产品的公开头契约。标准库及运行时 C 源本身已内嵌，仍须保留完整发布目录。
+- `test-host/`：下面的完整包另外发布的同版本 TUnit NativeAOT 测试宿主及其 sidecars、`Tests/` 语料、压力源和 C fixture 头文件。生产编译器不含测试代码；只安装编译器不要求该目录，安装后全量发布验收则需要它，并用 `RIGI_TEST_HOST` 指定宿主。
 - `LICENSE`、`NOTICE`、`README.md`、本指南、`DEVELOPMENT.md` 与 `docs/`：由下面的打包步骤补入，包内文档导航可离线阅读（外部网站链接仍需联网）。
 - 为 Native 编译准备的 `.libuv/<rid>/include、lib` 和 `.mimalloc/<rid>/include、lib`：下面推荐的完整包会补入；单独 `dotnet publish` 不会自动复制 `tools/` 下的这些缓存。
 
@@ -34,7 +35,7 @@ Windows 的 libLLVM 还依赖 x64 Visual C++ v14 运行库（VCRUNTIME140、VCRU
 
 Linux 包还依赖构建时要求的系统原生库；在较新发行版发布的二进制不能据此保证可在旧发行版运行。发布者应选择支持范围内最旧的构建环境，记录构建发行版与架构，并在目标系统验证。`ldd ./rigic` 和 `ldd ./libLLVM.so`（按实际文件名）可检查缺失依赖。NativeAOT 的运行与构建前提见 [Microsoft 的部署文档](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/)。
 
-现有 CI 执行发布与测试，没有上传安装包或创建 GitHub Release 的步骤。以下是从源码制作包的操作，不假设已有可下载的官方发行资产。
+现有 CI 执行发布与测试，上传分片 JSON/TRX 证据供全目录汇总，没有上传安装包或创建 GitHub Release 的步骤。以下是从源码制作包的操作，不假设已有可下载的官方发行资产。
 
 ## 3. 从源码制作 Windows x64 包
 
@@ -57,6 +58,9 @@ pwsh -File tools/Fetch-Mimalloc.ps1 -Rid win-x64
 if ($LASTEXITCODE -ne 0) { throw 'mimalloc 获取失败' }
 dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o $packageDir
 if ($LASTEXITCODE -ne 0) { throw 'NativeAOT 发布失败' }
+$testHostDir = Join-Path $packageDir 'test-host'
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r win-x64 -o $testHostDir
+if ($LASTEXITCODE -ne 0) { throw 'TUnit NativeAOT 发布失败' }
 
 Copy-Item -LiteralPath 'LICENSE','NOTICE','README.md','INSTALLATION.md','DEVELOPMENT.md' -Destination $packageDir
 Copy-Item -LiteralPath 'docs' -Destination $packageDir -Recurse
@@ -100,6 +104,7 @@ package_dir="publish/$package_name"
 pwsh -File tools/Fetch-Libuv.ps1 -Rid linux-x64
 pwsh -File tools/Fetch-Mimalloc.ps1 -Rid linux-x64
 dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o "$package_dir"
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r linux-x64 -o "$package_dir/test-host"
 cp LICENSE NOTICE README.md INSTALLATION.md DEVELOPMENT.md "$package_dir/"
 cp -a docs "$package_dir/"
 mkdir -p "$package_dir/.libuv" "$package_dir/.mimalloc"
@@ -115,7 +120,13 @@ sha256sum "dist/$package_name.tar.gz"
 
 系统工具链不可用时，可先执行 `pwsh -File tools/Fetch-LlvmToolchain.ps1 -Rid linux-x64`。如果一起分发，压缩前复制到包内 `tools/.llvm/linux-x64`，保留完整工具链布局及许可证。tar 会保留可执行权限与点目录。
 
-发布者应在仓库外解压包做验收，避免解析器向上找到源码缓存而掩盖漏打包。`help` 只检查启动，不会验证 Native 链接能力：还应分别运行下一节的 VM 和 Native 示例。全量发布验收使用 `RIGI_TEST_CORPUS_ONLY_OUTPUT=1`、`RIGI_TEST_RIGIC=<包内编译器绝对路径>` 与 `rigic test --all`；完整双平台门禁见 [DEVELOPMENT.md](DEVELOPMENT.md#23-发布release--nativeaot)。WSL 全量测试的工作目录应位于 Linux 原生文件系统。
+发布者应在仓库外解压包做验收，避免解析器向上找到源码缓存而掩盖漏打包。`help` 只检查启动，不会验证 Native 链接能力：还应分别运行下一节的 VM 和 Native 示例。全量验收使用同版本测试伴随产物，设置 `RIGI_TEST_CORPUS_ONLY_OUTPUT=1`、`RIGI_TEST_RIGIC=<包内编译器绝对路径>` 与 `RIGI_TEST_HOST=<包内test-host测试宿主绝对路径>`，再执行一次 `rigic test --all`，它只转发 TUnit 全量。测试宿主自己的 `--compat --all` 是等价入口，不再额外重复执行；该入口自动生成新鲜 TRX 并核对 provider/契约完整性，不能在其后追加 MTP flags。
+
+测试宿主位于 `test-host/` 时，native 测试的静态依赖要显式指向包根：设置 `RIGI_LIBUV=<包根>/.libuv/<rid>` 和 `RIGI_MIMALLOC=<包根>/.mimalloc/<rid>`。解析器的发布回退只查当前宿主旁的点目录，不能假定会从子目录向上发现包根 `.libuv/.mimalloc`。Windows 模块测试另需 §6 的归档器。设置 `RIGI_TEST_RESULTS=<结果目录>/case-results.json` 可把断言 journal 与本次 TRX 放在同一指定目录。
+
+完整双平台发布、超时看门狗与提交门禁命令见 [DEVELOPMENT.md](DEVELOPMENT.md#23-发布release--nativeaot)。WSL 全量宿主工作目录及 worker 临时根须位于 Linux 原生文件系统；默认 `/tmp` 应为 ext4 等原生文件系统，不能将临时目录设为 `/mnt/c`。
+
+本机完整发布验收使用 24 小时外层看门狗，并按 Windows、WSL 顺序串行运行完整宿主；worker 重型截止与 fuzz 默认不限时保持原样。CI 为适应 hosted runner 的六小时单 job 上限，每个 RID 使用 16 个独立 runner 精确分片，再验证全目录并集、互斥性和仅片 0 的框架契约；安装包验收继续使用上述单进程 `--compat --all`。
 
 分发时记录源码提交/是否有未提交修改、SDK、RID、构建系统和工具链版本，附上压缩包 SHA-256；本地时间包名不能替代这些来源信息。附带第三方二进制与工具链时保留相应许可/归属文件，参见项目 `NOTICE`。
 

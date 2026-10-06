@@ -11,14 +11,13 @@ namespace RigiCompiler.Tests
     /// <summary>真实磁盘 fixture 校验 fs_realpath 对所有路径分量的解析。</summary>
     public static class VmFsRealpathTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsRealpath", Cases, sectionTitle: "VmFsRealpath");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -32,7 +31,7 @@ namespace RigiCompiler.Tests
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 { return 0 }\n");
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var context = new VmContext(module);
@@ -78,20 +77,20 @@ namespace RigiCompiler.Tests
                 var plain = Path.Combine(root, "文件_é.txt");
                 File.WriteAllText(plain, "ok");
                 var (rc, text, length) = Resolve(dispatch, plain);
-                TestHarness.CheckTrue("普通非 ASCII 文件解析成功", rc == 0,
+                CaseAssertions.CheckTrue("普通非 ASCII 文件解析成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("普通路径返回绝对真实路径",
+                CaseAssertions.CheckTrue("普通路径返回绝对真实路径",
                     text == plain, "actual=" + text);
                 var (smallRc, _, required) = Resolve(dispatch, plain, 1);
-                TestHarness.CheckTrue("容量不足回正数哨兵 2", smallRc == 2,
+                CaseAssertions.CheckTrue("容量不足回正数哨兵 2", smallRc == 2,
                     "rc=" + smallRc);
-                TestHarness.CheckTrue("meta 是 UTF-8 字节长度",
+                CaseAssertions.CheckTrue("meta 是 UTF-8 字节长度",
                     length == Encoding.UTF8.GetByteCount(text)
                     && required == length && length > text.Length,
                     "length=" + length + " required=" + required);
                 var (missing, _, _) = Resolve(dispatch,
                     Path.Combine(root, "absent"));
-                TestHarness.CheckTrue("缺失目标归 NotFound", missing == -2,
+                CaseAssertions.CheckTrue("缺失目标归 NotFound", missing == -2,
                     "rc=" + missing);
             }
             finally { Directory.Delete(root, recursive: true); }
@@ -126,36 +125,36 @@ namespace RigiCompiler.Tests
                                 RedirectStandardError = true,
                             });
                         result!.WaitForExit();
-                        TestHarness.CheckTrue("symlink 或 junction fixture 可用",
+                        CaseAssertions.CheckTrue("symlink 或 junction fixture 可用",
                             result.ExitCode == 0, result.StandardError.ReadToEnd());
                         if (result.ExitCode != 0) { return; }
                     }
                     else
                     {
-                        TestHarness.CheckTrue("Linux symlink fixture 可用", false,
+                        CaseAssertions.CheckTrue("Linux symlink fixture 可用", false,
                             ex.ToString());
                         return;
                     }
                 }
                 var (rc, text, _) = Resolve(dispatch, Path.Combine(alias, "a.txt"));
-                TestHarness.CheckTrue("中间目录链接真实解析", rc == 0
+                CaseAssertions.CheckTrue("中间目录链接真实解析", rc == 0
                     && text == child, "rc=" + rc + " actual=" + text);
                 var (dirRc, dirText, _) = Resolve(dispatch, alias);
-                TestHarness.CheckTrue("末段目录链接真实解析", dirRc == 0
+                CaseAssertions.CheckTrue("末段目录链接真实解析", dirRc == 0
                     && dirText == real, "rc=" + dirRc + " actual=" + dirText);
                 var fileAlias = Path.Combine(root, "filealias");
                 try
                 {
                     File.CreateSymbolicLink(fileAlias, child);
                     var (fileRc, fileText, _) = Resolve(dispatch, fileAlias);
-                    TestHarness.CheckTrue("末段文件链接真实解析", fileRc == 0
+                    CaseAssertions.CheckTrue("末段文件链接真实解析", fileRc == 0
                         && fileText == child, "rc=" + fileRc
                         + " actual=" + fileText);
                 }
                 catch (Exception ex) when (ex is IOException
                     or UnauthorizedAccessException or NotSupportedException)
                 {
-                    TestHarness.RecordSkip("  UNSUPPORTED 末段文件符号链接 fixture："
+                    CaseAssertions.RecordSkip("  UNSUPPORTED 末段文件符号链接 fixture："
                         + ex.Message);
                 }
             }
@@ -173,7 +172,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsLinux())
             {
-                TestHarness.RecordSkip("  SKIP 链接前 ..：仅 Linux 实盘链接解析，当前平台未验证");
+                CaseAssertions.RecordSkip("  SKIP 链接前 ..：仅 Linux 实盘链接解析，当前平台未验证");
                 return;
             }
             var dispatch = NewDispatch();
@@ -187,13 +186,13 @@ namespace RigiCompiler.Tests
                 File.WriteAllBytes(marker, new byte[] { 0x72, 0x65, 0x61, 0x6c });
                 Directory.CreateSymbolicLink(link, "real/sub");
                 var path = root + "/link/../marker";
-                TestHarness.CheckTrue("词法折叠目标不存在", !File.Exists(Path.Combine(root, "marker")));
+                CaseAssertions.CheckTrue("词法折叠目标不存在", !File.Exists(Path.Combine(root, "marker")));
                 // Path.Combine/GetFullPath 会先抹去 ..；原始文本必须原样送 VM 原语。
                 var (rc, text, bytes) = Resolve(dispatch, path);
-                TestHarness.CheckTrue("链接先于 .. 解析成功", rc == 0, "rc=" + rc);
-                TestHarness.CheckTrue(".. 返回真实父目录的 marker", text == marker,
+                CaseAssertions.CheckTrue("链接先于 .. 解析成功", rc == 0, "rc=" + rc);
+                CaseAssertions.CheckTrue(".. 返回真实父目录的 marker", text == marker,
                     "expected=" + marker + " actual=" + text);
-                TestHarness.CheckTrue("真实 marker 有独立字节内容",
+                CaseAssertions.CheckTrue("真实 marker 有独立字节内容",
                     File.ReadAllBytes(marker).SequenceEqual(new byte[] { 0x72, 0x65, 0x61, 0x6c })
                     && bytes == Encoding.UTF8.GetByteCount(marker));
             }
@@ -221,15 +220,15 @@ namespace RigiCompiler.Tests
                 catch (Exception ex) when (ex is IOException
                     or UnauthorizedAccessException or NotSupportedException)
                 {
-                    TestHarness.RecordSkip("  UNSUPPORTED 断链/循环符号链接 fixture："
+                    CaseAssertions.RecordSkip("  UNSUPPORTED 断链/循环符号链接 fixture："
                         + ex.Message);
                     return;
                 }
                 var (brokenRc, _, _) = Resolve(dispatch, broken);
-                TestHarness.CheckTrue("断链归 NotFound", brokenRc == -2,
+                CaseAssertions.CheckTrue("断链归 NotFound", brokenRc == -2,
                     "rc=" + brokenRc);
                 var (loopRc, _, _) = Resolve(dispatch, loop);
-                TestHarness.CheckTrue("循环不伪装 NotFound", loopRc < 0
+                CaseAssertions.CheckTrue("循环不伪装 NotFound", loopRc < 0
                     && loopRc != -2, "rc=" + loopRc);
             }
             finally { Directory.Delete(root, recursive: true); }

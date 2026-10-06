@@ -11,13 +11,12 @@ namespace RigiCompiler.Tests
     /// <summary>fs_stat/fs_lstat 的真实 birth、不可得哨兵及纳秒精度。</summary>
     public static class VmFsBirthTimeTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsBirthTime", Cases, sectionTitle: "VmFsBirthTime");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -29,7 +28,7 @@ namespace RigiCompiler.Tests
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 { return 0 }\n");
-            TestHarness.CheckTrue("编译 fixture 无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("编译 fixture 无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var context = new VmContext(module);
@@ -53,7 +52,7 @@ namespace RigiCompiler.Tests
         }
 
         private static void Check(string label, bool ok, string detail) =>
-            TestHarness.CheckTrue(label, ok, detail);
+            CaseAssertions.CheckTrue(label, ok, detail);
 
         private static void TestRegularBirthAndPrecision()
         {
@@ -111,7 +110,7 @@ namespace RigiCompiler.Tests
             if (!OperatingSystem.IsLinux()
                 || RuntimeInformation.ProcessArchitecture != Architecture.X64)
             {
-                TestHarness.RecordSkip("  SKIP Linux-only link/proc birth fixture");
+                CaseAssertions.RecordSkip("  SKIP Linux-only link/proc birth fixture");
                 return;
             }
             var vm = NewDispatch();

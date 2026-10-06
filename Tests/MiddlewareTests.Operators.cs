@@ -86,57 +86,57 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.opr.bil");
-            TestHarness.CheckTrue("运算符烘焙用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("运算符烘焙用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
             var functions = context.Mir!.Functions;
             var allInsts = functions.SelectMany(f => f.Blocks)
                 .SelectMany(b => b.Instructions).ToList();
-            TestHarness.CheckTrue("运算符用例烘焙后无残留 MirInnerCall",
+            CaseAssertions.CheckTrue("运算符用例烘焙后无残留 MirInnerCall",
                 !allInsts.OfType<MirInnerCall>().Any());
 
             // 同层择一：ping 走 specific 环（不打包），pong 走 wildcard 环
             var pingRing = functions.Single(f =>
                 f.Symbol.Canonical.Contains("Mix$.bake.Service$ping"));
-            TestHarness.CheckTrue("同层 specific 环直传（无打包）",
+            CaseAssertions.CheckTrue("同层 specific 环直传（无打包）",
                 !pingRing.Blocks.SelectMany(b => b.Instructions).OfType<MirNewArray>().Any()
                 && pingRing.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical.Contains("Service$.wrapped.ping")));
-            TestHarness.CheckTrue("同层 wildcard 环兜底（pong）",
+            CaseAssertions.CheckTrue("同层 wildcard 环兜底（pong）",
                 functions.Any(f => f.Symbol.Canonical.Contains("Mix$.bake.Service$pong")));
 
             // 运算符 specific：VecA$$plus 原名槽换 trampoline（直传形态）
             var plusATrampoline = functions.Single(f =>
                 f.Symbol.Canonical == "VecA$$plus(another:VecA)@VecA");
-            TestHarness.CheckTrue("运算符 specific trampoline（get.wrapper.addr + 调环）",
+            CaseAssertions.CheckTrue("运算符 specific trampoline（get.wrapper.addr + 调环）",
                 plusATrampoline.Blocks.SelectMany(b => b.Instructions)
                     .OfType<MirGetWrapperAddr>()
                     .Any(g => g.WrapperType == "WO")
                 && plusATrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical.Contains("WO$.bake.VecA$$plus")));
-            TestHarness.CheckTrue("运算符 specific $.wrapped. 原始体",
+            CaseAssertions.CheckTrue("运算符 specific $.wrapped. 原始体",
                 functions.Any(f =>
                     f.Symbol.Canonical.Contains("VecA$.wrapped.$plus")));
             // 运算符 wildcard：VecB$$plus trampoline 打包 + 环动态分派 +
             // router 覆盖 VecB$$plus 分支
             var plusBTrampoline = functions.Single(f =>
                 f.Symbol.Canonical == "VecB$$plus(another:VecB)@VecB");
-            TestHarness.CheckTrue("运算符 wildcard trampoline 打包",
+            CaseAssertions.CheckTrue("运算符 wildcard trampoline 打包",
                 plusBTrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirNewArray>()
                     .Count() == 2
                 && plusBTrampoline.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical.Contains("WW$.bake.VecB$$plus")));
             var oprRouter = functions.Single(f =>
                 f.Symbol.Canonical.Contains("VecB$.mw.router.1"));
-            TestHarness.CheckTrue("运算符 router 覆盖 $$plus 分支并直调终态",
+            CaseAssertions.CheckTrue("运算符 router 覆盖 $$plus 分支并直调终态",
                 oprRouter.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                     .Any(c => c.Target.Canonical.Contains("VecB$.wrapped.$plus")));
 
             using var llvmLease3977 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue("LLVM 含运算符烘焙环", ll.Contains(".bake.VecB$$plus"), ll);
+            CaseAssertions.CheckTrue("LLVM 含运算符烘焙环", ll.Contains(".bake.VecB$$plus"), ll);
         }
 
         // ===== 遗1：用户运算符 native 分派（VM FindOperator 口径） =====
@@ -181,7 +181,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "user.opr.bil");
-            TestHarness.CheckTrue("用户运算符用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("用户运算符用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -190,36 +190,36 @@ namespace RigiCompiler.Tests
             var insts = main.Blocks.SelectMany(b => b.Instructions).ToList();
             var dispatchCalls = insts.OfType<MirCall>().Where(c => c.OperatorDispatch).ToList();
 
-            TestHarness.Check("运算符直译调用数（Vec plus/equals×2/compareTo×2/opposite + Meter plus）",
+            CaseAssertions.Check("运算符直译调用数（Vec plus/equals×2/compareTo×2/opposite + Meter plus）",
                 dispatchCalls.Count.ToString(), "7");
-            TestHarness.CheckTrue("add → Vec$$plus（OperatorDispatch）",
+            CaseAssertions.CheckTrue("add → Vec$$plus（OperatorDispatch）",
                 dispatchCalls.Any(c => c.Target.Canonical == "Vec$$plus(another:Vec)@Vec"));
-            TestHarness.CheckTrue("==/!= → Vec$$equals 两次（== 直存、!= 取反）",
+            CaseAssertions.CheckTrue("==/!= → Vec$$equals 两次（== 直存、!= 取反）",
                 dispatchCalls.Count(c =>
                     c.Target.Canonical == "Vec$$equals(another:Vec)@.bool") == 2);
-            TestHarness.CheckTrue("</<= → Vec$$compareTo 两次",
+            CaseAssertions.CheckTrue("</<= → Vec$$compareTo 两次",
                 dispatchCalls.Count(c =>
                     c.Target.Canonical == "Vec$$compareTo(another:Vec)@core::ComparisonResult") == 2);
-            TestHarness.CheckTrue("一元 - → Vec$$opposite",
+            CaseAssertions.CheckTrue("一元 - → Vec$$opposite",
                 dispatchCalls.Any(c => c.Target.Canonical == "Vec$$opposite()@Vec"));
 
             // != 的 MIR 形状：equals 调用结果槽经 not 取反
-            TestHarness.CheckTrue("!= 形状：equals 后跟 not",
+            CaseAssertions.CheckTrue("!= 形状：equals 后跟 not",
                 insts.OfType<MirUnaryIntrinsic>().Any(u => u.Op == BilUnaryOp.Not));
             // < 的 MIR 形状：compareTo + is.case(.LesserThanAnother)；
             // <= 多一个 is.case(.Equal) + or 组合
             var cases = insts.OfType<MirIsCase>().Select(
                 c => c.Case.Declaration.QualifiedName).ToList();
-            TestHarness.CheckTrue("< 形状：is.case LesserThanAnother 命中",
+            CaseAssertions.CheckTrue("< 形状：is.case LesserThanAnother 命中",
                 cases.Contains("core::ComparisonResult.LesserThanAnother"));
-            TestHarness.CheckTrue("<= 形状：is.case Equal + or 组合",
+            CaseAssertions.CheckTrue("<= 形状：is.case Equal + or 组合",
                 cases.Contains("core::ComparisonResult.Equal")
                 && insts.OfType<MirBinaryIntrinsic>().Any(b => b.Op == BilBinaryOp.Or));
 
             // 内建标量运算保持原形状（Vec$$plus 体内的 i32 add 不走用户派发）
             var plusFn = functions.Single(f =>
                 f.Symbol.Canonical == "Vec$$plus(another:Vec)@Vec");
-            TestHarness.CheckTrue("内建 i32 add 保持 MirBinaryIntrinsic",
+            CaseAssertions.CheckTrue("内建 i32 add 保持 MirBinaryIntrinsic",
                 plusFn.Blocks.SelectMany(b => b.Instructions).OfType<MirBinaryIntrinsic>()
                     .Any(b => b.Op == BilBinaryOp.Add)
                 && !plusFn.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
@@ -227,25 +227,25 @@ namespace RigiCompiler.Tests
 
             // struct 的 add：Meter$$plus 直译（OperatorDispatch；直调分流
             // 归 Binding）
-            TestHarness.CheckTrue("struct add → Meter$$plus（OperatorDispatch）",
+            CaseAssertions.CheckTrue("struct add → Meter$$plus（OperatorDispatch）",
                 insts.OfType<MirCall>().Any(c => c.OperatorDispatch
                     && c.Target.Canonical == "Meter$$plus(another:Meter)@Meter"));
 
             // 绑定分流：class 运算符 → 虚派发（运行期按实际类型落最派生
             // 实现，VM 口径）；struct → 直调；interface → iMap 派发
             var vecPlus = context.Symbols.FindMember("Vec$$plus(another:Vec)@Vec")!;
-            TestHarness.CheckTrue("class 运算符绑定 → VirtualCallBinding",
+            CaseAssertions.CheckTrue("class 运算符绑定 → VirtualCallBinding",
                 ImplBinder.BindOperatorCall(vecPlus) is VirtualCallBinding);
             var meterPlus = context.Symbols.FindMember("Meter$$plus(another:Meter)@Meter")!;
-            TestHarness.CheckTrue("struct 运算符绑定 → DirectCallBinding",
+            CaseAssertions.CheckTrue("struct 运算符绑定 → DirectCallBinding",
                 ImplBinder.BindOperatorCall(meterPlus) is DirectCallBinding);
             var ifaceEquals = context.Symbols.FindMember(
                 "Equatable$$equals(other:Equatable)@.bool")!;
-            TestHarness.CheckTrue("interface 运算符绑定 → InterfaceCallBinding",
+            CaseAssertions.CheckTrue("interface 运算符绑定 → InterfaceCallBinding",
                 ImplBinder.BindOperatorCall(ifaceEquals) is InterfaceCallBinding);
             // 显式 invoke 运算符保持静态直调（VM ResolveDispatchSymbol
             // 对 operator 原样返回调用点符号的同口径）
-            TestHarness.CheckTrue("显式 invoke 运算符保持 DirectCallBinding",
+            CaseAssertions.CheckTrue("显式 invoke 运算符保持 DirectCallBinding",
                 ImplBinder.BindCall(vecPlus) is DirectCallBinding);
         }
 
@@ -277,18 +277,18 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.index.closure.bil");
-            TestHarness.CheckTrue("闭包索引用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("闭包索引用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             var index = WrapperApplicationIndex.Build(context.Symbols);
 
             // 重申去重：Mid/Leaf 重申 Logged/Extra 后各只装一次，声明序保持
-            TestHarness.CheckTrue("Base 闭包=本类声明",
+            CaseAssertions.CheckTrue("Base 闭包=本类声明",
                 index.EntityWrappers("Base").SequenceEqual(new[] { "Logged", "Extra" }));
-            TestHarness.CheckTrue("Mid 闭包=重申+追加、无重复",
+            CaseAssertions.CheckTrue("Mid 闭包=重申+追加、无重复",
                 index.EntityWrappers("Mid").SequenceEqual(
                     new[] { "Logged", "Extra", "Third" }));
-            TestHarness.CheckTrue("Leaf 闭包沿链去重不翻倍",
+            CaseAssertions.CheckTrue("Leaf 闭包沿链去重不翻倍",
                 index.EntityWrappers("Leaf").SequenceEqual(
                     new[] { "Logged", "Extra", "Third" }));
 
@@ -299,10 +299,10 @@ namespace RigiCompiler.Tests
             var hand = text.Replace(
                 "        pub open wrapped(Logged) wrapped(Extra) wrapped(Third) {",
                 "        pub open {");
-            TestHarness.CheckTrue("探测：BIL 文本确含可剔除的重申段", hand != text);
+            CaseAssertions.CheckTrue("探测：BIL 文本确含可剔除的重申段", hand != text);
             var handIndex = WrapperApplicationIndex.Build(
                 new MwContext(BilReader.Read(hand)).Symbols);
-            TestHarness.CheckTrue("未重申子类闭包并入基类应用（基→本追加）",
+            CaseAssertions.CheckTrue("未重申子类闭包并入基类应用（基→本追加）",
                 handIndex.EntityWrappers("Mid").SequenceEqual(
                     new[] { "Logged", "Extra" }));
         }
@@ -336,16 +336,16 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.slot.dedup.bil");
-            TestHarness.CheckTrue("槽去重用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("槽去重用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
-            TestHarness.CheckTrue("管线挂载布局", context.Layout != null);
+            CaseAssertions.CheckTrue("管线挂载布局", context.Layout != null);
 
             var basePlan = context.Layout!.Find("Base");
             var midPlan = context.Layout.Find("Mid");
             var leafPlan = context.Layout.Find("Leaf");
-            TestHarness.CheckTrue("三级布局计划齐全",
+            CaseAssertions.CheckTrue("三级布局计划齐全",
                 basePlan != null && midPlan != null && leafPlan != null);
             if (basePlan == null || midPlan == null || leafPlan == null)
             {
@@ -353,23 +353,23 @@ namespace RigiCompiler.Tests
             }
             const string baseLogged = "Base#.wrapper.Logged@Logged";
             const string baseExtra = "Base#.wrapper.Extra@Extra";
-            TestHarness.CheckTrue("Base 含两枚本类槽",
+            CaseAssertions.CheckTrue("Base 含两枚本类槽",
                 basePlan.Fields.Count(f => f.Symbol == baseLogged) == 1
                     && basePlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
-            TestHarness.CheckTrue("Mid 重申不另开槽（无 Mid# 前缀 wrapper 槽）",
+            CaseAssertions.CheckTrue("Mid 重申不另开槽（无 Mid# 前缀 wrapper 槽）",
                 !midPlan.Fields.Any(f => f.Symbol.StartsWith("Mid#.wrapper.",
                     System.StringComparison.Ordinal)));
-            TestHarness.CheckTrue("Leaf 重申不另开槽（无 Leaf# 前缀 wrapper 槽）",
+            CaseAssertions.CheckTrue("Leaf 重申不另开槽（无 Leaf# 前缀 wrapper 槽）",
                 !leafPlan.Fields.Any(f => f.Symbol.StartsWith("Leaf#.wrapper.",
                     System.StringComparison.Ordinal)));
-            TestHarness.CheckTrue("Mid 恰含原名拷入的基类槽各一枚",
+            CaseAssertions.CheckTrue("Mid 恰含原名拷入的基类槽各一枚",
                 midPlan.Fields.Count(f => f.Symbol == baseLogged) == 1
                     && midPlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
-            TestHarness.CheckTrue("Leaf 恰含原名拷入的基类槽各一枚",
+            CaseAssertions.CheckTrue("Leaf 恰含原名拷入的基类槽各一枚",
                 leafPlan.Fields.Count(f => f.Symbol == baseLogged) == 1
                     && leafPlan.Fields.Count(f => f.Symbol == baseExtra) == 1);
             var baseOffset = basePlan.Fields.First(f => f.Symbol == baseLogged).Offset;
-            TestHarness.CheckTrue("基类槽偏移跨层级一致",
+            CaseAssertions.CheckTrue("基类槽偏移跨层级一致",
                 midPlan.Fields.First(f => f.Symbol == baseLogged).Offset == baseOffset
                     && leafPlan.Fields.First(f => f.Symbol == baseLogged).Offset
                         == baseOffset);

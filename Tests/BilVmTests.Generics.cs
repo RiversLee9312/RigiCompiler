@@ -32,7 +32,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("泛型构造类型 init 匹配", result);
-            TestHarness.Check("泛型构造 stdout", result.Stdout,
+            CaseAssertions.Check("泛型构造 stdout", result.Stdout,
                 "age:3\n1\nkwargs-ok\n");
             CheckI32("main 返回 0", result, 0);
         }
@@ -53,7 +53,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Pair 子类 super 调用 + 解构", result);
-            TestHarness.Check("解构 stdout", result.Stdout, "age:3\n");
+            CaseAssertions.Check("解构 stdout", result.Stdout, "age:3\n");
             CheckI32("main 返回 0", result, 0);
         }
 
@@ -70,11 +70,11 @@ namespace RigiCompiler.Tests
                 "    var f = func{(x: i32): i32 -> (x + 41)}\n" +
                 "    return take2(f)\n" +
                 "}\n");
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             // 签名形态回归锁：符号内闭合泛型紧凑无空白
-            TestHarness.CheckTrue("方法符号内嵌闭合泛型紧凑形态",
+            CaseAssertions.CheckTrue("方法符号内嵌闭合泛型紧凑形态",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "$take2(f:core::Func<.i32,.i32>)@.i32"),
                 string.Join(", ", module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
@@ -115,7 +115,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("firstOf<String>", firstString);
-            TestHarness.Check("firstOf<String> stdout", firstString.Stdout, "ok\n");
+            CaseAssertions.Check("firstOf<String> stdout", firstString.Stdout, "ok\n");
             CheckI32("firstOf<String> 返回 0", firstString, 0);
 
             var nested = Run(
@@ -148,7 +148,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("nullable<T> 形参", nullable);
-            TestHarness.Check("unwrapOr(9, 0) 打印", nullable.Stdout, "9\n");
+            CaseAssertions.Check("unwrapOr(9, 0) 打印", nullable.Stdout, "9\n");
             CheckI32("nullable main 返回 0", nullable, 0);
 
             var id = Run(
@@ -382,7 +382,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("无约束 T toString 端到端", ts);
-            TestHarness.Check("toString(42)", ts.Stdout, "42\n");
+            CaseAssertions.Check("toString(42)", ts.Stdout, "42\n");
 
             var pair = Run(
                 "pub interface Addable { pub operator plus(other: Addable): Addable }\n" +
@@ -426,7 +426,7 @@ namespace RigiCompiler.Tests
             var result = RunPrepared(module, "$probe()@.typeid",
                 new[] { new VmTypeId(".i32") });
             CheckOk("getid.type 解析嵌套泛型占位", result);
-            TestHarness.CheckTrue("物化为 .array<.i32>",
+            CaseAssertions.CheckTrue("物化为 .array<.i32>",
                 result.ReturnValue is VmTypeId id && id.TypeSymbol == ".array<.i32>",
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }

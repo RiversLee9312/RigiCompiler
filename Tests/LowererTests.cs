@@ -27,7 +27,7 @@ namespace RigiCompiler.Tests
     /// </summary>
     //
     // 测试组按类别分文件（partial class，仿 Bil/BilVerifier 分文件先例）：
-    //   LowererTests.cs             —— RunAll 入口 + 共享驱动/断言 helper
+    //   LowererTests.cs             —— provider 目录 + 共享驱动/断言 helper
     //   LowererTests.Basics.cs      —— 局部声明/赋值/语句/new/Origin 链/未覆盖节点负例
     //   LowererTests.ControlFlow.cs —— 短路/if 表达式/复合赋值/值块/循环/switch/throw
     //   LowererTests.TrySeq.cs      —— try/seq/值块编织
@@ -36,9 +36,9 @@ namespace RigiCompiler.Tests
     //   LowererTests.EnumCases.cs   —— enum case 构造恒等降级/is .Case 槽透传（S11）
     public static partial class LowererTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Lowerer",
+
+        internal static TestSuiteData Spec { get; } = new("Lowerer",
         [
             (nameof(TestLocalDeclarations), TestLocalDeclarations),
             (nameof(TestAssignment), TestAssignment),
@@ -104,7 +104,7 @@ namespace RigiCompiler.Tests
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bound,
             IReadOnlyList<LoweredFunctionBody> Lowered) LowerUnit(params string[] sources)
         {
-            var roots = sources.Select(TestHarness.ParseRoot).ToArray();
+            var roots = sources.Select(CompilerTestTools.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
@@ -120,7 +120,7 @@ namespace RigiCompiler.Tests
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.AddRange(sources.Select(TestHarness.ParseRoot));
+            roots.AddRange(sources.Select(CompilerTestTools.ParseRoot));
             var unit = new CompilationUnit(roots.ToArray());
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
@@ -140,13 +140,13 @@ namespace RigiCompiler.Tests
             var call = bodies.Single(b => b.Method.Owner?.LambdaClosure is { } closure
                 && ReferenceEquals(b.Method, closure.Call)
                 && closure.ValueBlock is { ValueType: null });
-            TestHarness.CheckTrue("全逃逸 lambda 不读取不存在的结果",
+            CaseAssertions.CheckTrue("全逃逸 lambda 不读取不存在的结果",
                 call.Body.Statements.Count == 1
                 && call.Body.Statements[0] is LoweredSeqBlock { Origin: BoundValueBlock { ValueType: null } });
         }
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
         }
@@ -154,7 +154,7 @@ namespace RigiCompiler.Tests
         private static LoweredFunctionBody BodyOf(IReadOnlyList<LoweredFunctionBody> bodies,
             string name)
         {
-            return TestHarness.UniqueNamedBody(bodies, name, b => b.Method);
+            return CompilerTestTools.UniqueNamedBody(bodies, name, b => b.Method);
         }
     }
 }

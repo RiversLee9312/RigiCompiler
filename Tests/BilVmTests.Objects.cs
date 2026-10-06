@@ -299,7 +299,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("like 委托转发", result);
-            TestHarness.Check("显式优先 + 委托转发 + 接口虚调用",
+            CaseAssertions.Check("显式优先 + 委托转发 + 接口虚调用",
                 result.Stdout, "apple-ish\ngreen\napple-ish\ngreen\n");
         }
 
@@ -325,7 +325,7 @@ namespace RigiCompiler.Tests
                 "    return b.run(3)\n" +
                 "}\n");
             CheckOk("接口字段 like 委托转发", result);
-            TestHarness.Check("接口字段委托运行输出",
+            CaseAssertions.Check("接口字段委托运行输出",
                 result.Stdout, "4\n5\n");
             CheckI32("接口字段委托返回值", result, 4);
 
@@ -351,7 +351,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("显式 override 优先于接口字段转发", explicitFirst);
-            TestHarness.Check("显式优先输出",
+            CaseAssertions.Check("显式优先输出",
                 explicitFirst.Stdout, "9\nimpl\n");
 
             // 字段接口的默认方法（HasBody）作委托目标：虚派发到默认实现
@@ -371,7 +371,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("接口默认方法作委托目标", defaultMethod);
-            TestHarness.Check("默认方法转发输出", defaultMethod.Stdout, "hi\n");
+            CaseAssertions.Check("默认方法转发输出", defaultMethod.Stdout, "hi\n");
         }
 
     }

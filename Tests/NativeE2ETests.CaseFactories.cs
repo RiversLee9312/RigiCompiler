@@ -22,9 +22,6 @@ namespace RigiCompiler.Tests
             long maxSteps = 20_000_000) =>
             RegisterCase(label, source, () => RunCase(label, source, maxSteps: maxSteps));
 
-        internal static string? PilotSkipReason => ToolchainResolver.ResolveClang(null) == null
-            ? "未找到 clang 工具链" : null;
-
         internal static void RunPilotHelloBil()
         {
             // 只编译一个小 BIL；沿用 VM/native 单 case 对拍驱动，默认 O2。
@@ -76,7 +73,7 @@ namespace RigiCompiler.Tests
             {
                 if (useFixtureRoot && !OperatingSystem.IsLinux())
                 {
-                    TestHarness.RecordSkip("  SKIP " + label + "：仅 Linux 原生文件系统机制探针");
+                    CaseAssertions.RecordSkip("  SKIP " + label + "：仅 Linux 原生文件系统机制探针");
                     return;
                 }
                 RunNativeOnlyCase(label, source, cSource,

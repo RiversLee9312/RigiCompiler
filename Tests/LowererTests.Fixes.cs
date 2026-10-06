@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -34,7 +34,7 @@ namespace RigiCompiler.Tests
                 "    u?.M()\n" +
                 "}\n");
             CheckNoErrors("无诊断（?. 调 void 方法）", unit);
-            TestHarness.Check("?. void 调用降级形态（then 块 InstCallStmt）",
+            CaseAssertions.Check("?. void 调用降级形态（then 块 InstCallStmt）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: User?, .s1: Any?, .b0: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
@@ -45,7 +45,7 @@ namespace RigiCompiler.Tests
             // 结构性事实：then 块唯一语句 = LoweredCallStatement（无赋值）
             var body = BodyOf(lowered, "f").Body.Statements;
             var nullCheck = (LoweredIfStatement)body[2];
-            TestHarness.CheckTrue("then 块 = 单条 LoweredCallStatement（无 s_result 赋值）",
+            CaseAssertions.CheckTrue("then 块 = 单条 LoweredCallStatement（无 s_result 赋值）",
                 nullCheck.TrueBlock.Statements.Count == 1
                 && nullCheck.TrueBlock.Statements[0] is LoweredCallStatement call
                 && call.Method.Name == "M");
@@ -68,7 +68,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（?. Access 前置收块）", unit);
             // 求值序保护（EvalOrderGuard）：实参 (a and b) 产短路前置，
             // receiver 的 cast 物化为 .s3（先于短路 if 执行）
-            TestHarness.Check("?. Access 短路前置在 then 块内",
+            CaseAssertions.Check("?. Access 短路前置在 then 块内",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: User?, .s1: bool?, .s2: bool, .b0: .breakid, .s3: User, .b1: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
@@ -87,7 +87,7 @@ namespace RigiCompiler.Tests
             // receiver/result 两条）
             var body = BodyOf(lowered, "f").Body.Statements;
             var nullCheck = (LoweredIfStatement)body[2];
-            TestHarness.CheckTrue("then 块首两条 = receiver 物化 + 短路 if（前置收块结构断言）",
+            CaseAssertions.CheckTrue("then 块首两条 = receiver 物化 + 短路 if（前置收块结构断言）",
                 nullCheck.TrueBlock.Statements.Count == 3
                 && nullCheck.TrueBlock.Statements[0] is LoweredAssignmentStatement
                 && nullCheck.TrueBlock.Statements[1] is LoweredIfStatement
@@ -117,7 +117,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（索引解包后复合赋值）", unit);
-            TestHarness.Check("解包局部复合赋值（Q6 显式形态）",
+            CaseAssertions.Check("解包局部复合赋值（Q6 显式形态）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [held: Counter?, .s0: Counter, .b0: .breakid], " +
                 "[Decl(held, Counter?, = Index(Param(b,Bag), Int(0,i32), Counter?)); " +
@@ -150,7 +150,7 @@ namespace RigiCompiler.Tests
                 "    h.Prop.c += 1\n" +
                 "}\n");
             CheckNoErrors("无诊断（getter 复合赋值物化）", unit);
-            TestHarness.Check("getter 字段读取物化 .s0（单次求值）",
+            CaseAssertions.Check("getter 字段读取物化 .s0（单次求值）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Counter], [" +
                 "Assign(Local(.s0,Counter), InstField(Prop, Param(h,Holder), Counter)); " +
@@ -170,7 +170,7 @@ namespace RigiCompiler.Tests
                 "    var copy: core.Array\\<i32> = nums\n" +
                 "}\n");
             CheckNoErrors("无诊断（可变参数引用定型）", unit);
-            TestHarness.Check("variadic 引用透传 Array<i32>（无 cast）",
+            CaseAssertions.Check("variadic 引用透传 Array<i32>（无 cast）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [copy: Array<i32>], " +
                 "[Decl(copy, Array<i32>, = Param(nums,Array<i32>))])");
@@ -190,7 +190,7 @@ namespace RigiCompiler.Tests
                 "    return nums[1] if? 0\n" +
                 "}\n");
             CheckNoErrors("无诊断（vargs 索引读写降级）", unit);
-            TestHarness.Check("vargs 索引读外包拆箱 cast（Q6）",
+            CaseAssertions.Check("vargs 索引读外包拆箱 cast（Q6）",
                 LoweredDescribe.Body(BodyOf(lowered, "sum")),
                 "Body(sum, [first: i32, .s0: i32?, .s1: i32, .b0: .breakid, " +
                 ".s2: i32?, .s3: i32, .b1: .breakid], " +
@@ -216,7 +216,7 @@ namespace RigiCompiler.Tests
                 .Select(a => a.Value)
                 .OfType<LoweredCastExpression>()
                 .FirstOrDefault(c => ReferenceEquals(c.TargetType, unit.Symbols.Bootstrap.Any));
-            TestHarness.CheckTrue("vargs 索引写值装箱 cast 目标 Any", boxCast != null);
+            CaseAssertions.CheckTrue("vargs 索引写值装箱 cast 目标 Any", boxCast != null);
 
             // kwargs 读（Q6：读出 Pair?，?. 取 key 后 if? 回退）
             var (unit2, _, lowered2) = LowerUnitWithStdlib(
@@ -224,7 +224,7 @@ namespace RigiCompiler.Tests
                 "    return options[0]?.key if? \"\"\n" +
                 "}\n");
             CheckNoErrors("无诊断（kwargs 索引读降级）", unit2);
-            TestHarness.Check("kwargs 索引读逐元素转换并重建 Pair",
+            CaseAssertions.Check("kwargs 索引读逐元素转换并重建 Pair",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: Pair<String, String>?, .s1: String?, .b0: .breakid, " +
                 ".s2: String?, .s3: String, .b1: .breakid], " +
@@ -251,7 +251,7 @@ namespace RigiCompiler.Tests
                 "    nums[0] = ((nums[0] if? 0) + 1)\n" +
                 "}\n");
             CheckNoErrors("无诊断（vargs 索引显式读改写回降级）", unit3);
-            TestHarness.Check("vargs 索引显式读改写回（读拆箱/写装箱）",
+            CaseAssertions.Check("vargs 索引显式读改写回（读拆箱/写装箱）",
                 LoweredDescribe.Body(BodyOf(lowered3, "bump")),
                 "Body(bump, [.s0: i32?, .s1: i32, .b0: .breakid], " +
                 "[Assign(Local(.s0,i32?), " +
@@ -289,7 +289,7 @@ namespace RigiCompiler.Tests
                 "    r.origin.x = 7\n" +
                 "}\n");
             CheckNoErrors("无诊断（值类型链深写）", unit);
-            TestHarness.Check("r.origin.x = 7 降级形态（正向 get + 叶写 + 反向 set）",
+            CaseAssertions.Check("r.origin.x = 7 降级形态（正向 get + 叶写 + 反向 set）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Vec2], [" +
                 "Assign(Local(.s0,Vec2), InstField(origin, Param(r,Rect), Vec2)); " +
@@ -307,7 +307,7 @@ namespace RigiCompiler.Tests
                 "    pub func shift() { origin.x = (origin.x + 1) }\n" +
                 "}\n");
             CheckNoErrors("无诊断（this 根值类型链深写）", unit);
-            TestHarness.Check("this.origin.x 深写降级形态（写回 this.origin）",
+            CaseAssertions.Check("this.origin.x 深写降级形态（写回 this.origin）",
                 LoweredDescribe.Body(BodyOf(lowered, "shift")),
                 "Body(shift, [.s0: Vec2], [" +
                 "Assign(Local(.s0,Vec2), InstField(origin, This(Rect2), Vec2)); " +
@@ -325,7 +325,7 @@ namespace RigiCompiler.Tests
                 "    r.origin.x += 1\n" +
                 "}\n");
             CheckNoErrors("无诊断（值类型链复合赋值）", unit);
-            TestHarness.Check("r.origin.x += 1 降级形态（含写回）",
+            CaseAssertions.Check("r.origin.x += 1 降级形态（含写回）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Vec2, .s1: i32], [" +
                 "Assign(Local(.s0,Vec2), InstField(origin, Param(r,Rect), Vec2)); " +
@@ -348,7 +348,7 @@ namespace RigiCompiler.Tests
                 "    Holder.current.origin.x = 7\n" +
                 "}\n");
             CheckNoErrors("无诊断（静态根值类型链深写）", unit);
-            TestHarness.Check("Holder.current.origin.x = 7 降级形态（含静态槽写回）",
+            CaseAssertions.Check("Holder.current.origin.x = 7 降级形态（含静态槽写回）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Rect, .s1: Vec2], [" +
                 "Assign(Local(.s0,Rect), Field(current,Rect)); " +
@@ -369,7 +369,7 @@ namespace RigiCompiler.Tests
                 "    Holder.current.origin.x += 1\n" +
                 "}\n");
             CheckNoErrors("无诊断（静态根值类型链复合赋值）", unit);
-            TestHarness.Check("Holder.current.origin.x += 1 降级形态（含静态槽写回）",
+            CaseAssertions.Check("Holder.current.origin.x += 1 降级形态（含静态槽写回）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Rect, .s1: Vec2, .s2: i32], [" +
                 "Assign(Local(.s0,Rect), Field(current,Rect)); " +
@@ -393,7 +393,7 @@ namespace RigiCompiler.Tests
                 "    Holder.current.origin.bumpX()\n" +
                 "}\n");
             CheckNoErrors("无诊断（静态根值类型 receiver 调用写回）", unit);
-            TestHarness.Check("Holder.current.origin.bumpX() 降级形态（含静态槽写回）",
+            CaseAssertions.Check("Holder.current.origin.bumpX() 降级形态（含静态槽写回）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Rect, .s1: Vec2], [" +
                 "Assign(Local(.s0,Rect), Field(current,Rect)); " +
@@ -414,7 +414,7 @@ namespace RigiCompiler.Tests
                 "    Holder.current.origin = new Vec2(8, 2)\n" +
                 "}\n");
             CheckNoErrors("无诊断（静态根单层字段写）", unit);
-            TestHarness.Check("Holder.current.origin = new Vec2 降级形态（含静态槽写回）",
+            CaseAssertions.Check("Holder.current.origin = new Vec2 降级形态（含静态槽写回）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Rect], [" +
                 "Assign(Local(.s0,Rect), Field(current,Rect)); " +
@@ -441,7 +441,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（wrapped 静态根值类型链深写）", unit);
             var desc = BilTestHarness.NormalizeLambdaUuids(
                 LoweredDescribe.Body(BodyOf(lowered, "f")));
-            TestHarness.CheckTrue("wrapped 静态根含 getValue 拷贝 + 叶写 + setValue 写回",
+            CaseAssertions.CheckTrue("wrapped 静态根含 getValue 拷贝 + 叶写 + setValue 写回",
                 desc.Contains("InstCall(getValue, InstField(current, New(..companion, []), ..cell..UUID)")
                 && desc.Contains("InstField(x,")
                 && desc.Contains("InstCallStmt(setValue, InstField(current, New(..companion, []), ..cell..UUID)"));
@@ -459,13 +459,13 @@ namespace RigiCompiler.Tests
                 "    return r.origin.getX()\n" +
                 "}\n");
             CheckNoErrors("无诊断（值类型 receiver 调用写回）", unit);
-            TestHarness.Check("r.origin.bumpX() 降级形态（调用后写回 origin）",
+            CaseAssertions.Check("r.origin.bumpX() 降级形态（调用后写回 origin）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: Vec2], [" +
                 "Assign(Local(.s0,Vec2), InstField(origin, Param(r,Rect), Vec2)); " +
                 "[InstCallStmt(bumpX, Local(.s0,Vec2), []); " +
                 "Assign(InstField(origin, Param(r,Rect), Vec2), Local(.s0,Vec2))]])");
-            TestHarness.Check("r.origin.getX() 降级形态（结果物化 + 写回前置）",
+            CaseAssertions.Check("r.origin.getX() 降级形态（结果物化 + 写回前置）",
                 LoweredDescribe.Body(BodyOf(lowered, "g")),
                 "Body(g, [.s0: Vec2, .s1: i32], [" +
                 "Assign(Local(.s0,Vec2), InstField(origin, Param(r,Rect), Vec2)); " +
@@ -489,7 +489,7 @@ namespace RigiCompiler.Tests
                 "func f(b: Box) {\n" +
                 "    b.Item.x = 7\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("getter-only struct 中间环节写穿报错",
+            CaseAssertions.CheckSemanticError("getter-only struct 中间环节写穿报错",
                 unit.Diagnostics, "'Item' has no setter");
         }
 
@@ -505,7 +505,7 @@ namespace RigiCompiler.Tests
                 "func f(h: Holder) {\n" +
                 "    h.origin.x = 7\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("const struct 字段中间环节写穿报错",
+            CaseAssertions.CheckSemanticError("const struct 字段中间环节写穿报错",
                 unit.Diagnostics, "Cannot assign to const field 'origin'");
         }
 
@@ -522,7 +522,7 @@ namespace RigiCompiler.Tests
                 "func f(b: Bag) {\n" +
                 "    b[0].x = 9\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("索引结果字段写 P3 拒绝（非可写 place）",
+            CaseAssertions.CheckSemanticError("索引结果字段写 P3 拒绝（非可写 place）",
                 unit.Diagnostics, "cannot be accessed on nullable type");
         }
     }

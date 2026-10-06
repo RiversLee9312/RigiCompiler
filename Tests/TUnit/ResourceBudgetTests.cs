@@ -83,19 +83,19 @@ public class ResourceBudgetTests
     {
         foreach (var name in new[] { "DeclarationResolver", "Binder", "BilEmitter", "Lowerer", "SmartCast", "StdlibSources" })
         {
-            var number = RigiCompiler.Tests.TestRunner.GetSuiteNumber(name);
-            var tasks = RigiCompiler.Tests.LegacyDispatcher.Select(number);
+            var number = RigiCompiler.Tests.TestSuiteCatalog.GetNumber(name);
+            var tasks = RigiCompiler.Tests.CaseSelection.Select(number);
             Check(tasks.Count > 1 && tasks.All(t => t.Indices.Count == 1), "重型方法组不能重新合批：" + name);
             foreach (var task in tasks)
             {
-                var request = RigiCompiler.Tests.LegacyDispatcher.ResourcesFor(task.Id);
+                var request = RigiCompiler.Tests.CaseSelection.ResourcesFor(task.Id);
                 Check(request.MemoryMiB == 2048 && request.CpuSlots == 1,
                     "每个 stdlib 编译组必须独立声明内存：" + name);
             }
         }
-        var single = RigiCompiler.Tests.LegacyDispatcher.Select(
-            RigiCompiler.Tests.TestRunner.GetSuiteNumber("E2e"), ["rich_return_nullable"]).Single();
-        Check(RigiCompiler.Tests.LegacyDispatcher.ResourcesFor(single.Id).MemoryMiB == 512,
+        var single = RigiCompiler.Tests.CaseSelection.Select(
+            RigiCompiler.Tests.TestSuiteCatalog.GetNumber("E2e"), ["rich_return_nullable"]).Single();
+        Check(RigiCompiler.Tests.CaseSelection.ResourcesFor(single.Id).MemoryMiB == 512,
             "单编译 child 契约应继续按自身 profile 授予");
     }
 

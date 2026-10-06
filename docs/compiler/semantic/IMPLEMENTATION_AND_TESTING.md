@@ -100,15 +100,18 @@ CLI 接入已位于 `Core/Commands.cs`：`CompileCommand` 在 parse-only 之后
 
 ## 10. 测试策略
 
-独立 TUnit/MTP 与尚未迁移的自研控制台套件并存，入口与资源协议见
-[DEVELOPMENT.md](../../../DEVELOPMENT.md)。中端逐层验收：
+全部 provider 由独立 TUnit/MTP 宿主发现执行，编译器只转发兼容测试命令；入口与资源协议见
+[DEVELOPMENT.md](../../../DEVELOPMENT.md)。
+
+本机提交使用单进程完整 AOT 全量；CI 在独立 runner 按稳定 ID 分片后汇总精确全集，
+只改变发现行选择，不拆共享状态动作或 seed 批次，也不重复执行框架契约。中端逐层验收：
 
 - **符号图测试**：断言驻留（同一引用）、继承图、canonical 打印串
   （`CanonicalSymbolPrinter` 输出直接对照 BIL §5.2 的例子）。
 - **P3 测试**：使用既有 `BoundDescribe`（仿 `AstDescribe` 的唯一描述器），
   断言 bound 树形态 + 类型定型结果 + 结构性事实；诊断测试断言
   `DiagnosticBag` 内容（消息子串 + Span），复用 `CheckSemanticError`
-  类断言进 `TestHarness`。
+  类断言由 `CaseAssertions` 在每 worker 的请求 scope 记录。
 - **P4 测试**：`LoweredDescribe` 断言脱糖形态（BIL §3.4 每条规则
   至少一个用例）；发射测试直接断言 `BilWriter` 文本（BIL 文本本身
   就是规范化的快照格式，无需再造描述器）。
@@ -116,9 +119,10 @@ CLI 接入已位于 `Core/Commands.cs`：`CompileCommand` 在 parse-only 之后
 - **BilVm**：维护执行断言（跑出结果/异常与预期比对），
   测试从「形态断言」升级为「语义断言」；这也是 BIL_STANDARD §21.9
   「VM 可执行性」的持续验证。
-- legacy 套件在 `TestRunner` 注册表注册；迁入逐 input 隔离执行的 case
-  由 `CaseCatalog` 提供稳定 ID，再由独立 TUnit adapter 消费，不宣称全部
-  旧套件已完成逐 case 迁移。
+- provider 的 Spec 与 `StaticTestProviders` 提供实际动作，`TestSuiteCatalog`
+  只保留套件编号兼容；`CaseCatalog` 为全部动作/种子批次提供稳定 ID，
+  由 TUnit adapter 消费并在隔离 worker 内执行。共享状态或完整序列对拍的
+  单方法保留其生命周期，一条框架发现行可能含多条关联断言，不冒称逐输入拆分。
 
 ---
 

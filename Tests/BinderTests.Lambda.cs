@@ -4,7 +4,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestLambdaBinding()
         {
-            TestHarness.Section("P3 Lambda Binding（§5.2 对象模型）");
+            CompilerTestTools.Section("P3 Lambda Binding（§5.2 对象模型）");
             var (unit, bodies) = BindUnitWithStdlib(
                 "func f(p: i32): i32 {\n" +
                 "    const c = 1\n" +
@@ -23,28 +23,28 @@ namespace RigiCompiler.Tests
 
             // 隐藏类身份（SYNTAX §5.2）：..lambda..UUID 命名、同命名空间、
             // 继承 core::Func\<i32, i32\>、不入用户符号图
-            TestHarness.CheckTrue("lambda 类型为隐藏类（LambdaClosure 标记 + 不入用户类型图）",
+            CaseAssertions.CheckTrue("lambda 类型为隐藏类（LambdaClosure 标记 + 不入用户类型图）",
                 first.Type is TypeSymbol { LambdaClosure: not null } hidden
                 && hidden.Name.StartsWith("..lambda..", StringComparison.Ordinal)
                 && !unit.Symbols.GlobalNamespace.Types.Any(t => t.LambdaClosure != null));
             var hiddenClass = (TypeSymbol)first.Type;
-            TestHarness.CheckTrue("隐藏类基类 = core::Func<i32, i32>（TRet 在前）",
+            CaseAssertions.CheckTrue("隐藏类基类 = core::Func<i32, i32>（TRet 在前）",
                 hiddenClass.BaseType is { ConstructedFrom: { } baseDefinition }
                 && baseDefinition.Name == "Func"
                 && hiddenClass.BaseType.TypeArguments!.Count == 2);
-            TestHarness.CheckTrue("隐藏类非 shared（普通 lambda）",
+            CaseAssertions.CheckTrue("隐藏类非 shared（普通 lambda）",
                 !hiddenClass.IsShared);
             // $$call 运算符：覆写基类 abstract call、参数/返回齐备
-            TestHarness.CheckTrue("$$call 覆写运算符齐备",
+            CaseAssertions.CheckTrue("$$call 覆写运算符齐备",
                 first.Closure.Call.Kind == MethodKind.Operator
                 && first.Closure.Call.IsOverride
                 && first.Closure.Call.Parameters.Count == 1
                 && first.Closure.Call.ReturnType == unit.Symbols.Bootstrap.Int32);
             // 捕获按符号身份记录 + 闭包字段（var p → Cell 字段）
-            TestHarness.CheckTrue("参数捕获按符号身份记录",
+            CaseAssertions.CheckTrue("参数捕获按符号身份记录",
                 first.CapturedSymbols.Count == 1
                 && first.CapturedSymbols.Any(s => s.Name == "p"));
-            TestHarness.CheckTrue("var 捕获 → .capture 字段 + cell 隐藏子类（基类 Cell）",
+            CaseAssertions.CheckTrue("var 捕获 → .capture 字段 + cell 隐藏子类（基类 Cell）",
                 first.Closure.Captures.Count == 1
                 && first.Closure.Captures[0].Field.Name == ".capture.p"
                 && first.Closure.Captures[0].Field.FieldType is TypeSymbol
@@ -52,14 +52,14 @@ namespace RigiCompiler.Tests
                     CellStorage: not null,
                     BaseType.ConstructedFrom: { Name: "Cell" }
                 });
-            TestHarness.CheckTrue("被捕获参数置 CellStorage 标记（Cell 风味）",
+            CaseAssertions.CheckTrue("被捕获参数置 CellStorage 标记（Cell 风味）",
                 first.CapturedSymbols.OfType<ParameterSymbol>().Single()
                     .CellStorage is { IsReadOnly: false });
-            TestHarness.CheckTrue("init 参数 = 捕获序（c0 = cell 类型）",
+            CaseAssertions.CheckTrue("init 参数 = 捕获序（c0 = cell 类型）",
                 first.Closure.Init.Parameters.Count == 1
                 && first.Closure.Init.Parameters[0].Name == "c0");
             // 块体排除体内声明捕获（localValue 是 lambda 体内局部）
-            TestHarness.CheckTrue("块体绑定并排除体内声明捕获",
+            CaseAssertions.CheckTrue("块体绑定并排除体内声明捕获",
                 second.CapturedSymbols.Count == 0
                 && second.Closure.Captures.Count == 0);
 
@@ -74,7 +74,7 @@ namespace RigiCompiler.Tests
             var constLambda = (BoundLambdaExpression)BodyOf(constCapture.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "fn").Initializer!;
-            TestHarness.CheckTrue("const 捕获 → ReadonlyCell 子类字段 + 符号标记",
+            CaseAssertions.CheckTrue("const 捕获 → ReadonlyCell 子类字段 + 符号标记",
                 constLambda.Closure.Captures[0].IsReadOnly
                 && constLambda.Closure.Captures[0].Field.FieldType is TypeSymbol
                 {
@@ -93,7 +93,7 @@ namespace RigiCompiler.Tests
             var voidAction = (BoundLambdaExpression)BodyOf(voidLambda.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single().Initializer!;
-            TestHarness.CheckTrue("void lambda 基类 = core::Action（零元数）",
+            CaseAssertions.CheckTrue("void lambda 基类 = core::Action（零元数）",
                 voidAction.ReturnType == null
                 && ((TypeSymbol)voidAction.Type).BaseType is { } actionBase
                 && (actionBase.ConstructedFrom ?? actionBase).Name == "Action");
@@ -110,14 +110,14 @@ namespace RigiCompiler.Tests
             var outer = (BoundLambdaExpression)BodyOf(nested.Bodies, "f").Body.Statements
                 .OfType<BoundLocalDeclarationStatement>()
                 .Single(statement => statement.Local.Name == "outer").Initializer!;
-            TestHarness.CheckTrue("嵌套捕获向外层传递外层方法符号 p（不传自身局部 local）",
+            CaseAssertions.CheckTrue("嵌套捕获向外层传递外层方法符号 p（不传自身局部 local）",
                 outer.CapturedSymbols.Count == 1
                 && outer.CapturedSymbols.Any(s => s.Name == "p")
                 && !outer.CapturedSymbols.Any(s => s.Name == "local"));
             var nestedFn = outer.CallBody.Body.Statements
                 .OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "nestedFn").Initializer as BoundLambdaExpression;
-            TestHarness.CheckTrue("内层捕获 p 与 local",
+            CaseAssertions.CheckTrue("内层捕获 p 与 local",
                 nestedFn != null
                 && nestedFn.CapturedSymbols.Count == 2
                 && nestedFn.CapturedSymbols.Any(s => s.Name == "p")
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
             var thisLambda = (BoundLambdaExpression)BodyOf(thisCapture.Bodies, "bump")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single().Initializer!;
-            TestHarness.CheckTrue("this 捕获为普通字段（不套 Cell）",
+            CaseAssertions.CheckTrue("this 捕获为普通字段（不套 Cell）",
                 thisLambda.Closure.Captures.Count == 1
                 && thisLambda.Closure.Captures[0].IsThis
                 && thisLambda.Closure.Captures[0].Field.Name == ".capture.this"
@@ -142,17 +142,17 @@ namespace RigiCompiler.Tests
 
             var badName = BindUnitWithStdlib(
                 "func f() { var fn = func{(x: i32): i32 -> missing} }\n");
-            TestHarness.CheckSemanticError("lambda 未定义名", badName.Unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("lambda 未定义名", badName.Unit.Diagnostics,
                 "Undefined");
 
             var badReturn = BindUnitWithStdlib(
                 "func f() { var fn = func{(x: i32): String -> x} }\n");
-            TestHarness.CheckSemanticError("lambda 返回类型错误", badReturn.Unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("lambda 返回类型错误", badReturn.Unit.Diagnostics,
                 "Lambda result");
 
             var implicitBlock = BindUnitWithStdlib(
                 "func f() { var fn = func{(): i32 -> { 42 }} }\n");
-            TestHarness.CheckSemanticError("lambda 块体禁止隐式返回", implicitBlock.Unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("lambda 块体禁止隐式返回", implicitBlock.Unit.Diagnostics,
                 "explicitly return@");
 
             // M105：值位置括号形态 void 间接调用仍报 no result (void)
@@ -162,7 +162,7 @@ namespace RigiCompiler.Tests
                 "    var act: core.Action = func{() -> { sink(0) }}\n" +
                 "    var x = (act)()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("值位置 (act)() 仍报 void 不可作值",
+            CaseAssertions.CheckSemanticError("值位置 (act)() 仍报 void 不可作值",
                 voidGroupedValue.Unit.Diagnostics,
                 "Method 'call' has no result (void) and cannot be used as a value");
 
@@ -179,12 +179,12 @@ namespace RigiCompiler.Tests
                 .Single(s => s.Local.Name == "f").Initializer!;
             var yLocal = BodyOf(methodGenericCapture.Bodies, "wrap").Locals
                 .First(l => l.Name == "y");
-            TestHarness.CheckTrue("捕获 y 的 cell 子类共享 generic(T)",
+            CaseAssertions.CheckTrue("捕获 y 的 cell 子类共享 generic(T)",
                 captureLambda.Closure.Captures.Count == 1
                 && yLocal.CellStorage != null
                 && yLocal.CellStorage.CellClass.GenericParameters.Count == 1
                 && yLocal.CellStorage.CellClass.GenericParameters[0].Name == "T");
-            TestHarness.CheckTrue("lambda 隐藏类共享 generic(T)",
+            CaseAssertions.CheckTrue("lambda 隐藏类共享 generic(T)",
                 captureLambda.Closure.HiddenClass.GenericParameters.Count == 1
                 && captureLambda.Closure.HiddenClass.GenericParameters[0].Name == "T");
 
@@ -209,13 +209,13 @@ namespace RigiCompiler.Tests
                 .Single(s => s.Local.Name == "f").Initializer!;
             // 嵌套捕获外层 lambda 自身参数 v：不向外层 init 传递（外层 $$call
             // 以 CellLocal 持有）；外层 CapturedSymbols 空
-            TestHarness.CheckTrue("外层不传递自身参数捕获",
+            CaseAssertions.CheckTrue("外层不传递自身参数捕获",
                 outerF.CapturedSymbols.Count == 0
                 && outerF.Closure.Captures.Count == 0);
             var nestedG = outerF.CallBody.Body.Statements
                 .OfType<BoundLocalDeclarationStatement>()
                 .FirstOrDefault(s => s.Local.Name == "g")?.Initializer as BoundLambdaExpression;
-            TestHarness.CheckTrue("内层捕获 v 且 cell 化",
+            CaseAssertions.CheckTrue("内层捕获 v 且 cell 化",
                 nestedG != null
                 && nestedG.CapturedSymbols.Count == 1
                 && nestedG.CapturedSymbols.Any(s => s.Name == "v")
@@ -226,7 +226,7 @@ namespace RigiCompiler.Tests
                     || nestCell.Name.StartsWith("..cell..", StringComparison.Ordinal)
                     || nestCell.ConstructedFrom?.Name.StartsWith("..cell..",
                         StringComparison.Ordinal) == true));
-            TestHarness.CheckTrue("嵌套两侧隐藏类均共享 generic(T)",
+            CaseAssertions.CheckTrue("嵌套两侧隐藏类均共享 generic(T)",
                 outerF.Type is TypeSymbol outerLambdaType
                 && (outerLambdaType.ConstructedFrom ?? outerLambdaType).GenericParameters.Count
                     == 1
@@ -271,15 +271,15 @@ namespace RigiCompiler.Tests
             var wrappedLambda = (BoundLambdaExpression)BodyOf(lambdaWrapped.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "fn").Initializer!;
-            TestHarness.CheckTrue("lambda $$call 挂 Method wrapper 应用",
+            CaseAssertions.CheckTrue("lambda $$call 挂 Method wrapper 应用",
                 wrappedLambda.Closure.Call.AppliedWrappers.Count == 1
                 && wrappedLambda.Closure.Call.AppliedWrappers[0].Wrapper.Name == "Timed");
-            TestHarness.CheckTrue("lambda 隐藏类合成 ..init.wrapper（无参）",
+            CaseAssertions.CheckTrue("lambda 隐藏类合成 ..init.wrapper（无参）",
                 wrappedLambda.Closure.InitWrapper != null
                 && wrappedLambda.Closure.InitWrapper.Name == "..init.wrapper"
                 && wrappedLambda.Closure.InitWrapper.Parameters.Count == 0
                 && wrappedLambda.Closure.InitWrapper.Owner == wrappedLambda.Closure.HiddenClass);
-            TestHarness.CheckTrue("..init.wrapper 体汇入函数体列表",
+            CaseAssertions.CheckTrue("..init.wrapper 体汇入函数体列表",
                 lambdaWrapped.Bodies.Any(b => b.Method == wrappedLambda.Closure.InitWrapper));
 
             var lambdaWrappedArg = BindUnitWithStdlib(
@@ -301,13 +301,13 @@ namespace RigiCompiler.Tests
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "fn").Initializer!;
             var taggedApp = taggedLambda.Closure.Call.AppliedWrappers.Single();
-            TestHarness.CheckTrue("wrapper 实参在外层作用域绑定",
+            CaseAssertions.CheckTrue("wrapper 实参在外层作用域绑定",
                 taggedApp.BoundInitArguments is { Count: 1 }
                 && taggedApp.BoundInitArguments[0].Type.Name == "String");
-            TestHarness.CheckTrue("..init.wrapper 有参且参数平铺 w0",
+            CaseAssertions.CheckTrue("..init.wrapper 有参且参数平铺 w0",
                 taggedLambda.Closure.InitWrapper is { Parameters.Count: 1 }
                 && taggedLambda.Closure.InitWrapper.Parameters[0].Name == "w0");
-            TestHarness.CheckTrue("WrapperInitArguments 与 ..init.wrapper 参数一一对应",
+            CaseAssertions.CheckTrue("WrapperInitArguments 与 ..init.wrapper 参数一一对应",
                 taggedLambda.Closure.WrapperInitArguments.Count == 1);
 
             var doubleWrapped = BindUnitWithStdlib(
@@ -329,7 +329,7 @@ namespace RigiCompiler.Tests
             var doubleLambda = (BoundLambdaExpression)BodyOf(doubleWrapped.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "fn").Initializer!;
-            TestHarness.CheckTrue("多 wrapper 按声明序 outer→inner 挂 $$call",
+            CaseAssertions.CheckTrue("多 wrapper 按声明序 outer→inner 挂 $$call",
                 doubleLambda.Closure.Call.AppliedWrappers.Select(a => a.Wrapper.Name)
                     .SequenceEqual(new[] { "WOuter", "WInner" }));
 
@@ -344,7 +344,7 @@ namespace RigiCompiler.Tests
                 "    var fn = func{ @Clamped (x: i32): i32 -> x }\n" +
                 "    return fn(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Value wrapper 不适用于 lambda",
+            CaseAssertions.CheckSemanticError("Value wrapper 不适用于 lambda",
                 valueOnLambda.Unit.Diagnostics, "cannot be applied to a lambda");
 
             var entityOnLambda = BindUnitWithStdlib(
@@ -356,7 +356,7 @@ namespace RigiCompiler.Tests
                 "    var fn = func{ @Logged (x: i32): i32 -> x }\n" +
                 "    return fn(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Entity wrapper 不适用于 lambda",
+            CaseAssertions.CheckSemanticError("Entity wrapper 不适用于 lambda",
                 entityOnLambda.Unit.Diagnostics, "cannot be applied to a lambda");
 
             // 负例：@Timed 写在 var 声明上（修饰变量本身，Value 目标错误）
@@ -369,7 +369,7 @@ namespace RigiCompiler.Tests
                 "    @Timed var a = func{(x: i32): i32 -> x}\n" +
                 "    return a(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("var 声明上的 @Timed 按 Value 目标报错",
+            CaseAssertions.CheckSemanticError("var 声明上的 @Timed 按 Value 目标报错",
                 onVar.Unit.Diagnostics, "Method wrapper 'Timed' can only be applied to methods");
 
             // 负例：@EntryPoint 内建注解（§17.1）不适用于 lambda
@@ -378,7 +378,7 @@ namespace RigiCompiler.Tests
                 "    var fn = func{ @EntryPoint (x: i32): i32 -> x }\n" +
                 "    return fn(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("@EntryPoint 不适用于 lambda",
+            CaseAssertions.CheckSemanticError("@EntryPoint 不适用于 lambda",
                 entryPointOnLambda.Unit.Diagnostics,
                 "@EntryPoint can only be applied to static methods");
 
@@ -393,7 +393,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("i32 捕获 cell 无诊断", i32Cell.Unit);
             var i32Local = BodyOf(i32Cell.Bodies, "f").Locals.First(l => l.Name == "local");
-            TestHarness.CheckTrue("i32 捕获 cell 子类非 shared",
+            CaseAssertions.CheckTrue("i32 捕获 cell 子类非 shared",
                 i32Local.CellStorage is { } i32Storage && !i32Storage.CellClass.IsShared);
 
             var plainClassCell = BindUnitWithStdlib(
@@ -406,7 +406,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("未标 shared 的 class 捕获 cell 无诊断", plainClassCell.Unit);
             var plainBoxLocal = BodyOf(plainClassCell.Bodies, "f").Locals
                 .First(l => l.Name == "box");
-            TestHarness.CheckTrue("未标 shared 的 class 捕获 cell 子类非 shared",
+            CaseAssertions.CheckTrue("未标 shared 的 class 捕获 cell 子类非 shared",
                 plainBoxLocal.CellStorage is { } plainStorage
                 && !plainStorage.CellClass.IsShared);
 
@@ -420,7 +420,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("shared class 捕获 cell 无诊断", sharedClassCell.Unit);
             var sharedBoxLocal = BodyOf(sharedClassCell.Bodies, "f").Locals
                 .First(l => l.Name == "box");
-            TestHarness.CheckTrue("显式 shared class 元素 cell 子类 shared",
+            CaseAssertions.CheckTrue("显式 shared class 元素 cell 子类 shared",
                 sharedBoxLocal.CellStorage is { } sharedBoxStorage
                 && sharedBoxStorage.CellClass.IsShared);
 
@@ -438,7 +438,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("shared rich struct 捕获 cell 无诊断", sharedStructCell.Unit);
             var sharedPointLocal = BodyOf(sharedStructCell.Bodies, "f").Locals
                 .First(l => l.Name == "p");
-            TestHarness.CheckTrue("显式 shared rich struct 元素 cell 子类 shared",
+            CaseAssertions.CheckTrue("显式 shared rich struct 元素 cell 子类 shared",
                 sharedPointLocal.CellStorage is { } sharedPointStorage
                 && sharedPointStorage.CellClass.IsShared);
 
@@ -451,7 +451,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("泛型 T 捕获 cell 无诊断", genericTCell.Unit);
             var genericYLocal = BodyOf(genericTCell.Bodies, "wrap").Locals
                 .First(l => l.Name == "y");
-            TestHarness.CheckTrue("泛型参数 T 元素 cell 子类非 shared",
+            CaseAssertions.CheckTrue("泛型参数 T 元素 cell 子类非 shared",
                 genericYLocal.CellStorage is { } genericStorage
                 && !genericStorage.CellClass.IsShared);
         }
@@ -461,7 +461,7 @@ namespace RigiCompiler.Tests
         // 赋值表达式合法、非 void 调用产值被丢弃
         private static void TestVoidLambdaExpressionBodyStatementSemantics()
         {
-            TestHarness.Section("P3 void lambda 单表达式体（语句语境，§5.1）");
+            CompilerTestTools.Section("P3 void lambda 单表达式体（语句语境，§5.1）");
 
             // void 调用体：落 BoundCallStatement（修复前误报
             // "Method 'sink' has no result (void) and cannot be used as a value"）
@@ -475,7 +475,7 @@ namespace RigiCompiler.Tests
             var voidCallLambda = (BoundLambdaExpression)BodyOf(voidCall.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "act").Initializer!;
-            TestHarness.CheckTrue("void 调用体落 BoundCallStatement",
+            CaseAssertions.CheckTrue("void 调用体落 BoundCallStatement",
                 voidCallLambda.CallBody.Body.Statements.Count == 1
                 && voidCallLambda.CallBody.Body.Statements[0] is BoundCallStatement);
 
@@ -499,7 +499,7 @@ namespace RigiCompiler.Tests
             var dropLambda = (BoundLambdaExpression)BodyOf(dropValue.Bodies, "f")
                 .Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Single(s => s.Local.Name == "g").Initializer!;
-            TestHarness.CheckTrue("非 void 调用体包 BoundExpressionStatement（值被丢弃）",
+            CaseAssertions.CheckTrue("非 void 调用体包 BoundExpressionStatement（值被丢弃）",
                 dropLambda.CallBody.Body.Statements.Count == 1
                 && dropLambda.CallBody.Body.Statements[0] is BoundExpressionStatement);
         }

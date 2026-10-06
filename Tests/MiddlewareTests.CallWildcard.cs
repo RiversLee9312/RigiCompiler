@@ -60,16 +60,16 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "wrapper.callwildcard.bil");
-            TestHarness.CheckTrue("call??? 用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("call??? 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
             var functions = context.Mir!.Functions;
             var allInsts = functions.SelectMany(f => f.Blocks)
                 .SelectMany(b => b.Instructions).ToList();
-            TestHarness.CheckTrue("call??? 烘焙后无残留 MirInnerCall",
+            CaseAssertions.CheckTrue("call??? 烘焙后无残留 MirInnerCall",
                 !allInsts.OfType<MirInnerCall>().Any());
-            TestHarness.CheckTrue("调用点无残留 core::Any$call??? 调用",
+            CaseAssertions.CheckTrue("调用点无残留 core::Any$call??? 调用",
                 !allInsts.OfType<MirCall>().Any(c =>
                     c.Target.Canonical.StartsWith("core::Any$call???",
                         System.StringComparison.Ordinal)));
@@ -84,20 +84,20 @@ namespace RigiCompiler.Tests
             // dispatch fn：两候选（Child 深于 Base）if 链 + miss 抛
             var dispatch = Fn("$mw.call???.dispatch");
             var main = functions.Single(f => f.Symbol.Canonical == "$main()@.i32");
-            TestHarness.CheckTrue("main 调用点改写为 dispatch",
+            CaseAssertions.CheckTrue("main 调用点改写为 dispatch",
                 calls(main).Any(c => c.Target.Canonical == dispatch.Symbol.Canonical));
             var checks = instsOf(dispatch).OfType<MirTypeCheck>()
                 .Where(t => t.Kind == MirTypeCheckKind.Is).ToList();
-            TestHarness.CheckTrue("dispatch 含两候选实际类型判定",
+            CaseAssertions.CheckTrue("dispatch 含两候选实际类型判定",
                 checks.Count == 2);
-            TestHarness.CheckTrue("dispatch 候选按深度深→浅（Child 先 Base 后）",
+            CaseAssertions.CheckTrue("dispatch 候选按深度深→浅（Child 先 Base 后）",
                 checks[0].TargetTypeRef == "Child" && checks[1].TargetTypeRef == "Base");
-            TestHarness.CheckTrue("dispatch hit 取槽调 entry 首环并返回",
+            CaseAssertions.CheckTrue("dispatch hit 取槽调 entry 首环并返回",
                 instsOf(dispatch).OfType<MirGetWrapperAddr>().Any()
                 && calls(dispatch).Any(c =>
                     c.Target.Canonical.Contains("$.mw.call???.entry."))
                 && dispatch.Blocks.Any(b => b.Terminator is MirRet));
-            TestHarness.CheckTrue("dispatch miss 抛 NoSuchMethodException",
+            CaseAssertions.CheckTrue("dispatch miss 抛 NoSuchMethodException",
                 instsOf(dispatch).OfType<MirNewObject>().Any(n =>
                     n.Type.Canonical == "core::NoSuchMethodException")
                 && instsOf(dispatch).OfType<MirThrow>().Any()
@@ -106,27 +106,27 @@ namespace RigiCompiler.Tests
             // entry 环：Child/Base 各一环（单层 wildcard）；返回 .any、
             // 无 .generic 形参；inner → router(T, 1)
             var childEntry = Fn("Child$.mw.call???.entry.0");
-            TestHarness.CheckTrue("entry 环返回擦除 .any", childEntry.ReturnType.IsAny);
-            TestHarness.CheckTrue("entry 环形参剔除 .generic",
+            CaseAssertions.CheckTrue("entry 环返回擦除 .any", childEntry.ReturnType.IsAny);
+            CaseAssertions.CheckTrue("entry 环形参剔除 .generic",
                 !childEntry.Parameters.Any(p => p.Name.StartsWith(".generic.")));
-            TestHarness.CheckTrue("entry 环含 .proxy.* 模板体（symbol 比对）",
+            CaseAssertions.CheckTrue("entry 环含 .proxy.* 模板体（symbol 比对）",
                 instsOf(childEntry).OfType<MirBinaryIntrinsic>().Any(b =>
                     b.Op == BilBinaryOp.CmpEq && b.LeftType.IsString));
-            TestHarness.CheckTrue("Child entry 末环 inner → router(Child, 1)",
+            CaseAssertions.CheckTrue("Child entry 末环 inner → router(Child, 1)",
                 calls(childEntry).Any(c =>
                     c.Target.Canonical.Contains("Child$.mw.router.1")));
             var baseEntry = Fn("Base$.mw.call???.entry.0");
-            TestHarness.CheckTrue("Base entry 末环 inner → router(Base, 1)",
+            CaseAssertions.CheckTrue("Base entry 末环 inner → router(Base, 1)",
                 calls(baseEntry).Any(c =>
                     c.Target.Canonical.Contains("Base$.mw.router.1")));
-            TestHarness.CheckTrue("router 预建覆盖无可烘焙成员宿主（Child 零分支亦建）",
+            CaseAssertions.CheckTrue("router 预建覆盖无可烘焙成员宿主（Child 零分支亦建）",
                 functions.Any(f => f.Symbol.Canonical.Contains("Child$.mw.router.1")));
 
             using var llvmLease4317 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue("LLVM 含 dispatch", ll.Contains(".mw.call???"), ll);
-            TestHarness.CheckTrue("LLVM 含 entry 环", ll.Contains(".mw.call???.entry"), ll);
+            CaseAssertions.CheckTrue("LLVM 含 dispatch", ll.Contains(".mw.call???"), ll);
+            CaseAssertions.CheckTrue("LLVM 含 entry 环", ll.Contains(".mw.call???.entry"), ll);
         }
 
     }

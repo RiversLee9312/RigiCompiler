@@ -82,11 +82,11 @@ namespace RigiCompiler.Tests
                 "    ghost()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("fire-and-forget 后台异常经 quiescence 可见",
+            CaseAssertions.CheckTrue("fire-and-forget 后台异常经 quiescence 可见",
                 ghost.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("RuntimeException"),
                 ghost.Exception?.ToString() ?? "<null>");
-            TestHarness.CheckTrue("fire-and-forget 入口仍返回",
+            CaseAssertions.CheckTrue("fire-and-forget 入口仍返回",
                 ghost.ReturnValue is VmI32 n && n.Value == 0,
                 ghost.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -255,11 +255,11 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("并发 print", result);
-            TestHarness.CheckTrue("行 one 完整出现", result.Stdout.Contains("one\n"),
+            CaseAssertions.CheckTrue("行 one 完整出现", result.Stdout.Contains("one\n"),
                 result.Stdout);
-            TestHarness.CheckTrue("行 two 完整出现", result.Stdout.Contains("two\n"),
+            CaseAssertions.CheckTrue("行 two 完整出现", result.Stdout.Contains("two\n"),
                 result.Stdout);
-            TestHarness.CheckTrue("行 three 完整出现", result.Stdout.Contains("three\n"),
+            CaseAssertions.CheckTrue("行 three 完整出现", result.Stdout.Contains("three\n"),
                 result.Stdout);
         }
 
@@ -279,7 +279,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("await 穿越 try/finally", ok);
-            TestHarness.Check("恢复后 finally", ok.Stdout, "fin\n");
+            CaseAssertions.Check("恢复后 finally", ok.Stdout, "fin\n");
             CheckI32("finally 后返回", ok, 9);
             var boom = Run(
                 "async func boom(): i32 {\n" +
@@ -297,7 +297,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("await 异常穿越 finally", boom);
-            TestHarness.Check("异常路径 finally", boom.Stdout, "fin\n");
+            CaseAssertions.Check("异常路径 finally", boom.Stdout, "fin\n");
             CheckI32("catch 返回", boom, 2);
         }
 

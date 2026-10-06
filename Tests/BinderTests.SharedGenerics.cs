@@ -4,7 +4,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestExplicitSharedGenerics()
         {
-            TestHarness.Section("显式 shared 泛型约束：用户与标准库同规则");
+            CompilerTestTools.Section("显式 shared 泛型约束：用户与标准库同规则");
             const string definitions = """
                 pub class Local { }
                 pub shared class Shared { }
@@ -40,7 +40,7 @@ namespace RigiCompiler.Tests
             })
             {
                 var (unit, _) = BindUnitWithStdlib(definitions + "\n" + body);
-                TestHarness.CheckTrue("拒绝非共享安全填入：" + body,
+                CaseAssertions.CheckTrue("拒绝非共享安全填入：" + body,
                     unit.Diagnostics.HasErrors
                     && unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("shared-safe")),
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
@@ -63,7 +63,7 @@ namespace RigiCompiler.Tests
             })
             {
                 var (unit, _) = BindUnitWithStdlib(handles + "\n" + body);
-                TestHarness.CheckTrue("拒绝 Handle 越界或 Task 擦除：" + body,
+                CaseAssertions.CheckTrue("拒绝 Handle 越界或 Task 擦除：" + body,
                     unit.Diagnostics.HasErrors);
             }
             var (validHandle, _) = BindUnitWithStdlib(handles + """

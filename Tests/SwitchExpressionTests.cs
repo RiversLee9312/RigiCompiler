@@ -23,7 +23,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 值匹配 =====
         public static void TestValueMatch()
         {
-            TestHarness.Section("Testing switch Value Match");
+            CompilerTestTools.Section("Testing switch Value Match");
 
             TestExpr("var r = switch(expr) {\n" +
                      "    (1) -> { \"one\" }\n" +
@@ -33,13 +33,13 @@ namespace RigiCompiler.Tests
                 "Switch(Path(expr, []), [Int(1,I32) -> [Str(\"one\")], Int(2,I32) -> [Str(\"two\")]], " +
                 "default -> [Str(\"other\")])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 模式匹配 =====
         public static void TestPatternMatch()
         {
-            TestHarness.Section("Testing switch Pattern Match");
+            CompilerTestTools.Section("Testing switch Pattern Match");
 
             TestExpr("var r = switch(n) {\n" +
                      "    (_ > 10) -> { \"big\" }\n" +
@@ -51,24 +51,24 @@ namespace RigiCompiler.Tests
                 "Binary(Path(_, []) == Group(Binary(Int(3,I32) + Int(4,I32)))) -> [Str(\"seven\")]], " +
                 "default -> [Str(\"small\")])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 单行书写 =====
         public static void TestSingleLine()
         {
-            TestHarness.Section("Testing switch Single-line");
+            CompilerTestTools.Section("Testing switch Single-line");
 
             TestExpr("var r = switch(x) { (1) -> { 1 } default -> { 0 } }",
                 "Switch(Path(x, []), [Int(1,I32) -> [Int(1,I32)]], default -> [Int(0,I32)])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. 表达式形态：多语句分支体 + named（SYNTAX §7.2）=====
         public static void TestMultiStatementCaseBodies()
         {
-            TestHarness.Section("Testing switch Expression Multi-statement Case Bodies");
+            CompilerTestTools.Section("Testing switch Expression Multi-statement Case Bodies");
 
             // 多语句分支体：return@_ 显式产出分支值（匿名分支体的默认标签是 _）
             TestExpr("var r = switch(x) {\n" +
@@ -97,13 +97,13 @@ namespace RigiCompiler.Tests
                 "Binary(Path(_, []) > Int(10,I32)) -> [Seq([Return@match(Str(\"big\"))])]], " +
                 "default -> [Return@match(Str(\"other\"))])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 语句形态（SYNTAX §7.2：结果值被丢弃，分支体为完整代码块）=====
         public static void TestSwitchStatement()
         {
-            TestHarness.Section("Testing switch Statement Form");
+            CompilerTestTools.Section("Testing switch Statement Form");
 
             // 基本语句形态
             TestBlock("{ switch(x) { (1) -> { handleOne() } default -> { handleOther() } } }",
@@ -126,97 +126,97 @@ namespace RigiCompiler.Tests
                 "default -> [Path(handleOther(), [])]), " +
                 "Path(done(), [])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Testing switch Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Testing switch Error Cases (expect ParserException)");
 
             // 缺 default（两种形态都必须包含 default 分支，SYNTAX §7.2）
-            TestHarness.CheckParseError("var r = switch(x) { (1) -> { 1 } }",
-                () => TestHarness.ParseRoot("var r = switch(x) { (1) -> { 1 } }"),
+            CaseAssertions.CheckParseError("var r = switch(x) { (1) -> { 1 } }",
+                () => CompilerTestTools.ParseRoot("var r = switch(x) { (1) -> { 1 } }"),
                 "switch 必须包含 default 分支");
-            TestHarness.CheckParseError("{ switch(x) { (1) -> { 1 } } }（语句形态缺 default）",
-                () => TestHarness.ParseBlock("{ switch(x) { (1) -> { 1 } } }"),
+            CaseAssertions.CheckParseError("{ switch(x) { (1) -> { 1 } } }（语句形态缺 default）",
+                () => CompilerTestTools.ParseBlock("{ switch(x) { (1) -> { 1 } } }"),
                 "switch 必须包含 default 分支");
             // 分支缺 ->
-            TestHarness.CheckParseError("var r = switch(x) { (1) { 1 } default -> { 0 } }",
-                () => TestHarness.ParseRoot("var r = switch(x) { (1) { 1 } default -> { 0 } }"),
+            CaseAssertions.CheckParseError("var r = switch(x) { (1) { 1 } default -> { 0 } }",
+                () => CompilerTestTools.ParseRoot("var r = switch(x) { (1) { 1 } default -> { 0 } }"),
                 "Expected '->' after switch case pattern");
             // 缺 selector 的 (
-            TestHarness.CheckParseError("var r = switch x { (1) -> { 1 } default -> { 0 } }",
-                () => TestHarness.ParseRoot("var r = switch x { (1) -> { 1 } default -> { 0 } }"),
+            CaseAssertions.CheckParseError("var r = switch x { (1) -> { 1 } default -> { 0 } }",
+                () => CompilerTestTools.ParseRoot("var r = switch x { (1) -> { 1 } default -> { 0 } }"),
                 "Expected '(' after switch");
             // named 后缺标签名
-            TestHarness.CheckParseError("var r = switch(x) named { (1) -> { 1 } default -> { 0 } }",
-                () => TestHarness.ParseRoot("var r = switch(x) named { (1) -> { 1 } default -> { 0 } }"),
+            CaseAssertions.CheckParseError("var r = switch(x) named { (1) -> { 1 } default -> { 0 } }",
+                () => CompilerTestTools.ParseRoot("var r = switch(x) named { (1) -> { 1 } default -> { 0 } }"),
                 "Expected label name after 'named'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
         public static void TestStructuralAssertions()
         {
-            TestHarness.Section("Structural Assertions");
+            CompilerTestTools.Section("Structural Assertions");
 
             // --- 表达式形态 ---
-            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var r = switch(x) { (1) -> { 1 } default -> { 0 } }");
-            TestHarness.CheckTrue("Initializer Root 存在", decl.Initializer != null);
-            TestHarness.CheckTrue("Initializer 已填充", decl.Initializer!.IsAttached);
-            TestHarness.CheckTrue("内容表达式是 SwitchExpression",
+            CaseAssertions.CheckTrue("Initializer Root 存在", decl.Initializer != null);
+            CaseAssertions.CheckTrue("Initializer 已填充", decl.Initializer!.IsAttached);
+            CaseAssertions.CheckTrue("内容表达式是 SwitchExpression",
                 decl.Initializer.Expression is SwitchExpressionASTNode);
 
             var sw = (SwitchExpressionASTNode)decl.Initializer.Expression;
-            TestHarness.CheckTrue("Selector Root 已 Attach", sw.Selector.IsAttached);
-            TestHarness.CheckTrue("DefaultBody 存在且恰好一条语句（单表达式分支）",
+            CaseAssertions.CheckTrue("Selector Root 已 Attach", sw.Selector.IsAttached);
+            CaseAssertions.CheckTrue("DefaultBody 存在且恰好一条语句（单表达式分支）",
                 sw.DefaultBody != null && sw.DefaultBody.Statements.Count == 1 &&
                 sw.DefaultBody.Statements[0] is ExpressionStatementASTNode);
-            TestHarness.CheckTrue("分支数为 1", sw.Cases.Count == 1);
-            TestHarness.CheckTrue("分支 Pattern Root 已 Attach", sw.Cases[0].Pattern.IsAttached);
-            TestHarness.CheckTrue("分支 Body 是代码块且恰好一条语句（单表达式分支）",
+            CaseAssertions.CheckTrue("分支数为 1", sw.Cases.Count == 1);
+            CaseAssertions.CheckTrue("分支 Pattern Root 已 Attach", sw.Cases[0].Pattern.IsAttached);
+            CaseAssertions.CheckTrue("分支 Body 是代码块且恰好一条语句（单表达式分支）",
                 sw.Cases[0].Body.Statements.Count == 1 &&
                 sw.Cases[0].Body.Statements[0] is ExpressionStatementASTNode);
-            TestHarness.CheckTrue("无 named 时 Label 为 null", sw.Label == null);
-            TestHarness.CheckTrue("Selector Root 的 Parent 是 switch 节点",
+            CaseAssertions.CheckTrue("无 named 时 Label 为 null", sw.Label == null);
+            CaseAssertions.CheckTrue("Selector Root 的 Parent 是 switch 节点",
                 ReferenceEquals(sw.Selector.Parent, sw));
-            TestHarness.CheckTrue("分支的 Parent 是 switch 节点",
+            CaseAssertions.CheckTrue("分支的 Parent 是 switch 节点",
                 ReferenceEquals(sw.Cases[0].Parent, sw));
-            TestHarness.CheckTrue("DefaultBody 的 Parent 是 switch 节点",
+            CaseAssertions.CheckTrue("DefaultBody 的 Parent 是 switch 节点",
                 ReferenceEquals(sw.DefaultBody!.Parent, sw));
-            TestHarness.CheckTrue("switch 节点挂在 Initializer Root 下",
+            CaseAssertions.CheckTrue("switch 节点挂在 Initializer Root 下",
                 ReferenceEquals(sw.Parent, decl.Initializer));
 
             // --- 语句形态 ---
-            var block = TestHarness.ParseBlock(
+            var block = CompilerTestTools.ParseBlock(
                 "{ switch(x) { (1) -> { a()\n b() } default -> { c() } } }");
-            TestHarness.CheckTrue("块内首条语句是 SwitchStatement",
+            CaseAssertions.CheckTrue("块内首条语句是 SwitchStatement",
                 block.Statements.Count == 1 && block.Statements[0] is SwitchStatementASTNode);
             var stmt = (SwitchStatementASTNode)block.Statements[0];
-            TestHarness.CheckTrue("语句 Selector Root 已 Attach", stmt.Selector.IsAttached);
-            TestHarness.CheckTrue("语句 DefaultBody 存在", stmt.DefaultBody != null);
-            TestHarness.CheckTrue("语句分支数为 1", stmt.Cases.Count == 1);
-            TestHarness.CheckTrue("语句 Selector Root 的 Parent 是 switch 语句节点",
+            CaseAssertions.CheckTrue("语句 Selector Root 已 Attach", stmt.Selector.IsAttached);
+            CaseAssertions.CheckTrue("语句 DefaultBody 存在", stmt.DefaultBody != null);
+            CaseAssertions.CheckTrue("语句分支数为 1", stmt.Cases.Count == 1);
+            CaseAssertions.CheckTrue("语句 Selector Root 的 Parent 是 switch 语句节点",
                 ReferenceEquals(stmt.Selector.Parent, stmt));
-            TestHarness.CheckTrue("语句分支的 Parent 是 switch 语句节点",
+            CaseAssertions.CheckTrue("语句分支的 Parent 是 switch 语句节点",
                 ReferenceEquals(stmt.Cases[0].Parent, stmt));
-            TestHarness.CheckTrue("语句 DefaultBody 的 Parent 是 switch 语句节点",
+            CaseAssertions.CheckTrue("语句 DefaultBody 的 Parent 是 switch 语句节点",
                 ReferenceEquals(stmt.DefaultBody!.Parent, stmt));
-            TestHarness.CheckTrue("switch 语句节点挂在代码块下",
+            CaseAssertions.CheckTrue("switch 语句节点挂在代码块下",
                 ReferenceEquals(stmt.Parent, block));
-            TestHarness.CheckTrue("语句分支体是完整代码块（可写多条语句）",
+            CaseAssertions.CheckTrue("语句分支体是完整代码块（可写多条语句）",
                 stmt.Cases[0].Body.Statements.Count == 2);
 
             // named 标签的结构事实（表达式形态）
-            var namedDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var namedDecl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var r = switch(x) named match { (1) -> { return@match 1 } default -> { return@match 0 } }");
             var namedSw = (SwitchExpressionASTNode)namedDecl.Initializer!.Expression;
-            TestHarness.CheckTrue("named 标签写入 Label", namedSw.Label == "match");
+            CaseAssertions.CheckTrue("named 标签写入 Label", namedSw.Label == "match");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -226,12 +226,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -240,12 +240,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(code);
-                TestHarness.Check(Label(code), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -253,9 +253,9 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SwitchExpression",
+
+        internal static TestSuiteData Spec { get; } = new("SwitchExpression",
         [
             (nameof(TestValueMatch), TestValueMatch),
             (nameof(TestPatternMatch), TestPatternMatch),

@@ -6,9 +6,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class DiagnosticsTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Diagnostics",
+
+        internal static TestSuiteData Spec { get; } = new("Diagnostics",
         [
             (nameof(TestBagAccumulation), TestBagAccumulation),
             (nameof(TestMissingError), TestMissingError),
@@ -18,19 +18,19 @@ namespace RigiCompiler.Tests
         {
             // 空袋：无错、无内容
             var bag = new DiagnosticBag();
-            TestHarness.CheckTrue("空袋 HasErrors == false", !bag.HasErrors);
-            TestHarness.CheckTrue("空袋 Count == 0", bag.Diagnostics.Count == 0);
+            CaseAssertions.CheckTrue("空袋 HasErrors == false", !bag.HasErrors);
+            CaseAssertions.CheckTrue("空袋 Count == 0", bag.Diagnostics.Count == 0);
 
             // Warning 不触发 Error 门槛；字段逐一携带
             bag.Warning(DiagnosticPhase.P1, null, "警告甲");
-            TestHarness.CheckTrue("Warning 后 HasErrors 仍为 false", !bag.HasErrors);
-            TestHarness.CheckTrue("Warning 后 Count == 1", bag.Diagnostics.Count == 1);
-            TestHarness.CheckTrue("Warning 的 Severity 携带",
+            CaseAssertions.CheckTrue("Warning 后 HasErrors 仍为 false", !bag.HasErrors);
+            CaseAssertions.CheckTrue("Warning 后 Count == 1", bag.Diagnostics.Count == 1);
+            CaseAssertions.CheckTrue("Warning 的 Severity 携带",
                 bag.Diagnostics[0].Severity == DiagnosticSeverity.Warning);
-            TestHarness.CheckTrue("Warning 的 Phase 携带",
+            CaseAssertions.CheckTrue("Warning 的 Phase 携带",
                 bag.Diagnostics[0].Phase == DiagnosticPhase.P1);
-            TestHarness.CheckTrue("Warning 的 Span 可空", bag.Diagnostics[0].Span == null);
-            TestHarness.CheckTrue("Warning 的 Message 携带",
+            CaseAssertions.CheckTrue("Warning 的 Span 可空", bag.Diagnostics[0].Span == null);
+            CaseAssertions.CheckTrue("Warning 的 Message 携带",
                 bag.Diagnostics[0].Message == "警告甲");
 
             // Error 触发门槛；Span 携带（构造一个真实 CharRange）
@@ -41,22 +41,22 @@ namespace RigiCompiler.Tests
                 End = new CharPosition { line = 3, column = 9, offset = 44 },
             };
             bag.Error(DiagnosticPhase.P2, span, "错误乙");
-            TestHarness.CheckTrue("Error 后 HasErrors == true", bag.HasErrors);
-            TestHarness.CheckTrue("Error 的 Span 携带",
+            CaseAssertions.CheckTrue("Error 后 HasErrors == true", bag.HasErrors);
+            CaseAssertions.CheckTrue("Error 的 Span 携带",
                 bag.Diagnostics[1].Span is { } s
                 && s.sourceName == "a.rg" && s.Start.line == 3 && s.Start.column == 5);
-            TestHarness.CheckTrue("Error 的 Phase 携带",
+            CaseAssertions.CheckTrue("Error 的 Phase 携带",
                 bag.Diagnostics[1].Phase == DiagnosticPhase.P2);
 
             // 多错累积不互断：顺序保持、全部保留
             bag.Error(DiagnosticPhase.P3, null, "错误丙");
             bag.Warning(DiagnosticPhase.P4, null, "警告丁");
-            TestHarness.CheckTrue("累积 4 条", bag.Diagnostics.Count == 4);
-            TestHarness.CheckTrue("累积顺序保持",
+            CaseAssertions.CheckTrue("累积 4 条", bag.Diagnostics.Count == 4);
+            CaseAssertions.CheckTrue("累积顺序保持",
                 bag.Diagnostics[2].Message == "错误丙" && bag.Diagnostics[3].Message == "警告丁");
 
             // CheckSemanticError 断言本身：命中 Error 子串
-            TestHarness.CheckSemanticError("CheckSemanticError 命中", bag, "错误丙");
+            CaseAssertions.CheckSemanticError("CheckSemanticError 命中", bag, "错误丙");
         }
 
         private static void TestMissingError()
@@ -72,7 +72,7 @@ namespace RigiCompiler.Tests
                     found = true;
                 }
             }
-            TestHarness.CheckTrue("空袋查不到诊断", !found);
+            CaseAssertions.CheckTrue("空袋查不到诊断", !found);
 
         }
     }

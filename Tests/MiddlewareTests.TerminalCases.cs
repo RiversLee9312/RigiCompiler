@@ -43,31 +43,31 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
 
-            TestHarness.CheckTrue("MirTakePending → rigi_exc_take",
+            CaseAssertions.CheckTrue("MirTakePending → rigi_exc_take",
                 ll.Contains("call ptr @rigi_exc_take()"), ll);
-            TestHarness.CheckTrue("MirThrow → rigi_exc_raise",
+            CaseAssertions.CheckTrue("MirThrow → rigi_exc_raise",
                 ll.Contains("call void @rigi_exc_raise(ptr"), ll);
-            TestHarness.CheckTrue("MirRetThrow → ret undef（值返回）",
+            CaseAssertions.CheckTrue("MirRetThrow → ret undef（值返回）",
                 ll.Contains("ret i32 undef"), ll);
-            TestHarness.CheckTrue("调用后 pending 检查",
+            CaseAssertions.CheckTrue("调用后 pending 检查",
                 ll.Contains("call ptr @rigi_exc_pending()"), ll);
-            TestHarness.CheckTrue("异常边跳传播垫",
+            CaseAssertions.CheckTrue("异常边跳传播垫",
                 ll.Contains("label %mw.propagate"), ll);
-            TestHarness.CheckTrue("正常边落内联继续块",
+            CaseAssertions.CheckTrue("正常边落内联继续块",
                 ll.Contains("exc.cont"), ll);
-            TestHarness.CheckTrue("派发垫胖引用落槽",
+            CaseAssertions.CheckTrue("派发垫胖引用落槽",
                 ll.Contains("store { i64, i64 }"), ll);
-            TestHarness.CheckTrue("reporter 块已发射",
+            CaseAssertions.CheckTrue("reporter 块已发射",
                 ll.Contains("entry.uncaught:"), ll);
-            TestHarness.CheckTrue("reporter 取实际类型全名",
+            CaseAssertions.CheckTrue("reporter 取实际类型全名",
                 ll.Contains("@rigi_type_name_of("), ll);
-            TestHarness.CheckTrue("reporter 虚派发 getMessage",
+            CaseAssertions.CheckTrue("reporter 虚派发 getMessage",
                 ll.Contains("call ptr @rigi_vtable_entry(ptr"), ll);
-            TestHarness.CheckTrue("reporter 打印 stderr",
+            CaseAssertions.CheckTrue("reporter 打印 stderr",
                 ll.Contains("call void @rigi_print_err(ptr"), ll);
-            TestHarness.CheckTrue("reporter 释放异常胖引用",
+            CaseAssertions.CheckTrue("reporter 释放异常胖引用",
                 ll.Contains("call void @rigi_ref_release("), ll);
-            TestHarness.CheckTrue("reporter 出口 rigi_exc_halt",
+            CaseAssertions.CheckTrue("reporter 出口 rigi_exc_halt",
                 ll.Contains("call void @rigi_exc_halt()"), ll);
             // MW11c 棒5a：rigi_entry 固定序列锚点（对齐 VM BilVm.Run：
             // singletons → globals.init → main →（协程运行时段收编时）
@@ -77,18 +77,18 @@ namespace RigiCompiler.Tests
             var stubStart = ll.IndexOf("define i32 @rigi_entry(i32 %0, ptr %1)", StringComparison.Ordinal);
             var stubLl = stubStart >= 0 ? ll.Substring(stubStart) : "";
             var firstCall = stubLl.IndexOf("call ", StringComparison.Ordinal);
-            TestHarness.CheckTrue("rigi_entry 固定序列：singleton 急切初始化最先（stub 首调用）",
+            CaseAssertions.CheckTrue("rigi_entry 固定序列：singleton 急切初始化最先（stub 首调用）",
                 firstCall >= 0 && stubLl.IndexOf("mw.singleton.get",
                     StringComparison.Ordinal) >= 0
                 && stubLl.IndexOf("mw.singleton.get", StringComparison.Ordinal)
                     < stubLl.IndexOf("entry.mainexc:", StringComparison.Ordinal), ll);
-            TestHarness.CheckTrue("rigi_entry 固定序列：workerLoop drain + 主 Worker 收尾",
+            CaseAssertions.CheckTrue("rigi_entry 固定序列：workerLoop drain + 主 Worker 收尾",
                 ll.Contains("$workerLoop(")
                 && ll.Contains("call void @rigi_main_worker_shutdown()"), ll);
-            TestHarness.CheckTrue("rigi_entry 固定序列：main 失败 take 进合成槽",
+            CaseAssertions.CheckTrue("rigi_entry 固定序列：main 失败 take 进合成槽",
                 ll.Contains("entry.mainexc:") && ll.Contains("entry.take:")
                 && ll.Contains("entry.drain:"), ll);
-            TestHarness.CheckTrue("rigi_entry 固定序列：未观察失败查询（native 注册表）",
+            CaseAssertions.CheckTrue("rigi_entry 固定序列：未观察失败查询（native 注册表）",
                 ll.Contains("call i32 @rigi_failure_take_unobserved(ptr")
                 && ll.Contains("entry.unobserved:"), ll);
         }
@@ -99,23 +99,23 @@ namespace RigiCompiler.Tests
             foreach (var kind in new[] { TypeLayout.RefMapKindFatRef, TypeLayout.RefMapKindString })
             {
                 var maximum = TypeLayout.EncodeRefMap(kind, 0x3fff);
-                TestHarness.CheckTrue("refMap 最大 hop 保留 kind 与全部低 14 位",
+                CaseAssertions.CheckTrue("refMap 最大 hop 保留 kind 与全部低 14 位",
                     TypeLayout.RefMapKindOf(maximum) == kind && TypeLayout.RefMapHopOf(maximum) == 0x3fff);
                 var accepted = RefMapBuilder.BuildRefMap(Array.Empty<FieldPlan>(),
                     new() { new(0x3fff * 16, kind, null) }, 0);
-                TestHarness.CheckTrue("refMap 按 16 字节单位接受边界布局", accepted.Single() == maximum);
+                CaseAssertions.CheckTrue("refMap 按 16 字节单位接受边界布局", accepted.Single() == maximum);
                 foreach (var invalidHop in new[] { -1, 0x4000, 0xffff })
                 {
                     var rejected = false;
                     try { TypeLayout.EncodeRefMap(kind, invalidHop); }
                     catch (CompilerInternalException) { rejected = true; }
-                    TestHarness.CheckTrue("refMap 拒绝越界 hop " + invalidHop, rejected);
+                    CaseAssertions.CheckTrue("refMap 拒绝越界 hop " + invalidHop, rejected);
                 }
                 var overflowRejected = false;
                 try { RefMapBuilder.BuildRefMap(Array.Empty<FieldPlan>(),
                     new() { new(0x4000 * 16, kind, null) }, 0); }
                 catch (CompilerInternalException) { overflowRejected = true; }
-                TestHarness.CheckTrue("refMap 构建拒绝越界布局而不污染 kind", overflowRejected);
+                CaseAssertions.CheckTrue("refMap 构建拒绝越界布局而不污染 kind", overflowRejected);
             }
             var layout = BuildLayout(
                 "pub class Node {\n" +
@@ -143,7 +143,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
 
             var note = layout.Find("Note");
-            TestHarness.CheckTrue("enum String payload 产 kind1",
+            CaseAssertions.CheckTrue("enum String payload 产 kind1",
                 note != null
                 && note.RefMap.Length == 1
                 && FieldOf(note, "#text@")!.Offset == 16
@@ -152,7 +152,7 @@ namespace RigiCompiler.Tests
 
             var inner = layout.Find("Inner");
             var outer = layout.Find("Outer");
-            TestHarness.CheckTrue("嵌套 rich 外层 refMap 序（kind1,kind0,kind1）",
+            CaseAssertions.CheckTrue("嵌套 rich 外层 refMap 序（kind1,kind0,kind1）",
                 inner != null && outer != null
                 && inner.RefMap.Length == 2
                 && inner.RefMap[0] == TypeLayout.EncodeRefMap(TypeLayout.RefMapKindString, 0)
@@ -164,7 +164,7 @@ namespace RigiCompiler.Tests
                 outer == null ? "missing" : string.Join(",", outer.RefMap));
 
             var tagged = layout.Find("Tagged");
-            TestHarness.CheckTrue("非 rich 含 String 也产 refMap kind1",
+            CaseAssertions.CheckTrue("非 rich 含 String 也产 refMap kind1",
                 tagged != null
                 && (tagged.TypeFlags & TypeLayoutPlan.FlagRich) == 0
                 && tagged.RefMap.Length == 1
@@ -196,25 +196,25 @@ namespace RigiCompiler.Tests
                 "dynnew.bil");
             var allInsts = ctx.Mir!.Functions.SelectMany(f => f.Blocks)
                 .SelectMany(b => b.Instructions).ToList();
-            TestHarness.CheckTrue("MIR 含 new.indirect",
+            CaseAssertions.CheckTrue("MIR 含 new.indirect",
                 allInsts.OfType<MirNewIndirect>().Any());
 
             using var llvmLease7599 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue("槽 0 为 init 分发器",
+            CaseAssertions.CheckTrue("槽 0 为 init 分发器",
                 ll.Contains("@typesheet.vtable.Point = internal constant")
                 && ll.Contains("ptr @mw.init.dispatch.Point"), ll);
-            TestHarness.CheckTrue("分发器 if 链比 argc",
+            CaseAssertions.CheckTrue("分发器 if 链比 argc",
                 ll.Contains("define internal ptr @mw.init.dispatch.Point(ptr")
                 && ll.Contains("icmp eq i32"), ll);
-            TestHarness.CheckTrue("ctor thunk 序列 alloc",
+            CaseAssertions.CheckTrue("ctor thunk 序列 alloc",
                 ll.Contains("define internal { i64, i64 } @\"mw.init.ctor.Point#")
                 && ll.Contains("call ptr @rigi_alloc(ptr @typesheet.Point)"), ll);
-            TestHarness.CheckTrue("无匹配 init 抛 NoSuchMethodException",
+            CaseAssertions.CheckTrue("无匹配 init 抛 NoSuchMethodException",
                 ll.Contains("call void @rigi_exc_raise(ptr")
                 && ll.Contains("NoSuchMethodException$init(typeName:"), ll);
-            TestHarness.CheckTrue("调用点读 vTable 字段",
+            CaseAssertions.CheckTrue("调用点读 vTable 字段",
                 ll.Contains("getelementptr") && ll.Contains("dynnew"), ll);
 
             var pairCtx = PipelineFromSource(
@@ -225,7 +225,7 @@ namespace RigiCompiler.Tests
                 "    return p.value\n" +
                 "}\n",
                 "dynnew-pair.bil");
-            TestHarness.CheckTrue("Pair typeOf 值 MIR 含 new.indirect",
+            CaseAssertions.CheckTrue("Pair typeOf 值 MIR 含 new.indirect",
                 pairCtx.Mir!.Functions.SelectMany(f => f.Blocks)
                     .SelectMany(b => b.Instructions).OfType<MirNewIndirect>().Any());
 
@@ -238,7 +238,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n",
                 "dynnew-exn.bil");
-            TestHarness.CheckTrue("RuntimeException typeOf 值 MIR 含 new.indirect",
+            CaseAssertions.CheckTrue("RuntimeException typeOf 值 MIR 含 new.indirect",
                 exnCtx.Mir!.Functions.SelectMany(f => f.Blocks)
                     .SelectMany(b => b.Instructions).OfType<MirNewIndirect>().Any());
 
@@ -256,10 +256,10 @@ namespace RigiCompiler.Tests
             using var llvmLease7652 = LlvmHost.Enter();
             using var structMod = ModuleBuilder.Build(structCtx, structCtx.Mir!);
             var structLl = structMod.PrintToString();
-            TestHarness.CheckTrue("struct 槽 0 为 init 分发器",
+            CaseAssertions.CheckTrue("struct 槽 0 为 init 分发器",
                 structLl.Contains("@typesheet.vtable.Vec = internal constant")
                 && structLl.Contains("ptr @mw.init.dispatch.Vec"), structLl);
-            TestHarness.CheckTrue("struct ctor thunk 为 sret void",
+            CaseAssertions.CheckTrue("struct ctor thunk 为 sret void",
                 structLl.Contains("define internal void @\"mw.init.ctor.Vec#")
                 && structLl.Contains("call void @llvm.memset.p0.i64"), structLl);
         }

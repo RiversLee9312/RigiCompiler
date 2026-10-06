@@ -2,7 +2,7 @@ using System;
 
 namespace RigiCompiler.Tests
 {
-    // throw 语句解析测试：代码块独立驱动（TestHarness.ParseBlock），
+    // throw 语句解析测试：代码块独立驱动（CompilerTestTools.ParseBlock），
     // 断言 AstDescribe 精确描述串。
     // 覆盖：简单 throw / throw 表达式（new、调用）/ 配合 try-catch 使用 /
     // throw 在不同位置（if 分支、循环）/ 错误用例。
@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 简单 throw =====
         public static void TestSimpleThrow()
         {
-            TestHarness.Section("Testing Simple Throw");
+            CompilerTestTools.Section("Testing Simple Throw");
 
             TestBlock("{ throw error }",
                 "[Throw(Path(error, []))]");
@@ -19,13 +19,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ throw e }",
                 "[Throw(Path(e, []))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. throw 表达式 =====
         public static void TestThrowExpression()
         {
-            TestHarness.Section("Testing Throw with Expression");
+            CompilerTestTools.Section("Testing Throw with Expression");
 
             TestBlock("{ throw new IOException() }",
                 "[Throw(New(IOException, []))]");
@@ -36,13 +36,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ throw getError() }",
                 "[Throw(Path(getError(), []))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 配合 try-catch 使用 =====
         public static void TestThrowInTryCatch()
         {
-            TestHarness.Section("Testing Throw in Try-Catch");
+            CompilerTestTools.Section("Testing Throw in Try-Catch");
 
             TestBlock("{\n" +
                       "    try {\n" +
@@ -62,13 +62,13 @@ namespace RigiCompiler.Tests
                       "}",
                 "[Try([Path(validate(Path(data, [])), [])], [Catch(e: ValidationError, [Throw(New(ProcessingError, [Path(e, [])]))])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. throw 在不同位置 =====
         public static void TestThrowInDifferentContexts()
         {
-            TestHarness.Section("Testing Throw in Different Contexts");
+            CompilerTestTools.Section("Testing Throw in Different Contexts");
 
             // if 分支中
             TestBlock("{\n" +
@@ -88,13 +88,13 @@ namespace RigiCompiler.Tests
                       "}",
                 "[For(item, Path(items, []), [IfStmt(Path(invalid(Path(item, [])), []), [Throw(New(InvalidItemError, [Path(item, [])]))], <none>)])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 错误用例 =====
         public static void TestInvalidCases()
         {
-            TestHarness.Section("Testing Invalid Cases");
+            CompilerTestTools.Section("Testing Invalid Cases");
 
             // throw 后缺少表达式：} 触发 ExpressionParserLayer 报错
             TestInvalidBlock("{ throw }",
@@ -105,7 +105,7 @@ namespace RigiCompiler.Tests
             TestInvalidBlock("{\n    throw\n    foo()\n}",
                 "Expected exception expression after 'throw'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助 =====
@@ -115,24 +115,23 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(source);
-                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(source);
+                CaseAssertions.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         private static void TestInvalidBlock(string source, string expectedError)
         {
-            TestHarness.CheckParseError(source.Replace("\n", "\\n"),
-                () => TestHarness.ParseBlock(source), expectedError);
+            CaseAssertions.CheckParseError(source.Replace("\n", "\\n"),
+                () => CompilerTestTools.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Throw",
+        internal static TestSuiteData Spec { get; } = new("Throw",
         [
             (nameof(TestSimpleThrow), TestSimpleThrow),
             (nameof(TestThrowExpression), TestThrowExpression),

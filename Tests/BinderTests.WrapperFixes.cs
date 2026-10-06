@@ -14,29 +14,11 @@ namespace RigiCompiler.Tests
                     nameof(TestWrapperFieldInitializers), nameof(TestWrapperDefaultConstructionDa)];
 
         // WRAP-001：wrapper 自身初值必须走真实初始化器，DA 与普通实体一致。
-        public static int RunWithArgs(System.Collections.Generic.IReadOnlyList<string> args)
-        {
-            if (args.Count == 0) return RunAll();
-            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("Binder"), args);
-            if (args.Count != 1 || !(string.Equals(args[0], "WRAP-001", System.StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(args[0], "WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)))
-            {
-                System.Console.WriteLine("支持的定向测试参数：WRAP-001、WRAP-001-review");
-                return 2;
-            }
-            TestHarness.Reset();
-            TestGenericParameterFieldInitializers();
-            TestForwardDefaultConstructionDa();
-            if (args[0].Equals("WRAP-001-review", System.StringComparison.OrdinalIgnoreCase))
-                return TestHarness.Summary("Binder WRAP-001 review");
-            TestWrapperFieldInitializers();
-            TestWrapperDefaultConstructionDa();
-            return TestHarness.Summary("Binder WRAP-001");
-        }
+
 
         private static void TestForwardDefaultConstructionDa()
         {
-            TestHarness.Section("P3 前向默认构造 DA（WRAP-001 review）");
+            CompilerTestTools.Section("P3 前向默认构造 DA（WRAP-001 review）");
             var contexts = new[]
             {
                 "@WrapperTarget(.Entity)\nrich wrapper W { pub var payload: Payload = new Payload() }\n@W\nclass Host { }\n",
@@ -52,10 +34,10 @@ namespace RigiCompiler.Tests
                 var (ok, _) = BindUnit(context + "shared class Payload { pub var n: i64 = 7L }\n");
                 CheckNoErrors("后声明类型真实初值满足默认构造：" + context.Split('\n')[0], ok);
                 var (missing, _) = BindUnit(context + "shared class Payload { pub var n: i64 }\n");
-                TestHarness.CheckSemanticError("后声明类型无初值仍拒绝", missing.Diagnostics,
+                CaseAssertions.CheckSemanticError("后声明类型无初值仍拒绝", missing.Diagnostics,
                     "has no constructor that assigns non-nullable field 'n'");
                 var (bad, _) = BindUnit(context + "shared class Payload { pub var n: i64 = \"bad\" }\n");
-                TestHarness.CheckSemanticError("后声明类型错误初值仍拒绝", bad.Diagnostics,
+                CaseAssertions.CheckSemanticError("后声明类型错误初值仍拒绝", bad.Diagnostics,
                     "initializer must be of type");
             }
             var (derived, bodies) = BindUnit(
@@ -63,7 +45,7 @@ namespace RigiCompiler.Tests
                 "class Derived : Base { }\n" +
                 "open class Base { pub var n: i64\n pub init() { n = 7L } }\n");
             CheckNoErrors("前向 Derived 默认构造由 super 担保基类字段", derived);
-            TestHarness.CheckTrue("Derived 默认构造真实委托基类 init",
+            CaseAssertions.CheckTrue("Derived 默认构造真实委托基类 init",
                 bodies.Any(b => b.Method.Owner?.Name == "Derived" && b.Method.Kind == MethodKind.Init
                     && b.Body.Statements.Single() is BoundExpressionStatement
                         { Expression: BoundSuperCallExpression }));
@@ -74,24 +56,24 @@ namespace RigiCompiler.Tests
             var (boundBad, _) = BindUnit(
                 "func make\\<T extends Payload>(value: Payload = T()) { }\n" +
                 "open class Payload { pub var n: i64 }\n");
-            TestHarness.CheckSemanticError("泛型界 T() 缺初值仍拒绝", boundBad.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型界 T() 缺初值仍拒绝", boundBad.Diagnostics,
                 "has no init assigning non-nullable field 'n'");
             var tokenOnly = BindUnitWithStdlib(
                 "import core.serialization.*\n" +
                 "class Early { pub var payload: Payload = new Payload() }\n" +
                 "@Serializable\nclass Payload { pub var n: i64 }\n");
-            TestHarness.CheckSemanticError("token-only init 不担保普通零参构造", tokenOnly.Unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("token-only init 不担保普通零参构造", tokenOnly.Unit.Diagnostics,
                 "has no constructor that assigns non-nullable field 'n'");
             var (enumOk, _) = BindUnit("enum struct E { pub var n: i64 = 7L }[One]\n");
             CheckNoErrors("enum 默认 case 初值检查延后到真实方法合成", enumOk);
             var (enumBad, _) = BindUnit("enum struct E { pub var n: i64 }[One]\n");
-            TestHarness.CheckSemanticError("enum 默认 case 缺初值仍拒绝", enumBad.Diagnostics,
+            CaseAssertions.CheckSemanticError("enum 默认 case 缺初值仍拒绝", enumBad.Diagnostics,
                 "cannot assign non-nullable field 'n'");
         }
 
         private static void TestGenericParameterFieldInitializers()
         {
-            TestHarness.Section("P3 泛型参数字段初值（WRAP-001 review）");
+            CompilerTestTools.Section("P3 泛型参数字段初值（WRAP-001 review）");
             foreach (var init in new[] { "", "pub init(value: TTarget) { reads = value }" })
             {
                 var (unit, bodies) = BindUnit(
@@ -100,27 +82,27 @@ namespace RigiCompiler.Tests
                     "pub var reads: TTarget = seed() as TTarget\n" + init + "\n}\n" +
                     "@W\\<i64>" + (init.Length == 0 ? "" : "(9L)") + "\nclass Host { }\n");
                 CheckNoErrors("泛型参数字段初值合法：" + init, unit);
-                TestHarness.CheckTrue("泛型字段真实初值保留函数调用与类型转换",
+                CaseAssertions.CheckTrue("泛型字段真实初值保留函数调用与类型转换",
                     bodies.Any(b => b.Method.Name == "..init.field.reads"
                         && b.Body.Statements.Single() is BoundAssignmentStatement
                             { Value: BoundCastExpression { Source: BoundCallExpression } }));
             }
             var (bad, _) = BindUnit(
                 "@WrapperTarget(.Entity)\nrich wrapper W\\<TTarget> { pub var reads: TTarget = 7L }\n");
-            TestHarness.CheckSemanticError("不兼容泛型初值仍拒绝", bad.Diagnostics,
+            CaseAssertions.CheckSemanticError("不兼容泛型初值仍拒绝", bad.Diagnostics,
                 "initializer must be of type");
             var (staticBad, _) = BindUnit(
                 "class C\\<T> { pub static var value: T = 7L as T }\n");
-            TestHarness.CheckSemanticError("静态字段仍禁宿主泛型参数", staticBad.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态字段仍禁宿主泛型参数", staticBad.Diagnostics,
                 "static");
             var (thisBad, _) = BindUnit(
                 "class C { pub var n: i64 = 7L\n pub var copy: i64 = this.n }\n");
-            TestHarness.CheckSemanticError("实例字段初值仍禁 this", thisBad.Diagnostics, "this");
+            CaseAssertions.CheckSemanticError("实例字段初值仍禁 this", thisBad.Diagnostics, "this");
         }
 
         private static void TestWrapperFieldInitializers()
         {
-            TestHarness.Section("P3 Wrapper Field Initializers (WRAP-001)");
+            CompilerTestTools.Section("P3 Wrapper Field Initializers (WRAP-001)");
             foreach (var init in new[] { "", "pub init()", "pub init() { }", "pub init(v: i64) { reads = v }" })
             {
                 var (unit, bodies) = BindUnit(
@@ -128,17 +110,17 @@ namespace RigiCompiler.Tests
                     "wrapper W { pub var reads: i64 = 7L\n" + init + "\n}\n");
                 CheckNoErrors("wrapper 初值与 init 形态：" + init, unit);
                 var wrapper = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "W");
-                TestHarness.CheckTrue("wrapper 字段初始化方法真实写字段",
+                CaseAssertions.CheckTrue("wrapper 字段初始化方法真实写字段",
                     bodies.Any(b => ReferenceEquals(b.Method.Owner, wrapper)
                         && b.Method.Name == "..init.field.reads"
                         && b.Body.Statements.Single() is BoundAssignmentStatement
                             { Target: BoundFieldAccessExpression { Field.Name: "reads" } }));
-                TestHarness.CheckTrue("wrapper 安装阶段调用字段初始化方法",
+                CaseAssertions.CheckTrue("wrapper 安装阶段调用字段初始化方法",
                     bodies.Any(b => ReferenceEquals(b.Method.Owner, wrapper)
                         && b.Method.Name == "..init.wrapper"
                         && b.Body.Statements.Single() is BoundCallStatement
                             { Method.Name: "..init.field.reads" }));
-                TestHarness.CheckTrue("wrapper 零参默认 init 只在省略 init 时合成",
+                CaseAssertions.CheckTrue("wrapper 零参默认 init 只在省略 init 时合成",
                     wrapper.Methods.Count(m => m.Kind == MethodKind.Init && m.IsSynthetic)
                         == (init.Length == 0 ? 1 : 0));
             }
@@ -146,7 +128,7 @@ namespace RigiCompiler.Tests
 
         private static void TestWrapperDefaultConstructionDa()
         {
-            TestHarness.Section("P3 Wrapper Construction DA (WRAP-001)");
+            CompilerTestTools.Section("P3 Wrapper Construction DA (WRAP-001)");
             foreach (var target in new[] { "Entity", "Method", "Value" })
             {
                 var application = target switch
@@ -160,7 +142,7 @@ namespace RigiCompiler.Tests
                     var (bad, _) = BindUnit(
                         application + "@WrapperTarget(." + target + ")\n" +
                         "wrapper W { pub var reads: i64\n" + init + "\n}\n");
-                    TestHarness.CheckSemanticError("无初值非空字段拒绝：" + target + "/" + init,
+                    CaseAssertions.CheckSemanticError("无初值非空字段拒绝：" + target + "/" + init,
                         bad.Diagnostics, init.Length == 0
                             ? "has no constructor that assigns non-nullable field 'reads'"
                             : "is not definitely assigned");
@@ -180,13 +162,13 @@ namespace RigiCompiler.Tests
             var (generic, _) = BindUnit(
                 "@W\\<i64>\nclass Host { }\n" +
                 "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { pub var reads: TTarget }\n");
-            TestHarness.CheckSemanticError("泛型 wrapper 非空字段仍拒绝", generic.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型 wrapper 非空字段仍拒绝", generic.Diagnostics,
                 "has no constructor that assigns non-nullable field 'reads'");
         }
 
         private static void TestWrapperPlaceVoidStatement()
         {
-            TestHarness.Section("P3 Wrapper Place Void Statement (§14.5)");
+            CompilerTestTools.Section("P3 Wrapper Place Void Statement (§14.5)");
 
             var (unit, bodies) = BindUnit(
                 "@WrapperTarget(.Entity)\n" +
@@ -208,13 +190,13 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("wrapper place 语句位 void/带参/默认值/有返回 均合法", unit);
             var body = BoundDescribe.Body(BodyOf(bodies, "f"));
-            TestHarness.CheckTrue("void bump 落 InstCallStmt",
+            CaseAssertions.CheckTrue("void bump 落 InstCallStmt",
                 body.Contains("InstCallStmt(bump, WrapperPlace(Param(s,Svc), Logged), [])"));
-            TestHarness.CheckTrue("void bumpBy 带参落 InstCallStmt",
+            CaseAssertions.CheckTrue("void bumpBy 带参落 InstCallStmt",
                 body.Contains("InstCallStmt(bumpBy,"));
-            TestHarness.CheckTrue("void bumpDef 默认值落 InstCallStmt",
+            CaseAssertions.CheckTrue("void bumpDef 默认值落 InstCallStmt",
                 body.Contains("InstCallStmt(bumpDef,"));
-            TestHarness.CheckTrue("有返回 describe 仍是表达式语句",
+            CaseAssertions.CheckTrue("有返回 describe 仍是表达式语句",
                 body.Contains("InstCall(describe, WrapperPlace(Param(s,Svc), Logged), [], String)"));
 
             var (unitVal, _) = BindUnit(
@@ -229,13 +211,13 @@ namespace RigiCompiler.Tests
                 "    var x = s:Logged.bump()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("值位置 void 仍拒绝",
+            CaseAssertions.CheckSemanticError("值位置 void 仍拒绝",
                 unitVal.Diagnostics, "has no result (void) and cannot be used as a value");
         }
 
         private static void TestGetProxyInnerForbidden()
         {
-            TestHarness.Section("P3 Get Proxy Inner Forbidden (§14.2/§14.3)");
+            CompilerTestTools.Section("P3 Get Proxy Inner Forbidden (§14.2/§14.3)");
 
             var (unitVal, _) = BindUnitWithStdlib(
                 "@WrapperTarget(.Value)\n" +
@@ -250,7 +232,7 @@ namespace RigiCompiler.Tests
                 "    const x: i32 = 1\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Value .proxy.get 禁 inner",
+            CaseAssertions.CheckSemanticError("Value .proxy.get 禁 inner",
                 unitVal.Diagnostics, "cannot call inner(...)");
 
             var (unitWild, _) = BindUnit(
@@ -266,7 +248,7 @@ namespace RigiCompiler.Tests
                 "    pub var name: String\n" +
                 "    pub init(_ -> name)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Entity .proxy.get.* 禁 inner",
+            CaseAssertions.CheckSemanticError("Entity .proxy.get.* 禁 inner",
                 unitWild.Diagnostics, "cannot call inner(...)");
 
             var (unitSpec, _) = BindUnit(
@@ -282,7 +264,7 @@ namespace RigiCompiler.Tests
                 "    pub var name: String\n" +
                 "    pub init(_ -> name)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Entity .proxy.get.<名> 禁 inner",
+            CaseAssertions.CheckSemanticError("Entity .proxy.get.<名> 禁 inner",
                 unitSpec.Diagnostics, "cannot call inner(...)");
 
             var (unitSet, _) = BindUnitWithStdlib(
@@ -315,7 +297,7 @@ namespace RigiCompiler.Tests
 
         private static void TestSubclassWrapperInheritedShape()
         {
-            TestHarness.Section("P3 Subclass Wrapper Inherited Member Shape (§14.2)");
+            CompilerTestTools.Section("P3 Subclass Wrapper Inherited Member Shape (§14.2)");
 
             var (unitOk, _) = BindUnit(
                 "@WrapperTarget(.Entity)\n" +
@@ -343,7 +325,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "@Logged\n" +
                 "pub class Child : Base { pub init() }\n");
-            TestHarness.CheckSemanticError("子类 wrapper specific 对继承方法形状不符",
+            CaseAssertions.CheckSemanticError("子类 wrapper specific 对继承方法形状不符",
                 unitBad.Diagnostics, "does not match the shape");
 
             var (unitBoth, _) = BindUnit(
@@ -370,7 +352,7 @@ namespace RigiCompiler.Tests
 
         private static void TestMethodWrapperSpecificCallShape()
         {
-            TestHarness.Section("P3 Method Wrapper Specific .proxy.call Shape (§14.4)");
+            CompilerTestTools.Section("P3 Method Wrapper Specific .proxy.call Shape (§14.4)");
 
             var (unitBad, _) = BindUnitWithStdlib(
                 "@WrapperTarget(.Method)\n" +
@@ -385,7 +367,7 @@ namespace RigiCompiler.Tests
                 "    const f = func{ @Trace (x: i32): i32 -> (x * x) }\n" +
                 "    return f(6)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("lambda specific .proxy.call 形状不符",
+            CaseAssertions.CheckSemanticError("lambda specific .proxy.call 形状不符",
                 unitBad.Diagnostics, "does not match the shape");
 
             var (unitOk, _) = BindUnitWithStdlib(
@@ -427,7 +409,7 @@ namespace RigiCompiler.Tests
                 "    @Trace\n" +
                 "    pub func f(x: i32): i32 { return x }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("声明方法 specific .proxy.call 形状不符",
+            CaseAssertions.CheckSemanticError("声明方法 specific .proxy.call 形状不符",
                 unitMethBad.Diagnostics, "does not match the shape");
 
             var (unitMethOk, _) = BindUnit(

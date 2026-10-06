@@ -23,7 +23,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 基本形式 =====
         public static void TestBasicLambdas()
         {
-            TestHarness.Section("Testing Basic Lambdas");
+            CompilerTestTools.Section("Testing Basic Lambdas");
 
             TestLambda("var f = func{(x: i32): i32 -> (x + 1)}",
                 "Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
@@ -38,32 +38,32 @@ namespace RigiCompiler.Tests
             TestLambda("var f = func{(numbers: i32...): i32 -> 0}",
                 "Lambda([numbers: i32...]): i32 -> Int(0,I32)");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 泛型 lambda 负例（SYNTAX §5.1：lambda 不支持泛型形参）=====
         public static void TestGenericLambdasRejected()
         {
-            TestHarness.Section("Testing Generic Lambdas Rejected");
+            CompilerTestTools.Section("Testing Generic Lambdas Rejected");
 
             const string genericMsg = "lambda 不支持泛型参数";
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var f = func{(width: TSize)\\<TSize extends Size>: TSize -> width}",
-                () => TestHarness.ParseRoot(
+                () => CompilerTestTools.ParseRoot(
                     "var f = func{(width: TSize)\\<TSize extends Size>: TSize -> width}"),
                 genericMsg);
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var f = func{(x: T)\\<T>: T -> x}",
-                () => TestHarness.ParseRoot("var f = func{(x: T)\\<T>: T -> x}"),
+                () => CompilerTestTools.ParseRoot("var f = func{(x: T)\\<T>: T -> x}"),
                 genericMsg);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. async lambda =====
         public static void TestAsyncLambdas()
         {
-            TestHarness.Section("Testing Async Lambdas");
+            CompilerTestTools.Section("Testing Async Lambdas");
 
             TestLambda("var loader = func{async (id: i32): SharedUser -> loadUserNow(id)}",
                 "Lambda async([id: i32]): SharedUser -> Path(loadUserNow(Path(id, [])), [])");
@@ -71,13 +71,13 @@ namespace RigiCompiler.Tests
             TestLambda("var a = func{async (x: i32) -> x}",
                 "Lambda async([x: i32]) -> Path(x, [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. trailing lambda =====
         public static void TestTrailingLambdas()
         {
-            TestHarness.Section("Testing Trailing Lambdas");
+            CompilerTestTools.Section("Testing Trailing Lambdas");
 
             // expr{...} 脱糖为以 lambda 为唯一实参的调用
             TestLambda("var r = list.map{(item: String): i32 -> item.length}",
@@ -89,24 +89,24 @@ namespace RigiCompiler.Tests
             TestLambda("var r = list.forEach{(item: String) -> item}",
                 "Path(list, [.forEach(Lambda([item: String]) -> Path(item, []))])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 跨行书写 =====
         public static void TestMultiLineLambdas()
         {
-            TestHarness.Section("Testing Multi-line Lambdas");
+            CompilerTestTools.Section("Testing Multi-line Lambdas");
 
             TestLambda("var f = func{(x: i32): i32 ->\n    (x + 1)\n}",
                 "Lambda([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 多语句块体（return@_ / named，SYNTAX §5.1）=====
         public static void TestBlockBodies()
         {
-            TestHarness.Section("Testing Lambda Block Bodies");
+            CompilerTestTools.Section("Testing Lambda Block Bodies");
 
             // 多语句块体：return@_ 显式产出返回值（匿名体的默认标签是 _）
             TestLambda("var f = func{(x: i32): i32 -> {\n" +
@@ -129,13 +129,13 @@ namespace RigiCompiler.Tests
             TestLambda("var r = list.map{(item: String): i32 -> { return@_ item.length }}",
                 "Path(list, [.map(Lambda([item: String]): i32 -> [Return@_(Path(item, [.length]))])])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. void lambda（省略返回类型 = 无返回值，SYNTAX §5.1）=====
         public static void TestVoidLambdas()
         {
-            TestHarness.Section("Testing Void Lambdas");
+            CompilerTestTools.Section("Testing Void Lambdas");
 
             // 单表达式体：无返回值时表达式语句语义（解析层只收形态，不校验 return@）
             TestLambda("var f = func{() -> (1 + 1)}",
@@ -151,110 +151,110 @@ namespace RigiCompiler.Tests
             TestLambda("var f = func{(x: i32) -> { const y = x }}",
                 "Lambda([x: i32]) -> [const y = Path(x, [])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 8. 裸 return 编译错误（SYNTAX §5.1：lambda 体内一律显式 return@）=====
         public static void TestBareReturnErrors()
         {
-            TestHarness.Section("Testing Lambda Bare Return Errors (expect ParserException)");
+            CompilerTestTools.Section("Testing Lambda Bare Return Errors (expect ParserException)");
 
             const string bareReturnMsg = "lambda 体内不允许裸 return";
 
             // 块体内直接裸 return
-            TestHarness.CheckParseError("var f = func{(): i32 -> { return 1 }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> { return 1 }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> { return 1 }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> { return 1 }}"),
                 bareReturnMsg);
             // 无值裸 return 同样禁止
-            TestHarness.CheckParseError("var f = func{(): i32 -> { return }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> { return }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> { return }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> { return }}"),
                 bareReturnMsg);
             // 嵌套 seq 块内的裸 return（标记向嵌套块传染）
-            TestHarness.CheckParseError("var f = func{(): i32 -> { seq { return 1 } }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> { seq { return 1 } }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> { seq { return 1 } }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> { seq { return 1 } }}"),
                 bareReturnMsg);
             // 嵌套 if 语句块内的裸 return
-            TestHarness.CheckParseError("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> { if (c) { return 1 } return@_ 0 }}"),
                 bareReturnMsg);
             // 嵌套循环体内的裸 return
-            TestHarness.CheckParseError("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> { while (c) { return 1 } return@_ 0 }}"),
                 bareReturnMsg);
             // 嵌套 switch 语句分支内的裸 return
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var f = func{(): i32 -> { switch (x) { (1) -> { return 1 } default -> { } } return@_ 0 }}",
-                () => TestHarness.ParseRoot(
+                () => CompilerTestTools.ParseRoot(
                     "var f = func{(): i32 -> { switch (x) { (1) -> { return 1 } default -> { } } return@_ 0 }}"),
                 bareReturnMsg);
             // 单表达式体内的 if 表达式分支块裸 return（if 表达式不是 lambda 边界）
-            TestHarness.CheckParseError("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}",
-                () => TestHarness.ParseRoot("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}"),
+            CaseAssertions.CheckParseError("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(): i32 -> if (c) { return 1 } else { return@_ 0 }}"),
                 bareReturnMsg);
             // lambda 内嵌 lambda：内层仍是 false 边界
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var f = func{(): i32 -> { var g = func{(): i32 -> { return 1 }}\n return@_ 0 }}",
-                () => TestHarness.ParseRoot(
+                () => CompilerTestTools.ParseRoot(
                     "var f = func{(): i32 -> { var g = func{(): i32 -> { return 1 }}\n return@_ 0 }}"),
                 bareReturnMsg);
             // void 块体裸 return 同样禁止
-            TestHarness.CheckParseError("var f = func{() -> { return }}",
-                () => TestHarness.ParseRoot("var f = func{() -> { return }}"),
+            CaseAssertions.CheckParseError("var f = func{() -> { return }}",
+                () => CompilerTestTools.ParseRoot("var f = func{() -> { return }}"),
                 bareReturnMsg);
 
             // 对照：return@_ / return@标签 合法（不报错，由块体用例覆盖快照）
             // 对照：函数体内裸 return 不受影响（函数不是 lambda 边界）
-            var block = TestHarness.ParseBlock("{ return 1 }");
-            TestHarness.CheckTrue("普通代码块内裸 return 合法",
+            var block = CompilerTestTools.ParseBlock("{ return 1 }");
+            CaseAssertions.CheckTrue("普通代码块内裸 return 合法",
                 block.Statements.Count == 1 && block.Statements[0] is ReturnStatementASTNode);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 9. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Testing Lambda Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Testing Lambda Error Cases (expect ParserException)");
 
             // 缺 ->
-            TestHarness.CheckParseError("var f = func{(x: i32): i32 (x + 1)}",
-                () => TestHarness.ParseRoot("var f = func{(x: i32): i32 (x + 1)}"),
+            CaseAssertions.CheckParseError("var f = func{(x: i32): i32 (x + 1)}",
+                () => CompilerTestTools.ParseRoot("var f = func{(x: i32): i32 (x + 1)}"),
                 "Expected '->' before lambda body");
             // 缺 body
-            TestHarness.CheckParseError("var f = func{(x: i32): i32 -> }",
-                () => TestHarness.ParseRoot("var f = func{(x: i32): i32 -> }"),
+            CaseAssertions.CheckParseError("var f = func{(x: i32): i32 -> }",
+                () => CompilerTestTools.ParseRoot("var f = func{(x: i32): i32 -> }"),
                 "Unexpected token at start of expression");
             // 表达式起始 async（旧写法 async func{...} 亦同）
-            TestHarness.CheckParseError("var f = async x",
-                () => TestHarness.ParseRoot("var f = async x"),
+            CaseAssertions.CheckParseError("var f = async x",
+                () => CompilerTestTools.ParseRoot("var f = async x"),
                 "async lambda 写作 func{async (...)...}，'async' 不能出现在表达式起始位置");
-            TestHarness.CheckParseError("var f = async func{(x: i32): i32 -> x}",
-                () => TestHarness.ParseRoot("var f = async func{(x: i32): i32 -> x}"),
+            CaseAssertions.CheckParseError("var f = async func{(x: i32): i32 -> x}",
+                () => CompilerTestTools.ParseRoot("var f = async func{(x: i32): i32 -> x}"),
                 "async lambda 写作 func{async (...)...}，'async' 不能出现在表达式起始位置");
             // 双重 async：第二次 async 落到形参列表
-            TestHarness.CheckParseError("var f = func{async async (x: i32): i32 -> x}",
-                () => TestHarness.ParseRoot("var f = func{async async (x: i32): i32 -> x}"),
+            CaseAssertions.CheckParseError("var f = func{async async (x: i32): i32 -> x}",
+                () => CompilerTestTools.ParseRoot("var f = func{async async (x: i32): i32 -> x}"),
                 "Expected '('");
             // 缺 {
-            TestHarness.CheckParseError("var f = func(x: i32): i32 -> (x + 1)",
-                () => TestHarness.ParseRoot("var f = func(x: i32): i32 -> (x + 1)"),
+            CaseAssertions.CheckParseError("var f = func(x: i32): i32 -> (x + 1)",
+                () => CompilerTestTools.ParseRoot("var f = func(x: i32): i32 -> (x + 1)"),
                 "Expected '{' to start lambda body");
             // named 后缺标签名
-            TestHarness.CheckParseError("var f = func{(x: i32): i32 -> named { return@_ 1 }}",
-                () => TestHarness.ParseRoot("var f = func{(x: i32): i32 -> named { return@_ 1 }}"),
+            CaseAssertions.CheckParseError("var f = func{(x: i32): i32 -> named { return@_ 1 }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(x: i32): i32 -> named { return@_ 1 }}"),
                 "Expected label name after 'named'");
             // 形参后既非 : 也非 ->
-            TestHarness.CheckParseError("var f = func{(x: i32) { x }}",
-                () => TestHarness.ParseRoot("var f = func{(x: i32) { x }}"),
+            CaseAssertions.CheckParseError("var f = func{(x: i32) { x }}",
+                () => CompilerTestTools.ParseRoot("var f = func{(x: i32) { x }}"),
                 "Expected ':' or '->'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 10. lambda 头内部 annotation（SYNTAX §5.1/§14.4）=====
         public static void TestLambdaAnnotations()
         {
-            TestHarness.Section("Testing Lambda Head Annotations");
+            CompilerTestTools.Section("Testing Lambda Head Annotations");
 
             // 无参注解：func{ 之后、形参列表之前
             TestLambda("var f = func{ @Timed (x: i32): i32 -> (x + 1) }",
@@ -270,72 +270,72 @@ namespace RigiCompiler.Tests
                 "@Timed Lambda async([x: i32]): i32 -> Group(Binary(Path(x, []) + Int(1,I32)))");
             // 注解直接挂 lambda 节点；无注解时列表为空（既有用例已覆盖描述串不变）
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 11. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
         public static void TestStructuralAssertions()
         {
-            TestHarness.Section("Structural Assertions");
+            CompilerTestTools.Section("Structural Assertions");
 
             // 单表达式体：Body 填充、BlockBody 为 null（互斥）
-            var exprDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var exprDecl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var f = func{(x: i32): i32 -> (x + 1)}");
             var exprLambda = (LambdaExpressionASTNode)exprDecl.Initializer!.Expression;
-            TestHarness.CheckTrue("单表达式体 Body Root 存在且已填充",
+            CaseAssertions.CheckTrue("单表达式体 Body Root 存在且已填充",
                 exprLambda.Body != null && exprLambda.Body.IsAttached);
-            TestHarness.CheckTrue("单表达式体 BlockBody 为 null（互斥）",
+            CaseAssertions.CheckTrue("单表达式体 BlockBody 为 null（互斥）",
                 exprLambda.BlockBody == null);
-            TestHarness.CheckTrue("无 named 时 Label 为 null", exprLambda.Label == null);
-            TestHarness.CheckTrue("有返回类型时 ReturnType 非 null",
+            CaseAssertions.CheckTrue("无 named 时 Label 为 null", exprLambda.Label == null);
+            CaseAssertions.CheckTrue("有返回类型时 ReturnType 非 null",
                 exprLambda.ReturnType != null);
-            TestHarness.CheckTrue("Body Root 的 Parent 是 lambda 节点",
+            CaseAssertions.CheckTrue("Body Root 的 Parent 是 lambda 节点",
                 ReferenceEquals(exprLambda.Body!.Parent, exprLambda));
 
             // 块体：BlockBody 填充、Body 为 null（互斥）；named 写入 Label
-            var blockDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var blockDecl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var f = func{(x: i32): i32 -> named calc { return@calc x }}");
             var blockLambda = (LambdaExpressionASTNode)blockDecl.Initializer!.Expression;
-            TestHarness.CheckTrue("块体 BlockBody 存在",
+            CaseAssertions.CheckTrue("块体 BlockBody 存在",
                 blockLambda.BlockBody != null);
-            TestHarness.CheckTrue("块体 Body 为 null（互斥）", blockLambda.Body == null);
-            TestHarness.CheckTrue("named 标签写入 Label", blockLambda.Label == "calc");
-            TestHarness.CheckTrue("BlockBody 的 Parent 是 lambda 节点",
+            CaseAssertions.CheckTrue("块体 Body 为 null（互斥）", blockLambda.Body == null);
+            CaseAssertions.CheckTrue("named 标签写入 Label", blockLambda.Label == "calc");
+            CaseAssertions.CheckTrue("BlockBody 的 Parent 是 lambda 节点",
                 ReferenceEquals(blockLambda.BlockBody!.Parent, blockLambda));
-            TestHarness.CheckTrue("块体内 return@标签 的 Label",
+            CaseAssertions.CheckTrue("块体内 return@标签 的 Label",
                 blockLambda.BlockBody!.Statements.Count == 1 &&
                 blockLambda.BlockBody.Statements[0] is ReturnStatementASTNode ret &&
                 ret.Label == "calc");
 
             // void lambda：ReturnType 为 null
-            var voidDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var voidDecl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var f = func{() -> (1 + 1)}");
             var voidLambda = (LambdaExpressionASTNode)voidDecl.Initializer!.Expression;
-            TestHarness.CheckTrue("void lambda ReturnType 为 null",
+            CaseAssertions.CheckTrue("void lambda ReturnType 为 null",
                 voidLambda.ReturnType == null);
-            TestHarness.CheckTrue("void 单表达式体 Body 已填充",
+            CaseAssertions.CheckTrue("void 单表达式体 Body 已填充",
                 voidLambda.Body != null && voidLambda.Body.IsAttached);
 
             // lambda 头内部注解：Annotations 挂 lambda 节点、顺序与实参形态
-            var annDecl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var annDecl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var f = func{ @WOuter @WInner(\"x\") async (x: i32): i32 -> x }");
             var annLambda = (LambdaExpressionASTNode)annDecl.Initializer!.Expression;
-            TestHarness.CheckTrue("lambda 注解列表数量与顺序",
+            CaseAssertions.CheckTrue("lambda 注解列表数量与顺序",
                 annLambda.Annotations.Count == 2
                 && annLambda.Annotations[0].Name.symbol.elements[0].name == "WOuter"
                 && annLambda.Annotations[1].Name.symbol.elements[0].name == "WInner");
-            TestHarness.CheckTrue("无参注解 HasArguments=false、实参表为空",
+            CaseAssertions.CheckTrue("无参注解 HasArguments=false、实参表为空",
                 !annLambda.Annotations[0].HasArguments
                 && annLambda.Annotations[0].Arguments.Count == 0);
-            TestHarness.CheckTrue("带参注解 HasArguments=true、实参挂接",
+            CaseAssertions.CheckTrue("带参注解 HasArguments=true、实参挂接",
                 annLambda.Annotations[1].HasArguments
                 && annLambda.Annotations[1].Arguments.Count == 1
                 && annLambda.Annotations[1].Arguments[0].Value.IsAttached);
-            TestHarness.CheckTrue("注解 Parent 是 lambda 节点",
+            CaseAssertions.CheckTrue("注解 Parent 是 lambda 节点",
                 ReferenceEquals(annLambda.Annotations[0].Parent, annLambda)
                 && ReferenceEquals(annLambda.Annotations[1].Parent, annLambda));
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -345,12 +345,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -358,9 +358,9 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Lambda",
+
+        internal static TestSuiteData Spec { get; } = new("Lambda",
         [
             (nameof(TestBasicLambdas), TestBasicLambdas),
             (nameof(TestGenericLambdasRejected), TestGenericLambdasRejected),

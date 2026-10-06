@@ -16,15 +16,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVmTaskTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilVmTask", Cases, sectionTitle: "BilVmTask");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -68,10 +66,10 @@ namespace RigiCompiler.Tests
                     "    const task = new Task(func{async () -> { while (true) { yield } }})\n" +
                     "    task.run(new " + executor + "())\n" +
                     "    await task\n    return 0\n}\n");
-                TestHarness.CheckTrue(executor + " 预算用例编译通过", !unit.Diagnostics.HasErrors);
+                CaseAssertions.CheckTrue(executor + " 预算用例编译通过", !unit.Diagnostics.HasErrors);
                 if (unit.Diagnostics.HasErrors) continue;
                 var result = BilVm.Run(module, maxSteps: 100_000);
-                TestHarness.CheckTrue(executor + " 超限返回而非遗留 Worker 等待",
+                CaseAssertions.CheckTrue(executor + " 超限返回而非遗留 Worker 等待",
                     result.Exception is VmStepLimitException, result.Exception?.ToString() ?? "无异常");
             }
         }
@@ -86,7 +84,7 @@ namespace RigiCompiler.Tests
             try
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-                TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                         d => $"{d.Phase}: {d.Message}")));
                 if (unit.Diagnostics.HasErrors)
@@ -100,7 +98,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue("全管线无诊断", false, exception.ToString());
+                CaseAssertions.CheckTrue("全管线无诊断", false, exception.ToString());
                 return (new BilVmResult("", "", null,
                     new VmException(exception.Message, inner: exception)), null!);
             }
@@ -108,13 +106,13 @@ namespace RigiCompiler.Tests
 
         private static void CheckOk(string label, BilVmResult result)
         {
-            TestHarness.CheckTrue(label + " 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
         }
 
         private static void CheckI32(string label, BilVmResult result, int expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmI32 n && n.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -123,7 +121,7 @@ namespace RigiCompiler.Tests
             params string[] expectedLines)
         {
             var expected = string.Join("\n", expectedLines) + "\n";
-            TestHarness.CheckTrue(label, result.Stdout == expected,
+            CaseAssertions.CheckTrue(label, result.Stdout == expected,
                 "期望 <" + expected.Replace("\n", "\\n") + "> 实际 <"
                 + result.Stdout.Replace("\n", "\\n") + ">");
         }
@@ -134,7 +132,7 @@ namespace RigiCompiler.Tests
         {
             if (!dispatch.ResumeLog.TryGetValue(coroutineHandle, out var log))
             {
-                TestHarness.CheckTrue(label, false, "协程 " + coroutineHandle + " 无恢复记录");
+                CaseAssertions.CheckTrue(label, false, "协程 " + coroutineHandle + " 无恢复记录");
                 return;
             }
             long[] snapshot;
@@ -142,7 +140,7 @@ namespace RigiCompiler.Tests
             {
                 snapshot = log.ToArray();
             }
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 snapshot.SequenceEqual(expectedWorkers),
                 "期望 [" + string.Join(",", expectedWorkers) + "] 实际 ["
                 + string.Join(",", snapshot) + "]");
@@ -156,7 +154,7 @@ namespace RigiCompiler.Tests
             long[] snapshot;
             lock (log) snapshot = log.ToArray();
             var workers = WorkerHandles(dispatch).Where(w => w != 0).ToHashSet();
-            TestHarness.CheckTrue(label, snapshot.Length == 2
+            CaseAssertions.CheckTrue(label, snapshot.Length == 2
                 && (startsOnMain ? snapshot[0] == 0 : workers.Contains(snapshot[0]))
                 && workers.Contains(snapshot[1]),
                 "实际 [" + string.Join(",", snapshot) + "]");
@@ -169,7 +167,7 @@ namespace RigiCompiler.Tests
         {
             var others = dispatch.ResumeLog.Keys
                 .Where(h => h != dispatch.MainHandle).ToArray();
-            TestHarness.CheckTrue(label + "（协程数）",
+            CaseAssertions.CheckTrue(label + "（协程数）",
                 others.Length == expectedCoroutines,
                 "期望 " + expectedCoroutines + " 实际 [" + string.Join(",", others) + "]");
             foreach (var handle in others)
@@ -179,7 +177,7 @@ namespace RigiCompiler.Tests
                 {
                     snapshot = dispatch.ResumeLog[handle].ToArray();
                 }
-                TestHarness.CheckTrue(label + "（协程 " + handle + " 全部段离主）",
+                CaseAssertions.CheckTrue(label + "（协程 " + handle + " 全部段离主）",
                     snapshot.Length > 0 && snapshot.All(w => w != 0),
                     "实际 [" + string.Join(",", snapshot) + "]");
             }
@@ -190,7 +188,7 @@ namespace RigiCompiler.Tests
         {
             var others = dispatch.ResumeLog.Keys
                 .Where(h => h != dispatch.MainHandle).ToArray();
-            TestHarness.CheckTrue("恰一个非 main 协程", others.Length == 1,
+            CaseAssertions.CheckTrue("恰一个非 main 协程", others.Length == 1,
                 "实际 [" + string.Join(",", others) + "]");
             return others.Length == 1 ? others[0] : -1;
         }
@@ -346,7 +344,7 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute Worker 池按可用并行度懒建",
+            CaseAssertions.CheckTrue("Compute Worker 池按可用并行度懒建",
                 workers.Length == (VmDispatch.ComputeParallelism() + 1) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
             CheckComputeResumes("冷 Task 两恢复段都在 Compute Worker 集合",
@@ -372,7 +370,7 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("IO Worker 懒建", workers.Length == 2 && workers[0] == 0,
+            CaseAssertions.CheckTrue("IO Worker 懒建", workers.Length == 2 && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
             CheckResumeWorkers("冷 Task 在 IO Worker 启动",
                 dispatch, SoleNonMainHandle(dispatch), workers[1]);
@@ -401,7 +399,7 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("换绑触发 Compute Worker 懒建",
+            CaseAssertions.CheckTrue("换绑触发 Compute Worker 懒建",
                 workers.Length == (VmDispatch.ComputeParallelism() + 1) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
             CheckComputeResumes("首段主 Worker、换绑后恢复段在 Compute Worker 集合",
@@ -432,7 +430,7 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute Worker 懒建", workers.Length == (VmDispatch.ComputeParallelism() + 1),
+            CaseAssertions.CheckTrue("Compute Worker 懒建", workers.Length == (VmDispatch.ComputeParallelism() + 1),
                 "workers=[" + string.Join(",", workers) + "]");
             CheckNonMainOffMain("冷 Task 与其 eager 子协程都继承/落在 Compute Worker 集合",
                 dispatch, 2);
@@ -729,7 +727,7 @@ namespace RigiCompiler.Tests
                 return;
             }
             var workers = WorkerHandles(dispatch);
-            TestHarness.CheckTrue("Compute 池与 IO Worker 均懒建",
+            CaseAssertions.CheckTrue("Compute 池与 IO Worker 均懒建",
                 workers.Length == (VmDispatch.ComputeParallelism() + 2) && workers[0] == 0,
                 "workers=[" + string.Join(",", workers) + "]");
             CheckNonMainOffMain("两 Task 都不在 Main Worker 执行", dispatch, 2);

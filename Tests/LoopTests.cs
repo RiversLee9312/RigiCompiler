@@ -14,7 +14,7 @@ namespace RigiCompiler.Tests
     /// 6. 嵌套循环
     /// 7. 错误用例
     ///
-    /// 驱动方式：TestHarness.ParseBlock（TestRootParserLayer 垫底 + CodeBlockParserLayer
+    /// 驱动方式：CompilerTestTools.ParseBlock（TestRootParserLayer 垫底 + CodeBlockParserLayer
     /// 独立入口），源码以 { ... } 包裹；断言统一走 AstDescribe 描述串（M31 基建）。
     /// </summary>
     public class LoopTests
@@ -22,7 +22,7 @@ namespace RigiCompiler.Tests
         // ===== 1. for-each =====
         public static void TestForEachLoops()
         {
-            TestHarness.Section("for-each Loops");
+            CompilerTestTools.Section("for-each Loops");
 
             TestBlock("{ for (item in collection) { print(item) } }",
                 "[For(item, Path(collection, []), [Path(print(Path(item, [])), [])])]");
@@ -30,46 +30,46 @@ namespace RigiCompiler.Tests
             TestBlock("{ for (x in getItems(1)) { print(x) } }",
                 "[For(x, Path(getItems(Int(1,I32)), []), [Path(print(Path(x, [])), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 范围循环 =====
         public static void TestForRangeLoops()
         {
-            TestHarness.Section("for-range Loops");
+            CompilerTestTools.Section("for-range Loops");
 
             TestBlock("{ for (i in 0 to 10) { print(i) } }",
                 "[For(i, Range(Int(0,I32) to Int(10,I32)), [Path(print(Path(i, [])), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. while =====
         public static void TestWhileLoops()
         {
-            TestHarness.Section("while Loops");
+            CompilerTestTools.Section("while Loops");
 
             TestBlock("{ while (condition) { doSomething() } }",
                 "[While(Path(condition, []), [Path(doSomething(), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. do-while =====
         public static void TestDoWhileLoops()
         {
-            TestHarness.Section("do-while Loops");
+            CompilerTestTools.Section("do-while Loops");
 
             TestBlock("{ do { doSomething() } while (condition) }",
                 "[DoWhile(Path(condition, []), [Path(doSomething(), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. named 标签 =====
         public static void TestNamedLoops()
         {
-            TestHarness.Section("named Loops");
+            CompilerTestTools.Section("named Loops");
 
             TestBlock("{ for (i in 0 to 10) named outer { break@outer } }",
                 "[For(i, Range(Int(0,I32) to Int(10,I32)), named outer, [Break@outer])]");
@@ -78,13 +78,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ do named loop { continue@loop } while (c) }",
                 "[DoWhile(Path(c, []), named loop, [Continue@loop])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 嵌套循环 =====
         public static void TestNestedLoops()
         {
-            TestHarness.Section("Nested Loops");
+            CompilerTestTools.Section("Nested Loops");
 
             // SYNTAX §7.4 示例
             TestBlock("{\n" +
@@ -100,13 +100,13 @@ namespace RigiCompiler.Tests
                 "[For(j, Range(Int(0,I32) to Int(10,I32)), named inner, " +
                 "[IfStmt(Path(someCondition, []), [Break@outer], <none>)])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Loop Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Loop Error Cases (expect ParserException)");
 
             // for 缺 (
             TestError("{ for item in collection { } }", "Expected '(' after for");
@@ -121,7 +121,7 @@ namespace RigiCompiler.Tests
             // 循环体缺 {
             TestError("{ for (item in collection) print(item) }", "Expected 'named' or '{' after loop clause");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -131,28 +131,28 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(code);
-                TestHarness.Check(Label(code), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
         // 错误校验：解析必须抛出 ParserException/LexerException 且消息含片段
         private static void TestError(string code, string expectedMessagePart)
         {
-            TestHarness.CheckParseError(Label(code), () => TestHarness.ParseBlock(code), expectedMessagePart);
+            CaseAssertions.CheckParseError(Label(code), () => CompilerTestTools.ParseBlock(code), expectedMessagePart);
         }
 
         // 标签：多行源码的 \n 转义显示
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Loop",
+
+        internal static TestSuiteData Spec { get; } = new("Loop",
         [
             (nameof(TestForEachLoops), TestForEachLoops),
             (nameof(TestForRangeLoops), TestForRangeLoops),

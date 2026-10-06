@@ -18,7 +18,7 @@ namespace RigiCompiler.Tests
                 "    var z: i32\n" +
                 "}\n");
             CheckNoErrors("无诊断（局部声明）", unit);
-            TestHarness.Check("局部声明 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("局部声明 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [x: i32, y: i32, z: i32], [Decl(x, i32, = Int(42,i32)); " +
                 "Decl(y, i32, = Binary(Add, Int(1,i32), Int(2,i32), i32)); Decl(z, i32)])");
         }
@@ -32,7 +32,7 @@ namespace RigiCompiler.Tests
                 "    x = 5\n" +
                 "}\n");
             CheckNoErrors("无诊断（赋值）", unit);
-            TestHarness.Check("赋值 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("赋值 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [x: i32], [Decl(x, i32, = Int(0,i32)); " +
                 "Assign(Local(x,i32), Int(5,i32))])");
         }
@@ -49,9 +49,9 @@ namespace RigiCompiler.Tests
                 "    return\n" +
                 "}\n");
             CheckNoErrors("无诊断（表达式/调用语句）", unit);
-            TestHarness.Check("带返回值调用", LoweredDescribe.Body(BodyOf(lowered, "add")),
+            CaseAssertions.Check("带返回值调用", LoweredDescribe.Body(BodyOf(lowered, "add")),
                 "Body(add, [], [Return(Binary(Add, Param(a,i32), Param(b,i32), i32))])");
-            TestHarness.Check("表达式语句 + void 调用 + 裸 return",
+            CaseAssertions.Check("表达式语句 + void 调用 + 裸 return",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [], [ExprStmt(Call(add, [Int(1,i32), Int(2,i32)], i32)); " +
                 "CallStmt(use, [Int(3,i32)]); Return])");
@@ -66,11 +66,11 @@ namespace RigiCompiler.Tests
                 "func read(): i32 { return Counter.value }\n" +
                 "func write() { Counter.value = 42 }\n");
             CheckNoErrors("无诊断（一元/字段引用）", unit);
-            TestHarness.Check("一元运算 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "neg")),
+            CaseAssertions.Check("一元运算 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "neg")),
                 "Body(neg, [], [Return(Unary(Opposite, Param(a,i32), i32))])");
-            TestHarness.Check("static 字段读取", LoweredDescribe.Body(BodyOf(lowered, "read")),
+            CaseAssertions.Check("static 字段读取", LoweredDescribe.Body(BodyOf(lowered, "read")),
                 "Body(read, [], [Return(Field(value,i32))])");
-            TestHarness.Check("static 字段写入", LoweredDescribe.Body(BodyOf(lowered, "write")),
+            CaseAssertions.Check("static 字段写入", LoweredDescribe.Body(BodyOf(lowered, "write")),
                 "Body(write, [], [Assign(Field(value,i32), Int(42,i32))])");
 
             // 结构性事实：字段符号引用相等（符号图唯一实例）
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
             var fieldSymbol = counterType.Fields.Single(f => f.Name == "value");
             var readReturn = (LoweredReturnStatement)BodyOf(lowered, "read").Body.Statements[0];
             var fieldRef = readReturn.Value as LoweredFieldReferenceExpression;
-            TestHarness.CheckTrue("字段符号引用相等",
+            CaseAssertions.CheckTrue("字段符号引用相等",
                 fieldRef != null && ReferenceEquals(fieldRef.Field, fieldSymbol));
         }
 
@@ -94,16 +94,16 @@ namespace RigiCompiler.Tests
                 "func e(): Empty { return new Empty() }\n" +
                 "func p(): Point { return new Point(42) }\n");
             CheckNoErrors("无诊断（new）", unit);
-            TestHarness.Check("零参构造 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "e")),
+            CaseAssertions.Check("零参构造 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "e")),
                 "Body(e, [], [Return(New(Empty, []))])");
-            TestHarness.Check("带参构造 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "p")),
+            CaseAssertions.Check("带参构造 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "p")),
                 "Body(p, [], [Return(New(Point, init, [Int(42,i32)]))])");
 
             // 结构性事实：Init 符号引用相等
             var pointType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Point");
             var pReturn = (LoweredReturnStatement)BodyOf(lowered, "p").Body.Statements[0];
             var newExpr = pReturn.Value as LoweredNewExpression;
-            TestHarness.CheckTrue("init 符号引用相等",
+            CaseAssertions.CheckTrue("init 符号引用相等",
                 newExpr?.Init != null && ReferenceEquals(newExpr.Init,
                     pointType.Methods.Single(m => m.Kind == MethodKind.Init)));
         }
@@ -119,25 +119,25 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（Origin 链）", unit);
             var boundBody = bound.Single(b => b.Method.Name == "f");
             var loweredBody = BodyOf(lowered, "f");
-            TestHarness.CheckTrue("方法符号同一实例",
+            CaseAssertions.CheckTrue("方法符号同一实例",
                 ReferenceEquals(boundBody.Method, loweredBody.Method));
-            TestHarness.CheckTrue("块 Origin 回指",
+            CaseAssertions.CheckTrue("块 Origin 回指",
                 ReferenceEquals(loweredBody.Body.Origin, boundBody.Body));
 
             var boundDecl = (BoundLocalDeclarationStatement)boundBody.Body.Statements[0];
             var loweredDecl = (LoweredLocalDeclarationStatement)loweredBody.Body.Statements[0];
-            TestHarness.CheckTrue("声明语句 Origin 回指",
+            CaseAssertions.CheckTrue("声明语句 Origin 回指",
                 ReferenceEquals(loweredDecl.Origin, boundDecl));
-            TestHarness.CheckTrue("LocalSymbol 同一实例",
+            CaseAssertions.CheckTrue("LocalSymbol 同一实例",
                 ReferenceEquals(loweredDecl.Local, boundDecl.Local));
 
             var boundBinary = (BoundBinaryExpression)boundDecl.Initializer!;
             var loweredBinary = (LoweredBinaryExpression)loweredDecl.Initializer!;
-            TestHarness.CheckTrue("二元运算 Origin 回指",
+            CaseAssertions.CheckTrue("二元运算 Origin 回指",
                 ReferenceEquals(loweredBinary.Origin, boundBinary));
-            TestHarness.CheckTrue("左操作数 Origin 回指",
+            CaseAssertions.CheckTrue("左操作数 Origin 回指",
                 ReferenceEquals(loweredBinary.Left.Origin, boundBinary.Left));
-            TestHarness.CheckTrue("运算键透传", loweredBinary.Op == boundBinary.Op);
+            CaseAssertions.CheckTrue("运算键透传", loweredBinary.Op == boundBinary.Op);
         }
 
         // ===== 负例：未覆盖节点 → P4 Error + 跳过该函数体 =====
@@ -152,15 +152,15 @@ namespace RigiCompiler.Tests
 
         private static void TestUnsupportedNode()
         {
-            var root = TestHarness.ParseRoot("func f() { }\n");
+            var root = CompilerTestTools.ParseRoot("func f() { }\n");
             var unit = new CompilationUnit(root);
             var method = new MethodSymbol("future", MethodKind.Regular);
             var body = new BoundFunctionBody(method, new List<LocalSymbol>(),
                 new BoundBlock(root, new List<BoundStatement> { new FutureBoundStatement(root) }));
             var lowered = Lowerer.Lower(unit, new[] { body });
-            TestHarness.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("未覆盖节点报 P4 Error", unit.Diagnostics,
                 "not supported by minimal lowering");
-            TestHarness.CheckTrue("跳过未覆盖函数体（无 LoweredFunctionBody 产出）",
+            CaseAssertions.CheckTrue("跳过未覆盖函数体（无 LoweredFunctionBody 产出）",
                 lowered.Count == 0);
         }
 
@@ -170,20 +170,20 @@ namespace RigiCompiler.Tests
         {
             var (unit, _, lowered) = LowerUnitWithStdlib(
                 "func f() { var fn = func{(): i32 -> 42 } }\n");
-            TestHarness.CheckTrue("无捕获 lambda P4 降级无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("无捕获 lambda P4 降级无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var noCapBodies = LambdaRelatedBodies(lowered, "f");
-            TestHarness.CheckTrue("无捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
+            CaseAssertions.CheckTrue("无捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
                 noCapBodies.Count == 3);
-            TestHarness.Check("无捕获宿主 Lowered 形态",
+            CaseAssertions.Check("无捕获宿主 Lowered 形态",
                 NormLambda(LoweredDescribe.Body(BodyOf(noCapBodies, "f"))),
                 "Body(f, [fn: ..lambda..UUID], [Decl(fn, ..lambda..UUID, = " +
                 "New(..lambda..UUID, init, []))])");
-            TestHarness.Check("无捕获 $$call Lowered 形态",
+            CaseAssertions.Check("无捕获 $$call Lowered 形态",
                 NormLambda(LoweredDescribe.Body(LambdaCallBody(noCapBodies))),
                 "Body(call, [], [Return(Int(42,i32))])");
-            TestHarness.Check("无捕获 init Lowered 形态",
+            CaseAssertions.Check("无捕获 init Lowered 形态",
                 NormLambda(LoweredDescribe.Body(LambdaInitBody(noCapBodies))),
                 "Body(init, [], [])");
 
@@ -191,13 +191,13 @@ namespace RigiCompiler.Tests
                 "func f(p: i32) { var x = 1\n" +
                 "    var fn = func{(): i32 -> (p + x) }\n" +
                 "    x = 2 }\n");
-            TestHarness.CheckTrue("捕获 lambda P4 降级无诊断", !captured.Unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("捕获 lambda P4 降级无诊断", !captured.Unit.Diagnostics.HasErrors,
                 string.Join("; ", captured.Unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var capBodies = LambdaRelatedBodies(captured.Lowered, "f");
-            TestHarness.CheckTrue("捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
+            CaseAssertions.CheckTrue("捕获 lambda 产 3 个 Lowered body（宿主+init+$$call）",
                 capBodies.Count == 3);
-            TestHarness.Check("捕获宿主 Lowered 形态（cell 构造 + CellRef 实参 + setValue）",
+            CaseAssertions.Check("捕获宿主 Lowered 形态（cell 构造 + CellRef 实参 + setValue）",
                 NormLambda(LoweredDescribe.Body(BodyOf(capBodies, "f"))),
                 "Body(f, [x: i32, fn: ..lambda..UUID, .c.p: ..cell..UUID], [" +
                 "Decl(.c.p, ..cell..UUID, = New(..cell..UUID, init, [Param(p,i32)])); " +
@@ -205,13 +205,13 @@ namespace RigiCompiler.Tests
                 "Decl(fn, ..lambda..UUID, = New(..lambda..UUID, init, " +
                 "[CellRef(.c.p,..cell..UUID), CellRef(x,..cell..UUID)])); " +
                 "InstCallStmt(setValue, CellRef(x,..cell..UUID), [Int(2,i32)])])");
-            TestHarness.Check("捕获 $$call 读取 getValue",
+            CaseAssertions.Check("捕获 $$call 读取 getValue",
                 NormLambda(LoweredDescribe.Body(LambdaCallBody(capBodies))),
                 "Body(call, [], [Return(Binary(Add, " +
                 "InstCall(getValue, InstField(.capture.p, This(i32), ..cell..UUID), [], i32), " +
                 "InstCall(getValue, InstField(.capture.x, This(i32), ..cell..UUID), [], i32), " +
                 "i32))])");
-            TestHarness.Check("捕获 init 写 .capture 字段",
+            CaseAssertions.Check("捕获 init 写 .capture 字段",
                 NormLambda(LoweredDescribe.Body(LambdaInitBody(capBodies))),
                 "Body(init, [], [" +
                 "Assign(InstField(.capture.p, This(..lambda..UUID), ..cell..UUID), Param(c0,..cell..UUID)); " +

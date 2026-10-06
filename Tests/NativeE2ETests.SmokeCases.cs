@@ -25,7 +25,7 @@ namespace RigiCompiler.Tests
             const string label = "Linux getRealPath 链接前点点独立预期";
             if (!OperatingSystem.IsLinux())
             {
-                TestHarness.RecordSkip("  SKIP " + label + "：仅 Linux 实盘链接解析，当前平台未验证");
+                CaseAssertions.RecordSkip("  SKIP " + label + "：仅 Linux 实盘链接解析，当前平台未验证");
                 return;
             }
             var root = Path.Combine(Path.GetTempPath(), $"rigi_realpath_dotdot_{Guid.NewGuid():N}");
@@ -36,7 +36,7 @@ namespace RigiCompiler.Tests
                 var marker = Path.Combine(root, "real", "marker");
                 File.WriteAllBytes(marker, new byte[] { 0x72, 0x65, 0x61, 0x6c });
                 Directory.CreateSymbolicLink(link, "real/sub");
-                TestHarness.CheckTrue(label + "：词法折叠目标不存在",
+                CaseAssertions.CheckTrue(label + "：词法折叠目标不存在",
                     !File.Exists(Path.Combine(root, "marker")));
                 var input = root + "/link/../marker";
                 // 公共 Path.of 不做词法正规化；两宿主均须按原始路径访问磁盘。

@@ -37,7 +37,7 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "rc.param.bil");
             var take = FnOf(ctx, "$take(");
-            TestHarness.CheckTrue("① take 入口首条是参数 acquire",
+            CaseAssertions.CheckTrue("① take 入口首条是参数 acquire",
                 take.Blocks[0].Instructions.Count > 0
                 && take.Blocks[0].Instructions[0] is MirAcquireSlot acq
                 && acq.Local == take.Parameters[0].Name,
@@ -62,7 +62,7 @@ namespace RigiCompiler.Tests
             var copies = alias.Blocks.SelectMany(b => b.Instructions.Select((inst, i) => (b, i, inst)))
                 .Where(t => t.inst is MirCopyLocal)
                 .ToList();
-            TestHarness.CheckTrue("② 存在托管 CopyLocal", copies.Count > 0);
+            CaseAssertions.CheckTrue("② 存在托管 CopyLocal", copies.Count > 0);
             foreach (var (block, i, inst) in copies)
             {
                 var copy = (MirCopyLocal)inst;
@@ -70,10 +70,10 @@ namespace RigiCompiler.Tests
                 {
                     continue;
                 }
-                TestHarness.CheckTrue("② 三段式前 Release",
+                CaseAssertions.CheckTrue("② 三段式前 Release",
                     i > 0 && block.Instructions[i - 1] is MirReleaseSlot rel
                     && rel.Local == copy.Target);
-                TestHarness.CheckTrue("② 三段式后 Acquire",
+                CaseAssertions.CheckTrue("② 三段式后 Acquire",
                     i + 1 < block.Instructions.Count
                     && block.Instructions[i + 1] is MirAcquireSlot a
                     && a.Local == copy.Target);
@@ -147,14 +147,14 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var selfGate = BilGate.Accept(SelfCopyBil, "selfcopy.bil");
-            TestHarness.CheckTrue("② 自赋值模块门禁", selfGate.IsAccepted,
+            CaseAssertions.CheckTrue("② 自赋值模块门禁", selfGate.IsAccepted,
                 string.Join("; ", selfGate.Errors.Take(3)));
             if (selfGate.IsAccepted)
             {
                 var selfCtx = new MwContext(selfGate.Module!);
                 RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(selfCtx);
                 var idFn = FnOf(selfCtx, "$id(");
-                TestHarness.CheckTrue("② dst==src CopyLocal 已删除",
+                CaseAssertions.CheckTrue("② dst==src CopyLocal 已删除",
                     !idFn.Blocks.SelectMany(b => b.Instructions).OfType<MirCopyLocal>().Any());
             }
 
@@ -171,12 +171,12 @@ namespace RigiCompiler.Tests
             var concat = main.Blocks.SelectMany(b => b.Instructions)
                 .Select((inst, i) => (inst, i))
                 .FirstOrDefault(t => t.inst is MirBinaryIntrinsic);
-            TestHarness.CheckTrue("③ 含 string concat", concat.inst != null);
+            CaseAssertions.CheckTrue("③ 含 string concat", concat.inst != null);
             if (concat.inst is MirBinaryIntrinsic bin)
             {
                 var block = main.Blocks.First(b => b.Instructions.Contains(bin));
                 var idx = block.Instructions.ToList().IndexOf(bin);
-                TestHarness.CheckTrue("③ concat 前是 ReleaseSlot",
+                CaseAssertions.CheckTrue("③ concat 前是 ReleaseSlot",
                     idx > 0 && block.Instructions[idx - 1] is MirReleaseSlot pre
                     && pre.Local == bin.Target);
             }
@@ -194,16 +194,16 @@ namespace RigiCompiler.Tests
                 "}\n",
                 "rc.ret.bil");
             var wrap = FnOf(ctx, "$wrap(");
-            TestHarness.CheckTrue("④ $mw.ret 已登记",
+            CaseAssertions.CheckTrue("④ $mw.ret 已登记",
                 wrap.Locals.Any(l => l.Name == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName));
             var retBlock = wrap.Blocks.First(b => b.Terminator is MirRet);
-            TestHarness.CheckTrue("④ ret 操作数是 $mw.ret",
+            CaseAssertions.CheckTrue("④ ret 操作数是 $mw.ret",
                 retBlock.Terminator is MirRet { Value: MirLocalOperand op }
                 && op.Name == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName);
-            TestHarness.CheckTrue("④ ret 块末尾是 ReleaseSlot",
+            CaseAssertions.CheckTrue("④ ret 块末尾是 ReleaseSlot",
                 retBlock.Instructions.Count > 0
                 && retBlock.Instructions[^1] is MirReleaseSlot);
-            TestHarness.CheckTrue("④ 出口 release 不含 $mw.ret",
+            CaseAssertions.CheckTrue("④ 出口 release 不含 $mw.ret",
                 !retBlock.Instructions.TakeLast(1).OfType<MirReleaseSlot>()
                     .Any(r => r.Local == RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName)
                 || wrap.Parameters.All(p => p.Name != RigiCompiler.Middleware.Passes.RcInjectionPass.RetLocalName));
@@ -228,13 +228,13 @@ namespace RigiCompiler.Tests
                 "rc.this.bil");
             var classGet = FnOf(ctx, "C$get");
             var structGet = FnOf(ctx, "S$get");
-            TestHarness.CheckTrue("⑤ class .this 入口 acquire",
+            CaseAssertions.CheckTrue("⑤ class .this 入口 acquire",
                 classGet.Blocks[0].Instructions.OfType<MirAcquireSlot>()
                     .Any(a => a.Local == ".this"));
-            TestHarness.CheckTrue("⑤ 值类型 .this 豁免 acquire",
+            CaseAssertions.CheckTrue("⑤ 值类型 .this 豁免 acquire",
                 !structGet.Blocks[0].Instructions.OfType<MirAcquireSlot>()
                     .Any(a => a.Local == ".this"));
-            TestHarness.CheckTrue("⑤ 值类型 .this 豁免 release",
+            CaseAssertions.CheckTrue("⑤ 值类型 .this 豁免 release",
                 !structGet.Blocks.SelectMany(b => b.Instructions).OfType<MirReleaseSlot>()
                     .Any(r => r.Local == ".this"));
 
@@ -252,7 +252,7 @@ namespace RigiCompiler.Tests
                 "rc.void.bil");
             var drop = FnOf(ctx, "$drop(");
             var dropRet = drop.Blocks.First(b => b.Terminator is MirRet);
-            TestHarness.CheckTrue("⑥ void 函数 ret 块含 ReleaseSlot",
+            CaseAssertions.CheckTrue("⑥ void 函数 ret 块含 ReleaseSlot",
                 dropRet.Instructions.OfType<MirReleaseSlot>().Any());
 
             // .ll 黄金：含 ref 拷贝的函数出现 acquire/release 配对
@@ -279,17 +279,17 @@ namespace RigiCompiler.Tests
             using var llvmLease7179 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(ctx, ctx.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue(".ll 含 rigi_ref_acquire",
+            CaseAssertions.CheckTrue(".ll 含 rigi_ref_acquire",
                 ll.Contains("call i64 @rigi_ref_acquire("), ll);
-            TestHarness.CheckTrue(".ll 含 rigi_ref_release",
+            CaseAssertions.CheckTrue(".ll 含 rigi_ref_release",
                 ll.Contains("call void @rigi_ref_release("), ll);
-            TestHarness.CheckTrue(".ll 胖引用复合写入由同一 ownership region 包裹",
+            CaseAssertions.CheckTrue(".ll 胖引用复合写入由同一 ownership region 包裹",
                 LlRegionContains(ll, "call i64 @rigi_ref_acquire(",
                     "call void @rigi_ref_release(", "store { i64, i64 }"), ll);
-            TestHarness.CheckTrue(".ll String 复合写入由同一 ownership region 包裹",
+            CaseAssertions.CheckTrue(".ll String 复合写入由同一 ownership region 包裹",
                 LlRegionContains(ll, "call void @rigi_string_acquire(",
                     "call void @rigi_string_release(", "store { ptr, i64 }"), ll);
-            TestHarness.CheckTrue(".ll rich value 复合写入由同一 ownership region 包裹",
+            CaseAssertions.CheckTrue(".ll rich value 复合写入由同一 ownership region 包裹",
                 LlRegionContains(ll, "call void @rigi_value_acquire(",
                     "call void @rigi_value_release(", "@llvm.memcpy"), ll);
 
@@ -328,15 +328,15 @@ namespace RigiCompiler.Tests
             using (var regionModule = ModuleBuilder.Build(ctx, ctx.Mir!))
             {
                 var regionLl = regionModule.PrintToString();
-                TestHarness.CheckTrue(".ll 出口 release 序列由同一 region 包裹",
+                CaseAssertions.CheckTrue(".ll 出口 release 序列由同一 region 包裹",
                     LlRegionContains(regionLl, "call void @rigi_ref_release(",
                         "call void @rigi_string_release(", "call void @rigi_value_release("),
                     regionLl);
-                TestHarness.CheckTrue(".ll 参数 acquire 段由同一 region 包裹",
+                CaseAssertions.CheckTrue(".ll 参数 acquire 段由同一 region 包裹",
                     LlRegionMaxCount(regionLl, "call i64 @rigi_ref_acquire(") >= 2, regionLl);
-                TestHarness.CheckTrue(".ll rich temps 级联析构由同一 region 包裹",
+                CaseAssertions.CheckTrue(".ll rich temps 级联析构由同一 region 包裹",
                     LlRegionMaxCount(regionLl, "call void @rigi_value_release(") >= 2, regionLl);
-                TestHarness.CheckTrue(".ll boxed temps 级联析构由同一 region 包裹",
+                CaseAssertions.CheckTrue(".ll boxed temps 级联析构由同一 region 包裹",
                     LlRegionMaxCount(regionLl, "call void @rigi_ref_release(") >= 2, regionLl);
             }
         }
@@ -458,10 +458,10 @@ namespace RigiCompiler.Tests
                 "rc.pad.bil");
             var main = FnOf(ctx, "$main(");
             var pad = main.Blocks.SingleOrDefault(b => b.Id == PadId);
-            TestHarness.CheckTrue("① 含可抛调用函数有传播垫", pad != null);
-            TestHarness.CheckTrue("① 垫 MirRetThrow 收尾",
+            CaseAssertions.CheckTrue("① 含可抛调用函数有传播垫", pad != null);
+            CaseAssertions.CheckTrue("① 垫 MirRetThrow 收尾",
                 pad != null && pad.Terminator is MirRetThrow);
-            TestHarness.CheckTrue("① 垫指令全 ReleaseSlot",
+            CaseAssertions.CheckTrue("① 垫指令全 ReleaseSlot",
                 pad != null && pad.Instructions.Count > 0
                 && pad.Instructions.All(i => i is MirReleaseSlot));
             var retBlock = main.Blocks.First(b => b.Terminator is MirRet);
@@ -471,12 +471,12 @@ namespace RigiCompiler.Tests
             {
                 retTail.Insert(0, rel.Local);
             }
-            TestHarness.CheckTrue("① 垫 release 序与 ret 出口同口径",
+            CaseAssertions.CheckTrue("① 垫 release 序与 ret 出口同口径",
                 pad != null
                 && pad.Instructions.OfType<MirReleaseSlot>().Select(r => r.Local)
                     .SequenceEqual(retTail),
                 string.Join(",", retTail));
-            TestHarness.CheckTrue("① 可抛指令 ExcTarget 全解析指向垫",
+            CaseAssertions.CheckTrue("① 可抛指令 ExcTarget 全解析指向垫",
                 pad != null && main.Blocks.SelectMany(b => b.Instructions).All(inst =>
                     inst switch
                     {
@@ -495,7 +495,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return seven() }\n",
                 "rc.padfree.bil");
             var seven = FnOf(ctx, "$seven(");
-            TestHarness.CheckTrue("② 无可抛/守卫指令函数无传播垫",
+            CaseAssertions.CheckTrue("② 无可抛/守卫指令函数无传播垫",
                 seven.Blocks.All(b => b.Id != PadId));
 
             // ③ throw 直写出厂：ExcTarget 解析进垫、原 MirRetThrow 终结符
@@ -511,15 +511,15 @@ namespace RigiCompiler.Tests
                 "rc.throw.bil");
             var boom = FnOf(ctx, "$boom(");
             var boomPad = boom.Blocks.SingleOrDefault(b => b.Id == PadId);
-            TestHarness.CheckTrue("③ throw 出厂函数有传播垫", boomPad != null);
+            CaseAssertions.CheckTrue("③ throw 出厂函数有传播垫", boomPad != null);
             var throwInst = boom.Blocks.SelectMany(b => b.Instructions)
                 .OfType<MirThrow>().Single();
-            TestHarness.CheckTrue("③ MirThrow ExcTarget=垫（对象身份）",
+            CaseAssertions.CheckTrue("③ MirThrow ExcTarget=垫（对象身份）",
                 boomPad != null && ReferenceEquals(throwInst.ExcTarget, boomPad));
             var throwBlock = boom.Blocks.Single(b => b.Instructions.Contains(throwInst));
-            TestHarness.CheckTrue("③ throw 块终结符改道 MirBranch(垫)",
+            CaseAssertions.CheckTrue("③ throw 块终结符改道 MirBranch(垫)",
                 throwBlock.Terminator is MirBranch branch && branch.Target == PadId);
-            TestHarness.CheckTrue("③ MirRetThrow 仅传播垫一处",
+            CaseAssertions.CheckTrue("③ MirRetThrow 仅传播垫一处",
                 boom.Blocks.Count(b => b.Terminator is MirRetThrow) == 1);
         }
 

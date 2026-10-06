@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("return@middle 路径", pathA);
-            TestHarness.Check("cleanup 执行、afterTry 跳过、afterMiddle 执行",
+            CaseAssertions.Check("cleanup 执行、afterTry 跳过、afterMiddle 执行",
                 pathA.Stdout, "cleanup\nafterMiddle\n");
             CheckI32("return@middle 返回", pathA, 1);
             var pathB = Run(
@@ -99,7 +99,7 @@ namespace RigiCompiler.Tests
                 "    return 2\n" +
                 "}\n");
             CheckOk("return@outer 路径", pathB);
-            TestHarness.Check("cleanup 执行、afterTry/afterMiddle 跳过",
+            CaseAssertions.Check("cleanup 执行、afterTry/afterMiddle 跳过",
                 pathB.Stdout, "cleanup\n");
             CheckI32("return@outer 返回", pathB, 2);
             var pathC = Run(
@@ -120,7 +120,7 @@ namespace RigiCompiler.Tests
                 "    return 3\n" +
                 "}\n");
             CheckOk("无 exit 路径", pathC);
-            TestHarness.Check("work/cleanup/afterTry/afterMiddle 全执行",
+            CaseAssertions.Check("work/cleanup/afterTry/afterMiddle 全执行",
                 pathC.Stdout, "work\ncleanup\nafterTry\nafterMiddle\n");
             CheckI32("无 exit 返回", pathC, 3);
 
@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckOk("return@ 穿 try/catch/finally", throughTry);
-            TestHarness.Check("finally 执行且 catch 不触发", throughTry.Stdout, "fin\n");
+            CaseAssertions.Check("finally 执行且 catch 不触发", throughTry.Stdout, "fin\n");
             CheckI32("return@ 产值 5", throughTry, 5);
 
             // (e) weaving 旧 bug 回归：try 后 continuation 抛 catch 类型
@@ -160,7 +160,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return r\n" +
                 "}\n");
-            TestHarness.CheckTrue("try 后 continuation 异常不被前 catch 捕获",
+            CaseAssertions.CheckTrue("try 后 continuation 异常不被前 catch 捕获",
                 notCaught.Exception?.ExceptionObject is VmObject escaped
                 && escaped.TypeRef.Contains("RuntimeException"),
                 notCaught.Exception?.ToString() ?? "<null>");
@@ -192,7 +192,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return r\n" +
                 "}\n");
-            TestHarness.CheckTrue("finally throw 覆盖并跳过 dispatcher",
+            CaseAssertions.CheckTrue("finally throw 覆盖并跳过 dispatcher",
                 overrideThrow.Exception?.ExceptionObject is VmObject thrown
                 && thrown.TypeRef.Contains("RuntimeException"),
                 overrideThrow.Exception?.ToString() ?? "<null>");
@@ -220,7 +220,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("finally return@middle 覆盖 body return@outer", finallyOverrideNamed);
-            TestHarness.Check("命中 middle（afterTry 跳过、afterMiddle/afterOuter 执行）",
+            CaseAssertions.Check("命中 middle（afterTry 跳过、afterMiddle/afterOuter 执行）",
                 finallyOverrideNamed.Stdout, "afterMiddle\nafterOuter\n");
             CheckI32("middle 路径返回", finallyOverrideNamed, 1);
 
@@ -263,7 +263,7 @@ namespace RigiCompiler.Tests
                 "    return (r + s)\n" +
                 "}\n");
             CheckOk("using 穿越 relay", usingRelay);
-            TestHarness.Check("逆序 dispose（db,da 后 dc）", usingRelay.Stdout, "db\nda\ndc\n");
+            CaseAssertions.Check("逆序 dispose（db,da 后 dc）", usingRelay.Stdout, "db\nda\ndc\n");
             CheckI32("using 穿越产值 7 + 3", usingRelay, 10);
 
             // (i) 循环体 return@ 外层值块（while / do-while / for）
@@ -396,7 +396,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckOk("循环内 return@ 穿 try/finally", loopThroughTry);
-            TestHarness.Check("finally 执行", loopThroughTry.Stdout, "fin\n");
+            CaseAssertions.Check("finally 执行", loopThroughTry.Stdout, "fin\n");
             CheckI32("穿 try 产值 5", loopThroughTry, 5);
             var loopFinallyOverride = Run(
                 "pub func main(): i32 {\n" +

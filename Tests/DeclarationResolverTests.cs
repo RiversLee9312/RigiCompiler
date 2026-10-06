@@ -13,9 +13,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class DeclarationResolverTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("DeclarationResolver",
+
+        internal static TestSuiteData Spec { get; } = new("DeclarationResolver",
         [
             (nameof(TestTypeReferences), TestTypeReferences),
             (nameof(TestGenericAndNullable), TestGenericAndNullable),
@@ -75,7 +75,7 @@ namespace RigiCompiler.Tests
         // 多源文件经全管线解析后组成编译单元，执行 P1 + P2
         private static (CompilationUnit Unit, DeclarationCollection Decls) ResolveUnit(params string[] sources)
         {
-            var roots = sources.Select(TestHarness.ParseRoot).ToArray();
+            var roots = sources.Select(CompilerTestTools.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
@@ -84,7 +84,7 @@ namespace RigiCompiler.Tests
 
         private static void TestGenericVariance()
         {
-            TestHarness.Section("P2 Generic Variance (§3.6)");
+            CompilerTestTools.Section("P2 Generic Variance (§3.6)");
 
             var (ok, _) = ResolveUnit(
                 "class Producer\\<out T> {\n" +
@@ -98,17 +98,17 @@ namespace RigiCompiler.Tests
 
             var (badOut, _) = ResolveUnit(
                 "class Producer\\<out T> { pub func put(value: T) { } }\n");
-            TestHarness.CheckSemanticError("out 不能出现在方法参数", badOut.Diagnostics,
+            CaseAssertions.CheckSemanticError("out 不能出现在方法参数", badOut.Diagnostics,
                 "covariant parameter 'T' cannot be used in parameter 'value' of method 'put'");
 
             var (badIn, _) = ResolveUnit(
                 "class Consumer\\<in T> { pub func get(): T { return default } }\n");
-            TestHarness.CheckSemanticError("in 不能出现在方法返回值", badIn.Diagnostics,
+            CaseAssertions.CheckSemanticError("in 不能出现在方法返回值", badIn.Diagnostics,
                 "contravariant parameter 'T' cannot be used in return type of method 'get'");
 
             var (badFunction, _) = ResolveUnit(
                 "func f\\<out T>(): T { return default }\n");
-            TestHarness.CheckSemanticError("函数泛型参数不接受型变", badFunction.Diagnostics,
+            CaseAssertions.CheckSemanticError("函数泛型参数不接受型变", badFunction.Diagnostics,
                 "variance is only allowed on type declarations");
 
             // init 构造参数豁免（§3.6 同 Kotlin：构造不产生只读接口写入暴露）
@@ -128,14 +128,14 @@ namespace RigiCompiler.Tests
 
             var (stillBad, _) = ResolveUnit(
                 "class Box\\<out T> { pub var item: T\n    pub init(_ -> item)\n}\n");
-            TestHarness.CheckSemanticError("out T 仍不可用于可变字段", stillBad.Diagnostics,
+            CaseAssertions.CheckSemanticError("out T 仍不可用于可变字段", stillBad.Diagnostics,
                 "covariant parameter 'T' cannot be used in field 'item'");
         }
 
         // 无诊断断言（失败时附带诊断袋内容）
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => $"{d.Phase}: {d.Message}")));
         }
 
@@ -157,7 +157,7 @@ namespace RigiCompiler.Tests
         // ===== 子任务 1：类型引用解析（基本类型 / 用户类型 / 参数与返回 / 失败毒化）=====
         private static void TestTypeReferences()
         {
-            TestHarness.Section("P2 Type References (basics)");
+            CompilerTestTools.Section("P2 Type References (basics)");
 
             var (unit, _) = ResolveUnit(
                 "var a: i32\n" +
@@ -170,41 +170,41 @@ namespace RigiCompiler.Tests
             var global = unit.Symbols.GlobalNamespace;
 
             CheckNoErrors("无诊断", unit);
-            TestHarness.CheckTrue("i32 字段解析到 bootstrap",
+            CaseAssertions.CheckTrue("i32 字段解析到 bootstrap",
                 ReferenceEquals(global.Fields.Single(f => f.Name == "a").FieldType, b.Int32));
-            TestHarness.CheckTrue("String 字段解析到 bootstrap",
+            CaseAssertions.CheckTrue("String 字段解析到 bootstrap",
                 ReferenceEquals(global.Fields.Single(f => f.Name == "b").FieldType, b.String));
             var user = GlobalType(unit, "User");
-            TestHarness.CheckTrue("用户类型解析同一引用",
+            CaseAssertions.CheckTrue("用户类型解析同一引用",
                 ReferenceEquals(global.Fields.Single(f => f.Name == "u").FieldType, user));
-            TestHarness.CheckTrue("Object 裸名经 core 隐式解析",
+            CaseAssertions.CheckTrue("Object 裸名经 core 隐式解析",
                 ReferenceEquals(GlobalType(unit, "Holder").Fields.Single(f => f.Name == "o").FieldType, b.Object));
             var add = global.Methods.Single(m => m.Name == "add");
-            TestHarness.CheckTrue("参数类型解析",
+            CaseAssertions.CheckTrue("参数类型解析",
                 ReferenceEquals(add.Parameters[0].Type, b.Int32) && ReferenceEquals(add.Parameters[1].Type, b.Int32));
-            TestHarness.CheckTrue("返回类型解析", ReferenceEquals(add.ReturnType, b.Int32));
+            CaseAssertions.CheckTrue("返回类型解析", ReferenceEquals(add.ReturnType, b.Int32));
 
             // 解析失败 → ErrorType 毒化（后续检查静默）
             var (unit2, _) = ResolveUnit("var x: NoSuchType\n");
-            TestHarness.CheckSemanticError("未知名诊断", unit2.Diagnostics, "Unresolved type or namespace: 'NoSuchType'");
+            CaseAssertions.CheckSemanticError("未知名诊断", unit2.Diagnostics, "Unresolved type or namespace: 'NoSuchType'");
             var poisoned = unit2.Symbols.GlobalNamespace.Fields.Single(f => f.Name == "x").FieldType;
-            TestHarness.CheckTrue("失败绑 ErrorType 毒化（编译单元单例）",
+            CaseAssertions.CheckTrue("失败绑 ErrorType 毒化（编译单元单例）",
                 poisoned is ErrorTypeSymbol && ReferenceEquals(poisoned, unit2.Symbols.ErrorType));
 
             // 毒化传播：泛型实参失败只报实参一处，整体静默毒化
             var (unit3, _) = ResolveUnit("class Box\\<T> { }\nvar x: Box\\<Nope>\n");
-            TestHarness.CheckTrue("毒化传播不添新诊断",
+            CaseAssertions.CheckTrue("毒化传播不添新诊断",
                 unit3.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error) == 1);
-            TestHarness.CheckSemanticError("实参未知名", unit3.Diagnostics, "Unresolved type or namespace: 'Nope'");
-            TestHarness.CheckTrue("构造整体毒化",
+            CaseAssertions.CheckSemanticError("实参未知名", unit3.Diagnostics, "Unresolved type or namespace: 'Nope'");
+            CaseAssertions.CheckTrue("构造整体毒化",
                 unit3.Symbols.GlobalNamespace.Fields.Single(f => f.Name == "x").FieldType is ErrorTypeSymbol);
 
             // 泛型实参数目不匹配
             var (unit4, _) = ResolveUnit("class Box\\<T> { }\nvar x: Box\\<i32, i32>\n");
-            TestHarness.CheckSemanticError("实参数目不匹配", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("实参数目不匹配", unit4.Diagnostics,
                 "'Box' expects 1 type argument(s), got 2");
             var (unit5, _) = ResolveUnit("var x: i32\\<i32>\n");
-            TestHarness.CheckSemanticError("非泛型类型带实参", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("非泛型类型带实参", unit5.Diagnostics,
                 "'i32' expects 0 type argument(s), got 1");
         }
 
@@ -213,7 +213,7 @@ namespace RigiCompiler.Tests
         // 既有元数诊断路径）=====
         private static void TestArityLookup()
         {
-            TestHarness.Section("P2 Type References (arity distinction)");
+            CompilerTestTools.Section("P2 Type References (arity distinction)");
 
             var (unit, _) = ResolveUnit(
                 "shared class Task { }\n" +
@@ -225,12 +225,12 @@ namespace RigiCompiler.Tests
 
             CheckNoErrors("无诊断", unit);
             var bareField = global.Fields.Single(f => f.Name == "bare").FieldType;
-            TestHarness.CheckTrue("裸名 Task 解析到非泛型声明",
+            CaseAssertions.CheckTrue("裸名 Task 解析到非泛型声明",
                 bareField is TypeSymbol bareType
                 && ReferenceEquals(bareType, global.Types.Single(t => t.Name == "Task"
                     && t.GenericParameters.Count == 0)));
             var genericField = global.Fields.Single(f => f.Name == "generic").FieldType;
-            TestHarness.CheckTrue("带实参 Task\\<i32> 解析到泛型声明构造",
+            CaseAssertions.CheckTrue("带实参 Task\\<i32> 解析到泛型声明构造",
                 genericField is TypeSymbol genericType
                 && genericType.ConstructedFrom != null
                 && ReferenceEquals(genericType.ConstructedFrom,
@@ -238,7 +238,7 @@ namespace RigiCompiler.Tests
                 && genericType.TypeArguments!.Count == 1
                 && ReferenceEquals(genericType.TypeArguments[0], unit.Symbols.Bootstrap.Int32));
             var deepField = global.Fields.Single(f => f.Name == "deep").FieldType;
-            TestHarness.CheckTrue("嵌套 Task\\<Task\\<String>> 逐层正确构造",
+            CaseAssertions.CheckTrue("嵌套 Task\\<Task\\<String>> 逐层正确构造",
                 deepField is TypeSymbol deepType
                 && deepType.ConstructedFrom != null
                 && deepType.TypeArguments![0] is TypeSymbol inner
@@ -247,16 +247,16 @@ namespace RigiCompiler.Tests
 
             // 带实参但只有非泛型声明 → 既有元数诊断
             var (unit2, _) = ResolveUnit("class Task { }\nvar x: Task\\<i32>\n");
-            TestHarness.CheckSemanticError("仅非泛型声明带实参报元数诊断", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅非泛型声明带实参报元数诊断", unit2.Diagnostics,
                 "'Task' expects 0 type argument(s), got 1");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 子任务 1：泛型构造驻留、T?、泛型参数引用 =====
         private static void TestGenericAndNullable()
         {
-            TestHarness.Section("P2 Type References (generics / nullable)");
+            CompilerTestTools.Section("P2 Type References (generics / nullable)");
 
             var (unit, _) = ResolveUnit(
                 "shared class Box\\<T> { var item: T }\n" +
@@ -272,25 +272,25 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断", unit);
             var box = GlobalType(unit, "Box");
             var boxI32a = (TypeSymbol)global.Fields.Single(f => f.Name == "a").FieldType!;
-            TestHarness.CheckTrue("构造类型驻留同一引用",
+            CaseAssertions.CheckTrue("构造类型驻留同一引用",
                 ReferenceEquals(boxI32a, global.Fields.Single(f => f.Name == "b2").FieldType));
-            TestHarness.CheckTrue("不同实参不同实例",
+            CaseAssertions.CheckTrue("不同实参不同实例",
                 !ReferenceEquals(boxI32a, global.Fields.Single(f => f.Name == "c").FieldType));
-            TestHarness.CheckTrue("ConstructedFrom 指泛型定义", ReferenceEquals(boxI32a.ConstructedFrom, box));
-            TestHarness.CheckTrue("实参列表", boxI32a.TypeArguments!.Count == 1
+            CaseAssertions.CheckTrue("ConstructedFrom 指泛型定义", ReferenceEquals(boxI32a.ConstructedFrom, box));
+            CaseAssertions.CheckTrue("实参列表", boxI32a.TypeArguments!.Count == 1
                 && ReferenceEquals(boxI32a.TypeArguments[0], b.Int32));
-            TestHarness.CheckTrue("泛型参数字段 → GenericParameterSymbol 同一引用",
+            CaseAssertions.CheckTrue("泛型参数字段 → GenericParameterSymbol 同一引用",
                 ReferenceEquals(box.Fields.Single(f => f.Name == "item").FieldType, box.GenericParameters[0]));
 
             var nullableI32 = (TypeSymbol)global.Fields.Single(f => f.Name == "n").FieldType!;
-            TestHarness.CheckTrue("T? → Nullable\\<T\\> 构造",
+            CaseAssertions.CheckTrue("T? → Nullable\\<T\\> 构造",
                 ReferenceEquals(nullableI32.ConstructedFrom, b.NullableDefinition)
                 && ReferenceEquals(nullableI32.TypeArguments![0], b.Int32));
-            TestHarness.CheckTrue("i32? 与 Nullable\\<i32> 同实例",
+            CaseAssertions.CheckTrue("i32? 与 Nullable\\<i32> 同实例",
                 ReferenceEquals(nullableI32, global.Fields.Single(f => f.Name == "n2").FieldType));
 
             var deep = (TypeSymbol)global.Fields.Single(f => f.Name == "deep").FieldType!;
-            TestHarness.CheckTrue("嵌套构造 Box\\<Box\\<i32>>",
+            CaseAssertions.CheckTrue("嵌套构造 Box\\<Box\\<i32>>",
                 ReferenceEquals(deep.ConstructedFrom, box)
                 && deep.TypeArguments![0] is TypeSymbol inner && ReferenceEquals(inner, boxI32a));
         }
@@ -298,7 +298,7 @@ namespace RigiCompiler.Tests
         // ===== 子任务 1：名字解析上下文（namespace / 嵌套 / import / core 路径）=====
         private static void TestNameLookupContexts()
         {
-            TestHarness.Section("P2 Name Lookup Contexts");
+            CompilerTestTools.Section("P2 Name Lookup Contexts");
 
             var (unit, _) = ResolveUnit(
                 "namespace app.models\n" +
@@ -313,12 +313,12 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（跨文件/具名/通配）", unit);
             var models = NsOf(unit, "app", "models");
             var user = models.Types.Single(t => t.Name == "User");
-            TestHarness.CheckTrue("同命名空间互见",
+            CaseAssertions.CheckTrue("同命名空间互见",
                 ReferenceEquals(models.Types.Single(t => t.Name == "Order").Fields[0].FieldType, user));
-            TestHarness.CheckTrue("具名 import 解析",
+            CaseAssertions.CheckTrue("具名 import 解析",
                 ReferenceEquals(NsOf(unit, "app", "services").Types.Single(t => t.Name == "UserService")
                     .Fields[0].FieldType, user));
-            TestHarness.CheckTrue("通配 import 解析",
+            CaseAssertions.CheckTrue("通配 import 解析",
                 ReferenceEquals(NsOf(unit, "app", "more").Types.Single(t => t.Name == "Repo")
                     .Fields[0].FieldType, user));
 
@@ -331,29 +331,29 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（嵌套）", unit2);
             var outer = GlobalType(unit2, "Outer");
             var inner = outer.NestedTypes.Single(t => t.Name == "Inner");
-            TestHarness.CheckTrue("成员引用同类型嵌套",
+            CaseAssertions.CheckTrue("成员引用同类型嵌套",
                 ReferenceEquals(outer.Fields.Single(f => f.Name == "slot").FieldType, inner));
-            TestHarness.CheckTrue("外层泛型参数在嵌套内可见",
+            CaseAssertions.CheckTrue("外层泛型参数在嵌套内可见",
                 ReferenceEquals(inner.Fields.Single(f => f.Name == "x").FieldType, outer.GenericParameters[0]));
 
             // core 全路径
             var (unit3, _) = ResolveUnit("var o: core.Object\n");
-            TestHarness.CheckTrue("core 全路径解析",
+            CaseAssertions.CheckTrue("core 全路径解析",
                 ReferenceEquals(unit3.Symbols.GlobalNamespace.Fields[0].FieldType, unit3.Symbols.Bootstrap.Object));
 
             // import 未解析 → 诊断（消费侧静默）
             var (unit4, _) = ResolveUnit("import no.such.Thing\nvar x: Thing\n");
-            TestHarness.CheckSemanticError("未解析 import", unit4.Diagnostics, "Unresolved import: 'no.such.Thing'");
+            CaseAssertions.CheckSemanticError("未解析 import", unit4.Diagnostics, "Unresolved import: 'no.such.Thing'");
 
             // 通配 import 的容器必须是命名空间或类型（未解析同样诊断）
             var (unit5, _) = ResolveUnit("import no.such.*\nvar x: i32\n");
-            TestHarness.CheckSemanticError("未解析通配 import", unit5.Diagnostics, "Unresolved import: 'no.such'");
+            CaseAssertions.CheckSemanticError("未解析通配 import", unit5.Diagnostics, "Unresolved import: 'no.such'");
         }
 
         // ===== 子任务 1 附属：init 参数映射解析（§9.3 前端遗留义务）=====
         private static void TestInitMapping()
         {
-            TestHarness.Section("P2 Init Parameter Mapping");
+            CompilerTestTools.Section("P2 Init Parameter Mapping");
 
             var (unit, _) = ResolveUnit(
                 "class Point {\n" +
@@ -366,43 +366,43 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断", unit);
             var point = GlobalType(unit, "Point");
             var init = point.Methods.First(m => m.Kind == MethodKind.Init);
-            TestHarness.CheckTrue("`_ -> x` 参数名取字段名（P1 语法替换）",
+            CaseAssertions.CheckTrue("`_ -> x` 参数名取字段名（P1 语法替换）",
                 init.Parameters[0].Name == "x" && init.Parameters[1].Name == "y");
-            TestHarness.CheckTrue("省略类型沿用字段类型",
+            CaseAssertions.CheckTrue("省略类型沿用字段类型",
                 ReferenceEquals(init.Parameters[0].Type, b.Int32)
                 && ReferenceEquals(init.Parameters[1].Type, b.String));
             var init2 = point.Methods.Where(m => m.Kind == MethodKind.Init).Skip(1).First();
-            TestHarness.CheckTrue("显式类型映射按标注解析",
+            CaseAssertions.CheckTrue("显式类型映射按标注解析",
                 ReferenceEquals(init2.Parameters[0].Type, b.Int32));
             // MappedField 回写（§9.3 合成的凭据）：省类型/显式类型两分支引用相等
-            TestHarness.CheckTrue("省类型映射 MappedField 落定（引用相等）",
+            CaseAssertions.CheckTrue("省类型映射 MappedField 落定（引用相等）",
                 ReferenceEquals(init.Parameters[0].MappedField,
                     point.Fields.Single(f => f.Name == "x"))
                 && ReferenceEquals(init.Parameters[1].MappedField,
                     point.Fields.Single(f => f.Name == "y")));
-            TestHarness.CheckTrue("显式类型映射 MappedField 落定（引用相等）",
+            CaseAssertions.CheckTrue("显式类型映射 MappedField 落定（引用相等）",
                 ReferenceEquals(init2.Parameters[0].MappedField,
                     point.Fields.Single(f => f.Name == "x")));
 
             var (unit2, _) = ResolveUnit("class C { init(_ -> missing) }\n");
-            TestHarness.CheckSemanticError("映射未知字段", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("映射未知字段", unit2.Diagnostics,
                 "Init parameter mapping targets unknown field: 'missing'");
 
             // 显式写类型的映射参数同样做字段存在性检查（两分支同规则）
             var (unit2b, _) = ResolveUnit("class C { init(v: i32 -> missing) }\n");
-            TestHarness.CheckSemanticError("显式类型映射未知字段", unit2b.Diagnostics,
+            CaseAssertions.CheckSemanticError("显式类型映射未知字段", unit2b.Diagnostics,
                 "Init parameter mapping targets unknown field: 'missing'");
 
             // 映射到无类型标注字段：P2 无法定型（类型推断归 P3），声明侧报错
             var (unit3, _) = ResolveUnit("class C { var x = 1\ninit(_ -> x) }\n");
-            TestHarness.CheckSemanticError("映射无标注字段", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("映射无标注字段", unit3.Diagnostics,
                 "requires field 'x' to have a type annotation");
         }
 
         // ===== 子任务 2：继承 / implements 图 + 循环继承 =====
         private static void TestInheritance()
         {
-            TestHarness.Section("P2 Inheritance Graph");
+            CompilerTestTools.Section("P2 Inheritance Graph");
 
             var (unit, _) = ResolveUnit(
                 "open class Animal { }\n" +
@@ -417,52 +417,52 @@ namespace RigiCompiler.Tests
                 "rich struct Entry : BaseEntry { }\n");
             CheckNoErrors("无诊断（合法继承全形态）", unit);
             var animal = GlobalType(unit, "Animal");
-            TestHarness.CheckTrue("class 基类覆盖默认 Object",
+            CaseAssertions.CheckTrue("class 基类覆盖默认 Object",
                 ReferenceEquals(GlobalType(unit, "Dog").BaseType, animal));
-            TestHarness.CheckTrue("abstract 基类可继承",
+            CaseAssertions.CheckTrue("abstract 基类可继承",
                 ReferenceEquals(GlobalType(unit, "Circle").BaseType, GlobalType(unit, "Shape")));
             var cat = GlobalType(unit, "Cat");
-            TestHarness.CheckTrue("implements 双接口",
+            CaseAssertions.CheckTrue("implements 双接口",
                 cat.Interfaces.Count == 2
                 && ReferenceEquals(cat.Interfaces[0], GlobalType(unit, "Comparable"))
                 && ReferenceEquals(cat.Interfaces[1], GlobalType(unit, "Named")));
-            TestHarness.CheckTrue("interface 继承进 Interfaces",
+            CaseAssertions.CheckTrue("interface 继承进 Interfaces",
                 GlobalType(unit, "Pet").Interfaces.Count == 1
                 && ReferenceEquals(GlobalType(unit, "Pet").Interfaces[0], GlobalType(unit, "Named")));
-            TestHarness.CheckTrue("struct 基类覆盖",
+            CaseAssertions.CheckTrue("struct 基类覆盖",
                 ReferenceEquals(GlobalType(unit, "Entry").BaseType, GlobalType(unit, "BaseEntry")));
 
             var (u2, _) = ResolveUnit("class A { }\nclass B : A { }\n");
-            TestHarness.CheckSemanticError("基类非 open/abstract", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("基类非 open/abstract", u2.Diagnostics,
                 "base class 'A' is not open or abstract");
             var (u3, _) = ResolveUnit("interface I { }\nclass A : I { }\n");
-            TestHarness.CheckSemanticError("class 以 interface 为基类", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("class 以 interface 为基类", u3.Diagnostics,
                 "a class can only inherit from a class");
             var (u4, _) = ResolveUnit("struct S { }\nopen class A { }\nclass C : S { }\n");
-            TestHarness.CheckSemanticError("class 继承 struct", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("class 继承 struct", u4.Diagnostics,
                 "a class can only inherit from a class");
             var (u5, _) = ResolveUnit("open class A { }\nstruct S : A { }\n");
-            TestHarness.CheckSemanticError("struct 继承 class", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("struct 继承 class", u5.Diagnostics,
                 "a struct can only inherit from a struct");
             var (u6, _) = ResolveUnit("struct Base { }\nstruct S : Base { }\n");
-            TestHarness.CheckSemanticError("基 struct 非 open rich", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("基 struct 非 open rich", u6.Diagnostics,
                 "base struct 'Base' must be an open rich struct");
             var (u7, _) = ResolveUnit("interface I { }\nstruct S implements I { }\n");
-            TestHarness.CheckSemanticError("struct implements", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("struct implements", u7.Diagnostics,
                 "structs cannot implement interfaces");
             var (u8, _) = ResolveUnit("class C { }\nclass D implements C { }\n");
-            TestHarness.CheckSemanticError("implements 非接口", u8.Diagnostics, "must be an interface");
+            CaseAssertions.CheckSemanticError("implements 非接口", u8.Diagnostics, "must be an interface");
             var (u9, _) = ResolveUnit("open class A : B { }\nopen class B : A { }\n");
-            TestHarness.CheckSemanticError("class 循环继承", u9.Diagnostics, "Circular inheritance involving 'B'");
+            CaseAssertions.CheckSemanticError("class 循环继承", u9.Diagnostics, "Circular inheritance involving 'B'");
             var (u10, _) = ResolveUnit("interface A : B { }\ninterface B : A { }\n");
-            TestHarness.CheckSemanticError("interface 循环继承", u10.Diagnostics,
+            CaseAssertions.CheckSemanticError("interface 循环继承", u10.Diagnostics,
                 "Circular interface inheritance involving 'B'");
         }
 
         // ===== F2：继承子句填入点（V-C）+ 继承可见性单调性（V5）=====
         private static void TestInheritanceF2()
         {
-            TestHarness.Section("P2 Inheritance Fill-In & Monotonicity (F2)");
+            CompilerTestTools.Section("P2 Inheritance Fill-In & Monotonicity (F2)");
 
             // V-C：构造基类显式 extends 界（probe c5）——登记后延至
             // GenericConstraintChecker 之后收口（用户约束 Bound 彼时就绪）
@@ -560,7 +560,7 @@ namespace RigiCompiler.Tests
             var (v5e, _) = ResolveUnit(
                 "open class SecretBase { pub init()\n pub open func n(): i32 { return 1 } }\n" +
                 "pub class Exposed : SecretBase { }\n");
-            TestHarness.CheckTrue("单调性违规基类仍入图",
+            CaseAssertions.CheckTrue("单调性违规基类仍入图",
                 ReferenceEquals(
                     (GlobalType(v5e, "Exposed").BaseType!.ConstructedFrom
                         ?? GlobalType(v5e, "Exposed").BaseType!),
@@ -570,61 +570,61 @@ namespace RigiCompiler.Tests
         // ===== 子任务 3：修饰符合法性 =====
         private static void TestModifierLegality()
         {
-            TestHarness.Section("P2 Modifier Legality");
+            CompilerTestTools.Section("P2 Modifier Legality");
 
             var (u1, _) = ResolveUnit("rich class C { }\n");
-            TestHarness.CheckSemanticError("rich class", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("rich class", u1.Diagnostics,
                 "'rich' can only be applied to struct/enum struct");
             var (u2, _) = ResolveUnit("rich interface I { }\n");
-            TestHarness.CheckSemanticError("rich interface", u2.Diagnostics, "'rich' cannot be applied to interface");
+            CaseAssertions.CheckSemanticError("rich interface", u2.Diagnostics, "'rich' cannot be applied to interface");
             var (u3, _) = ResolveUnit("@WrapperTarget(.Entity)\nrich wrapper W { }\n");
             CheckNoErrors("wrapper 可以显式 rich", u3);
-            TestHarness.CheckTrue("wrapper rich 标记按源码读取", GlobalType(u3, "W").IsRich);
+            CaseAssertions.CheckTrue("wrapper rich 标记按源码读取", GlobalType(u3, "W").IsRich);
             var (u4, _) = ResolveUnit("shared interface I { }\n");
             CheckNoErrors("shared interface 合法（A2）", u4);
             var (u5, _) = ResolveUnit("shared struct S { }\n");
-            TestHarness.CheckSemanticError("shared 非 rich struct", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared 非 rich struct", u5.Diagnostics,
                 "'shared' struct must also be 'rich'");
             var (u6, _) = ResolveUnit("open struct S { }\n");
-            TestHarness.CheckSemanticError("非 rich struct open", u6.Diagnostics, "non-rich struct cannot be 'open'");
+            CaseAssertions.CheckSemanticError("非 rich struct open", u6.Diagnostics, "non-rich struct cannot be 'open'");
             var (u7, _) = ResolveUnit("abstract struct S { }\n");
-            TestHarness.CheckSemanticError("非 rich struct abstract", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct abstract", u7.Diagnostics,
                 "non-rich struct cannot be 'abstract'");
             var (u8, _) = ResolveUnit("open enum struct E {}[A]\n");
-            TestHarness.CheckSemanticError("enum struct open", u8.Diagnostics, "enum struct cannot be 'open'");
+            CaseAssertions.CheckSemanticError("enum struct open", u8.Diagnostics, "enum struct cannot be 'open'");
             // 非 rich enum struct 写 open：同因一报（不再叠加 non-rich struct 条）
-            TestHarness.CheckTrue("enum struct open 同因一报",
+            CaseAssertions.CheckTrue("enum struct open 同因一报",
                 u8.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error) == 1,
                 string.Join("; ", u8.Diagnostics.Diagnostics.Select(d => d.Message)));
             var (u9, _) = ResolveUnit("abstract enum struct E {}[A]\n");
-            TestHarness.CheckSemanticError("enum struct abstract", u9.Diagnostics,
+            CaseAssertions.CheckSemanticError("enum struct abstract", u9.Diagnostics,
                 "enum struct cannot be 'abstract'");
             var (u10, _) = ResolveUnit("open abstract class C { }\n");
-            TestHarness.CheckSemanticError("open×abstract", u10.Diagnostics,
+            CaseAssertions.CheckSemanticError("open×abstract", u10.Diagnostics,
                 "'open' and 'abstract' are mutually exclusive");
             var (u11, _) = ResolveUnit("singleton struct S { }\n");
-            TestHarness.CheckSemanticError("singleton struct", u11.Diagnostics,
+            CaseAssertions.CheckSemanticError("singleton struct", u11.Diagnostics,
                 "'singleton' can only be applied to class");
             var (u12, _) = ResolveUnit("singleton class C { }\n");
-            TestHarness.CheckSemanticError("singleton 非 shared", u12.Diagnostics, "singleton class must also be 'shared'");
+            CaseAssertions.CheckSemanticError("singleton 非 shared", u12.Diagnostics, "singleton class must also be 'shared'");
             var (u13, _) = ResolveUnit("abstract singleton shared class C { }\n");
-            TestHarness.CheckSemanticError("abstract×singleton", u13.Diagnostics,
+            CaseAssertions.CheckSemanticError("abstract×singleton", u13.Diagnostics,
                 "'abstract' and 'singleton' are mutually exclusive");
             var (u14, _) = ResolveUnit("@WrapperTarget(.Entity)\nopen wrapper W { }\n");
-            TestHarness.CheckSemanticError("wrapper open", u14.Diagnostics, "wrapper cannot be 'open' or 'abstract'");
+            CaseAssertions.CheckSemanticError("wrapper open", u14.Diagnostics, "wrapper cannot be 'open' or 'abstract'");
             var (u14b, _) = ResolveUnit("open interface I { }\n");
-            TestHarness.CheckSemanticError("interface open", u14b.Diagnostics, "'open' cannot be applied to interface");
+            CaseAssertions.CheckSemanticError("interface open", u14b.Diagnostics, "'open' cannot be applied to interface");
             var (u15, _) = ResolveUnit("pub priv class C { }\n");
-            TestHarness.CheckSemanticError("访问修饰符互斥", u15.Diagnostics,
+            CaseAssertions.CheckSemanticError("访问修饰符互斥", u15.Diagnostics,
                 "Access modifiers are mutually exclusive");
             var (u15b, _) = ResolveUnit("pub pub class C { }\n");
-            TestHarness.CheckSemanticError("重复修饰符", u15b.Diagnostics, "Duplicate modifier 'pub'");
+            CaseAssertions.CheckSemanticError("重复修饰符", u15b.Diagnostics, "Duplicate modifier 'pub'");
             var (u16, _) = ResolveUnit("async var x: i32\n");
-            TestHarness.CheckSemanticError("async 字段", u16.Diagnostics, "'async' can only be applied to functions");
+            CaseAssertions.CheckSemanticError("async 字段", u16.Diagnostics, "'async' can only be applied to functions");
             var (u17, _) = ResolveUnit("ext func foo() { }\n");
-            TestHarness.CheckSemanticError("ext 无限定名", u17.Diagnostics, "'ext' declaration requires a qualified name");
+            CaseAssertions.CheckSemanticError("ext 无限定名", u17.Diagnostics, "'ext' declaration requires a qualified name");
             var (u18, _) = ResolveUnit("class C { ext func String.foo() { } }\n");
-            TestHarness.CheckSemanticError("成员位置 ext", u18.Diagnostics,
+            CaseAssertions.CheckSemanticError("成员位置 ext", u18.Diagnostics,
                 "'ext' can only be applied to global declarations");
 
             // 合法形态对照
@@ -640,14 +640,14 @@ namespace RigiCompiler.Tests
         // W2：静态成员 × 类级泛型声明侧禁令（SYNTAX §9.2.3）
         private static void TestStaticGenericBans()
         {
-            TestHarness.Section("P2 Static Generic Bans");
+            CompilerTestTools.Section("P2 Static Generic Bans");
 
             var (sig, _) = ResolveUnit(
                 "pub class Box\\<T> {\n" +
                 "    pub var v: T\n" +
                 "    pub static func wrap(x: T): Box\\<T> { return new Box\\<T>(x) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("静态方法签名用 T", sig.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态方法签名用 T", sig.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
             var (field, _) = ResolveUnit(
@@ -655,7 +655,7 @@ namespace RigiCompiler.Tests
                 "    pub var v: T\n" +
                 "    pub static var zero: T\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("静态字段类型用 T", field.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态字段类型用 T", field.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
             var (nested, _) = ResolveUnit(
@@ -663,19 +663,19 @@ namespace RigiCompiler.Tests
                 "    pub var v: T\n" +
                 "    pub static func id(x: Array\\<T>): i32 { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("静态方法形参嵌套 Array<T>", nested.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态方法形参嵌套 Array<T>", nested.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
             var (singleton, _) = ResolveUnit(
                 "pub shared singleton class S\\<T> { pub var v: i32 }\n");
-            TestHarness.CheckSemanticError("singleton 不得声明类型参数", singleton.Diagnostics,
+            CaseAssertions.CheckSemanticError("singleton 不得声明类型参数", singleton.Diagnostics,
                 "singleton type 'S' cannot declare type parameters");
 
             var (staticOnly, _) = ResolveUnit(
                 "pub class Util\\<T> {\n" +
                 "    pub static func count(): i32 { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("仅静态成员的泛型类型", staticOnly.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅静态成员的泛型类型", staticOnly.Diagnostics,
                 "type 'Util' cannot declare type parameters because it has only static members");
 
             var (ok, _) = ResolveUnit(
@@ -693,12 +693,12 @@ namespace RigiCompiler.Tests
         // ===== 子任务 4a：rich/shared 单向传染 =====
         private static void TestContagion()
         {
-            TestHarness.Section("P2 Rich/Shared Contagion");
+            CompilerTestTools.Section("P2 Rich/Shared Contagion");
 
             var (u1, _) = ResolveUnit("open shared class SBase { }\nclass Bad : SBase { }\n");
-            TestHarness.CheckSemanticError("shared 基类 ⇒ 子类必须 shared", u1.Diagnostics, "must also be 'shared'");
+            CaseAssertions.CheckSemanticError("shared 基类 ⇒ 子类必须 shared", u1.Diagnostics, "must also be 'shared'");
             var (u2, _) = ResolveUnit("open rich struct RBase { }\nstruct Bad : RBase { }\n");
-            TestHarness.CheckSemanticError("rich 基类 ⇒ 子类必须 rich", u2.Diagnostics, "must also be 'rich'");
+            CaseAssertions.CheckSemanticError("rich 基类 ⇒ 子类必须 rich", u2.Diagnostics, "must also be 'rich'");
 
             // 反向可收紧：非 shared 基类 + shared 子类（闭包合法时）合法
             var (u3, _) = ResolveUnit("open class LBase { }\nshared class Good : LBase { }\n");
@@ -709,7 +709,7 @@ namespace RigiCompiler.Tests
                 "class LocalObj { }\n" +
                 "open class LBase { var o: LocalObj }\n" +
                 "shared class Bad : LBase { }\n");
-            TestHarness.CheckSemanticError("继承字段闭包兜底", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("继承字段闭包兜底", u4.Diagnostics,
                 "is shared and cannot hold local object field 'o'");
         }
 
@@ -723,7 +723,7 @@ namespace RigiCompiler.Tests
 
         private static void TestFieldClosures()
         {
-            TestHarness.Section("P2 Field Closure Table (§3.1.1)");
+            CompilerTestTools.Section("P2 Field Closure Table (§3.1.1)");
 
             // 全部合法持有者行（闭包表每行的允许列）
             var (ok, _) = ResolveUnit(ClosurePrelude +
@@ -740,38 +740,38 @@ namespace RigiCompiler.Tests
 
             // 非 rich struct 行
             var (u1, _) = ResolveUnit(ClosurePrelude + "struct Bad { var u: LocalUser }\n");
-            TestHarness.CheckSemanticError("非 rich struct 持 local object", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 持 local object", u1.Diagnostics,
                 "Non-rich struct 'Bad' cannot hold object field 'u'");
             var (u2, _) = ResolveUnit(ClosurePrelude + "struct Bad { var u: SharedUser }\n");
-            TestHarness.CheckSemanticError("非 rich struct 持 shared object 同禁", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 持 shared object 同禁", u2.Diagnostics,
                 "Non-rich struct 'Bad' cannot hold object field 'u'");
             var (u3, _) = ResolveUnit(ClosurePrelude + "struct Bad { var e: RichEntry }\n");
-            TestHarness.CheckSemanticError("非 rich struct 内嵌 rich", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 内嵌 rich", u3.Diagnostics,
                 "Non-rich struct 'Bad' cannot embed rich value type field 'e'");
 
             // shared rich struct 行
             var (u4, _) = ResolveUnit(ClosurePrelude + "shared rich struct Bad { var u: LocalUser }\n");
-            TestHarness.CheckSemanticError("shared rich struct 持 local object", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared rich struct 持 local object", u4.Diagnostics,
                 "is shared and cannot hold local object field 'u'");
             var (u5, _) = ResolveUnit(ClosurePrelude + "shared rich struct Bad { var e: RichEntry }\n");
-            TestHarness.CheckSemanticError("shared rich struct 内嵌 local rich", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared rich struct 内嵌 local rich", u5.Diagnostics,
                 "is shared and cannot embed non-shared rich value type field 'e'");
 
             // shared wrapper 行
             var (u6, _) = ResolveUnit(ClosurePrelude +
                 "@WrapperTarget(.Entity)\nshared rich wrapper Bad { var u: LocalUser }\n");
-            TestHarness.CheckSemanticError("shared wrapper 持 local object", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared wrapper 持 local object", u6.Diagnostics,
                 "is shared and cannot hold local object field 'u'");
 
             // shared class 行
             var (u7, _) = ResolveUnit(ClosurePrelude + "shared class Bad { var u: LocalUser }\n");
-            TestHarness.CheckSemanticError("shared class 持 local object", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared class 持 local object", u7.Diagnostics,
                 "is shared and cannot hold local object field 'u'");
             var (u8, _) = ResolveUnit(ClosurePrelude + "shared class Bad { var u: LocalUser? }\n");
-            TestHarness.CheckSemanticError("shared class 持 Nullable\\<local>", u8.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared class 持 Nullable\\<local>", u8.Diagnostics,
                 "is shared and cannot hold local object field 'u'");
             var (u9, _) = ResolveUnit(ClosurePrelude + "shared class Bad { var e: RichEntry }\n");
-            TestHarness.CheckSemanticError("shared class 内嵌 local rich", u9.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared class 内嵌 local rich", u9.Diagnostics,
                 "is shared and cannot embed non-shared rich value type field 'e'");
 
             // 泛型实参所展开的字段（§3.1.1 递归）
@@ -783,7 +783,7 @@ namespace RigiCompiler.Tests
             var (u11, _) = ResolveUnit(ClosurePrelude +
                 "struct Pair\\<T> { var first: T }\n" +
                 "struct BadG { var p: Pair\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("非 rich struct 泛型实参展开 local object", u11.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 泛型实参展开 local object", u11.Diagnostics,
                 "Non-rich struct 'BadG' cannot hold object field 'p' (via generic argument of 'Pair')");
         }
 
@@ -796,7 +796,7 @@ namespace RigiCompiler.Tests
         // 此前不查的显式 extends 界一并收口。含未代入 GP 的构造仍跳过。
         private static void TestInstantiationFillIn()
         {
-            TestHarness.Section("P2 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
+            CompilerTestTools.Section("P2 Instantiation Fill-In Limits (§3.1.1/§3.6, bug g4)");
 
             const string prelude =
                 "class LocalUser { }\n" +
@@ -805,7 +805,7 @@ namespace RigiCompiler.Tests
 
             // g4 本体：非 rich struct 经实参持有 Object
             var (u1, _) = ResolveUnit(prelude + "class H { var w: Wrap\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("非 rich struct 经实参持 Object", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 经实参持 Object", u1.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v' " +
                 "(via type argument of 'Wrap<LocalUser>')");
 
@@ -819,7 +819,7 @@ namespace RigiCompiler.Tests
             var (u2, _) = ResolveUnit(prelude +
                 "class Outer\\<T> { var o: Wrap\\<T> }\n" +
                 "class H { var h: Outer\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("嵌套构造字段自身闭包", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("嵌套构造字段自身闭包", u2.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v'");
             var (ok2, _) = ResolveUnit(prelude +
                 "class Outer\\<T> { var o: Wrap\\<T> }\n" +
@@ -831,7 +831,7 @@ namespace RigiCompiler.Tests
             var (ok3, _) = ResolveUnit(prelude + "class H { var b: Box\\<Wrap\\<i32>> }\n");
             CheckNoErrors("Box\\<Wrap\\<i32>> 嵌套合法", ok3);
             var (u3, _) = ResolveUnit(prelude + "class H { var b: Box\\<Wrap\\<LocalUser>> }\n");
-            TestHarness.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("Box\\<Wrap\\<LocalUser>> 嵌套报错", u3.Diagnostics,
                 "Non-rich struct 'Wrap' cannot hold object field 'v'");
 
             // b：shared 持有者经实参持 local 字段
@@ -839,7 +839,7 @@ namespace RigiCompiler.Tests
                 "class LocalUser { }\nshared class SharedUser { }\n" +
                 "shared class S\\<T> { var v: T }\n" +
                 "class H { var s: S\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("shared 持有者经实参持 local", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared 持有者经实参持 local", u4.Diagnostics,
                 "'S' is shared and cannot hold local object field 'v' " +
                 "(via type argument of 'S<LocalUser>')");
             var (ok4, _) = ResolveUnit(
@@ -851,7 +851,7 @@ namespace RigiCompiler.Tests
             // P2 显式 extends 界补齐（此前 P2 不查）：Box\<T extends ValueType>
             var (u5, _) = ResolveUnit(
                 "class LocalUser { }\nclass H { var b: Box\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("P2 显式 extends 界检查", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("P2 显式 extends 界检查", u5.Diagnostics,
                 "Type argument 'LocalUser' does not satisfy the 'Extends ValueType' " +
                 "constraint of 'T'");
 
@@ -861,7 +861,7 @@ namespace RigiCompiler.Tests
                 "class LocalUser { }\n" +
                 "class SC\\<T> { var v: T\n static var s: T? }\n" +
                 "class H { var x: SC\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("静态字段不得使用类级 T", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态字段不得使用类级 T", u6.Diagnostics,
                 "static members cannot use type parameter 'T'");
             var (ok5, _) = ResolveUnit(
                 "shared class SharedUser { }\n" +
@@ -874,14 +874,14 @@ namespace RigiCompiler.Tests
                 "class LocalUser { }\n" +
                 "class AC\\<T> { async func f(x: T) { } }\n" +
                 "class H { var c: AC\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("async 闸门 2 经实参收口", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("async 闸门 2 经实参收口", u7.Diagnostics,
                 "Parameter 'x' of async function 'f' must be a shared-safe type: " +
                 "'LocalUser' (via instantiation 'AC<LocalUser>')");
             var (u8, _) = ResolveUnit(
                 "class LocalUser { }\n" +
                 "class AR\\<T> { async func g(): T { } }\n" +
                 "class H { var c: AR\\<LocalUser> }\n");
-            TestHarness.CheckSemanticError("async 闸门 3 经实参收口", u8.Diagnostics,
+            CaseAssertions.CheckSemanticError("async 闸门 3 经实参收口", u8.Diagnostics,
                 "Return type 'LocalUser' of async function 'g' must be a shared-safe type");
             var (ok6, _) = ResolveUnit(
                 "shared class SharedUser { }\n" +
@@ -899,14 +899,14 @@ namespace RigiCompiler.Tests
                 "class H { var t: Two\\<LocalUser> }\n");
             var hits = u9.Diagnostics.Diagnostics.Count(d =>
                 d.Message.Contains("Non-rich struct 'Wrap' cannot hold object field 'v'"));
-            TestHarness.CheckTrue("同一 (定义, 实参) 对单次填入只报一条", hits == 1,
+            CaseAssertions.CheckTrue("同一 (定义, 实参) 对单次填入只报一条", hits == 1,
                 $"hits={hits}");
         }
 
         // ===== 子任务 5：共享安全闸门（§3.1.1 闸门 1）=====
         private static void TestSharedSafetyGates()
         {
-            TestHarness.Section("P2 Shared-Safety Gates");
+            CompilerTestTools.Section("P2 Shared-Safety Gates");
 
             var (ok, _) = ResolveUnit(
                 "shared class SharedUser { }\n" +
@@ -920,20 +920,20 @@ namespace RigiCompiler.Tests
             CheckNoErrors("共享安全类型过闸门（含实例字段不查）", ok);
 
             var (u1, _) = ResolveUnit("class LocalUser { }\nvar g: LocalUser\n");
-            TestHarness.CheckSemanticError("全局变量持 local object", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("全局变量持 local object", u1.Diagnostics,
                 "Global or static field 'g' must have a shared-safe type");
             var (u2, _) = ResolveUnit("class LocalUser { }\nclass C { static var s: LocalUser }\n");
-            TestHarness.CheckSemanticError("静态字段持 local object", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态字段持 local object", u2.Diagnostics,
                 "Global or static field 's' must have a shared-safe type");
             var (u3, _) = ResolveUnit("class LocalUser { }\nvar g: LocalUser?\n");
-            TestHarness.CheckSemanticError("全局 Nullable\\<local>", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("全局 Nullable\\<local>", u3.Diagnostics,
                 "Global or static field 'g' must have a shared-safe type");
         }
 
         // ===== 子任务 6：泛型约束声明侧检查 =====
         private static void TestGenericConstraints()
         {
-            TestHarness.Section("P2 Generic Constraints (declaration side)");
+            CompilerTestTools.Section("P2 Generic Constraints (declaration side)");
 
             var (unit, _) = ResolveUnit(
                 "interface Comparable { }\n" +
@@ -942,12 +942,12 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（extends）", unit);
             var comparable = GlobalType(unit, "Comparable");
             var tElement = GlobalType(unit, "Container").GenericParameters[0];
-            TestHarness.CheckTrue("类型泛型参数约束填充",
+            CaseAssertions.CheckTrue("类型泛型参数约束填充",
                 tElement.Constraints.Count == 1
                 && tElement.Constraints[0].Kind == GenericConstraintKind.Extends
                 && ReferenceEquals(tElement.Constraints[0].Bound, comparable));
             var process = unit.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "process");
-            TestHarness.CheckTrue("函数泛型参数约束填充",
+            CaseAssertions.CheckTrue("函数泛型参数约束填充",
                 process.GenericParameters[0].Constraints.Count == 1
                 && ReferenceEquals(process.GenericParameters[0].Constraints[0].Bound, comparable));
 
@@ -955,7 +955,7 @@ namespace RigiCompiler.Tests
             var (u2, _) = ResolveUnit("open class Base { }\nfunc f\\<TItem supers Base>(x: TItem) { }\n");
             CheckNoErrors("supers 约束合法", u2);
             var tItem = u2.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f").GenericParameters[0];
-            TestHarness.CheckTrue("supers 约束填充",
+            CaseAssertions.CheckTrue("supers 约束填充",
                 tItem.Constraints.Count == 1 && tItem.Constraints[0].Kind == GenericConstraintKind.Supers
                 && ReferenceEquals(tItem.Constraints[0].Bound, GlobalType(u2, "Base")));
 
@@ -965,35 +965,35 @@ namespace RigiCompiler.Tests
                 "func dump\\<TItem with Serializable>(x: TItem) { }\n");
             CheckNoErrors("with wrapper 合法", u3);
             var (u4, _) = ResolveUnit("class NotWrapper { }\nfunc dump\\<TItem with NotWrapper>(x: TItem) { }\n");
-            TestHarness.CheckSemanticError("with 非 wrapper", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("with 非 wrapper", u4.Diagnostics,
                 "'with' constraint bound of 'TItem' must be a wrapper type");
 
             // 约束 Target 必须是本声明的泛型参数（路径形态 Target 不是裸参数名）
             var (u5, _) = ResolveUnit("func f\\<TItem, core.String extends Comparable>(x: TItem) { }\n" +
                 "interface Comparable { }\n");
-            TestHarness.CheckSemanticError("Target 非泛型参数", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("Target 非泛型参数", u5.Diagnostics,
                 "Constraint target must be a generic parameter of this declaration");
 
             // Bound 解析失败：约束不填充、诊断只在解析处
             var (u6, _) = ResolveUnit("func f\\<TItem extends Missing>(x: TItem) { }\n");
-            TestHarness.CheckSemanticError("Bound 未解析", u6.Diagnostics, "Unresolved type or namespace: 'Missing'");
+            CaseAssertions.CheckSemanticError("Bound 未解析", u6.Diagnostics, "Unresolved type or namespace: 'Missing'");
             var gp = u6.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f").GenericParameters[0];
-            TestHarness.CheckTrue("Bound 失败约束不填充（毒化）", gp.Constraints.Count == 0);
+            CaseAssertions.CheckTrue("Bound 失败约束不填充（毒化）", gp.Constraints.Count == 0);
 
             // 约束边界引用同一声明泛型参数列表中的参数（§3.6 明文禁止）——
             // 专门诊断替代「Unresolved type」通用报错；类型声明（本声明参数
             // 对边界解析不可见）与函数声明（可见）两路径同禁
             var (u7, _) = ResolveUnit("class C\\<T1 extends T2, T2> { }\n");
-            TestHarness.CheckSemanticError("约束边界引用同列表参数（类型）", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("约束边界引用同列表参数（类型）", u7.Diagnostics,
                 "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
             var (u8, _) = ResolveUnit("func f\\<T1 extends T2, T2>(x: T1) { }\n");
-            TestHarness.CheckSemanticError("约束边界引用同列表参数（函数）", u8.Diagnostics,
+            CaseAssertions.CheckSemanticError("约束边界引用同列表参数（函数）", u8.Diagnostics,
                 "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
             // 嵌套泛型实参位置同禁
             var (u9, _) = ResolveUnit(
                 "interface Comparable\\<T> { }\n" +
                 "class C\\<T1 extends Comparable\\<T2>, T2> { }\n");
-            TestHarness.CheckSemanticError("约束边界嵌套引用同列表参数", u9.Diagnostics,
+            CaseAssertions.CheckSemanticError("约束边界嵌套引用同列表参数", u9.Diagnostics,
                 "Constraint bound of 'T1' cannot reference generic parameter 'T2' of the same declaration");
             // 外层作用域的泛型参数作边界合法（宿主类型的 T 不在本声明参数
             // 列表——方法约束引用宿主泛型参数）
@@ -1004,7 +1004,7 @@ namespace RigiCompiler.Tests
         // ===== 子任务 7b：ext 成员注册 =====
         private static void TestExtRegistration()
         {
-            TestHarness.Section("P2 Extension Registration");
+            CompilerTestTools.Section("P2 Extension Registration");
 
             var (unit, _) = ResolveUnit(
                 "ext func String.poke() { }\n" +
@@ -1015,22 +1015,22 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（ext 注册）", unit);
             var stringType = b.String;
             var poke = stringType.Methods.Single(m => m.Name == "poke");
-            TestHarness.CheckTrue("ext 方法注册到目标类型", ReferenceEquals(poke.Owner, stringType));
-            TestHarness.CheckTrue("ext 方法 canonical 带目标前缀",
+            CaseAssertions.CheckTrue("ext 方法注册到目标类型", ReferenceEquals(poke.Owner, stringType));
+            CaseAssertions.CheckTrue("ext 方法 canonical 带目标前缀",
                 CanonicalSymbolPrinter.Print(poke).StartsWith("core::String$"));
             var isEmpty = stringType.Fields.Single(f => f.Name == "isEmpty");
-            TestHarness.CheckTrue("ext 字段注册 + 类型解析",
+            CaseAssertions.CheckTrue("ext 字段注册 + 类型解析",
                 ReferenceEquals(isEmpty.FieldType, b.Bool) && ReferenceEquals(isEmpty.Owner, stringType));
             // ext 实例成员不受全局/静态闸门约束（注册后是目标类型实例字段）
-            TestHarness.CheckTrue("ext 实例字段持 local object 不触闸门",
+            CaseAssertions.CheckTrue("ext 实例字段持 local object 不触闸门",
                 stringType.Fields.Any(f => f.Name == "data") && !unit.Diagnostics.HasErrors);
 
             var (u2, _) = ResolveUnit("ext func Missing.foo() { }\n");
-            TestHarness.CheckSemanticError("ext 目标未解析", u2.Diagnostics, "Unresolved extension target: 'Missing'");
+            CaseAssertions.CheckSemanticError("ext 目标未解析", u2.Diagnostics, "Unresolved extension target: 'Missing'");
             var (u3, _) = ResolveUnit("namespace a.b\next func a.b.foo() { }\n");
-            TestHarness.CheckSemanticError("ext 目标非类型", u3.Diagnostics, "Extension target 'a.b' must be a type");
+            CaseAssertions.CheckSemanticError("ext 目标非类型", u3.Diagnostics, "Extension target 'a.b' must be a type");
             var (u4, _) = ResolveUnit("class Local { }\next static var Local.hook: Local\n");
-            TestHarness.CheckSemanticError("ext 静态字段受闸门", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 静态字段受闸门", u4.Diagnostics,
                 "Global or static field 'hook' must have a shared-safe type");
 
             // ===== M80：ext 目标种类与闭包两闸门 =====
@@ -1040,12 +1040,12 @@ namespace RigiCompiler.Tests
                 "interface IFly { func fly() }\n" +
                 "ext var IFly.speed: i32\n" +
                 "ext func IFly.swoop() { }\n");
-            TestHarness.CheckSemanticError("ext 字段禁注 interface", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 字段禁注 interface", u5.Diagnostics,
                 "Extension field 'speed' cannot target interface 'IFly' (interfaces cannot declare fields)");
-            TestHarness.CheckTrue("ext 方法注册 interface 不受限",
+            CaseAssertions.CheckTrue("ext 方法注册 interface 不受限",
                 u5.Symbols.GlobalNamespace.Types.Single(t => t.Name == "IFly")
                     .Methods.Any(m => m.Name == "swoop"));
-            TestHarness.CheckTrue("被拒 ext 字段不注册（interface）",
+            CaseAssertions.CheckTrue("被拒 ext 字段不注册（interface）",
                 !u5.Symbols.GlobalNamespace.Types.Single(t => t.Name == "IFly")
                     .Fields.Any(f => f.Name == "speed"));
 
@@ -1054,9 +1054,9 @@ namespace RigiCompiler.Tests
                 "class Local { }\n" +
                 "shared class S { }\n" +
                 "ext var S.data: Local\n");
-            TestHarness.CheckSemanticError("shared 目标拒 local object ext 字段", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared 目标拒 local object ext 字段", u6.Diagnostics,
                 "'S' is shared and cannot hold local object field 'data'");
-            TestHarness.CheckTrue("被拒 ext 字段不注册（shared）",
+            CaseAssertions.CheckTrue("被拒 ext 字段不注册（shared）",
                 !u6.Symbols.GlobalNamespace.Types.Single(t => t.Name == "S")
                     .Fields.Any(f => f.Name == "data"));
 
@@ -1064,7 +1064,7 @@ namespace RigiCompiler.Tests
                 "class Local { }\n" +
                 "struct P { var x: i32 }\n" +
                 "ext var P.tag: Local\n");
-            TestHarness.CheckSemanticError("非 rich struct 拒 object ext 字段", u7.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 拒 object ext 字段", u7.Diagnostics,
                 "Non-rich struct 'P' cannot hold object field 'tag'");
 
             // 正例：shared 目标持 shared-safe 字段、非 rich struct 持纯值字段
@@ -1080,9 +1080,9 @@ namespace RigiCompiler.Tests
             var (u9, _) = ResolveUnit(
                 "class Box\\<T> { }\n" +
                 "ext func Box.foo() { }\n");
-            TestHarness.CheckSemanticError("ext 目标裸名命中泛型定义", u9.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 目标裸名命中泛型定义", u9.Diagnostics,
                 "'Box' expects 1 type argument(s), got 0");
-            TestHarness.CheckTrue("被拒 ext 方法不注册（裸名泛型）",
+            CaseAssertions.CheckTrue("被拒 ext 方法不注册（裸名泛型）",
                 !u9.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Box")
                     .Methods.Any(m => m.Name == "foo"));
 
@@ -1091,7 +1091,7 @@ namespace RigiCompiler.Tests
                 "class Box { }\n" +
                 "class Box\\<T> { }\n" +
                 "ext func Box.bar() { }\n");
-            TestHarness.CheckSemanticError("ext 目标同名不同元数歧义", u10.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 目标同名不同元数歧义", u10.Diagnostics,
                 "Ambiguous extension target: 'Box'");
 
             // 非泛型目标仍合法（对照）
@@ -1104,7 +1104,7 @@ namespace RigiCompiler.Tests
             var (u12, _) = ResolveUnit(
                 "class C { }\n" +
                 "protected ext func C.p() { }\n");
-            TestHarness.CheckSemanticError("ext 禁 protected", u12.Diagnostics,
+            CaseAssertions.CheckSemanticError("ext 禁 protected", u12.Diagnostics,
                 "'protected' cannot be applied to extension members");
         }
 
@@ -1118,73 +1118,73 @@ namespace RigiCompiler.Tests
 
         private static void TestWrapperApplications()
         {
-            TestHarness.Section("P2 Wrapper Target Matrix (§14.9)");
+            CompilerTestTools.Section("P2 Wrapper Target Matrix (§14.9)");
 
             // @WrapperTarget 声明侧
             var (u1, _) = ResolveUnit("wrapper NoTarget { }\n");
-            TestHarness.CheckSemanticError("wrapper 缺 @WrapperTarget", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("wrapper 缺 @WrapperTarget", u1.Diagnostics,
                 "requires @WrapperTarget(.Entity/.Value/.Method)");
             var (u2, _) = ResolveUnit("@WrapperTarget(.Entity)\nclass C { }\n");
-            TestHarness.CheckSemanticError("@WrapperTarget 挂非 wrapper", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("@WrapperTarget 挂非 wrapper", u2.Diagnostics,
                 "@WrapperTarget can only be applied to wrapper declarations");
             var (u3, _) = ResolveUnit("@WrapperTarget(.Nope)\nwrapper W { }\n");
-            TestHarness.CheckSemanticError("@WrapperTarget 实参非法", u3.Diagnostics,
+            CaseAssertions.CheckSemanticError("@WrapperTarget 实参非法", u3.Diagnostics,
                 "@WrapperTarget expects .Entity, .Value or .Method");
 
             // 类别匹配（互斥三分类）
             var (u4, _) = ResolveUnit(WrapperPrelude + "@EntityW\nvar x: i32\n");
-            TestHarness.CheckSemanticError("Entity wrapper 挂变量", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("Entity wrapper 挂变量", u4.Diagnostics,
                 "Entity wrapper 'EntityW' can only be applied to type declarations");
             var (u5, _) = ResolveUnit(WrapperPrelude + "@ValueW\nclass C { }\n");
-            TestHarness.CheckSemanticError("Value wrapper 挂类型", u5.Diagnostics,
+            CaseAssertions.CheckSemanticError("Value wrapper 挂类型", u5.Diagnostics,
                 "Value wrapper 'ValueW' can only be applied to fields and variables");
             var (u6, _) = ResolveUnit(WrapperPrelude + "@MethodW\nclass C { }\n");
-            TestHarness.CheckSemanticError("Method wrapper 挂类型", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("Method wrapper 挂类型", u6.Diagnostics,
                 "Method wrapper 'MethodW' can only be applied to methods");
 
             // 宿主可内嵌性 + 矩阵 D（类型目标）
             var (u7, _) = ResolveUnit(WrapperPrelude + "@EntityW\nstruct S { }\n");
             CheckNoErrors("非 rich struct 可以内嵌非 rich wrapper", u7);
-            TestHarness.CheckTrue("wrapper 默认非 rich", !GlobalType(u7, "EntityW").IsRich);
+            CaseAssertions.CheckTrue("wrapper 默认非 rich", !GlobalType(u7, "EntityW").IsRich);
             var (richRejected, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nrich wrapper W { }\n@W\nstruct S { }\n");
-            TestHarness.CheckSemanticError("非 rich struct 不得内嵌 rich wrapper", richRejected.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich struct 不得内嵌 rich wrapper", richRejected.Diagnostics,
                 "Non-rich struct 'S' cannot be wrapped");
             var (fieldRejected, _) = ResolveUnit(
                 "class Ref { }\n@WrapperTarget(.Entity)\nwrapper W { var item: Ref }\n");
-            TestHarness.CheckSemanticError("非 rich wrapper 普通引用字段不豁免", fieldRejected.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich wrapper 普通引用字段不豁免", fieldRejected.Diagnostics,
                 "cannot hold object field 'item'");
             var (nestedRejected, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nrich wrapper R { }\n@R\n@WrapperTarget(.Entity)\nwrapper W { }\n");
-            TestHarness.CheckSemanticError("非 rich wrapper 不能嵌套 rich wrapper", nestedRejected.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 rich wrapper 不能嵌套 rich wrapper", nestedRejected.Diagnostics,
                 "cannot be wrapped");
             var (u8, _) = ResolveUnit(WrapperPrelude + "@EntityW\nshared class C { }\n");
-            TestHarness.CheckSemanticError("矩阵 D：非 shared wrapper 挂 shared 类型", u8.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 D：非 shared wrapper 挂 shared 类型", u8.Diagnostics,
                 "Non-shared wrapper 'EntityW' cannot wrap shared type 'C'");
             var (ok1, _) = ResolveUnit(WrapperPrelude +
                 "@EntityW\nclass C { }\n" +
                 "@EntityW\nrich struct S { }\n" +
                 "@EntityW\ninterface I { }\n" +
                 "@SharedEntityW\nshared class C2 { }\n");
-            TestHarness.CheckTrue("矩阵 D 合法集（class/rich struct/interface + shared wrapper 挂 shared）",
+            CaseAssertions.CheckTrue("矩阵 D 合法集（class/rich struct/interface + shared wrapper 挂 shared）",
                 !ok1.Diagnostics.HasErrors);
             var wrapped = GlobalType(ok1, "C");
-            TestHarness.CheckTrue("AppliedWrappers 记录（引用相等 + 目标类别）",
+            CaseAssertions.CheckTrue("AppliedWrappers 记录（引用相等 + 目标类别）",
                 wrapped.AppliedWrappers.Count == 1
                 && ReferenceEquals(wrapped.AppliedWrappers[0].Wrapper, GlobalType(ok1, "EntityW"))
                 && GlobalType(ok1, "EntityW").WrapperTarget == WrapperTargetKind.Entity);
 
             // 矩阵 A（方法目标）
             var (u9, _) = ResolveUnit(WrapperPrelude + "@MethodW\nfunc g() { }\n");
-            TestHarness.CheckSemanticError("矩阵 A：非 shared wrapper 挂全局方法", u9.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 A：非 shared wrapper 挂全局方法", u9.Diagnostics,
                 "cannot wrap global or static method 'g'");
             var (u10, _) = ResolveUnit(WrapperPrelude +
                 "shared class C { @MethodW\nfunc m() { } }\n");
-            TestHarness.CheckSemanticError("矩阵 A：非 shared wrapper 挂 shared 类型方法", u10.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 A：非 shared wrapper 挂 shared 类型方法", u10.Diagnostics,
                 "cannot wrap method 'm' of shared type 'C'");
             var (u11, _) = ResolveUnit(WrapperPrelude +
                 "class C { @MethodW\nstatic func m() { } }\n");
-            TestHarness.CheckSemanticError("矩阵 A：非 shared wrapper 挂静态方法", u11.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 A：非 shared wrapper 挂静态方法", u11.Diagnostics,
                 "cannot wrap global or static method 'm'");
             var (u12, _) = ResolveUnit(WrapperPrelude +
                 "struct S { @MethodW\nfunc m() { } }\n");
@@ -1192,16 +1192,16 @@ namespace RigiCompiler.Tests
             var (ok2, _) = ResolveUnit(WrapperPrelude +
                 "@SharedMethodW\nfunc g() { }\n" +
                 "class C { @MethodW\nfunc m() { } }\n");
-            TestHarness.CheckTrue("矩阵 A 合法集（shared wrapper 挂全局 + 非 shared 挂 local 实例）",
+            CaseAssertions.CheckTrue("矩阵 A 合法集（shared wrapper 挂全局 + 非 shared 挂 local 实例）",
                 !ok2.Diagnostics.HasErrors);
 
             // 矩阵 B（字段目标）
             var (u13, _) = ResolveUnit(WrapperPrelude + "@ValueW\nvar gf: i32\n");
-            TestHarness.CheckSemanticError("矩阵 B：非 shared wrapper 挂全局字段", u13.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 B：非 shared wrapper 挂全局字段", u13.Diagnostics,
                 "cannot wrap global or static field 'gf'");
             var (u14, _) = ResolveUnit(WrapperPrelude +
                 "shared class C { @ValueW\nvar f: i32 }\n");
-            TestHarness.CheckSemanticError("矩阵 B：非 shared wrapper 挂 shared 类型字段", u14.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 B：非 shared wrapper 挂 shared 类型字段", u14.Diagnostics,
                 "cannot wrap field 'f' of shared type 'C'");
             var (u15, _) = ResolveUnit(WrapperPrelude +
                 "struct S { @ValueW\nvar f: i32 }\n");
@@ -1209,7 +1209,7 @@ namespace RigiCompiler.Tests
             var (ok3, _) = ResolveUnit(WrapperPrelude +
                 "class C { @ValueW\nvar f: i32 }\n" +
                 "shared class C2 { @ValueW\nvar f: i32 }\n");
-            TestHarness.CheckSemanticError("矩阵 B 复查：shared 类型字段非法", ok3.Diagnostics,
+            CaseAssertions.CheckSemanticError("矩阵 B 复查：shared 类型字段非法", ok3.Diagnostics,
                 "cannot wrap field 'f' of shared type 'C2'");
             var (ok4, _) = ResolveUnit(WrapperPrelude + "class C { @ValueW\nvar f: i32 }\n");
             CheckNoErrors("矩阵 B 合法（非 shared 目标实例字段）", ok4);
@@ -1224,7 +1224,7 @@ namespace RigiCompiler.Tests
                 "}\n";
             var (u15b, _) = ResolveUnit(getOnlyPrelude +
                 "class C { @GetOnlyW\nvar f: i32 }\n");
-            TestHarness.CheckSemanticError("get-only Value wrapper 挂 var 字段", u15b.Diagnostics,
+            CaseAssertions.CheckSemanticError("get-only Value wrapper 挂 var 字段", u15b.Diagnostics,
                 "Value wrapper 'GetOnlyW' does not implement .proxy.set");
             var (ok4b, _) = ResolveUnit(getOnlyPrelude +
                 "class C { @GetOnlyW\nconst f: i32 = 0 }\n");
@@ -1234,7 +1234,7 @@ namespace RigiCompiler.Tests
             var (u16, _) = ResolveUnit(WrapperPrelude +
                 "@EntityW\ninterface IW { }\n" +
                 "shared class Impl implements IW { }\n");
-            TestHarness.CheckSemanticError("shared 实现者 × 非 shared wrapper interface", u16.Diagnostics,
+            CaseAssertions.CheckSemanticError("shared 实现者 × 非 shared wrapper interface", u16.Diagnostics,
                 "Shared type 'Impl' cannot implement interface 'IW' wrapped by non-shared wrapper 'EntityW'");
             var (ok5, _) = ResolveUnit(WrapperPrelude +
                 "@EntityW\ninterface IW { }\n" +
@@ -1244,16 +1244,16 @@ namespace RigiCompiler.Tests
 
             // 注解名解析失败 / 非 wrapper
             var (u17, _) = ResolveUnit("@Missing\nclass C { }\n");
-            TestHarness.CheckSemanticError("注解名未解析", u17.Diagnostics, "Unresolved type or namespace: 'Missing'");
+            CaseAssertions.CheckSemanticError("注解名未解析", u17.Diagnostics, "Unresolved type or namespace: 'Missing'");
             var (u18, _) = ResolveUnit("class NotWrapper { }\n@NotWrapper\nclass C { }\n");
-            TestHarness.CheckSemanticError("注解名非 wrapper", u18.Diagnostics, "'NotWrapper' is not a wrapper type");
+            CaseAssertions.CheckSemanticError("注解名非 wrapper", u18.Diagnostics, "'NotWrapper' is not a wrapper type");
 
             // wrapper 继承闭包沿间接 interface 展开，子接口和实现者都必须显式重声明。
             var (u19, _) = ResolveUnit(WrapperPrelude +
                 "@EntityW\ninterface IBase { }\n" +
                 "interface IChild : IBase { }\n" +
                 "class Impl implements IChild { }\n");
-            TestHarness.CheckSemanticError("间接 interface wrapper 必须显式重声明", u19.Diagnostics,
+            CaseAssertions.CheckSemanticError("间接 interface wrapper 必须显式重声明", u19.Diagnostics,
                 "Entity wrapper 'EntityW' inherited by 'IChild' must be explicitly redeclared");
 
             // getter/setter 的 wrapper 应用挂在字段声明上；override 访问器沿字段
@@ -1270,7 +1270,7 @@ namespace RigiCompiler.Tests
                 "        override get(value: _) { return value }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("override getter wrapper 必须显式重声明", u20.Diagnostics,
+            CaseAssertions.CheckSemanticError("override getter wrapper 必须显式重声明", u20.Diagnostics,
                 "Accessor wrapper 'ValueW' inherited by 'value' must be explicitly redeclared");
 
             var (ok6, _) = ResolveUnit(WrapperPrelude +
@@ -1292,23 +1292,23 @@ namespace RigiCompiler.Tests
         // ===== S11a：proxy 声明侧形状校验（§14.2/§14.3/§14.4）=====
         private static void TestProxyShapeChecking()
         {
-            TestHarness.Section("P2 Proxy Shape Checking (§14.2–§14.4)");
+            CompilerTestTools.Section("P2 Proxy Shape Checking (§14.2–§14.4)");
 
             // 泛型元数：Entity/Value 至多一个，Method 零个
             var (g1, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W\\<TTarget, TExtra> { }\n");
-            TestHarness.CheckSemanticError("Entity wrapper 两个泛型参数", g1.Diagnostics,
+            CaseAssertions.CheckSemanticError("Entity wrapper 两个泛型参数", g1.Diagnostics,
                 "Entity wrapper 'W' must declare at most one generic parameter (the TTarget role)");
             var (g2, _) = ResolveUnit(
                 "@WrapperTarget(.Value)\nwrapper W\\<TValue> { }\n");
             CheckNoErrors("Value wrapper 一个泛型参数合法", g2);
             var (g2b, _) = ResolveUnit(
                 "@WrapperTarget(.Value)\nwrapper W\\<TValue, TExtra> { }\n");
-            TestHarness.CheckSemanticError("Value wrapper 两个泛型参数", g2b.Diagnostics,
+            CaseAssertions.CheckSemanticError("Value wrapper 两个泛型参数", g2b.Diagnostics,
                 "Value wrapper 'W' must declare at most one generic parameter (the TField role)");
             var (g3, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\nwrapper W\\<TTarget> { }\n");
-            TestHarness.CheckSemanticError("Method wrapper 泛型参数", g3.Diagnostics,
+            CaseAssertions.CheckSemanticError("Method wrapper 泛型参数", g3.Diagnostics,
                 "Method wrapper 'W' cannot declare generic parameters (§14.2)");
             var (g4, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { }\n" +
@@ -1318,74 +1318,74 @@ namespace RigiCompiler.Tests
             // 类别矩阵：proxy 形态 × wrapper 类别
             var (m1, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.get\\<T>(value: T): T { return value } }\n");
-            TestHarness.CheckSemanticError("Value 形态挂 Entity", m1.Diagnostics,
+            CaseAssertions.CheckSemanticError("Value 形态挂 Entity", m1.Diagnostics,
                 "Proxy '.proxy.get' is not allowed on Entity wrapper 'W'");
             var (m2, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.call\\<TReturn>(): TReturn { return default } }\n");
-            TestHarness.CheckSemanticError("Method 形态挂 Entity", m2.Diagnostics,
+            CaseAssertions.CheckSemanticError("Method 形态挂 Entity", m2.Diagnostics,
                 "Proxy '.proxy.call' is not allowed on Entity wrapper 'W'");
             var (m3, _) = ResolveUnit(
                 "@WrapperTarget(.Value)\nwrapper W { operator .proxy.doSomething(arg: i32): String { return \"\" } }\n");
-            TestHarness.CheckSemanticError("specific 方法挂 Value", m3.Diagnostics,
+            CaseAssertions.CheckSemanticError("specific 方法挂 Value", m3.Diagnostics,
                 "Proxy '.proxy.doSomething' is not allowed on Value wrapper 'W'");
             var (m4, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\nwrapper W { operator .proxy.get\\<T>(value: T): T { return value } }\n");
-            TestHarness.CheckSemanticError("Value 形态挂 Method", m4.Diagnostics,
+            CaseAssertions.CheckSemanticError("Value 形态挂 Method", m4.Diagnostics,
                 "Proxy '.proxy.get' is not allowed on Method wrapper 'W'");
             var (m5, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\n" +
                 "wrapper W { operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return default } }\n");
-            TestHarness.CheckSemanticError("wildcard 挂 Method", m5.Diagnostics,
+            CaseAssertions.CheckSemanticError("wildcard 挂 Method", m5.Diagnostics,
                 "Proxy '.proxy.*' is not allowed on Method wrapper 'W'");
 
             // wildcard canonical shape
             var (w1, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "wrapper W { operator .proxy.*\\<named TNamedArgs..., TUnnamedArgs..., TReturn>(symbol: String): TReturn { return default } }\n");
-            TestHarness.CheckSemanticError(".proxy.* 缺参数包", w1.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.* 缺参数包", w1.Diagnostics,
                 "Wildcard proxy '.proxy.*' must have the canonical shape");
             var (w2, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "wrapper W { operator .proxy.*\\<TNamedArgs, TReturn>(symbol: String, namedArgs: named TNamedArgs..., unnamedArgs: TUnnamedArgs...): TReturn { return default } }\n");
-            TestHarness.CheckSemanticError(".proxy.* 泛型结构错", w2.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.* 泛型结构错", w2.Diagnostics,
                 "Wildcard proxy '.proxy.*' must have the canonical shape");
             var (w3, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "wrapper W { operator .proxy.get.*\\<TValue>(value: TValue): TValue { return value } }\n");
-            TestHarness.CheckSemanticError(".proxy.get.* 缺 symbol", w3.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.get.* 缺 symbol", w3.Diagnostics,
                 "Wildcard proxy '.proxy.get.*' must have the canonical shape");
             var (w4, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\n" +
                 "wrapper W { operator .proxy.set.*\\<TValue>(symbol: String, value: TValue): TValue { return value } }\n");
-            TestHarness.CheckSemanticError(".proxy.set.* 带返回", w4.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.set.* 带返回", w4.Diagnostics,
                 "Wildcard proxy '.proxy.set.*' must have the canonical shape");
 
             // specific 形状
             var (s1, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.get.name(value: i32): i32 { return value } }\n");
-            TestHarness.CheckSemanticError("specific getter 缺泛型参数", s1.Diagnostics,
+            CaseAssertions.CheckSemanticError("specific getter 缺泛型参数", s1.Diagnostics,
                 "Accessor proxy '.proxy.get.name' must declare exactly one generic parameter");
             var (s2, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.set.name\\<T>(value: T): T { return value } }\n");
-            TestHarness.CheckSemanticError("specific setter 带返回", s2.Diagnostics,
+            CaseAssertions.CheckSemanticError("specific setter 带返回", s2.Diagnostics,
                 "Accessor proxy '.proxy.set.name' must declare exactly one generic parameter");
             var (s3, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W { operator .proxy.doSomething\\<T>(arg: i32): String { return \"\" } }\n");
-            TestHarness.CheckSemanticError("specific 方法带泛型", s3.Diagnostics,
+            CaseAssertions.CheckSemanticError("specific 方法带泛型", s3.Diagnostics,
                 "Specific proxy '.proxy.doSomething' cannot declare generic parameters (§14.2)");
             var (s4, _) = ResolveUnit(
                 "@WrapperTarget(.Entity)\nwrapper W\\<TTarget> { operator .proxy.opr.plus\\<T>(another: TTarget): TTarget { return default } }\n");
-            TestHarness.CheckSemanticError("specific operator 带泛型", s4.Diagnostics,
+            CaseAssertions.CheckSemanticError("specific operator 带泛型", s4.Diagnostics,
                 "Specific proxy '.proxy.opr.plus' cannot declare generic parameters (§14.2)");
 
             // .proxy.call 双形态（§14.4）
             var (c1, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\nwrapper W { operator .proxy.call(.name: i32, args: named Any...): Any { return default } }\n");
-            TestHarness.CheckSemanticError(".proxy.call wildcard 形态错", c1.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.call wildcard 形态错", c1.Diagnostics,
                 "Wildcard '.proxy.call' must have shape (.name: String, args: named Any...): Any (§14.4)");
             var (c2, _) = ResolveUnit(
                 "@WrapperTarget(.Method)\nwrapper W { operator .proxy.call(): Any { return default } }\n");
-            TestHarness.CheckSemanticError(".proxy.call specific 缺泛型", c2.Diagnostics,
+            CaseAssertions.CheckSemanticError(".proxy.call specific 缺泛型", c2.Diagnostics,
                 "Specific '.proxy.call' must declare exactly one generic parameter used as the return type (§14.4)");
 
             // 正例：canonical 全形态（Entity 四 wildcard + specific 三类 + TTarget）
@@ -1419,7 +1419,7 @@ namespace RigiCompiler.Tests
         // M88：烘焙合成已删——保留应用登记与形状匹配诊断冒烟
         private static void TestProxyDispatchChains()
         {
-            TestHarness.Section("P2 Proxy Match (M88, no synthesis)");
+            CompilerTestTools.Section("P2 Proxy Match (M88, no synthesis)");
             const string src =
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Logged\\<TTarget> {\n" +
@@ -1432,9 +1432,9 @@ namespace RigiCompiler.Tests
             var (unit, _) = ResolveUnit(src);
             CheckNoErrors("被修饰类无诊断", unit);
             var service = GlobalType(unit, "Service");
-            TestHarness.CheckTrue("AppliedWrappers 登记", service.AppliedWrappers.Count == 1);
-            TestHarness.CheckTrue("无隐藏字段合成", !service.Fields.Any(f => f.Name.StartsWith(".wrapper.")));
-            TestHarness.CheckTrue("无特化/原始体合成",
+            CaseAssertions.CheckTrue("AppliedWrappers 登记", service.AppliedWrappers.Count == 1);
+            CaseAssertions.CheckTrue("无隐藏字段合成", !service.Fields.Any(f => f.Name.StartsWith(".wrapper.")));
+            CaseAssertions.CheckTrue("无特化/原始体合成",
                 !service.Methods.Any(m => m.Name.StartsWith(".proxy.") || m.Name.StartsWith(".wrapped.")));
             // 名中形状不符诊断（措辞保留）
             var (bad, _) = ResolveUnit(
@@ -1444,7 +1444,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "@W\n" +
                 "pub class H { pub func foo(arg: i32): String { return \"x\" } }\n");
-            TestHarness.CheckTrue("specific 形状不符诊断",
+            CaseAssertions.CheckTrue("specific 形状不符诊断",
                 bad.Diagnostics.Diagnostics.Any(d => d.Message.Contains("does not match the shape")));
 
             // #27⑦：specific variadic 形状正例（双方同为位置包 → 无形状不符）
@@ -1458,7 +1458,7 @@ namespace RigiCompiler.Tests
                 "    pub func sum(nums: i32...): i32 { return 0 }\n" +
                 "}\n");
             CheckNoErrors("specific variadic 同形无诊断", okVar);
-            TestHarness.CheckTrue("无形状不符（variadic 正例）",
+            CaseAssertions.CheckTrue("无形状不符（variadic 正例）",
                 !okVar.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("does not match the shape")));
 
@@ -1472,7 +1472,7 @@ namespace RigiCompiler.Tests
                 "pub class Hb {\n" +
                 "    pub func sum(nums: i32...): i32 { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckTrue("ordinary vs variadic 形状不符",
+            CaseAssertions.CheckTrue("ordinary vs variadic 形状不符",
                 badVar.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("does not match the shape")));
 
@@ -1485,7 +1485,7 @@ namespace RigiCompiler.Tests
                 "pub class Hk {\n" +
                 "    pub func sum(nums: named i32...): i32 { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckTrue("positional vs named variadic 形状不符",
+            CaseAssertions.CheckTrue("positional vs named variadic 形状不符",
                 badPackKind.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("does not match the shape")));
         }
@@ -1493,7 +1493,7 @@ namespace RigiCompiler.Tests
         // M88：降级链合成已删——PrintDowngradeRequest 与资格判定冒烟
         private static void TestDowngradeChains()
         {
-            TestHarness.Section("P2 Downgrade Eligibility (M88, no synthesis)");
+            CompilerTestTools.Section("P2 Downgrade Eligibility (M88, no synthesis)");
             const string src =
                 "@WrapperTarget(.Entity)\n" +
                 "pub wrapper Audited {\n" +
@@ -1507,14 +1507,14 @@ namespace RigiCompiler.Tests
             var (unit, _) = ResolveUnit(src);
             CheckNoErrors("有 .proxy.* 应用无诊断", unit);
             var service = GlobalType(unit, "Service");
-            TestHarness.CheckTrue("降级资格", ProxyMatching.HasMethodWildcardProxy(service));
-            TestHarness.CheckTrue("无 router 合成", !service.Methods.Any(m => m.Name == "call???"));
-            TestHarness.Check("PrintDowngradeRequest",
+            CaseAssertions.CheckTrue("降级资格", ProxyMatching.HasMethodWildcardProxy(service));
+            CaseAssertions.CheckTrue("无 router 合成", !service.Methods.Any(m => m.Name == "call???"));
+            CaseAssertions.Check("PrintDowngradeRequest",
                 "Service$fetch(.i32)@.any",
                 CanonicalSymbolPrinter.PrintDowngradeRequest(service, "fetch",
                     Array.Empty<SemanticSymbol>(),
                     new (string?, SemanticSymbol)[] { (null, unit.Symbols.Bootstrap.Int32) }));
-            TestHarness.Check("PrintDowngradeRequest 显式泛型",
+            CaseAssertions.Check("PrintDowngradeRequest 显式泛型",
                 "Service$fetch<.i32,.string>(.i32)@.any",
                 CanonicalSymbolPrinter.PrintDowngradeRequest(service, "fetch",
                     new SemanticSymbol[] { unit.Symbols.Bootstrap.Int32, unit.Symbols.Bootstrap.String },
@@ -1523,43 +1523,43 @@ namespace RigiCompiler.Tests
 
         private static void TestNativeDeclarations()
         {
-            TestHarness.Section("P2 Native Functions (§4.6)");
+            CompilerTestTools.Section("P2 Native Functions (§4.6)");
 
             // 形态规则：无体 / 成员必 static / 仅函数（init/operator/类型/字段均拒绝）
             var (u1, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func f(): i32 { return 1 }\n");
-            TestHarness.CheckSemanticError("native 带函数体", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("native 带函数体", u1.Diagnostics,
                 "Native function 'f' must not have a body");
             var (u2, _) = ResolveUnit("class C { @NativeLibrary(\"rt\")\nnative func f(): i32 }\n");
-            TestHarness.CheckSemanticError("成员 native 非 static", u2.Diagnostics,
+            CaseAssertions.CheckSemanticError("成员 native 非 static", u2.Diagnostics,
                 "Native member function 'f' must be 'static'");
             var (u3a, _) = ResolveUnit("class C { native init() }\n");
-            TestHarness.CheckSemanticError("native init", u3a.Diagnostics,
+            CaseAssertions.CheckSemanticError("native init", u3a.Diagnostics,
                 "'native' can only be applied to functions");
             var (u3b, _) = ResolveUnit("class C { native operator plus(other: C): C }\n");
-            TestHarness.CheckSemanticError("native operator", u3b.Diagnostics,
+            CaseAssertions.CheckSemanticError("native operator", u3b.Diagnostics,
                 "'native' can only be applied to functions");
             var (u3c, _) = ResolveUnit("native class C { }\n");
-            TestHarness.CheckSemanticError("native 类型", u3c.Diagnostics,
+            CaseAssertions.CheckSemanticError("native 类型", u3c.Diagnostics,
                 "'native' can only be applied to functions");
             var (u3d, _) = ResolveUnit("native var x: i32\n");
-            TestHarness.CheckSemanticError("native 变量", u3d.Diagnostics,
+            CaseAssertions.CheckSemanticError("native 变量", u3d.Diagnostics,
                 "'native' can only be applied to functions");
 
             // 组合禁忌：async / 同容器同名重载（V2.5 放行 generic+native）
             var (u4, _) = ResolveUnit("@NativeLibrary(\"rt\")\nasync native func f(): i32\n");
-            TestHarness.CheckSemanticError("native × async", u4.Diagnostics,
+            CaseAssertions.CheckSemanticError("native × async", u4.Diagnostics,
                 "Native function 'f' cannot be 'async'");
             var (u5, _) = ResolveUnit(
                 "@NativeLibrary(\"rigi_rt\")\n@NativeSymbol(\"alloc_array\")\n" +
                 "priv native func alloc_array\\<T>(size: i32): Array\\<T>\n");
             CheckNoErrors("native × 泛型（V2.5 放行）", u5);
             var alloc = u5.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "alloc_array");
-            TestHarness.CheckTrue("泛型 native 标记位",
+            CaseAssertions.CheckTrue("泛型 native 标记位",
                 alloc.IsNative && alloc.GenericParameters.Count == 1);
             var (u6, _) = ResolveUnit(
                 "@NativeLibrary(\"rt\")\nnative func dup(x: i32)\n" +
                 "func dup(x: i32, y: i32) { }\n");
-            TestHarness.CheckSemanticError("native × 同容器重载", u6.Diagnostics,
+            CaseAssertions.CheckSemanticError("native × 同容器重载", u6.Diagnostics,
                 "Native function 'dup' cannot be overloaded");
 
             // 参数/返回类型白名单（参数限基本类型；返回类型 S10 放宽——
@@ -1567,49 +1567,49 @@ namespace RigiCompiler.Tests
             var (u7a, _) = ResolveUnit(
                 "class User { }\n" +
                 "@NativeLibrary(\"rt\")\nnative func f(u: User)\n");
-            TestHarness.CheckSemanticError("参数为用户类型", u7a.Diagnostics,
+            CaseAssertions.CheckSemanticError("参数为用户类型", u7a.Diagnostics,
                 "Parameter 'u' of native function 'f' must be a primitive type");
             var (u7b, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func g(): Object\n");
-            TestHarness.CheckTrue("返回 Object（class 引用类型，S10 放宽）无诊断",
+            CaseAssertions.CheckTrue("返回 Object（class 引用类型，S10 放宽）无诊断",
                 !u7b.Diagnostics.HasErrors);
             var (u7b2, _) = ResolveUnit(
                 "interface IUser { }\n" +
                 "@NativeLibrary(\"rt\")\nnative func g(): IUser\n");
-            TestHarness.CheckTrue("返回接口（引用类型，S10 放宽）无诊断",
+            CaseAssertions.CheckTrue("返回接口（引用类型，S10 放宽）无诊断",
                 !u7b2.Diagnostics.HasErrors);
             var (u7b3, _) = ResolveUnit(
                 "struct User { }\n" +
                 "@NativeLibrary(\"rt\")\nnative func g(): User\n");
-            TestHarness.CheckSemanticError("返回用户 struct（值类型，仍拒绝）", u7b3.Diagnostics,
+            CaseAssertions.CheckSemanticError("返回用户 struct（值类型，仍拒绝）", u7b3.Diagnostics,
                 "Return type of native function 'g' must be a primitive type or a " +
                 "user-declared reference type (class/interface)");
             var (u7c, _) = ResolveUnit("@NativeLibrary(\"rt\")\nnative func h(x: i32?)\n");
-            TestHarness.CheckSemanticError("参数为 Nullable 构造", u7c.Diagnostics,
+            CaseAssertions.CheckSemanticError("参数为 Nullable 构造", u7c.Diagnostics,
                 "Parameter 'x' of native function 'h' must be a primitive type");
 
             // 内建注解：@NativeLibrary 必填；实参必须恰好一个字符串字面量
             var (u8, _) = ResolveUnit("native func f(x: i32)\n");
-            TestHarness.CheckSemanticError("缺 @NativeLibrary", u8.Diagnostics,
+            CaseAssertions.CheckSemanticError("缺 @NativeLibrary", u8.Diagnostics,
                 "Native function 'f' requires @NativeLibrary");
             var (u9a, _) = ResolveUnit("@NativeLibrary\nnative func f(x: i32)\n");
-            TestHarness.CheckSemanticError("@NativeLibrary 无实参", u9a.Diagnostics,
+            CaseAssertions.CheckSemanticError("@NativeLibrary 无实参", u9a.Diagnostics,
                 "@NativeLibrary expects exactly one string literal argument");
             var (u9b, _) = ResolveUnit("@NativeLibrary(42)\nnative func f(x: i32)\n");
-            TestHarness.CheckSemanticError("@NativeLibrary 非字符串实参", u9b.Diagnostics,
+            CaseAssertions.CheckSemanticError("@NativeLibrary 非字符串实参", u9b.Diagnostics,
                 "@NativeLibrary expects exactly one string literal argument");
             var (u9c, _) = ResolveUnit(
                 "@NativeLibrary(\"rt\")\n@NativeSymbol()\nnative func f(x: i32)\n");
-            TestHarness.CheckSemanticError("@NativeSymbol 空实参", u9c.Diagnostics,
+            CaseAssertions.CheckSemanticError("@NativeSymbol 空实参", u9c.Diagnostics,
                 "@NativeSymbol expects exactly one string literal argument");
 
             // 内建注解只允许出现在 native 函数声明上（且不得被 wrapper 检查误伤）
             var (u10a, _) = ResolveUnit("@NativeLibrary(\"rt\")\nfunc f(): i32 { return 1 }\n");
-            TestHarness.CheckSemanticError("@NativeLibrary 挂普通函数", u10a.Diagnostics,
+            CaseAssertions.CheckSemanticError("@NativeLibrary 挂普通函数", u10a.Diagnostics,
                 "@NativeLibrary can only be applied to native functions");
-            TestHarness.CheckTrue("内建注解豁免 wrapper 解析（仅此一条诊断）",
+            CaseAssertions.CheckTrue("内建注解豁免 wrapper 解析（仅此一条诊断）",
                 u10a.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error) == 1);
             var (u10b, _) = ResolveUnit("@NativeSymbol(\"x\")\nclass C { }\n");
-            TestHarness.CheckSemanticError("@NativeSymbol 挂类型", u10b.Diagnostics,
+            CaseAssertions.CheckSemanticError("@NativeSymbol 挂类型", u10b.Diagnostics,
                 "@NativeSymbol can only be applied to native functions");
 
             // 正例：stdlib 形态（§4.6 示例，命名空间 + 类成员 + 双注解）
@@ -1623,9 +1623,9 @@ namespace RigiCompiler.Tests
             CheckNoErrors("stdlib 形态无诊断", ok1);
             var print = NsOf(ok1, "sample", "io").Types.Single(t => t.Name == "Console")
                 .Methods.Single(m => m.Name == "print");
-            TestHarness.CheckTrue("IsNative/IsStatic 标记位", print.IsNative && print.IsStatic);
-            TestHarness.Check("NativeSymbol 取注解实参", print.NativeSymbol ?? "", "print");
-            TestHarness.Check("NativeLibrary 取注解实参", print.NativeLibrary ?? "", "rigi_rt");
+            CaseAssertions.CheckTrue("IsNative/IsStatic 标记位", print.IsNative && print.IsStatic);
+            CaseAssertions.Check("NativeSymbol 取注解实参", print.NativeSymbol ?? "", "print");
+            CaseAssertions.Check("NativeLibrary 取注解实参", print.NativeLibrary ?? "", "rigi_rt");
 
             // 正例：@NativeSymbol 缺省取函数名
             var (ok2, _) = ResolveUnit(
@@ -1635,9 +1635,9 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("缺省 @NativeSymbol 无诊断", ok2);
             var printErr = GlobalType(ok2, "C").Methods.Single(m => m.Name == "printErr");
-            TestHarness.CheckTrue("IsNative 标记位", printErr.IsNative);
-            TestHarness.Check("NativeSymbol 缺省取函数名", printErr.NativeSymbol ?? "", "printErr");
-            TestHarness.Check("NativeLibrary 取注解实参", printErr.NativeLibrary ?? "", "rigi_rt");
+            CaseAssertions.CheckTrue("IsNative 标记位", printErr.IsNative);
+            CaseAssertions.Check("NativeSymbol 缺省取函数名", printErr.NativeSymbol ?? "", "printErr");
+            CaseAssertions.Check("NativeLibrary 取注解实参", printErr.NativeLibrary ?? "", "rigi_rt");
 
             // 正例：全局 native 函数（无需 static）+ 白名单全形态 + void 返回 + 路径形态注解
             var (ok3, _) = ResolveUnit(
@@ -1647,16 +1647,16 @@ namespace RigiCompiler.Tests
                 "native func poke(x: i32)\n");
             CheckNoErrors("全局 native + 白名单全形态无诊断", ok3);
             var conv = ok3.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "conv");
-            TestHarness.CheckTrue("全局函数 IsNative 且无 static 要求", conv.IsNative && !conv.IsStatic);
-            TestHarness.Check("全局函数 NativeSymbol 缺省", conv.NativeSymbol ?? "", "conv");
+            CaseAssertions.CheckTrue("全局函数 IsNative 且无 static 要求", conv.IsNative && !conv.IsStatic);
+            CaseAssertions.Check("全局函数 NativeSymbol 缺省", conv.NativeSymbol ?? "", "conv");
             var poke = ok3.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "poke");
-            TestHarness.Check("路径形态注解同样生效", poke.NativeLibrary ?? "", "rt");
+            CaseAssertions.Check("路径形态注解同样生效", poke.NativeLibrary ?? "", "rt");
         }
 
         // ===== @EntryPoint 内建注解（SYNTAX §17.1 程序入口）=====
         private static void TestEntryPointAnnotations()
         {
-            TestHarness.Section("P2 @EntryPoint (§17.1)");
+            CompilerTestTools.Section("P2 @EntryPoint (§17.1)");
 
             // 正例：任意命名空间的静态方法——全局函数 / 命名空间函数 /
             // 静态成员方法均可登记（IsEntryPoint 标记位）
@@ -1666,7 +1666,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             CheckNoErrors("命名空间内 @EntryPoint main 无诊断", ok1);
             var nsMain = NsOf(ok1, "app").Methods.Single(m => m.Name == "main");
-            TestHarness.CheckTrue("命名空间 main 的 IsEntryPoint 标记位", nsMain.IsEntryPoint);
+            CaseAssertions.CheckTrue("命名空间 main 的 IsEntryPoint 标记位", nsMain.IsEntryPoint);
 
             var (ok2, _) = ResolveUnit(
                 "pub class App {\n" +
@@ -1674,7 +1674,7 @@ namespace RigiCompiler.Tests
                 "    pub static func run(): i32 { return 0 }\n" +
                 "}\n");
             CheckNoErrors("静态成员方法 @EntryPoint 无诊断", ok2);
-            TestHarness.CheckTrue("静态成员 IsEntryPoint 标记位",
+            CaseAssertions.CheckTrue("静态成员 IsEntryPoint 标记位",
                 GlobalType(ok2, "App").Methods.Single(m => m.Name == "run").IsEntryPoint);
 
             // 多入口合法（P2 不限个数——运行前经 --entry-point 选择）
@@ -1722,14 +1722,14 @@ namespace RigiCompiler.Tests
             // a wrapper type（豁免通道）；此处无其余诊断即证明
             var (ok4, _) = ResolveUnit("@EntryPoint\npub func main(): i32 { return 0 }\n");
             CheckNoErrors("全局 main + @EntryPoint 无诊断（不进 wrapper 检查）", ok4);
-            TestHarness.CheckTrue("全局 main 的 IsEntryPoint 标记位",
+            CaseAssertions.CheckTrue("全局 main 的 IsEntryPoint 标记位",
                 ok4.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "main").IsEntryPoint);
         }
 
         // ===== @Terminal / @Internal 内建注解（MW11d Phase A）=====
         private static void TestTerminalAndInternalAnnotations()
         {
-            TestHarness.Section("P2 @Terminal / @Internal（MW11d）");
+            CompilerTestTools.Section("P2 @Terminal / @Internal（MW11d）");
 
             var termPrelude =
                 "@WrapperTarget(.Entity)\n@Terminal\nwrapper TermW { }\n" +
@@ -1741,9 +1741,9 @@ namespace RigiCompiler.Tests
             // terminal 为唯一 / 最内层 → 合法
             var (okOnly, _) = ResolveUnit(termPrelude + "@TermW\nclass C { }\n");
             CheckNoErrors("terminal 为唯一 wrapper 合法", okOnly);
-            TestHarness.CheckTrue("TermW.IsTerminal 标志位",
+            CaseAssertions.CheckTrue("TermW.IsTerminal 标志位",
                 GlobalType(okOnly, "TermW").IsTerminal);
-            TestHarness.CheckTrue("OtherW 非 terminal",
+            CaseAssertions.CheckTrue("OtherW 非 terminal",
                 !GlobalType(okOnly, "OtherW").IsTerminal);
 
             var (okInner, _) = ResolveUnit(termPrelude + "@OtherW\n@TermW\nclass C { }\n");
@@ -1796,7 +1796,7 @@ namespace RigiCompiler.Tests
                 "@WrapperTarget(.Entity)\n@Internal\npub wrapper Hidden { }\n" +
                 "@Hidden\nclass C { }\n");
             CheckNoErrors("声明命名空间内部应用 @Internal wrapper 合法", okSame);
-            TestHarness.CheckTrue("Hidden.IsInternal 标志位",
+            CaseAssertions.CheckTrue("Hidden.IsInternal 标志位",
                 NsOf(okSame, "lib").Types.Single(t => t.Name == "Hidden").IsInternal);
 
             foreach (var site in new[] { "lib", "lib.child", "lib.child.deep", "libx", "", "other.branch" })
@@ -1833,17 +1833,17 @@ namespace RigiCompiler.Tests
         // ===== MW11d A4/A5：SerializationBase 登记 + @Serializable 字段检查 =====
         private static void TestSerializableFields()
         {
-            TestHarness.Section("P2 @Serializable 字段可序列性（MW11d A5）");
+            CompilerTestTools.Section("P2 @Serializable 字段可序列性（MW11d A5）");
 
             var (okScalar, _) = ResolveUnitWithStdlib(
                 "import core.serialization.Serializable\n" +
                 "@Serializable\n" +
                 "class Point { pub var x: i32\n    pub var name: String }\n");
             CheckNoErrors("@Serializable 全标量字段合法", okScalar);
-            TestHarness.CheckTrue("i32 已登记 SerializationBase",
+            CaseAssertions.CheckTrue("i32 已登记 SerializationBase",
                 okScalar.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
                     w.WrapperDefinition.Name == "SerializationBase"));
-            TestHarness.CheckTrue("String 已登记 SerializationBase",
+            CaseAssertions.CheckTrue("String 已登记 SerializationBase",
                 okScalar.Symbols.Bootstrap.String.AppliedWrappers.Any(w =>
                     w.WrapperDefinition.Name == "SerializationBase"));
 
@@ -1900,16 +1900,16 @@ namespace RigiCompiler.Tests
                 "@SerializationBase\n" +
                 "class BaseOk { pub var n: i32\n    pub var s: String }\n");
             CheckNoErrors("@SerializationBase 标量字段合法", okBaseOnly);
-            TestHarness.CheckTrue("base-only 宿主未合成 Serializable",
+            CaseAssertions.CheckTrue("base-only 宿主未合成 Serializable",
                 !okBaseOnly.Symbols.GlobalNamespace.ChildNamespaces
                     .First(n => n.Name == "core").ChildNamespaces
                     .First(n => n.Name == "serialization").Types
                     .First(t => t.Name == "BaseOk").AppliedWrappers
                     .Any(w => w.WrapperDefinition.Name == "Serializable"));
-            TestHarness.CheckTrue("i32 的 Serializable 来自真实源码应用",
+            CaseAssertions.CheckTrue("i32 的 Serializable 来自真实源码应用",
                 okBaseOnly.Symbols.Bootstrap.Int32.AppliedWrappers.Any(w =>
                     w.WrapperDefinition.Name == "Serializable" && w.Syntax != null));
-            TestHarness.CheckTrue("Parcel 的 Serializable 来自真实源码应用",
+            CaseAssertions.CheckTrue("Parcel 的 Serializable 来自真实源码应用",
                 SerializationFacts.FindParcel(okBaseOnly.Symbols)!.AppliedWrappers.Any(w =>
                     w.WrapperDefinition.Name == "Serializable" && w.Syntax != null));
 
@@ -1992,7 +1992,7 @@ namespace RigiCompiler.Tests
                 "class Box { pub var m: Map\\<Other, i32> }\n");
             CheckP2Error("Map 不可序列化键报错", badMapKey,
                 "Map 键不可序列化");
-            TestHarness.CheckTrue("Map 键诊断建议 @Temporary",
+            CaseAssertions.CheckTrue("Map 键诊断建议 @Temporary",
                 badMapKey.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("可改用 @Temporary")));
 
@@ -2010,7 +2010,7 @@ namespace RigiCompiler.Tests
         // ===== 访问级别写符号（SYNTAX §16；BIL 发射与 S8 使用点访问控制消费）=====
         private static void TestAccessibility()
         {
-            TestHarness.Section("P2 Accessibility");
+            CompilerTestTools.Section("P2 Accessibility");
 
             var (unit, _) = ResolveUnit(
                 "pub class A { pub var x: i32\n protected func f() {}\n internal var y: i32 }\n" +
@@ -2021,33 +2021,33 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断", unit);
 
             var a = GlobalType(unit, "A");
-            TestHarness.CheckTrue("pub class => Public", a.Accessibility == Accessibility.Public);
-            TestHarness.CheckTrue("pub 字段 => Public",
+            CaseAssertions.CheckTrue("pub class => Public", a.Accessibility == Accessibility.Public);
+            CaseAssertions.CheckTrue("pub 字段 => Public",
                 a.Fields.Single(f => f.Name == "x").Accessibility == Accessibility.Public);
-            TestHarness.CheckTrue("protected 方法 => Protected",
+            CaseAssertions.CheckTrue("protected 方法 => Protected",
                 a.Methods.Single(m => m.Name == "f").Accessibility == Accessibility.Protected);
-            TestHarness.CheckTrue("internal 字段 => Internal",
+            CaseAssertions.CheckTrue("internal 字段 => Internal",
                 a.Fields.Single(f => f.Name == "y").Accessibility == Accessibility.Internal);
-            TestHarness.CheckTrue("无修饰符 class => Private（默认）",
+            CaseAssertions.CheckTrue("无修饰符 class => Private（默认）",
                 GlobalType(unit, "B").Accessibility == Accessibility.Private);
-            TestHarness.CheckTrue("无修饰符字段 => Private（默认）",
+            CaseAssertions.CheckTrue("无修饰符字段 => Private（默认）",
                 GlobalType(unit, "B").Fields.Single(f => f.Name == "z").Accessibility == Accessibility.Private);
 
             var global = unit.Symbols.GlobalNamespace;
-            TestHarness.CheckTrue("pub 全局函数 => Public",
+            CaseAssertions.CheckTrue("pub 全局函数 => Public",
                 global.Methods.Single(m => m.Name == "g").Accessibility == Accessibility.Public);
-            TestHarness.CheckTrue("无修饰符全局函数 => Private（默认）",
+            CaseAssertions.CheckTrue("无修饰符全局函数 => Private（默认）",
                 global.Methods.Single(m => m.Name == "h").Accessibility == Accessibility.Private);
-            TestHarness.CheckTrue("internal 全局变量 => Internal",
+            CaseAssertions.CheckTrue("internal 全局变量 => Internal",
                 global.Fields.Single(f => f.Name == "v").Accessibility == Accessibility.Internal);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== enum case 结构级检查（S11，§12：洞独占性 + 判别值落定 + 防御复核）=====
         private static void TestEnumCaseStructure()
         {
-            TestHarness.Section("P2 Enum Case Structure");
+            CompilerTestTools.Section("P2 Enum Case Structure");
 
             // 正例：固定实参 / 位置洞 / 具名洞 / 无括号与空括号 case（Arguments 空列表不区分）
             var (unit, _) = ResolveUnit(
@@ -2063,11 +2063,11 @@ namespace RigiCompiler.Tests
                 "]\n");
             CheckNoErrors("固定/位置洞/具名洞/无参形态全无诊断", unit);
             var result = GlobalType(unit, "Result");
-            TestHarness.CheckTrue("case 全建壳（5 个，声明序）",
+            CaseAssertions.CheckTrue("case 全建壳（5 个，声明序）",
                 result.Cases.Count == 5 && result.Cases[1].Name == "Positional" && result.Cases[3].Name == "Plain");
-            TestHarness.CheckTrue("auto case 判别值保持 null（§12.4 编号归发射侧按声明序推导）",
+            CaseAssertions.CheckTrue("auto case 判别值保持 null（§12.4 编号归发射侧按声明序推导）",
                 result.Cases.All(c => c.Discriminant == null));
-            TestHarness.CheckTrue("模板槽留空（init 绑定归 P3 声明点）",
+            CaseAssertions.CheckTrue("模板槽留空（init 绑定归 P3 声明点）",
                 result.Cases.All(c => c.ResolvedInit == null && c.HoleParameters == null));
 
             // 显式判别值落定
@@ -2078,7 +2078,7 @@ namespace RigiCompiler.Tests
                 "]\n");
             CheckNoErrors("显式判别值无诊断", unit2);
             var level = GlobalType(unit2, "Level");
-            TestHarness.CheckTrue("显式判别值落定符号（-> N 原文值）",
+            CaseAssertions.CheckTrue("显式判别值落定符号（-> N 原文值）",
                 level.Cases[0].Discriminant == 1 && level.Cases[1].Discriminant == 100);
 
             // 反例：洞嵌套在表达式内（someExpression(_) 形态，§12.1）
@@ -2091,7 +2091,7 @@ namespace RigiCompiler.Tests
                 "    Nested(wrap(_)),\n" +
                 "    Sum((1 + _))\n" +
                 "]\n");
-            TestHarness.CheckTrue("洞嵌套两条诊断（调用实参内 / 二元表达式内）",
+            CaseAssertions.CheckTrue("洞嵌套两条诊断（调用实参内 / 二元表达式内）",
                 unit3.Diagnostics.Diagnostics.Count(d => d.Message ==
                     "Enum case hole '_' must occupy an entire argument position") == 2);
             CheckP2Error("洞必须独占实参位置（确为 P2）", unit3,
@@ -2121,7 +2121,7 @@ namespace RigiCompiler.Tests
                     cases[1].CaseName = "Alpha";
                     cases[1].DiscriminantValue = 1;
                 });
-            TestHarness.CheckSemanticError("P1 case 名复核（重复符号不进 Cases 表）",
+            CaseAssertions.CheckSemanticError("P1 case 名复核（重复符号不进 Cases 表）",
                 unit5.Diagnostics, "Duplicate enum case declaration: 'Alpha'");
             CheckP2Error("P2 case 名复核", unit5, "Duplicate enum case name: 'Alpha'");
             CheckP2Error("P2 判别值唯一复核", unit5, "Duplicate enum discriminant value: 1");
@@ -2136,13 +2136,13 @@ namespace RigiCompiler.Tests
                 });
             CheckP2Error("P2 判别值非负复核", unit6, "Enum discriminant value must be non-negative");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== like 委托（SYNTAX §9.6）：待实现成员豁免与诊断口径 =====
         private static void TestLikeDelegation()
         {
-            TestHarness.Section("P2 like 委托（§9.6）");
+            CompilerTestTools.Section("P2 like 委托（§9.6）");
 
             // 委托字段类型提供同签名实现：豁免「未实现」诊断
             var (ok, _) = ResolveUnit(
@@ -2250,7 +2250,7 @@ namespace RigiCompiler.Tests
         // ===== 值类型布局环拒绝（P18/S2 配套，§10）=====
         private static void TestLayoutCycles()
         {
-            TestHarness.Section("P2 Value-Type Layout Cycles (§10)");
+            CompilerTestTools.Section("P2 Value-Type Layout Cycles (§10)");
 
             // 自包含：直接值字段回指自身
             var (u1, _) = ResolveUnit(
@@ -2262,7 +2262,7 @@ namespace RigiCompiler.Tests
                 "pub struct MutA {\n    pub var b: MutB\n    pub init(_ -> b)\n}\n" +
                 "pub struct MutB {\n    pub var a: MutA\n    pub init(_ -> a)\n}\n");
             CheckP2Error("互包含布局环", u2, "Value-type layout cycle: MutA -> MutB -> MutA");
-            TestHarness.CheckTrue("同一环只报一条",
+            CaseAssertions.CheckTrue("同一环只报一条",
                 u2.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error
                     && d.Message.Contains("Value-type layout cycle")) == 1,
                 string.Join("; ", u2.Diagnostics.Diagnostics.Select(d => d.Message)));
@@ -2285,7 +2285,7 @@ namespace RigiCompiler.Tests
                 "pub struct B3 {\n    pub var c: C3\n    pub init(_ -> c)\n}\n" +
                 "pub struct C3 {\n    pub var a: A3\n    pub init(_ -> a)\n}\n");
             CheckP2Error("三方布局环", u5, "Value-type layout cycle: A3 -> B3 -> C3 -> A3");
-            TestHarness.CheckTrue("三方环只报一条",
+            CaseAssertions.CheckTrue("三方环只报一条",
                 u5.Diagnostics.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error
                     && d.Message.Contains("Value-type layout cycle")) == 1);
 
@@ -2321,17 +2321,17 @@ namespace RigiCompiler.Tests
 
         private static void TestFreeze()
         {
-            TestHarness.Section("P2 Freeze");
+            CompilerTestTools.Section("P2 Freeze");
             var (unit, _) = ResolveUnit("var x: i32\n");
-            TestHarness.CheckTrue("P2 结束 Freeze", unit.Symbols.IsFrozen);
+            CaseAssertions.CheckTrue("P2 结束 Freeze", unit.Symbols.IsFrozen);
         }
 
         // P2 阶段断言（S8e 声明侧用例）：消息命中且诊断确为 P2 落袋
         private static void CheckP2Error(string label, CompilationUnit unit,
             string expectedMessagePart)
         {
-            TestHarness.CheckSemanticError(label, unit.Diagnostics, expectedMessagePart);
-            TestHarness.CheckTrue(label + "（确为 P2 阶段）",
+            CaseAssertions.CheckSemanticError(label, unit.Diagnostics, expectedMessagePart);
+            CaseAssertions.CheckTrue(label + "（确为 P2 阶段）",
                 unit.Diagnostics.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error
                     && d.Phase == DiagnosticPhase.P2 && d.Message.Contains(expectedMessagePart)));
         }
@@ -2341,7 +2341,7 @@ namespace RigiCompiler.Tests
         private static (CompilationUnit Unit, DeclarationCollection Decls) ResolveMutated(
             string source, Action<RootASTNode> mutate)
         {
-            var root = TestHarness.ParseRoot(source);
+            var root = CompilerTestTools.ParseRoot(source);
             mutate(root);
             var unit = new CompilationUnit(new[] { root });
             var decls = DeclarationCollector.Collect(unit);
@@ -2360,7 +2360,7 @@ namespace RigiCompiler.Tests
         // const+set/无体 computed/类型标注/可见性落定）=====
         private static void TestAccessorDeclarations()
         {
-            TestHarness.Section("P2 Accessor Declarations");
+            CompilerTestTools.Section("P2 Accessor Declarations");
 
             // 访问器修饰符白名单：仅访问级别（static 上访问器即错误）
             var (unit, _) = ResolveUnit(
@@ -2429,14 +2429,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（访问器可见性落定）", unit6);
             var appFields = NsOf(unit6, "app").Fields;
             var a = appFields.Single(f => f.Name == "a");
-            TestHarness.CheckTrue("无显式修饰 getter 取字段级别（pub）",
+            CaseAssertions.CheckTrue("无显式修饰 getter 取字段级别（pub）",
                 a.Getter!.Accessibility == Accessibility.Public);
-            TestHarness.CheckTrue("无显式修饰 setter 取字段级别（pub）",
+            CaseAssertions.CheckTrue("无显式修饰 setter 取字段级别（pub）",
                 a.Setter!.Accessibility == Accessibility.Public);
             var b = appFields.Single(f => f.Name == "b");
-            TestHarness.CheckTrue("显式 pub getter（字段 internal 不传染）",
+            CaseAssertions.CheckTrue("显式 pub getter（字段 internal 不传染）",
                 b.Getter!.Accessibility == Accessibility.Public);
-            TestHarness.CheckTrue("显式 priv setter",
+            CaseAssertions.CheckTrue("显式 priv setter",
                 b.Setter!.Accessibility == Accessibility.Private);
 
             // getter/setter 是独立的多态单元：open 与 override 分别登记并匹配。
@@ -2455,8 +2455,8 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("getter/setter open 与 override 合法", unit7);
             var child = GlobalType(unit7, "Child").Fields.Single(f => f.Name == "value");
-            TestHarness.CheckTrue("getter 标记 override", child.Getter!.IsOverride);
-            TestHarness.CheckTrue("setter 标记 override", child.Setter!.IsOverride);
+            CaseAssertions.CheckTrue("getter 标记 override", child.Getter!.IsOverride);
+            CaseAssertions.CheckTrue("setter 标记 override", child.Setter!.IsOverride);
 
             var (unit8, _) = ResolveUnit(
                 "open class Base {\n" +
@@ -2481,7 +2481,7 @@ namespace RigiCompiler.Tests
                 "        override get(value: _) { return value }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("全局/静态访问器不能多态", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("全局/静态访问器不能多态", unit9.Diagnostics,
                 "'open'/'override' cannot be applied to global or static accessors");
         }
 
@@ -2489,7 +2489,7 @@ namespace RigiCompiler.Tests
         // ModifierChecker 成员侧负例补充）=====
         private static void TestOverrideModifiers()
         {
-            TestHarness.Section("P2 Override Modifiers");
+            CompilerTestTools.Section("P2 Override Modifiers");
 
             // 字段写 override：§9.2.1 字段覆写开闸后归 OverrideChecker——
             // 无继承同名字段时报「no inherited field to override」
@@ -2537,7 +2537,7 @@ namespace RigiCompiler.Tests
         // 均为使用点，跨文件 priv 类型即拒绝；诊断确为 P2 阶段落袋）=====
         private static void TestDeclarationSiteAccess()
         {
-            TestHarness.Section("P2 Declaration-Site Access");
+            CompilerTestTools.Section("P2 Declaration-Site Access");
 
             // 跨文件 priv 类型作字段类型
             var (unit, _) = ResolveUnit(
@@ -2589,7 +2589,7 @@ namespace RigiCompiler.Tests
         // ===== 声明点签名泄漏（bug S5 修复1，SYNTAX §16.1 签名可见性单调性）=====
         private static void TestSignatureLeak()
         {
-            TestHarness.Section("P2 Signature Leak");
+            CompilerTestTools.Section("P2 Signature Leak");
 
             // pub 顶层函数返回 priv 类型（同文件也报——泄漏面与是否同文件无关）
             var (u1, _) = ResolveUnit(
@@ -2672,7 +2672,7 @@ namespace RigiCompiler.Tests
         // ===== F2：字段/全局变量与属性访问器签名闸门 =====
         private static void TestSignatureLeakFields()
         {
-            TestHarness.Section("P2 Signature Leak (fields / accessors, F2)");
+            CompilerTestTools.Section("P2 Signature Leak (fields / accessors, F2)");
 
             // pub 类内 pub 字段持 priv 类型（字段是泄漏源头门）
             var (f1, _) = ResolveUnit(
@@ -2732,7 +2732,7 @@ namespace RigiCompiler.Tests
             CheckP2Error("priv 字段 pub setter 泄漏", a1,
                 "Inconsistent accessibility: parameter type 'Hidden' is less accessible " +
                 "than setter 'x'");
-            TestHarness.CheckTrue("priv 字段自身不报字段闸",
+            CaseAssertions.CheckTrue("priv 字段自身不报字段闸",
                 !a1.Diagnostics.Diagnostics.Any(d =>
                     d.Message.Contains("less accessible than field 'x'")));
 
@@ -2773,7 +2773,7 @@ namespace RigiCompiler.Tests
         // ===== S8f：castTo/castFrom 声明形状（SYNTAX §3.5）=====
         private static void TestConversionOperators()
         {
-            TestHarness.Section("P2 Conversion Operators (castTo/castFrom)");
+            CompilerTestTools.Section("P2 Conversion Operators (castTo/castFrom)");
 
             // 合法形态（spec §3.5 示例：泛型形态 + 非泛型形态）
             var (ok, _) = ResolveUnit(
@@ -2813,7 +2813,7 @@ namespace RigiCompiler.Tests
         // ===== EnumerateInRange 声明形状（SYNTAX §7.3/§13.2）=====
         private static void TestEnumerateInRangeShape()
         {
-            TestHarness.Section("P2 EnumerateInRange Shape (§13.2)");
+            CompilerTestTools.Section("P2 EnumerateInRange Shape (§13.2)");
 
             var (ok, _) = ResolveUnitWithStdlib(
                 "class Step {\n" +
@@ -2875,7 +2875,7 @@ namespace RigiCompiler.Tests
         // ===== SYNTAX §13.2：不可自定义新运算符名称 =====
         private static void TestOperatorNameWhitelist()
         {
-            TestHarness.Section("P2 Operator Name Whitelist (§13.2)");
+            CompilerTestTools.Section("P2 Operator Name Whitelist (§13.2)");
 
             var (ok, _) = ResolveUnit(
                 "class V {\n" +
@@ -2899,7 +2899,7 @@ namespace RigiCompiler.Tests
         // ===== S8f：async 声明侧闸门 2/3/5 + async 仅函数（SYNTAX §4.5）=====
         private static void TestAsyncDeclarationGates()
         {
-            TestHarness.Section("P2 Async Declaration Gates (§4.5)");
+            CompilerTestTools.Section("P2 Async Declaration Gates (§4.5)");
 
             // 合法：void / 共享安全参数与返回值 / Nullable\<T\> 按 T 推导 /
             // 无约束泛型参数 / shared 约束边界
@@ -2948,7 +2948,7 @@ namespace RigiCompiler.Tests
         // 引用定义泛型参数的未代入快照统一重算；CreatesCycle 定义级比较）=====
         private static void TestConstructedBaseTypeBackfill()
         {
-            TestHarness.Section("P2 Constructed BaseType Backfill");
+            CompilerTestTools.Section("P2 Constructed BaseType Backfill");
 
             // 字段/参数类型引用（TypeReferenceResolver）先于继承解析：Sub\<i32\>
             // 驻留时 Sub 的显式基类尚未解析——回填后应为代入产物 Base\<i32\>（而非
@@ -2960,7 +2960,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（泛型基类回填）", unit);
             var subI32 = (TypeSymbol)unit.Symbols.GlobalNamespace.Methods
                 .Single(m => m.Name == "f").Parameters[0].Type!;
-            TestHarness.CheckTrue("构造类型 BaseType 代入为 Base\\<i32\\>",
+            CaseAssertions.CheckTrue("构造类型 BaseType 代入为 Base\\<i32\\>",
                 subI32.BaseType is TypeSymbol { ConstructedFrom: not null } baseI32
                 && baseI32.ConstructedFrom.Name == "Base"
                 && ReferenceEquals(baseI32.TypeArguments![0], unit.Symbols.Bootstrap.Int32));
@@ -2974,7 +2974,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（嵌套构造基类回填）", unit2);
             var midI32 = (TypeSymbol)unit2.Symbols.GlobalNamespace.Methods
                 .Single(m => m.Name == "g").Parameters[0].Type!;
-            TestHarness.CheckTrue("嵌套构造基类代入为 Wrapper\\<Box\\<i32\\>\\>",
+            CaseAssertions.CheckTrue("嵌套构造基类代入为 Wrapper\\<Box\\<i32\\>\\>",
                 midI32.BaseType is TypeSymbol { ConstructedFrom: not null } wrapper
                 && wrapper.ConstructedFrom.Name == "Wrapper"
                 && wrapper.TypeArguments![0] is TypeSymbol { ConstructedFrom: not null } boxI32
@@ -3011,7 +3011,7 @@ namespace RigiCompiler.Tests
         // 不注册——防止 P3 查找双候选静默遮蔽）=====
         private static void TestExtDuplicateDetection()
         {
-            TestHarness.Section("P2 Extension Duplicate Detection");
+            CompilerTestTools.Section("P2 Extension Duplicate Detection");
 
             var (u1, _) = ResolveUnit(
                 "pub ext var String.tag: i32\n" +
@@ -3048,7 +3048,7 @@ namespace RigiCompiler.Tests
         // ===== override 泛型元数（元数不同即不同派发契约，不是合法覆写目标）=====
         private static void TestOverrideGenericArity()
         {
-            TestHarness.Section("P2 Override Generic Arity");
+            CompilerTestTools.Section("P2 Override Generic Arity");
 
             var (u1, _) = ResolveUnit(
                 "pub open class B { pub open func pick\\<U>(x: U): i32 { return 0 } }\n" +
@@ -3066,7 +3066,7 @@ namespace RigiCompiler.Tests
         // import 拒绝 =====
         private static void TestNamespaceNotAType()
         {
-            TestHarness.Section("P2 Namespace Is Not A Type");
+            CompilerTestTools.Section("P2 Namespace Is Not A Type");
 
             var (u1, _) = ResolveUnit(
                 "namespace a.b\n" +
@@ -3101,7 +3101,7 @@ namespace RigiCompiler.Tests
         // 按 ApplyTypeArguments 同口径报元数错误 =====
         private static void TestBareGenericDefinitionArity()
         {
-            TestHarness.Section("P2 Bare Generic Definition Arity");
+            CompilerTestTools.Section("P2 Bare Generic Definition Arity");
 
             var (u1, _) = ResolveUnit(
                 "class Only\\<T> { }\n" +
@@ -3127,7 +3127,7 @@ namespace RigiCompiler.Tests
         // protected message 字段，SYNTAX §8.1——子类 init 直接赋值继承字段）=====
         private static void TestInitMappingBuiltinField()
         {
-            TestHarness.Section("P2 Init Mapping To Builtin Field");
+            CompilerTestTools.Section("P2 Init Mapping To Builtin Field");
 
             var (ok, _) = ResolveUnitWithStdlib(
                 "pub class E : core.Exception {\n" +
@@ -3136,7 +3136,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("init 映射继承的内建字段无诊断", ok);
             var init = GlobalType(ok, "E").Methods.Single(m => m.Kind == MethodKind.Init);
-            TestHarness.CheckTrue("映射参数类型沿用 message 字段类型",
+            CaseAssertions.CheckTrue("映射参数类型沿用 message 字段类型",
                 ReferenceEquals(init.Parameters[0].Type, ok.Symbols.Bootstrap.String));
         }
 
@@ -3144,7 +3144,7 @@ namespace RigiCompiler.Tests
         // 类型成员表 + 同目标 pending ext 比对）=====
         private static void TestExtNativeGates()
         {
-            TestHarness.Section("P2 Extension Native Gates");
+            CompilerTestTools.Section("P2 Extension Native Gates");
 
             var (u1, _) = ResolveUnit(
                 "@NativeLibrary(\"x\")\n" +
@@ -3172,7 +3172,7 @@ namespace RigiCompiler.Tests
         // FindInNamespace 一致）=====
         private static void TestNamespaceSegmentPriority()
         {
-            TestHarness.Section("P2 Namespace Segment Priority");
+            CompilerTestTools.Section("P2 Namespace Segment Priority");
 
             // q.X 中间段：q 内类型 X 与子命名空间 X 同名——类型优先
             var (ok, _) = ResolveUnit(
@@ -3185,7 +3185,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("中间段同名类型优先于子命名空间", ok);
             var field = NsOf(ok, "other").Types.Single(t => t.Name == "Z")
                 .Fields.Single(f => f.Name == "x");
-            TestHarness.CheckTrue("解析到类型而非子命名空间",
+            CaseAssertions.CheckTrue("解析到类型而非子命名空间",
                 field.FieldType is TypeSymbol { Name: "X", Kind: TypeKind.Class });
         }
 
@@ -3193,7 +3193,7 @@ namespace RigiCompiler.Tests
         // 闭包检查、不产生实现要求、实现类不继承，纯死声明，声明侧拒绝）=====
         private static void TestInterfaceFieldDeclaration()
         {
-            TestHarness.Section("P2 Interface Field Declaration");
+            CompilerTestTools.Section("P2 Interface Field Declaration");
 
             var (u1, _) = ResolveUnit("pub interface I { var x: i32\nfunc f() }\n");
             CheckP2Error("interface 实例字段拒绝", u1, "'x': interfaces cannot declare fields");
@@ -3215,14 +3215,14 @@ namespace RigiCompiler.Tests
         // 新的实现要求；重复者不进 Interfaces 表）=====
         private static void TestDuplicateInterfaceImplementation()
         {
-            TestHarness.Section("P2 Duplicate Interface Implementation");
+            CompilerTestTools.Section("P2 Duplicate Interface Implementation");
 
             // 同名重复
             var (u1, _) = ResolveUnit(
                 "pub interface I { }\n" +
                 "pub class C implements I, I { }\n");
             CheckP2Error("同名接口重复 implements", u1, "'C': duplicate interface 'I'");
-            TestHarness.CheckTrue("重复者不进 Interfaces 表",
+            CaseAssertions.CheckTrue("重复者不进 Interfaces 表",
                 GlobalType(u1, "C").Interfaces.Count == 1);
 
             // 同定义不同构造（ConstructedFrom 归一后同一定义）
@@ -3230,7 +3230,7 @@ namespace RigiCompiler.Tests
                 "pub interface I\\<T> { }\n" +
                 "pub class C implements I\\<i32>, I\\<String> { }\n");
             CheckP2Error("不同构造同定义重复", u2, "'C': duplicate interface 'I'");
-            TestHarness.CheckTrue("不同构造重复者同样不进表",
+            CaseAssertions.CheckTrue("不同构造重复者同样不进表",
                 GlobalType(u2, "C").Interfaces.Count == 1);
 
             // interface 继承侧同规则
@@ -3245,7 +3245,7 @@ namespace RigiCompiler.Tests
                 "pub interface J\\<T> { }\n" +
                 "pub class C implements I\\<i32>, J\\<i32> { }\n");
             CheckNoErrors("不同定义接口共存无诊断", ok);
-            TestHarness.CheckTrue("两接口都进表", GlobalType(ok, "C").Interfaces.Count == 2);
+            CaseAssertions.CheckTrue("两接口都进表", GlobalType(ok, "C").Interfaces.Count == 2);
         }
 
         // ===== bug S3：两接口同签名默认方法冲突（§11）——接口闭包中 ≥2 个
@@ -3253,7 +3253,7 @@ namespace RigiCompiler.Tests
         // 编译错误，强制显式 override；真菱形（同一符号经两条路径）放行 =====
         private static void TestConflictingInterfaceDefaults()
         {
-            TestHarness.Section("P2 Conflicting Interface Default Methods (bug S3)");
+            CompilerTestTools.Section("P2 Conflicting Interface Default Methods (bug S3)");
 
             // 负例：bug S3 本体——A/B 同签名默认 tag()，C 不显式解决冲突
             var (u1, _) = ResolveUnit(
@@ -3275,7 +3275,7 @@ namespace RigiCompiler.Tests
             // 报错位置在类声明点（接口声明点报会误伤「两接口尚未被同一类
             // 实现」的正常情况）；上方源码中 class C 声明在第 9 行
             var span = u1.Diagnostics.Diagnostics.First(d => d.Message.Contains("conflicts between"));
-            TestHarness.CheckTrue("冲突诊断挂在类声明点",
+            CaseAssertions.CheckTrue("冲突诊断挂在类声明点",
                 span.Span.HasValue && span.Span.Value.Start.line == 9);
 
             // 正例：接口各自声明同签名默认方法本身合法（未被同一类实现）
@@ -3331,7 +3331,7 @@ namespace RigiCompiler.Tests
         // FindConversionOperator 只查实例方法，static operator 纯死声明）=====
         private static void TestStaticOperatorDeclaration()
         {
-            TestHarness.Section("P2 Static Operator Declaration");
+            CompilerTestTools.Section("P2 Static Operator Declaration");
 
             var (u1, _) = ResolveUnit(
                 "class C { static operator plus(other: C): C { } }\n");
@@ -3357,7 +3357,7 @@ namespace RigiCompiler.Tests
         // 毒化有效者）；两条都有效时报歧义；同一路径重复 import 豁免 =====
         private static void TestNamedImportResolution()
         {
-            TestHarness.Section("P2 Named Import Resolution");
+            CompilerTestTools.Section("P2 Named Import Resolution");
 
             // 失效 + 有效：跳过失效者解析到有效者（失效 import 自身由
             // ImportValidator 统一诊断一次，使用点不再报「未解析」）
@@ -3367,13 +3367,13 @@ namespace RigiCompiler.Tests
                 "import a.Foo\n" +
                 "import b.Foo\n" +
                 "class C { var f: Foo }\n");
-            TestHarness.CheckSemanticError("失效 import 统一诊断", u1.Diagnostics,
+            CaseAssertions.CheckSemanticError("失效 import 统一诊断", u1.Diagnostics,
                 "Unresolved import: 'a.Foo'");
-            TestHarness.CheckTrue("有效者解析成功（引用相等 b.Foo）",
+            CaseAssertions.CheckTrue("有效者解析成功（引用相等 b.Foo）",
                 ReferenceEquals(
                     GlobalType(u1, "C").Fields.Single(f => f.Name == "f").FieldType,
                     NsOf(u1, "b").Types.Single(t => t.Name == "Foo")));
-            TestHarness.CheckTrue("使用点无「未解析」次生诊断",
+            CaseAssertions.CheckTrue("使用点无「未解析」次生诊断",
                 u1.Diagnostics.Diagnostics.Count(d =>
                     d.Message.Contains("Unresolved type or namespace")) == 0,
                 string.Join("; ", u1.Diagnostics.Diagnostics.Select(d => d.Message)));
@@ -3386,7 +3386,7 @@ namespace RigiCompiler.Tests
                 "import b.Foo\n" +
                 "class C { var f: Foo }\n");
             CheckP2Error("双有效具名 import 歧义", u2, "Ambiguous import: 'Foo'");
-            TestHarness.CheckTrue("歧义使用点毒化不叠加「未解析」",
+            CaseAssertions.CheckTrue("歧义使用点毒化不叠加「未解析」",
                 u2.Diagnostics.Diagnostics.Count(d =>
                     d.Message.Contains("Unresolved type or namespace")) == 0);
 
@@ -3397,7 +3397,7 @@ namespace RigiCompiler.Tests
                 "import a.Foo\n" +
                 "class C { var f: Foo }\n");
             CheckNoErrors("同路径重复 import 豁免无诊断", ok);
-            TestHarness.CheckTrue("同路径解析到 a.Foo",
+            CaseAssertions.CheckTrue("同路径解析到 a.Foo",
                 ReferenceEquals(
                     GlobalType(ok, "C").Fields.Single(f => f.Name == "f").FieldType,
                     NsOf(ok, "a").Types.Single(t => t.Name == "Foo")));
@@ -3408,7 +3408,7 @@ namespace RigiCompiler.Tests
         // 「not a type」；不存在名字仍 Unresolved import =====
         private static void TestNamedImportFunctionAndField()
         {
-            TestHarness.Section("P2 Named Import Function/Field (S4)");
+            CompilerTestTools.Section("P2 Named Import Function/Field (S4)");
 
             const string lib =
                 "namespace scene.geom\n" +
@@ -3452,7 +3452,7 @@ namespace RigiCompiler.Tests
         // 具名导入泛型类型定义（§15.2）：导入的是定义本身，实参在使用处书写
         private static void TestNamedGenericImport()
         {
-            TestHarness.Section("P2 Named Generic Import (§15.2)");
+            CompilerTestTools.Section("P2 Named Generic Import (§15.2)");
 
             var lib =
                 "namespace lib\n" +
@@ -3467,7 +3467,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("具名导入泛型 class", cls);
             var boxDef = NsOf(cls, "lib").Types.Single(t => t.Name == "Box");
             var boxField = (TypeSymbol)GlobalType(cls, "C").Fields.Single(f => f.Name == "f").FieldType!;
-            TestHarness.CheckTrue("导入后构造 Box\\<i32>",
+            CaseAssertions.CheckTrue("导入后构造 Box\\<i32>",
                 ReferenceEquals(boxField.ConstructedFrom, boxDef)
                 && ReferenceEquals(boxField.TypeArguments![0], cls.Symbols.Bootstrap.Int32));
 
@@ -3478,7 +3478,7 @@ namespace RigiCompiler.Tests
             var iseqDef = NsOf(iface, "lib").Types.Single(t => t.Name == "ISeq");
             var takeParam = iface.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "take")
                 .Parameters[0].Type as TypeSymbol;
-            TestHarness.CheckTrue("导入后作参数类型 ISeq\\<i32>",
+            CaseAssertions.CheckTrue("导入后作参数类型 ISeq\\<i32>",
                 takeParam != null && ReferenceEquals(takeParam.ConstructedFrom, iseqDef));
 
             var (list, _) = ResolveUnit(lib,
@@ -3488,7 +3488,7 @@ namespace RigiCompiler.Tests
                 "    var b: ISeq\\<i32>\n" +
                 "}\n");
             CheckNoErrors("{} 列表导入泛型", list);
-            TestHarness.CheckTrue("{} 列表两项均可构造",
+            CaseAssertions.CheckTrue("{} 列表两项均可构造",
                 GlobalType(list, "C").Fields.Single(f => f.Name == "a").FieldType is TypeSymbol aType
                 && aType.ConstructedFrom?.Name == "Box"
                 && GlobalType(list, "C").Fields.Single(f => f.Name == "b").FieldType is TypeSymbol bType
@@ -3501,7 +3501,7 @@ namespace RigiCompiler.Tests
             var gMethod = bound.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "g");
             var gBound = gMethod.GenericParameters[0].Constraints
                 .Single(c => c.Kind == GenericConstraintKind.Extends).Bound as TypeSymbol;
-            TestHarness.CheckTrue("约束界为导入的 Box\\<i32>",
+            CaseAssertions.CheckTrue("约束界为导入的 Box\\<i32>",
                 gBound != null && gBound.ConstructedFrom?.Name == "Box"
                 && ReferenceEquals(gBound.TypeArguments![0], bound.Symbols.Bootstrap.Int32));
 
@@ -3511,7 +3511,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("导入后作返回类型", ret);
             var hRet = ret.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "h").ReturnType
                 as TypeSymbol;
-            TestHarness.CheckTrue("返回类型为导入的 Box\\<String>",
+            CaseAssertions.CheckTrue("返回类型为导入的 Box\\<String>",
                 hRet != null && hRet.ConstructedFrom?.Name == "Box"
                 && ReferenceEquals(hRet.TypeArguments![0], ret.Symbols.Bootstrap.String));
 
@@ -3520,7 +3520,7 @@ namespace RigiCompiler.Tests
                 "import lib.Task\n" +
                 "func f(a: Task) { }\n");
             CheckNoErrors("具名导入裸名命中非泛型 Task", arity);
-            TestHarness.CheckTrue("Task 裸名 = 非泛型声明",
+            CaseAssertions.CheckTrue("Task 裸名 = 非泛型声明",
                 ReferenceEquals(
                     arity.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
                         .Parameters[0].Type,
@@ -3530,14 +3530,14 @@ namespace RigiCompiler.Tests
             var (arityNeg, _) = ResolveUnit(lib,
                 "import lib.Task\n" +
                 "func f(b: Task\\<i32>) { }\n");
-            TestHarness.CheckSemanticError("具名导入裸名后带实参仍走非泛型",
+            CaseAssertions.CheckSemanticError("具名导入裸名后带实参仍走非泛型",
                 arityNeg.Diagnostics, "'Task' expects 0 type argument(s), got 1");
 
             var (wild, _) = ResolveUnit(lib,
                 "import lib.*\n" +
                 "func f(b: Task\\<i32>) { }\n");
             CheckNoErrors("通配导入可达泛型兄弟", wild);
-            TestHarness.CheckTrue("通配 Task\\<i32> 命中泛型声明",
+            CaseAssertions.CheckTrue("通配 Task\\<i32> 命中泛型声明",
                 wild.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
                     .Parameters[0].Type is TypeSymbol wildTask
                 && wildTask.ConstructedFrom != null
@@ -3547,21 +3547,21 @@ namespace RigiCompiler.Tests
                 "import lib.Task\n" +
                 "func f(b: lib.Task\\<i32>) { }\n");
             CheckNoErrors("全限定名可达泛型兄弟", fqn);
-            TestHarness.CheckTrue("FQN Task\\<i32> 命中泛型声明",
+            CaseAssertions.CheckTrue("FQN Task\\<i32> 命中泛型声明",
                 fqn.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
                     .Parameters[0].Type is TypeSymbol fqnTask
                 && fqnTask.ConstructedFrom != null
                 && fqnTask.ConstructedFrom.GenericParameters.Count == 1);
 
             var (missing, _) = ResolveUnit("import no.such.Thing\nvar x: i32\n");
-            TestHarness.CheckSemanticError("导入不存在名字仍报 Unresolved import",
+            CaseAssertions.CheckSemanticError("导入不存在名字仍报 Unresolved import",
                 missing.Diagnostics, "Unresolved import: 'no.such.Thing'");
 
             var (pair, _) = ResolveUnitWithStdlib(
                 "import core.Pair\n" +
                 "func f(p: Pair\\<i32, String>) { }\n");
             CheckNoErrors("具名导入 core.Pair", pair);
-            TestHarness.CheckTrue("Pair\\<i32, String> 构造",
+            CaseAssertions.CheckTrue("Pair\\<i32, String> 构造",
                 pair.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "f")
                     .Parameters[0].Type is TypeSymbol pairType
                 && pairType.ConstructedFrom?.Name == "Pair"
@@ -3589,7 +3589,7 @@ namespace RigiCompiler.Tests
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
             roots.AddRange(sources.Select(source => {
-                var root = TestHarness.ParseRoot(source);
+                var root = CompilerTestTools.ParseRoot(source);
                 root.IsCompilerLibrary = compilerLibraryFixture;
                 return root;
             }));

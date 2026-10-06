@@ -15,12 +15,12 @@ namespace RigiCompiler.Tests
                 "func f(a: bool, b: bool): bool { return (a and b) }\n" +
                 "func o(a: bool, b: bool): bool { return (a or b) }\n");
             CheckNoErrors("无诊断（短路展开）", unit);
-            TestHarness.Check("a and b ⇒ if a { s = b } else { s = false }",
+            CaseAssertions.Check("a and b ⇒ if a { s = b } else { s = false }",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: bool, .b0: .breakid], " +
                 "[If(Param(a,bool), [Assign(Local(.s0,bool), Param(b,bool))], " +
                 "[Assign(Local(.s0,bool), Const(False,bool))], .b0); Return(Local(.s0,bool))])");
-            TestHarness.Check("a or b ⇒ if a { s = true } else { s = b }",
+            CaseAssertions.Check("a or b ⇒ if a { s = true } else { s = b }",
                 LoweredDescribe.Body(BodyOf(lowered, "o")),
                 "Body(o, [.s0: bool, .b0: .breakid], " +
                 "[If(Param(a,bool), [Assign(Local(.s0,bool), Const(True,bool))], " +
@@ -34,15 +34,15 @@ namespace RigiCompiler.Tests
             var constant = (LoweredConstantExpression)constantAssign.Value;
             var boundAnd = (BoundBinaryExpression)((BoundReturnStatement)
                 bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("合成局部 .s0 引用相等（写入与读取同一符号）",
+            CaseAssertions.CheckTrue("合成局部 .s0 引用相等（写入与读取同一符号）",
                 ReferenceEquals(((LoweredValueReferenceExpression)constantAssign.Target).Symbol,
                     loweredBody.Locals[0])
                 && ReferenceEquals(((LoweredValueReferenceExpression)
                     ((LoweredReturnStatement)loweredBody.Body.Statements[1]).Value!).Symbol,
                     loweredBody.Locals[0]));
-            TestHarness.CheckTrue("常量节点 Origin 回指 and/or Bound 节点",
+            CaseAssertions.CheckTrue("常量节点 Origin 回指 and/or Bound 节点",
                 ReferenceEquals(constant.Origin, boundAnd));
-            TestHarness.CheckTrue("常量类型为 bool", constant.Type.Name == "bool"
+            CaseAssertions.CheckTrue("常量类型为 bool", constant.Type.Name == "bool"
                 && (bool)constant.Value == false);
         }
 
@@ -58,14 +58,14 @@ namespace RigiCompiler.Tests
                 "    return if (x > 0) { x } else { -x }\n" +
                 "}\n");
             CheckNoErrors("无诊断（if 表达式降级）", unit);
-            TestHarness.Check("显式 return@ 值块写结果局部",
+            CaseAssertions.Check("显式 return@ 值块写结果局部",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [r: i32, .s0: i32, .b0: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[Assign(Local(.s0,i32), Int(1,i32))], " +
                 "[Assign(Local(.s0,i32), Int(2,i32))], .b0); " +
                 "Decl(r, i32, = Local(.s0,i32)); Return(Local(r,i32))])");
-            TestHarness.Check("隐式取值值块写结果局部",
+            CaseAssertions.Check("隐式取值值块写结果局部",
                 LoweredDescribe.Body(BodyOf(lowered, "g")),
                 "Body(g, [.s0: i32, .b0: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
@@ -84,7 +84,7 @@ namespace RigiCompiler.Tests
                 "    return y\n" +
                 "}\n");
             CheckNoErrors("无诊断（复合赋值脱糖）", unit);
-            TestHarness.Check("x += 1 ⇒ 前置 x = x + 1，表达式位 x",
+            CaseAssertions.Check("x += 1 ⇒ 前置 x = x + 1，表达式位 x",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [x: i32, y: i32], [Decl(x, i32, = Param(a,i32)); " +
                 "Assign(Local(x,i32), Binary(Add, Local(x,i32), Int(1,i32), i32)); " +
@@ -97,10 +97,10 @@ namespace RigiCompiler.Tests
             var boundCompound = (BoundCompoundAssignmentExpression)
                 ((BoundLocalDeclarationStatement)bound.Single(b => b.Method.Name == "f")
                     .Body.Statements[1]).Initializer!;
-            TestHarness.CheckTrue("脱糖赋值与运算 Origin 回指复合赋值 Bound 节点",
+            CaseAssertions.CheckTrue("脱糖赋值与运算 Origin 回指复合赋值 Bound 节点",
                 ReferenceEquals(assign.Origin, boundCompound)
                 && ReferenceEquals(assign.Value.Origin, boundCompound));
-            TestHarness.CheckTrue("表达式位引用 Origin 回指 Bound 侧 Target 引用",
+            CaseAssertions.CheckTrue("表达式位引用 Origin 回指 Bound 侧 Target 引用",
                 ReferenceEquals(
                     ((LoweredLocalDeclarationStatement)loweredBody.Body.Statements[2])
                         .Initializer!.Origin, boundCompound.Target));
@@ -128,7 +128,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "func bumpField(): i32 { var z = (getBox().f += 3)\nreturn z }\n");
             CheckNoErrors("无诊断（复合赋值单次求值）", unit2);
-            TestHarness.Check("索引显式读改写回（Q6）",
+            CaseAssertions.Check("索引显式读改写回（Q6）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bump")),
                 "Body(bump, [bag: Bag, i: i32, .s0: i32?, .s1: i32, .b0: .breakid, " +
                 ".s2: i32?, .s3: i32, .b1: .breakid], " +
@@ -145,7 +145,7 @@ namespace RigiCompiler.Tests
                 "[Assign(Local(.s3,i32), Cast(Local(.s2,i32?), i32, i32))], " +
                 "[Assign(Local(.s3,i32), Int(0,i32))], .b1); " +
                 "Return(Local(.s3,i32))])");
-            TestHarness.Check("字段复合物化（receiver 一次）",
+            CaseAssertions.Check("字段复合物化（receiver 一次）",
                 LoweredDescribe.Body(BodyOf(lowered2, "bumpField")),
                 "Body(bumpField, [z: i32, .s0: Box], " +
                 "[Assign(Local(.s0,Box), Call(getBox, [], Box)); " +
@@ -171,7 +171,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("无诊断（值块 route 展开）", unit);
-            TestHarness.Check("跨 region return@（route + dispatcher）",
+            CaseAssertions.Check("跨 region return@（route + dispatcher）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .s1: i32, .b2: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
@@ -197,7 +197,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("无诊断（双终止静死保留）", unit2);
-            TestHarness.Check("双分支终止后语句静死保留",
+            CaseAssertions.Check("双分支终止后语句静死保留",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [y: i32, r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .s1: i32, .b2: .breakid], " +
                 "[If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
@@ -223,7 +223,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（while 降级）", unit);
-            TestHarness.Check("while Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("while Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [x: i32, .s0: bool, .b0: .breakid], " +
                 "[Decl(x, i32, = Int(0,i32)); " +
                 "Loop([Assign(Local(.s0,bool), " +
@@ -234,13 +234,13 @@ namespace RigiCompiler.Tests
             // BreakId.Type 为 null（.breakid 特例）
             var whileLoop = (LoweredLoop)BodyOf(lowered, "f").Body.Statements[1];
             var fLocals = BodyOf(lowered, "f").Locals;
-            TestHarness.CheckTrue("条件局部 .s0（bool，引用相等）",
+            CaseAssertions.CheckTrue("条件局部 .s0（bool，引用相等）",
                 whileLoop.Condition.Name == ".s0" && whileLoop.Condition.Type?.Name == "bool"
                 && ReferenceEquals(whileLoop.Condition, fLocals[1]));
-            TestHarness.CheckTrue("BreakId 局部 .b0（Type null，引用相等）",
+            CaseAssertions.CheckTrue("BreakId 局部 .b0（Type null，引用相等）",
                 whileLoop.BreakId.Name == ".b0" && whileLoop.BreakId.Type == null
                 && ReferenceEquals(whileLoop.BreakId, fLocals[2]));
-            TestHarness.CheckTrue("while 非 rev", !whileLoop.IsRev);
+            CaseAssertions.CheckTrue("while 非 rev", !whileLoop.IsRev);
 
             // do-while → loop.rev（IsRev）
             var (unit2, _, lowered2) = LowerUnitWithStdlib(
@@ -250,7 +250,7 @@ namespace RigiCompiler.Tests
                 "    } while (a > 0)\n" +
                 "}\n");
             CheckNoErrors("无诊断（do-while 降级）", unit2);
-            TestHarness.Check("do-while Lowered 形态（rev）",
+            CaseAssertions.Check("do-while Lowered 形态（rev）",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: bool, .b0: .breakid], " +
                 "[Loop(rev, [Assign(Local(.s0,bool), " +
@@ -269,7 +269,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（嵌套标签循环降级）", unit3);
-            TestHarness.Check("嵌套循环 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+            CaseAssertions.Check("嵌套循环 Lowered 形态", LoweredDescribe.Body(BodyOf(lowered3, "f")),
                 "Body(f, [.s0: bool, .b0: .breakid, .s1: bool, .b1: .breakid], " +
                 "[Loop([Assign(Local(.s0,bool), Binary(CmpGt, Param(a,i32), Int(0,i32), bool))], .s0, " +
                 "[Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(a,i32), Int(1,i32), bool))], .s1, " +
@@ -278,10 +278,10 @@ namespace RigiCompiler.Tests
             // 结构性事实：映射引用相等——Break 携外层 BreakId、Continue 携内层
             var outer = (LoweredLoop)BodyOf(lowered3, "f").Body.Statements[0];
             var inner = (LoweredLoop)outer.Body.Statements[0];
-            TestHarness.CheckTrue("break@outer 携外层 BreakId（引用相等）",
+            CaseAssertions.CheckTrue("break@outer 携外层 BreakId（引用相等）",
                 ReferenceEquals(((LoweredBreakStatement)inner.Body.Statements[0]).BreakId,
                     outer.BreakId));
-            TestHarness.CheckTrue("continue 携内层 BreakId（引用相等）",
+            CaseAssertions.CheckTrue("continue 携内层 BreakId（引用相等）",
                 ReferenceEquals(((LoweredContinueStatement)inner.Body.Statements[1]).BreakId,
                     inner.BreakId));
 
@@ -292,7 +292,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（条件内短路）", unit4);
-            TestHarness.Check("短路展开进 Judge 块", LoweredDescribe.Body(BodyOf(lowered4, "f")),
+            CaseAssertions.Check("短路展开进 Judge 块", LoweredDescribe.Body(BodyOf(lowered4, "f")),
                 "Body(f, [.s0: bool, .b0: .breakid, .s1: bool, .b1: .breakid], " +
                 "[Loop([If(Param(a,bool), [Assign(Local(.s1,bool), Param(b,bool))], " +
                 "[Assign(Local(.s1,bool), Const(False,bool))], .b1); " +
@@ -311,7 +311,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("无诊断（值块内 break 穿透降级）", unit5);
-            TestHarness.Check("值块内 break 穿透 Lowered 形态",
+            CaseAssertions.Check("值块内 break 穿透 Lowered 形态",
                 LoweredDescribe.Body(BodyOf(lowered5, "f")),
                 "Body(f, [r: i32, .s0: bool, .b0: .breakid, .s1: i32, .b1: .breakid], " +
                 "[Decl(r, i32, = Int(0,i32)); " +
@@ -337,19 +337,19 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（循环 region route）", unit);
             var described = LoweredDescribe.Body(BodyOf(lowered, "f"));
-            TestHarness.Check("while 体 return@ → loop route + dispatcher", described,
+            CaseAssertions.Check("while 体 return@ → loop route + dispatcher", described,
                 "Body(f, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .s2: i32, .b2: .breakid], " +
                 "[Seq([Assign(Local(.s2,i32), Const(0,i32)); " +
                 "Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(x,i32), Int(1,i32), bool))], .s1, " +
                 "[Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b1); " +
                 "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b2); " +
                 "Assign(Local(.s0,i32), Int(2,i32))], .b0); Return(Local(.s0,i32))])");
-            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（loop）",
+            CaseAssertions.CheckTrue("routing 后无 StructuredExit 残留（loop）",
                 !described.Contains("StructuredExit"), described);
             var seqBlock = (LoweredSeqBlock)BodyOf(lowered, "f").Body.Statements[0];
             var loopDispatcher = seqBlock.Body.Statements.OfType<LoweredIfStatement>()
                 .Single(s => s.SeqRouteHintRoute != null);
-            TestHarness.CheckTrue("loop dispatcher 打了 seq-route hint",
+            CaseAssertions.CheckTrue("loop dispatcher 打了 seq-route hint",
                 loopDispatcher.SeqRouteHintRoute != null
                 && loopDispatcher.SeqRouteHintRoute.Name == ".s2");
 
@@ -366,7 +366,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（嵌套循环 relay）", unit2);
             var described2 = LoweredDescribe.Body(BodyOf(lowered2, "g"));
-            TestHarness.Check("嵌套循环两级 route + dispatcher", described2,
+            CaseAssertions.Check("嵌套循环两级 route + dispatcher", described2,
                 "Body(g, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .s2: bool, .b2: .breakid, " +
                 ".s3: i32, .s4: i32, .b3: .breakid, .b4: .breakid], " +
                 "[Seq([Assign(Local(.s4,i32), Const(0,i32)); " +
@@ -379,7 +379,7 @@ namespace RigiCompiler.Tests
                 "Assign(Local(.s0,i32), Int(0,i32)); Assign(Local(.s4,i32), Const(1,i32)); Break(.b1)], .b1); " +
                 "If(Binary(CmpEq, Local(.s4,i32), Const(1,i32), bool), [Break(.b0)], .b4); " +
                 "Assign(Local(.s0,i32), Int(1,i32))], .b0); Return(Local(.s0,i32))])");
-            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（嵌套 loop）",
+            CaseAssertions.CheckTrue("routing 后无 StructuredExit 残留（嵌套 loop）",
                 !described2.Contains("StructuredExit"), described2);
 
             // break 不写 route：dispatcher fall-through 落到循环后 return@
@@ -395,7 +395,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（break 与 return@ 共存）", unit3);
             var described3 = LoweredDescribe.Body(BodyOf(lowered3, "h"));
-            TestHarness.Check("break 不写 route、return@ 写 route", described3,
+            CaseAssertions.Check("break 不写 route、return@ 写 route", described3,
                 "Body(h, [.s0: i32, .b0: .breakid, .s1: bool, .b1: .breakid, .b2: .breakid, .s2: i32, .b3: .breakid], " +
                 "[Seq([Assign(Local(.s2,i32), Const(0,i32)); " +
                 "Loop([Assign(Local(.s1,bool), Binary(CmpGt, Param(x,i32), Int(0,i32), bool))], .s1, " +
@@ -403,7 +403,7 @@ namespace RigiCompiler.Tests
                 "Assign(Local(.s0,i32), Int(1,i32)); Assign(Local(.s2,i32), Const(1,i32)); Break(.b1)], .b1); " +
                 "If(Binary(CmpEq, Local(.s2,i32), Const(1,i32), bool), [Break(.b0)], .b3); " +
                 "Assign(Local(.s0,i32), Int(2,i32))], .b0); Return(Local(.s0,i32))])");
-            TestHarness.CheckTrue("routing 后无 StructuredExit 残留（break 共存）",
+            CaseAssertions.CheckTrue("routing 后无 StructuredExit 残留（break 共存）",
                 !described3.Contains("StructuredExit"), described3);
         }
 
@@ -419,7 +419,7 @@ namespace RigiCompiler.Tests
                 "    return sum\n" +
                 "}\n");
             CheckNoErrors("无诊断（for 脱糖）", unit);
-            TestHarness.Check("for 脱糖 Lowered 形态",
+            CaseAssertions.Check("for 脱糖 Lowered 形态",
                 LoweredDescribe.Body(BodyOf(lowered, "main")),
                 "Body(main, [sum: i32, i: i32, .s0: IEnumerator<i32>, .s1: bool, .b0: .breakid], " +
                 "[Decl(sum, i32, = Int(0,i32)); " +
@@ -446,20 +446,20 @@ namespace RigiCompiler.Tests
                 ((LoweredAssignmentStatement)forLoop.Judge.Statements[0]).Value;
             var currentCall = (LoweredInstanceCallExpression)
                 ((LoweredAssignmentStatement)forLoop.Body.Statements[0]).Value;
-            TestHarness.CheckTrue("前置 iterate 方法符号引用相等",
+            CaseAssertions.CheckTrue("前置 iterate 方法符号引用相等",
                 ReferenceEquals(((LoweredInstanceCallExpression)iterateAssign.Value).Method,
                     boundLoop.IterateMethod));
-            TestHarness.CheckTrue("Judge moveNext / Body 头 current 方法符号引用相等",
+            CaseAssertions.CheckTrue("Judge moveNext / Body 头 current 方法符号引用相等",
                 ReferenceEquals(judgeCall.Method, boundLoop.MoveNextMethod)
                 && ReferenceEquals(currentCall.Method, boundLoop.CurrentMethod));
-            TestHarness.CheckTrue("条件局部/枚举器局部/breakid 引用相等",
+            CaseAssertions.CheckTrue("条件局部/枚举器局部/breakid 引用相等",
                 ReferenceEquals(forLoop.Condition, mainBody.Locals[3])
                 && ReferenceEquals(
                     ((LoweredValueReferenceExpression)iterateAssign.Target).Symbol,
                     mainBody.Locals[2])
                 && ReferenceEquals(forLoop.BreakId, mainBody.Locals[4]));
             var enumeratorLocalType = mainBody.Locals[2].Type!;
-            TestHarness.CheckTrue("枚举器局部类型 = IEnumerator<i32> 构造",
+            CaseAssertions.CheckTrue("枚举器局部类型 = IEnumerator<i32> 构造",
                 enumeratorLocalType is TypeSymbol enumeratorType
                 && enumeratorType.ConstructedFrom != null
                 && enumeratorType.ConstructedFrom.Name == "IEnumerator"
@@ -480,13 +480,13 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（常量 switch）", unit);
-            TestHarness.Check("常量 switch Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("常量 switch Lowered 形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.b0: .breakid], [Switch(Param(x,i32), " +
                 "[Case(Int(1,i32), [Return(Int(1,i32))]); Case(Int(2,i32), [Return(Int(2,i32))])], " +
                 "[Return(Int(0,i32))], .b0)])");
             var fBody = BodyOf(lowered, "f");
             var switchStmt = (LoweredSwitch)fBody.Body.Statements[0];
-            TestHarness.CheckTrue("Origin 回指引用相等 + BreakId 进 Locals",
+            CaseAssertions.CheckTrue("Origin 回指引用相等 + BreakId 进 Locals",
                 ReferenceEquals(switchStmt.Origin,
                     ((BoundBlock)bound.Single(b => b.Method.Name == "f").Body).Statements[0])
                 && ReferenceEquals(switchStmt.BreakId, fBody.Locals[0]));
@@ -502,19 +502,19 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（pattern switch）", unit2);
             var described2 = LoweredDescribe.Body(BodyOf(lowered2, "f"));
-            TestHarness.Check("pattern switch if 链降级", described2,
+            CaseAssertions.Check("pattern switch if 链降级", described2,
                 "Body(f, [.s0: i32, .b0: .breakid, .b1: .breakid], " +
                 "[Assign(Local(.s0,i32), Param(x,i32)); " +
                 "[If(Binary(CmpEq, Local(.s0,i32), Int(1,i32), bool), [Return(Int(1,i32))], " +
                 "[If(Binary(CmpGt, Local(.s0,i32), Int(10,i32), bool), [Return(Int(2,i32))], " +
                 "[Return(Int(0,i32))], .b0)], .b1)]])");
-            TestHarness.CheckTrue("selector 全 switch 只求值一次",
+            CaseAssertions.CheckTrue("selector 全 switch 只求值一次",
                 described2.Split("Param(x").Length - 1 == 1);
             var chainAssign = (LoweredAssignmentStatement)BodyOf(lowered2, "f").Body.Statements[0];
             var selectorTemp = ((LoweredValueReferenceExpression)chainAssign.Target).Symbol;
             var outerIf = (LoweredIfStatement)
                 ((LoweredBlock)BodyOf(lowered2, "f").Body.Statements[1]).Statements[0];
-            TestHarness.CheckTrue("占位读取与 selector 物化局部引用相等",
+            CaseAssertions.CheckTrue("占位读取与 selector 物化局部引用相等",
                 ReferenceEquals(((LoweredValueReferenceExpression)
                     ((LoweredBinaryExpression)outerIf.Condition).Left).Symbol, selectorTemp));
 
@@ -527,7 +527,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（switch 表达式）", unit3);
-            TestHarness.Check("switch 表达式结果局部", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+            CaseAssertions.Check("switch 表达式结果局部", LoweredDescribe.Body(BodyOf(lowered3, "f")),
                 "Body(f, [.s0: i32, .b0: .breakid], " +
                 "[Switch(Param(x,i32), [Case(Int(1,i32), [Assign(Local(.s0,i32), Int(10,i32))])], " +
                 "[Assign(Local(.s0,i32), Int(0,i32))], .b0); Return(Local(.s0,i32))])");
@@ -544,7 +544,7 @@ namespace RigiCompiler.Tests
                 "    throw new MyException()\n" +
                 "}\n");
             CheckNoErrors("无诊断（throw）", unit);
-            TestHarness.Check("throw 恒等降级", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("throw 恒等降级", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [], [Throw(New(MyException, []))])");
 
             // 值块内 throw：路径终止（其后语句截断，if 转换不编织 continuation）
@@ -558,7 +558,7 @@ namespace RigiCompiler.Tests
                 "    } else { 0 }\n" +
                 "}\n");
             CheckNoErrors("无诊断（值块内 throw）", unit2);
-            TestHarness.Check("值块内 throw 终止", LoweredDescribe.Body(BodyOf(lowered2, "f")),
+            CaseAssertions.Check("值块内 throw 终止", LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: i32, .b0: .breakid], [If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[Throw(New(MyException, []))], [Assign(Local(.s0,i32), Int(0,i32))], .b0); " +
                 "Return(Local(.s0,i32))])");
@@ -577,7 +577,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（throw 后死代码）", unit3);
             // 语句被截断；dead 的「声明」是 P3 产物（Locals 归 P3 所有），
             // 仅作为从未赋值的局部留在 .vars——与未使用的普通声明同处置
-            TestHarness.Check("throw 后同块语句截断", LoweredDescribe.Body(BodyOf(lowered3, "f")),
+            CaseAssertions.Check("throw 后同块语句截断", LoweredDescribe.Body(BodyOf(lowered3, "f")),
                 "Body(f, [dead: i32], [Throw(New(MyException, []))])");
         }
 
@@ -598,7 +598,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("无诊断（else-if 链 route 展开）", unit);
-            TestHarness.Check("else-if 链混合终止 route 展开",
+            CaseAssertions.Check("else-if 链混合终止 route 展开",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [x: i32, r: i32, .s0: i32, .b0: .breakid, .b1: .breakid, .b2: .breakid, " +
                 ".s1: i32, .s2: i32, .b3: .breakid, .b4: .breakid], " +

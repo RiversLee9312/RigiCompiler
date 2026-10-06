@@ -39,14 +39,14 @@ namespace RigiCompiler.Tests
                 "    const result: RequestResult = .Success\n" +
                 "}\n");
             CheckNoErrors("无诊断（固定 case 降级）", unit);
-            TestHarness.Check("固定 case 降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("固定 case 降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [result: RequestResult], " +
                 "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, [Int(-1,i32)]))])");
             var boundCase = (BoundEnumCaseExpression)((BoundLocalDeclarationStatement)
                 bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Initializer!;
             var loweredCase = (LoweredEnumCaseExpression)((LoweredLocalDeclarationStatement)
                 BodyOf(lowered, "f").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("enum case Origin 回指 + Case 符号引用相等 + 固定实参组合",
+            CaseAssertions.CheckTrue("enum case Origin 回指 + Case 符号引用相等 + 固定实参组合",
                 ReferenceEquals(loweredCase.Origin, boundCase)
                 && ReferenceEquals(loweredCase.Case, boundCase.Case)
                 && loweredCase.Arguments.Count == 1
@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
                 "    const failed: RequestResult = .Failed(404)\n" +
                 "}\n");
             CheckNoErrors("无诊断（参数化 case 降级）", unit2);
-            TestHarness.Check("参数化 case 位置实参降级形态",
+            CaseAssertions.Check("参数化 case 位置实参降级形态",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [failed: RequestResult], " +
                 "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
@@ -66,7 +66,7 @@ namespace RigiCompiler.Tests
                 bound2.Single(b => b.Method.Name == "f").Body.Statements[0]).Initializer!;
             var loweredArg = (LoweredEnumCaseExpression)((LoweredLocalDeclarationStatement)
                 BodyOf(lowered2, "f").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("洞实参逐条降级（Origin 回指 Bound 实参）",
+            CaseAssertions.CheckTrue("洞实参逐条降级（Origin 回指 Bound 实参）",
                 loweredArg.Arguments.Count == 1
                 && ReferenceEquals(loweredArg.Arguments[0].Origin, boundArg.Arguments[0]));
 
@@ -76,7 +76,7 @@ namespace RigiCompiler.Tests
                 "    const e: DataResult = .Error(text = \"bad\", code = 7)\n" +
                 "}\n");
             CheckNoErrors("无诊断（乱序具名降级）", unit3);
-            TestHarness.Check("乱序具名归位规范序降级形态",
+            CaseAssertions.Check("乱序具名归位规范序降级形态",
                 LoweredDescribe.Body(BodyOf(lowered3, "f")),
                 "Body(f, [e: DataResult], [Decl(e, DataResult, = EnumCase(DataResult.Error, " +
                 "[Int(7,i32), Str(\"bad\",String)]))])");
@@ -97,7 +97,7 @@ namespace RigiCompiler.Tests
                 "    const w: Wrapped = .Custom(new Derived())\n" +
                 "}\n");
             CheckNoErrors("无诊断（洞签名 cast 物化）", unit4);
-            TestHarness.Check("洞实参按洞签名类型物化 cast",
+            CaseAssertions.Check("洞实参按洞签名类型物化 cast",
                 LoweredDescribe.Body(BodyOf(lowered4, "f")),
                 "Body(f, [w: Wrapped], [Decl(w, Wrapped, = EnumCase(Wrapped.Custom, " +
                 "[Cast(New(Derived, []), Base, Base)]))])");
@@ -110,14 +110,14 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("无诊断（is .Case 降级）", unit5);
-            TestHarness.Check("is .Case 降级形态", LoweredDescribe.Body(BodyOf(lowered5, "f")),
+            CaseAssertions.Check("is .Case 降级形态", LoweredDescribe.Body(BodyOf(lowered5, "f")),
                 "Body(f, [.b0: .breakid], [If(IsCase(Param(result,RequestResult), RequestResult.Failed), " +
                 "[CallStmt(consume, [Param(result,RequestResult)])], .b0); Return(Int(0,i32))])");
             var boundIsCase = (BoundTypeCheckExpression)((BoundIfStatement)
                 bound5.Single(b => b.Method.Name == "f").Body.Statements[0]).Condition;
             var loweredIsCase = (LoweredTypeCheckExpression)((LoweredIfStatement)
                 BodyOf(lowered5, "f").Body.Statements[0]).Condition;
-            TestHarness.CheckTrue("IsCase 槽透传（Origin/Kind/Case 引用相等/双槽 null）",
+            CaseAssertions.CheckTrue("IsCase 槽透传（Origin/Kind/Case 引用相等/双槽 null）",
                 ReferenceEquals(loweredIsCase.Origin, boundIsCase)
                 && loweredIsCase.Kind == BoundTypeCheckKind.IsCase
                 && ReferenceEquals(loweredIsCase.Case, boundIsCase.Case)
@@ -133,7 +133,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（switch pattern is .Case 降级）", unit6);
-            TestHarness.Check("switch pattern is .Case 降级形态",
+            CaseAssertions.Check("switch pattern is .Case 降级形态",
                 LoweredDescribe.Body(BodyOf(lowered6, "f")),
                 "Body(f, [.s0: RequestResult, .b0: .breakid], " +
                 "[Assign(Local(.s0,RequestResult), Param(result,RequestResult)); " +
@@ -147,7 +147,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("无诊断（丢弃式全形 case 降级）", unit7);
-            TestHarness.Check("丢弃式全形 case 降级形态",
+            CaseAssertions.Check("丢弃式全形 case 降级形态",
                 LoweredDescribe.Body(BodyOf(lowered7, "f")),
                 "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
                 "Return(Int(0,i32))])");

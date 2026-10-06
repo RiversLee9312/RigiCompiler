@@ -193,27 +193,27 @@ public static partial class ModuleTests
 
         File.WriteAllText(Path.Combine(folder, "app.rg"), LateApplicationSource);
         var before = SHA256.HashData(std.BilBytes);
-        var (app, unit) = CompileInterfaceProbe("late-app@1.0.0", [TestHarness.ParseRoot(LateApplicationSource, "source/app.rg")], [std, provider], finalApplication: true);
+        var (app, unit) = CompileInterfaceProbe("late-app@1.0.0", [CompilerTestTools.ParseRoot(LateApplicationSource, "source/app.rg")], [std, provider], finalApplication: true);
         File.WriteAllBytes(Path.Combine(folder, "app.bil"), app.BilBytes);
         File.WriteAllBytes(Path.Combine(folder, "app.interface.json"), app.InterfaceBytes);
         var linked = ModuleApplicationLinker.Link([std, provider], app.ReadBil(), unit.Symbols);
         File.WriteAllText(Path.Combine(folder, "linked.bil"), BilWriter.Write(linked));
-        TestHarness.CheckTrue("final只审批20个可信std late helper且无provider AST", unit.Symbols.ApprovedLateHelpers.Count == 20
+        CaseAssertions.CheckTrue("final只审批20个可信std late helper且无provider AST", unit.Symbols.ApprovedLateHelpers.Count == 20
             && unit.Symbols.LateHelperOverrides.Count == 20 && unit.SourceFiles.Count == 1 && !File.Exists(providerPath));
-        TestHarness.CheckTrue("late替换不修改cached std BIL", before.SequenceEqual(SHA256.HashData(std.BilBytes)));
-        TestHarness.CheckTrue("普通source lookup没有private Serializable host", !unit.Symbols.GetNamespace(["late"]).Types.Any(t => t.Name == "Hidden")
+        CaseAssertions.CheckTrue("late替换不修改cached std BIL", before.SequenceEqual(SHA256.HashData(std.BilBytes)));
+        CaseAssertions.CheckTrue("普通source lookup没有private Serializable host", !unit.Symbols.GetNamespace(["late"]).Types.Any(t => t.Name == "Hidden")
             && unit.Symbols.ImportedUserHosts.Any(t => t.Name == "Hidden"));
         var importedWrapped = unit.Symbols.GetNamespace(["late"]).Types.Single(t => t.Name == "Wrapped");
-        TestHarness.CheckTrue("imported wrapper应用无AST且provider安装器保留", importedWrapped.AppliedWrappers.Single().Syntax == null
+        CaseAssertions.CheckTrue("imported wrapper应用无AST且provider安装器保留", importedWrapped.AppliedWrappers.Single().Syntax == null
             && importedWrapped.Methods.Any(m => m.Name == BilSpellings.InitWrapperMethodName));
         BilTestHarness.CheckBilValid("artifact-only用户codec与final late body typed BIL", linked);
         var machine = new BilVm(linked);
         var run = machine.Run();
-        TestHarness.CheckTrue("artifact-only Std真实Dispatcher运行而非降级单线程通道", machine.LastContext!.Dispatch.HasDispatcher);
-        TestHarness.CheckTrue("provider移走后泛型/继承/私有host/本地codec与反射真实VM", run.Exception == null && run.ReturnValue is VmI32 { Value: 0 },
+        CaseAssertions.CheckTrue("artifact-only Std真实Dispatcher运行而非降级单线程通道", machine.LastContext!.Dispatch.HasDispatcher);
+        CaseAssertions.CheckTrue("provider移走后泛型/继承/私有host/本地codec与反射真实VM", run.Exception == null && run.ReturnValue is VmI32 { Value: 0 },
             run.Exception?.ToString() ?? run.ReturnValue?.ToString() ?? "无返回值");
         var languageException = machine.LastContext!.LanguageException("core::RuntimeException", "module-message");
-        TestHarness.CheckTrue("VM内置异常准确写入Std protected消息字段", languageException.ExceptionObject is IVmFieldHost exceptionHost
+        CaseAssertions.CheckTrue("VM内置异常准确写入Std protected消息字段", languageException.ExceptionObject is IVmFieldHost exceptionHost
             && exceptionHost.TryReadField(machine.LastContext.RuntimeField("core::Exception#message@.string"), out var message)
             && message is VmString { Value: "module-message" });
         var failureModule = BilReader.Read(BilWriter.Write(linked));
@@ -224,7 +224,7 @@ public static partial class ModuleTests
             failureDeclaration.Symbol, failureDeclaration.Modifiers.Concat([new BilKeywordModifier(BilKeyword.Entrypoint)]).ToArray());
         File.WriteAllText(Path.Combine(folder, "unhandled.bil"), BilWriter.Write(failureModule));
         var failure = new BilVm(failureModule).Run(entryPoint: "$unhandled()@.i32");
-        TestHarness.CheckTrue("uncaught getMessage失败时保留真实protected字段消息", failure.Exception?.Message.Contains("module-fallback", StringComparison.Ordinal) == true,
+        CaseAssertions.CheckTrue("uncaught getMessage失败时保留真实protected字段消息", failure.Exception?.Message.Contains("module-fallback", StringComparison.Ordinal) == true,
             failure.Exception?.ToString() ?? "无异常");
     }
 }

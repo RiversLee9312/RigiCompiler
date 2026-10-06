@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using RigiCompiler.Bil;
 
@@ -31,7 +31,7 @@ namespace RigiCompiler.Tests
             // 结构性事实：§12.1 三操作数形状（SOURCE RESULT type(TARGET_TYPE)）
             var castInstruction = module.Functions.Single(f => f.Symbol == "$f(s:.string)@.string")
                 .Blocks[0].Instructions.Single(i => i is CastInstruction);
-            TestHarness.CheckTrue("cast 三操作数（§12.1）",
+            CaseAssertions.CheckTrue("cast 三操作数（§12.1）",
                 castInstruction.Operands.Count == 3
                 && castInstruction.Operands[0] is BilVariableOperand
                 && castInstruction.Operands[1] is BilVariableOperand
@@ -71,7 +71,7 @@ namespace RigiCompiler.Tests
             // 结构性事实：String 段直拼无 toString；非 String 段一经 cast 一 invoke
             var mainInstructions = module.Functions.Single(f => f.Symbol == "$main()@.void")
                 .Blocks[0].Instructions;
-            TestHarness.CheckTrue("toString 调用恰一次（仅非 String 段）",
+            CaseAssertions.CheckTrue("toString 调用恰一次（仅非 String 段）",
                 mainInstructions.Count(i => i is InvokeInstruction) == 1);
         }
 
@@ -104,7 +104,7 @@ namespace RigiCompiler.Tests
                 "set.var $.t5 $.s1\n" +
                 "}\n");
             // 结构性事实：null 资源形态（§19.1：null type(元素类型)）
-            TestHarness.CheckTrue("null 资源按元素类型登记（R_5/R_6）",
+            CaseAssertions.CheckTrue("null 资源按元素类型登记（R_5/R_6）",
                 module.Resources.Any(r => r is BilNullResource n
                     && n.TypeRef == ".string")
                 && module.Resources.Any(r => r is BilNullResource n
@@ -212,7 +212,7 @@ namespace RigiCompiler.Tests
             var isInstruction = module.Functions.Single(f => f.Symbol == "$f(d:Dog)@.bool")
                 .Blocks[0].Instructions
                 .Single(i => i is DirectTypeCheckInstruction { Kind: BilTypeCheckKind.Is });
-            TestHarness.CheckTrue("type.is 三操作数（§12.3）",
+            CaseAssertions.CheckTrue("type.is 三操作数（§12.3）",
                 isInstruction.Operands.Count == 3
                 && isInstruction.Operands[0] is BilVariableOperand
                 && isInstruction.Operands[1] is BilTypeOperand
@@ -221,7 +221,7 @@ namespace RigiCompiler.Tests
             var indirectInstruction = module.Functions.Single(f => f.Symbol == "$k(d:Dog)@.bool")
                 .Blocks[0].Instructions
                 .Single(i => i is IndirectTypeCheckInstruction { Kind: BilTypeCheckKind.Is });
-            TestHarness.CheckTrue("type.is.indirect 三操作数全变量（§12.3）",
+            CaseAssertions.CheckTrue("type.is.indirect 三操作数全变量（§12.3）",
                 indirectInstruction.Operands.Count == 3
                 && indirectInstruction.Operands.All(o => o is BilVariableOperand));
         }
@@ -249,14 +249,14 @@ namespace RigiCompiler.Tests
             // 结构性事实：§12.5 getid.type 双操作数（type(TYPE_SYMBOL) TARGET_TYPEID）
             var getIdType = module.Functions.Single(f => f.Symbol == "$m()@.typeid<Animal>")
                 .Blocks[0].Instructions.Single(i => i is GetIdTypeInstruction);
-            TestHarness.CheckTrue("getid.type 双操作数（§12.5）",
+            CaseAssertions.CheckTrue("getid.type 双操作数（§12.5）",
                 getIdType.Operands.Count == 2
                 && getIdType.Operands[0] is BilTypeOperand
                 && getIdType.Operands[1] is BilVariableOperand);
             // 结构性事实：§12.5 getid.var 双操作数（VALUE TARGET_TYPEID）
             var getIdVar = module.Functions.Single(f => f.Symbol == "$n(d:Dog)@.typeid<Dog>")
                 .Blocks[0].Instructions.Single(i => i is GetIdVarInstruction);
-            TestHarness.CheckTrue("getid.var 双操作数全变量（§12.5）",
+            CaseAssertions.CheckTrue("getid.var 双操作数全变量（§12.5）",
                 getIdVar.Operands.Count == 2
                 && getIdVar.Operands.All(o => o is BilVariableOperand));
         }
@@ -302,7 +302,7 @@ namespace RigiCompiler.Tests
             // 结构性事实：§14.2 new.indirect 三操作数（TYPEID_VAR RESULT [ARGS]）
             var indirect = module.Functions.Single(f => f.Symbol == "$m()@.i32")
                 .Blocks[0].Instructions.Single(i => i is NewIndirectInstruction);
-            TestHarness.CheckTrue("new.indirect 三操作数（§14.2）",
+            CaseAssertions.CheckTrue("new.indirect 三操作数（§14.2）",
                 indirect.Operands.Count == 3
                 && indirect.Operands[0] is BilVariableOperand
                 && indirect.Operands[1] is BilVariableOperand
@@ -329,7 +329,7 @@ namespace RigiCompiler.Tests
             // $$call fn .args：.return → .this → .generic.T → 普通参数
             var callFn = module.Functions.Single(f => f.Symbol.Contains("$$call")
                 && f.Symbol.Contains("Mapper"));
-            TestHarness.CheckTrue("泛型 $$call .args 含 .generic.T = .typeid",
+            CaseAssertions.CheckTrue("泛型 $$call .args 含 .generic.T = .typeid",
                 callFn.Args.Any(a => a.Name == ".generic.T" && a.TypeRef == ".typeid"));
 
             // 调用点：getid.type 前置 + invoke.indirect 实参 [typeid, value]
@@ -356,13 +356,13 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（间接泛型包）", module2);
             var main2 = module2.Functions.Single(f => f.Symbol == "$main()@.void");
             var news = main2.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
-            TestHarness.CheckTrue("间接泛型包 .array<.typeid<.any>> 构造",
+            CaseAssertions.CheckTrue("间接泛型包 .array<.typeid<.any>> 构造",
                 news.Any(n => n.Type.TypeRef == ".array<.typeid<.any>>"
                     && n.Arguments.Count == 2));
-            TestHarness.CheckTrue("间接包调用含 invoke.indirect",
+            CaseAssertions.CheckTrue("间接包调用含 invoke.indirect",
                 main2.Blocks[0].Instructions.OfType<InvokeIndirectInstruction>().Any());
             var typeIds = main2.Blocks[0].Instructions.OfType<GetIdTypeInstruction>().ToList();
-            TestHarness.CheckTrue("间接包 typeid 物化（i32/String）", typeIds.Count >= 2);
+            CaseAssertions.CheckTrue("间接包 typeid 物化（i32/String）", typeIds.Count >= 2);
         }
 
         private static void TestGenericEmission()
@@ -379,7 +379,7 @@ namespace RigiCompiler.Tests
             // fn 定义 .args：§7.2 序 .return → .generic.T = .typeid → 普通参数
             var identityFn = module.Functions.Single(f => f.Symbol
                 == "$identity(x:.generic<$.generic.T>)@.generic<$.generic.T>");
-            TestHarness.CheckTrue("泛型 fn .args 顺序（.return → .generic.T → 普通）",
+            CaseAssertions.CheckTrue("泛型 fn .args 顺序（.return → .generic.T → 普通）",
                 identityFn.Args.Count == 3
                 && identityFn.Args[0].Name == ".return"
                 && identityFn.Args[0].TypeRef == ".generic<$.generic.T>"
@@ -422,7 +422,7 @@ namespace RigiCompiler.Tests
 
             // .type 声明 generic(...) 子句（§8.2，S9e 定稿：泛型参数名列表；
             // stdlib core::Pair 定义级发射验证）
-            TestHarness.CheckTrue(".type generic 子句（core::Pair）",
+            CaseAssertions.CheckTrue(".type generic 子句（core::Pair）",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .First(t => t.Symbol == "core::Pair") is { } pairDeclaration
                     && pairDeclaration.GenericParameters.Count == 2
@@ -449,10 +449,10 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol == "Producer");
             var consumer = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Consumer");
-            TestHarness.CheckTrue("BIL 泛型声明保留 out/in",
+            CaseAssertions.CheckTrue("BIL 泛型声明保留 out/in",
                 producer.GenericVariances.Single() == BilGenericVariance.Out
                 && consumer.GenericVariances.Single() == BilGenericVariance.In);
-            TestHarness.CheckTrue("BIL 泛型声明 writer 保留 out/in",
+            CaseAssertions.CheckTrue("BIL 泛型声明 writer 保留 out/in",
                 BilWriter.Write(module).Contains("generic(out T)")
                 && BilWriter.Write(module).Contains("generic(in T)"));
         }
@@ -473,16 +473,16 @@ namespace RigiCompiler.Tests
             // fn .args：普通参数区无 numbers/options（canonical 亦无——
             // PrintMethod 跳过可变参数）；隐藏条目 .vargs./.kwargs. 在末位
             var sumFn = module.Functions.Single(f => f.Symbol == "$sum()@.i32");
-            TestHarness.CheckTrue("位置包隐藏条目（.vargs.numbers = .array<.any>）",
+            CaseAssertions.CheckTrue("位置包隐藏条目（.vargs.numbers = .array<.any>）",
                 sumFn.Args.Count == 2 && sumFn.Args[1].Name == ".vargs.numbers"
                 && sumFn.Args[1].TypeRef == ".array<.any>");
             var configFn = module.Functions.Single(f => f.Symbol == "$config()@.any");
-            TestHarness.CheckTrue("具名包隐藏条目（.kwargs.options = .array<.pair<.string, .any>>）",
+            CaseAssertions.CheckTrue("具名包隐藏条目（.kwargs.options = .array<.pair<.string, .any>>）",
                 configFn.Args.Count == 2 && configFn.Args[1].Name == ".kwargs.options"
                 && configFn.Args[1].TypeRef == ".array<.pair<.string, .any>>");
 
             // 体内引用：$vargs.numbers / $kwargs.options 映射（零指令）
-            TestHarness.CheckTrue("体内 kwargs 引用映射",
+            CaseAssertions.CheckTrue("体内 kwargs 引用映射",
                 configFn.Blocks[0].Instructions
                     .OfType<CastInstruction>().Any(i =>
                         i.Operands[0] is BilVariableOperand { Name: ".kwargs.options" }));
@@ -493,7 +493,7 @@ namespace RigiCompiler.Tests
             // .array<.pair<.string, .any>> 同元素类型，§7.1）
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
             var news = mainFn.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
-            TestHarness.CheckTrue("位置包 array 构造 + 具名包 pair/array 构造",
+            CaseAssertions.CheckTrue("位置包 array 构造 + 具名包 pair/array 构造",
                 news.Any(n => n.Type.TypeRef == ".array<.any>"
                     && n.Arguments.Count == 3)
                 && news.Any(n => n.Type.TypeRef == "core::Pair<.string, .any>")
@@ -518,14 +518,14 @@ namespace RigiCompiler.Tests
 
             // fn .args：泛型包隐藏条目按 §7.2 序（固定泛型 → 泛型包 → 值包）
             var collectFn = module.Functions.Single(f => f.Symbol == "$collect()@.i32");
-            TestHarness.CheckTrue("位置泛型包隐藏条目（.generic.TArgs = .array<.typeid<.any>>）",
+            CaseAssertions.CheckTrue("位置泛型包隐藏条目（.generic.TArgs = .array<.typeid<.any>>）",
                 collectFn.Args.Count == 3
                 && collectFn.Args[1].Name == ".generic.TArgs"
                 && collectFn.Args[1].TypeRef == ".array<.typeid<.any>>"
                 && collectFn.Args[2].Name == ".vargs.values"
                 && collectFn.Args[2].TypeRef == ".array<.any>");
             var updateFn = module.Functions.Single(f => f.Symbol == "$update()@.bool");
-            TestHarness.CheckTrue("具名泛型包隐藏条目（.generic.TValues = .map<.string, .typeid<.any>>）",
+            CaseAssertions.CheckTrue("具名泛型包隐藏条目（.generic.TValues = .map<.string, .typeid<.any>>）",
                 updateFn.Args.Count == 3
                 && updateFn.Args[1].Name == ".generic.TValues"
                 && updateFn.Args[1].TypeRef == ".map<.string, .typeid<.any>>"
@@ -536,15 +536,15 @@ namespace RigiCompiler.Tests
             // pair 逐项（名 + getid.type）→ new .map<.string, .typeid<.any>>
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
             var mainNews = mainFn.Blocks[0].Instructions.OfType<NewInstruction>().ToList();
-            TestHarness.CheckTrue("位置包 .typeid 数组构造（2 元素）",
+            CaseAssertions.CheckTrue("位置包 .typeid 数组构造（2 元素）",
                 mainNews.Any(n => n.Type.TypeRef == ".array<.typeid<.any>>"
                     && n.Arguments.Count == 2));
-            TestHarness.CheckTrue("具名包 pair/map 构造",
+            CaseAssertions.CheckTrue("具名包 pair/map 构造",
                 mainNews.Any(n => n.Type.TypeRef == "core::Pair<.string, .typeid<.any>>")
                 && mainNews.Any(n => n.Type.TypeRef == ".map<.string, .typeid<.any>>"
                     && n.Arguments.Count == 2));
             var typeIds = mainFn.Blocks[0].Instructions.OfType<GetIdTypeInstruction>().ToList();
-            TestHarness.CheckTrue("typeid 物化（i32/String/bool 三项）", typeIds.Count >= 3);
+            CaseAssertions.CheckTrue("typeid 物化（i32/String/bool 三项）", typeIds.Count >= 3);
         }
     }
 }

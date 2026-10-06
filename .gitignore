@@ -12,6 +12,8 @@ tools/.mimalloc/
 # fuzz 失败落盘（StressFuzz）
 Tests/fuzz-failures/
 publish/
+publish-tests/
+TestResults/
 *.log
 # 临时探测目录（既有跟踪文件不受影响；新增临时文件不再入库）
 playground/

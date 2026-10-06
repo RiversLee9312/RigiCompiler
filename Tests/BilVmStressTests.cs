@@ -17,15 +17,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVmStressTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilVmStress", Cases, sectionTitle: "BilVmStress");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -79,7 +77,7 @@ namespace RigiCompiler.Tests
             try
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-                TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                         d => $"{d.Phase}: {d.Message}")));
                 if (unit.Diagnostics.HasErrors)
@@ -91,7 +89,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue("全管线无诊断", false, exception.ToString());
+                CaseAssertions.CheckTrue("全管线无诊断", false, exception.ToString());
                 return new BilVmResult("", "", null,
                     new VmException(exception.Message, inner: exception));
             }
@@ -99,20 +97,20 @@ namespace RigiCompiler.Tests
 
         private static void CheckOk(string label, BilVmResult result)
         {
-            TestHarness.CheckTrue(label + " 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
         }
 
         private static void CheckI32(string label, BilVmResult result, int expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmI32 n && n.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
 
         private static void CheckBool(string label, BilVmResult result, bool expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmBool flag && flag.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -263,7 +261,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("局部 Value wrapper 声明初始化经 set", result);
-            TestHarness.Check("初始化+赋值+读取 stdout", result.Stdout,
+            CaseAssertions.Check("初始化+赋值+读取 stdout", result.Stdout,
                 "[set] 50\n" +
                 "[set] 42\n" +
                 "[get] 42\n" +
@@ -422,7 +420,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("双层 Entity wrapper 带实参", result);
-            TestHarness.Check("双层 outer→inner 顺序 stdout", result.Stdout,
+            CaseAssertions.Check("双层 outer→inner 顺序 stdout", result.Stdout,
                 "outer:O\n" +
                 "inner:I\n" +
                 "x\n");
@@ -554,7 +552,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("插值各标量", result);
-            TestHarness.Check("插值标量 stdout", result.Stdout,
+            CaseAssertions.Check("插值标量 stdout", result.Stdout,
                 "b=true d=1.5 f=2.5 c=Z l=7 u=3\n");
         }
 
@@ -574,11 +572,11 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("嵌套 finally 异常未吞",
+            CaseAssertions.CheckTrue("嵌套 finally 异常未吞",
                 result.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("RuntimeException"),
                 result.Exception?.ToString() ?? "<null>");
-            TestHarness.Check("嵌套 finally 顺序", result.Stdout,
+            CaseAssertions.Check("嵌套 finally 顺序", result.Stdout,
                 "inner\n" +
                 "outer\n");
         }
@@ -633,7 +631,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Entity get/set proxy 顺序", result);
-            TestHarness.Check("写 s、读 g", result.Stdout, "s\ng\n");
+            CaseAssertions.Check("写 s、读 g", result.Stdout, "s\ng\n");
         }
 
         // Entity 字段读命中唯一 wildcard .proxy.get.*（无 specific 时），
@@ -660,7 +658,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Entity getter wildcard proxy", result);
-            TestHarness.CheckTrue("读命中 .proxy.get.* 且带 symbol",
+            CaseAssertions.CheckTrue("读命中 .proxy.get.* 且带 symbol",
                 result.Stdout.Contains("get:Service#name") == true,
                 result.Stdout);
         }
@@ -688,7 +686,7 @@ namespace RigiCompiler.Tests
                 "    if (s.name == \"b\") { return 1 } else { return 0 }\n" +
                 "}\n");
             CheckOk("Entity setter wildcard proxy", result);
-            TestHarness.CheckTrue("写命中 .proxy.set.* 且带 symbol",
+            CaseAssertions.CheckTrue("写命中 .proxy.set.* 且带 symbol",
                 result.Stdout.Contains("set:Service#name") == true,
                 result.Stdout);
             CheckI32("原始字段写生效", result, 1);
@@ -856,7 +854,7 @@ namespace RigiCompiler.Tests
                 "    return Holder.x\n" +
                 "}\n");
             CheckOk("静态 wrapper+访问器外置序", result);
-            TestHarness.Check("静态写读打印序", result.Stdout,
+            CaseAssertions.Check("静态写读打印序", result.Stdout,
                 "wrapper.set\nuser.set\nuser.get\nwrapper.get\n");
             CheckI32("静态 5→15→30 读 60→61", result, 61);
         }
@@ -888,10 +886,10 @@ namespace RigiCompiler.Tests
                 "    Calc.base = 30\n" +
                 "    return Calc.total(12)\n" +
                 "}\n");
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
-            TestHarness.CheckTrue("一个 companion 两个成员",
+            CaseAssertions.CheckTrue("一个 companion 两个成员",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Count(t => t.Symbol.EndsWith("..companion")) == 1
                 && module.LocalSymbols.OfType<BilTypeDeclaration>()
@@ -1022,7 +1020,7 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckOk("全局 wrapper+访问器外置序", result);
-            TestHarness.Check("全局写读打印序", result.Stdout,
+            CaseAssertions.Check("全局写读打印序", result.Stdout,
                 "wrapper.set\nuser.set\nuser.get\nwrapper.get\n");
             CheckI32("全局 5→15→30 读 60→61", result, 61);
         }
@@ -1079,23 +1077,23 @@ namespace RigiCompiler.Tests
             var (_, module, _) = BilTestHarness.EmitBilUnit(source);
             var cell = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..cell.."));
-            TestHarness.CheckTrue("const cell extends .readonly_cell<.i32>",
+            CaseAssertions.CheckTrue("const cell extends .readonly_cell<.i32>",
                 cell.ExtendsType == ".readonly_cell<.i32>");
             var members = cell.Members.OfType<BilSimpleMemberDeclaration>().ToList();
-            TestHarness.CheckTrue("const cell value 为 const + wrapped(Counting)",
+            CaseAssertions.CheckTrue("const cell value 为 const + wrapped(Counting)",
                 members.Any(m => m.Symbol.EndsWith("#value@.i32")
                     && m.Modifiers.OfType<BilKeywordModifier>()
                         .Any(k => k.Keyword == BilKeyword.Const)
                     && m.Modifiers.OfType<BilWrappedModifier>()
                         .Any(w => w.WrapperTypeRef == "Counting")));
-            TestHarness.CheckTrue("const cell 无 setValue",
+            CaseAssertions.CheckTrue("const cell 无 setValue",
                 !members.Any(m => m.Symbol.Contains("$setValue")));
-            TestHarness.CheckTrue("const cell 单例无参 init、无 1 元 init(value)",
+            CaseAssertions.CheckTrue("const cell 单例无参 init、无 1 元 init(value)",
                 members.Any(m => m.Symbol.Contains("$init()@")
                     && m.Modifiers.OfType<BilKeywordModifier>()
                         .Any(k => k.Keyword == BilKeyword.Init))
                 && !members.Any(m => m.Symbol.Contains("$init(value:")));
-            TestHarness.CheckTrue("const cell override getValue",
+            CaseAssertions.CheckTrue("const cell override getValue",
                 members.Any(m => m.Symbol.Contains("$getValue()")
                     && m.Modifiers.OfType<BilKeywordModifier>()
                         .Any(k => k.Keyword == BilKeyword.Override)));
@@ -1207,7 +1205,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n";
 
             var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-            TestHarness.CheckTrue("循环依赖编译无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("循环依赖编译无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             VmException? cycle = null;
@@ -1219,8 +1217,8 @@ namespace RigiCompiler.Tests
             {
                 cycle = ex;
             }
-            TestHarness.CheckTrue("循环依赖抛 VmException", cycle != null);
-            TestHarness.CheckTrue("异常信息含循环链（A → B → A）",
+            CaseAssertions.CheckTrue("循环依赖抛 VmException", cycle != null);
+            CaseAssertions.CheckTrue("异常信息含循环链（A → B → A）",
                 cycle?.Message.Contains("循环依赖") == true
                 && cycle?.Message.Contains("→") == true
                 && cycle?.Message.Contains("A") == true
@@ -1253,7 +1251,7 @@ namespace RigiCompiler.Tests
                 "        core.io.Console.println(\"fin\")\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckTrue("竞态回归 boom 编译无诊断", !boomUnit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("竞态回归 boom 编译无诊断", !boomUnit.Diagnostics.HasErrors,
                 string.Join("; ", boomUnit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var boomFailedRound = -1;
@@ -1270,7 +1268,7 @@ namespace RigiCompiler.Tests
                         + (result.ReturnValue?.ToStandardText() ?? "<null>");
                 }
             }
-            TestHarness.CheckTrue("await throw+finally 200 轮全绿", boomFailedRound < 0,
+            CaseAssertions.CheckTrue("await throw+finally 200 轮全绿", boomFailedRound < 0,
                 "第 " + boomFailedRound + " 轮失败：" + boomDetail);
 
             var (yieldUnit, yieldModule, _) = BilTestHarness.EmitBilUnit(
@@ -1293,7 +1291,7 @@ namespace RigiCompiler.Tests
                 "    var w = await d\n" +
                 "    return (((x + y) + z) + w)\n" +
                 "}\n");
-            TestHarness.CheckTrue("竞态回归 yield 编译无诊断", !yieldUnit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("竞态回归 yield 编译无诊断", !yieldUnit.Diagnostics.HasErrors,
                 string.Join("; ", yieldUnit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var yieldFailedRound = -1;
@@ -1309,7 +1307,7 @@ namespace RigiCompiler.Tests
                         + (result.ReturnValue?.ToStandardText() ?? "<null>");
                 }
             }
-            TestHarness.CheckTrue("bare yield fork/join 200 轮全绿", yieldFailedRound < 0,
+            CaseAssertions.CheckTrue("bare yield fork/join 200 轮全绿", yieldFailedRound < 0,
                 "第 " + yieldFailedRound + " 轮失败：" + yieldDetail);
         }
 
@@ -1357,7 +1355,7 @@ namespace RigiCompiler.Tests
                 "    core.io.Console.println(\"started=${counter.started} hits=${counter.hits}\")\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("并发计数编译无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("并发计数编译无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var failedRound = -1;
@@ -1372,7 +1370,7 @@ namespace RigiCompiler.Tests
                         + result.Stdout.Replace("\n", "\\n");
                 }
             }
-            TestHarness.CheckTrue("18 并发 Task 字段计数 6 轮全绿", failedRound < 0,
+            CaseAssertions.CheckTrue("18 并发 Task 字段计数 6 轮全绿", failedRound < 0,
                 "第 " + failedRound + " 轮失败：" + detail);
         }
 
@@ -1442,7 +1440,7 @@ namespace RigiCompiler.Tests
                 "    core.io.Console.println(\"got=${stats.got}\")\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("消息泵编译无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("消息泵编译无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var failedRound = -1;
@@ -1457,7 +1455,7 @@ namespace RigiCompiler.Tests
                         + result.Stdout.Replace("\n", "\\n");
                 }
             }
-            TestHarness.CheckTrue("消息泵 18 条全量投递 8 轮全绿", failedRound < 0,
+            CaseAssertions.CheckTrue("消息泵 18 条全量投递 8 轮全绿", failedRound < 0,
                 "第 " + failedRound + " 轮失败：" + detail);
         }
     }

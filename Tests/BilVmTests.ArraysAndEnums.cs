@@ -65,7 +65,7 @@ namespace RigiCompiler.Tests
                 "    return a[0] if? 0\n" +
                 "}\n");
             CheckOk("Q6：越界读取得 null", result);
-            TestHarness.Check("越界/负下标 stdout", result.Stdout, "-1\nnull\n");
+            CaseAssertions.Check("越界/负下标 stdout", result.Stdout, "-1\nnull\n");
             CheckI32("界内读回", result, 7);
         }
 
@@ -88,7 +88,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("数组越界写被 catch", caught);
             CheckI32("数组越界写 catch 返回 7", caught, 7);
-            TestHarness.Check("数组越界写 getMessage stdout", caught.Stdout,
+            CaseAssertions.Check("数组越界写 getMessage stdout", caught.Stdout,
                 "数组下标越界：5（长度 3）\n");
 
             var spanCaught = Run(
@@ -105,7 +105,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("Span 越界写被 catch", spanCaught);
             CheckI32("Span 越界写 catch 返回 8", spanCaught, 8);
-            TestHarness.Check("Span 越界写 getMessage stdout", spanCaught.Stdout,
+            CaseAssertions.Check("Span 越界写 getMessage stdout", spanCaught.Stdout,
                 "数组下标越界：-1（长度 3）\n");
 
             var uncaught = Run(
@@ -115,11 +115,11 @@ namespace RigiCompiler.Tests
                 "    a[9] = 2\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("未捕获越界写抛 OutOfBoundException",
+            CaseAssertions.CheckTrue("未捕获越界写抛 OutOfBoundException",
                 uncaught.Exception?.ExceptionObject is VmObject oobObj
                 && oobObj.TypeRef.Contains("OutOfBoundException"),
                 uncaught.Exception?.ToString() ?? "<null>");
-            TestHarness.Check("未捕获越界写顶层格式",
+            CaseAssertions.Check("未捕获越界写顶层格式",
                 uncaught.Exception?.Message ?? "",
                 "core::OutOfBoundException: 数组下标越界：9（长度 3）");
         }
@@ -206,14 +206,14 @@ namespace RigiCompiler.Tests
                 "pub enum struct Outcome { }[Ok, Failed]\n" +
                 "pub func main(): Outcome { return .Ok }\n");
             CheckOk("enum 身份 Ok", ok);
-            TestHarness.CheckTrue("Ok case 符号",
+            CaseAssertions.CheckTrue("Ok case 符号",
                 ok.ReturnValue is VmEnum e && e.CaseSymbol == "Outcome.Ok",
                 ok.ReturnValue?.ToStandardText() ?? "<null>");
             var failed = Run(
                 "pub enum struct Outcome { }[Ok, Failed]\n" +
                 "pub func main(): Outcome { return .Failed }\n");
             CheckOk("enum 身份 Failed", failed);
-            TestHarness.CheckTrue("Failed 与 Ok 身份不同",
+            CaseAssertions.CheckTrue("Failed 与 Ok 身份不同",
                 failed.ReturnValue is VmEnum f && f.CaseSymbol == "Outcome.Failed"
                 && ok.ReturnValue is VmEnum o && !f.SameCase(o),
                 failed.ReturnValue?.ToStandardText() ?? "<null>");
@@ -240,7 +240,7 @@ namespace RigiCompiler.Tests
                 "    return b.value\n" +
                 "}\n");
             CheckOk("访问器", result);
-            TestHarness.Check("getter/setter 调用顺序", result.Stdout, "s\ns\ng\n");
+            CaseAssertions.Check("getter/setter 调用顺序", result.Stdout, "s\ns\ng\n");
             CheckI32("访问器返回值", result, 3);
         }
 

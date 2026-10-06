@@ -13,7 +13,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestInitFieldDa()
         {
-            TestHarness.Section("P3 Init Field Definite Assignment (§9.3, P18/S2)");
+            CompilerTestTools.Section("P3 Init Field Definite Assignment (§9.3, P18/S2)");
 
             // ===== 正例 =====
             // 声明初始值（..init.field.* 视为进入时已赋值）
@@ -117,21 +117,21 @@ namespace RigiCompiler.Tests
             var (bad1, _) = BindUnit(
                 "class Q { pub var x: i32\n" +
                 "    pub init(c: bool) { if (c) { x = 1 } } }\n");
-            TestHarness.CheckSemanticError("分支漏赋值", bad1.Diagnostics,
+            CaseAssertions.CheckSemanticError("分支漏赋值", bad1.Diagnostics,
                 "Field 'x' of 'Q' is not definitely assigned on all paths");
 
             // 中途 return 路径漏赋值
             var (bad2, _) = BindUnit(
                 "class R { pub var x: i32\n" +
                 "    pub init(c: bool) {\n        if (c) { return }\n        x = 1\n    } }\n");
-            TestHarness.CheckSemanticError("中途 return 路径漏赋值", bad2.Diagnostics,
+            CaseAssertions.CheckSemanticError("中途 return 路径漏赋值", bad2.Diagnostics,
                 "Field 'x' of 'R' is not definitely assigned on all paths");
 
             // while 体可能零次：体内赋值不计入出口
             var (bad3, _) = BindUnit(
                 "class S { pub var x: i32\n" +
                 "    pub init() { while (false) { x = 1 } } }\n");
-            TestHarness.CheckSemanticError("while 体赋值不计入", bad3.Diagnostics,
+            CaseAssertions.CheckSemanticError("while 体赋值不计入", bad3.Diagnostics,
                 "Field 'x' of 'S' is not definitely assigned on all paths");
 
             // do-while 体内 break 跳过赋值：出环点与体尾取交，x 未定值
@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
                 "    pub init(b: bool) {\n" +
                 "        do { if (b) { break }\n            x = 1 } while (false)\n" +
                 "    } }\n");
-            TestHarness.CheckSemanticError("do-while break 跳过赋值", badBreak.Diagnostics,
+            CaseAssertions.CheckSemanticError("do-while break 跳过赋值", badBreak.Diagnostics,
                 "Field 'x' of 'SBreak' is not definitely assigned on all paths");
 
             // named break 穿透外层：内层体尾赋值不计入 outer 出口
@@ -154,7 +154,7 @@ namespace RigiCompiler.Tests
                 "            } while (false)\n" +
                 "        } while (false)\n" +
                 "    } }\n");
-            TestHarness.CheckSemanticError("named break 跨层不计入内层体尾", badNamed.Diagnostics,
+            CaseAssertions.CheckSemanticError("named break 跨层不计入内层体尾", badNamed.Diagnostics,
                 "Field 'x' of 'SNamed' is not definitely assigned on all paths");
 
             // while 体内 break 跳过赋值（零次路径已拒，break 路径同样未赋）
@@ -163,7 +163,7 @@ namespace RigiCompiler.Tests
                 "    pub init(b: bool) {\n" +
                 "        while (true) { if (b) { break }\n            x = 1 }\n" +
                 "    } }\n");
-            TestHarness.CheckSemanticError("while break 跳过赋值", badWhileBreak.Diagnostics,
+            CaseAssertions.CheckSemanticError("while break 跳过赋值", badWhileBreak.Diagnostics,
                 "Field 'x' of 'SWhileBreak' is not definitely assigned on all paths");
 
             // for 体内 break 跳过赋值
@@ -172,43 +172,43 @@ namespace RigiCompiler.Tests
                 "    pub init(b: bool) {\n" +
                 "        for (i in 0 to 1) { if (b) { break }\n            x = 1 }\n" +
                 "    } }\n");
-            TestHarness.CheckSemanticError("for break 跳过赋值", badForBreak.Diagnostics,
+            CaseAssertions.CheckSemanticError("for break 跳过赋值", badForBreak.Diagnostics,
                 "Field 'x' of 'SForBreak' is not definitely assigned on all paths");
 
             // 不调 super 且基类有无初始值非空字段：诊断引导 super
             var (bad4, _) = BindUnit(
                 "pub open class T { pub var t: i32\n    pub init(_ -> t) }\n" +
                 "pub class U : T { pub init() { } }\n");
-            TestHarness.CheckSemanticError("不调 super 基类义务", bad4.Diagnostics,
+            CaseAssertions.CheckSemanticError("不调 super 基类义务", bad4.Diagnostics,
                 "Field 't' of 'T' is not definitely assigned on all paths of this init " +
                 "of 'U'");
-            TestHarness.CheckSemanticError("诊断引导调 super", bad4.Diagnostics,
+            CaseAssertions.CheckSemanticError("诊断引导调 super", bad4.Diagnostics,
                 "or call super(...)");
 
             // 无 init 类型零参 new 使用点拒绝
             var (bad5, _) = BindUnit(
                 "struct V { pub var x: i32 }\n" +
                 "func m(): i32 { return new V().x }\n");
-            TestHarness.CheckSemanticError("无 init 直接 new", bad5.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 init 直接 new", bad5.Diagnostics,
                 "Type 'V' has no constructor that assigns non-nullable field 'x'");
 
             // 合成默认构造覆盖不了无初始值字段（有初始值触发合成，
             // 同类另一个无初始值非空字段漏出）
             var (bad6, _) = BindUnit(
                 "class W { pub var a: i32 = 1\n    pub var b: i32 }\n");
-            TestHarness.CheckSemanticError("合成默认构造漏字段", bad6.Diagnostics,
+            CaseAssertions.CheckSemanticError("合成默认构造漏字段", bad6.Diagnostics,
                 "Field 'b' of 'W' is not definitely assigned on all paths");
 
             // 无 init enum struct 的固定 case：默认构造无法担保字段
             var (bad7, _) = BindUnit(
                 "pub enum struct X { pub const c: i32 }[A]\n");
-            TestHarness.CheckSemanticError("无 init enum 固定 case", bad7.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 init enum 固定 case", bad7.Diagnostics,
                 "cannot assign non-nullable field 'c'");
 
             // 泛型参数类型字段按非空悲观（要豁免须写 T?）
             var (bad8, _) = BindUnit(
                 "class Y\\<T> { pub var v: T\n    pub init() { } }\n");
-            TestHarness.CheckSemanticError("泛型参数字段悲观非空", bad8.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型参数字段悲观非空", bad8.Diagnostics,
                 "Field 'v' of 'Y' is not definitely assigned on all paths");
         }
     }

@@ -28,7 +28,7 @@ namespace RigiCompiler.Tests
             var outcome = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Outcome");
             var cases = outcome.Members.OfType<BilCaseDeclaration>().ToArray();
-            TestHarness.CheckTrue(".case 声明挂类型 Members（数量/名称/空洞/auto）",
+            CaseAssertions.CheckTrue(".case 声明挂类型 Members（数量/名称/空洞/auto）",
                 cases.Length == 2
                 && cases[0].QualifiedName == "Outcome.Ok"
                 && cases[0].Parameters.Count == 0 && cases[0].DiscriminantResource == null
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
             var requestResult = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "RequestResult");
             var cases = requestResult.Members.OfType<BilCaseDeclaration>().ToArray();
-            TestHarness.CheckTrue(".case 声明洞签名形态（名/类型/auto）",
+            CaseAssertions.CheckTrue(".case 声明洞签名形态（名/类型/auto）",
                 cases.Length == 2
                 && cases[0].QualifiedName == "RequestResult.Success"
                 && cases[0].Parameters.Count == 0
@@ -122,7 +122,7 @@ namespace RigiCompiler.Tests
                 && cases[1].Parameters[0].Name == "errorCode"
                 && cases[1].Parameters[0].TypeRef == ".i32"
                 && cases.All(c => c.DiscriminantResource == null));
-            TestHarness.CheckTrue("enum 无体 init 照常声明（pub init 修饰符）",
+            CaseAssertions.CheckTrue("enum 无体 init 照常声明（pub init 修饰符）",
                 requestResult.Members.OfType<BilSimpleMemberDeclaration>().Any(m =>
                     m.Symbol == "RequestResult$init(errorCode:.i32)@.void"
                     && m.Modifiers.Any(mod => mod is BilKeywordModifier
@@ -180,7 +180,7 @@ namespace RigiCompiler.Tests
             var steady = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "SteadyABIEnum");
             var cases = steady.Members.OfType<BilCaseDeclaration>().ToArray();
-            TestHarness.CheckTrue("显式判别值发 discriminant res(R)（非 auto）",
+            CaseAssertions.CheckTrue("显式判别值发 discriminant res(R)（非 auto）",
                 cases.Length == 3
                 && cases[0].QualifiedName == "SteadyABIEnum.First"
                 && cases[1].QualifiedName == "SteadyABIEnum.Second"
@@ -193,7 +193,7 @@ namespace RigiCompiler.Tests
                 .Single(r => r.Name == cases[1].DiscriminantResource);
             var thirdRes = module.Resources.OfType<BilScalarResource>()
                 .Single(r => r.Name == cases[2].DiscriminantResource);
-            TestHarness.CheckTrue("判别值资源 i32 值（-> 0/-> 2/-> 1）",
+            CaseAssertions.CheckTrue("判别值资源 i32 值（-> 0/-> 2/-> 1）",
                 firstRes.Type == BilScalarType.I32 && firstRes.LiteralText == "0"
                 && secondRes.Type == BilScalarType.I32 && secondRes.LiteralText == "2"
                 && thirdRes.Type == BilScalarType.I32 && thirdRes.LiteralText == "1");

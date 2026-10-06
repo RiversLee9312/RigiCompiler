@@ -22,15 +22,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class SeqRouteHintTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "SeqRouteHint", Cases, sectionTitle: "SeqRouteHint");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -58,7 +56,7 @@ namespace RigiCompiler.Tests
         // 标签逃逸——修复前 §21.4 拦「$.s1 在赋值前被读取」
         private static void TestMixedSeqExpressionEndToEnd()
         {
-            TestHarness.Section("混合 seq 表达式端到端");
+            CompilerTestTools.Section("混合 seq 表达式端到端");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -84,7 +82,7 @@ namespace RigiCompiler.Tests
         // 混合 if 表达式：if 表达式一臂 return@_ 产值、一臂 return@ 逃逸
         private static void TestMixedIfExpressionEndToEnd()
         {
-            TestHarness.Section("混合 if 表达式端到端");
+            CompilerTestTools.Section("混合 if 表达式端到端");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -108,7 +106,7 @@ namespace RigiCompiler.Tests
         // 混合 switch 表达式（值匹配）：一臂 return@decide 逃逸，余臂产值
         private static void TestMixedSwitchExpressionEndToEnd()
         {
-            TestHarness.Section("混合 switch 表达式端到端");
+            CompilerTestTools.Section("混合 switch 表达式端到端");
             var source =
                 "pub func pick(n: i32): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -136,7 +134,7 @@ namespace RigiCompiler.Tests
         // loop dispatcher，hint 紧贴 loop/loop.rev 之后
         private static void TestLoopDispatcherHintEmission()
         {
-            TestHarness.Section("loop dispatcher 发 hint");
+            CompilerTestTools.Section("loop dispatcher 发 hint");
             CheckLoopHintAfter("while 体 return@",
                 "pub func f(x: i32): i32 {\n" +
                 "    return seq {\n" +
@@ -177,7 +175,7 @@ namespace RigiCompiler.Tests
             var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
             CheckNoErrors(label + " 无诊断", unit);
             BilTestHarness.CheckBilValid(label + " BIL 过验证器", module);
-            TestHarness.CheckTrue(label + " loop 后紧跟 seq-route hint",
+            CaseAssertions.CheckTrue(label + " loop 后紧跟 seq-route hint",
                 HasSeqRouteHintAfterLoop(module, expectRev),
                 "未找到 loop/loop.rev 后的 rigi.seq-route hint");
         }
@@ -185,7 +183,7 @@ namespace RigiCompiler.Tests
         // 无跨 region exit 的普通循环不建 route、不发 dispatcher、不发 hint
         private static void TestLoopNoDispatcherNoHint()
         {
-            TestHarness.Section("无 dispatcher 不发 loop hint");
+            CompilerTestTools.Section("无 dispatcher 不发 loop hint");
             var source =
                 "pub func main(): i32 {\n" +
                 "    var x: i32 = 0\n" +
@@ -196,7 +194,7 @@ namespace RigiCompiler.Tests
             var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
             CheckNoErrors("普通循环无诊断", unit);
             BilTestHarness.CheckBilValid("普通循环 BIL 过验证器", module);
-            TestHarness.CheckTrue("普通 while/do-while 后无 seq-route hint",
+            CaseAssertions.CheckTrue("普通 while/do-while 后无 seq-route hint",
                 !HasSeqRouteHintAfterLoop(module, expectRev: false)
                 && !HasSeqRouteHintAfterLoop(module, expectRev: true));
         }
@@ -205,7 +203,7 @@ namespace RigiCompiler.Tests
         // 局部只在 0 组（未进循环 / 循环正常结束）之后发生
         private static void TestMixedWhileExpressionEndToEnd()
         {
-            TestHarness.Section("混合 while 表达式端到端");
+            CompilerTestTools.Section("混合 while 表达式端到端");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -233,10 +231,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors(label + " 无诊断", unit);
             BilTestHarness.CheckBilValid(label + " BIL 过验证器", module);
             var result = BilVm.Run(module);
-            TestHarness.CheckTrue(label + " VM 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " VM 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
-            TestHarness.Check(label + " VM 输出", result.Stdout, expectedStdout);
-            TestHarness.CheckTrue(label + " main 返回 0",
+            CaseAssertions.Check(label + " VM 输出", result.Stdout, expectedStdout);
+            CaseAssertions.CheckTrue(label + " main 返回 0",
                 result.ReturnValue is VmI32 exitCode && exitCode.Value == 0,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -246,7 +244,7 @@ namespace RigiCompiler.Tests
         // 正例：带正确 hint 的混合形态模块过验证器
         private static void TestHandModuleWithHintPasses()
         {
-            TestHarness.Section("rigi.seq-route hint：手工模块正例");
+            CompilerTestTools.Section("rigi.seq-route hint：手工模块正例");
             var (module, _, _, _) = SeqRouteModule(out _, out _, out _);
             BilTestHarness.CheckBilValid("带正确 hint 的混合形态模块过验证器", module);
         }
@@ -294,7 +292,7 @@ namespace RigiCompiler.Tests
         // loop 手工模块：带正确 hint 过验证器（DA 按组精确，读 $.s1 合法）
         private static void TestLoopHandModuleWithHintPasses()
         {
-            TestHarness.Section("rigi.seq-route hint：loop 手工模块正例");
+            CompilerTestTools.Section("rigi.seq-route hint：loop 手工模块正例");
             var (module, _, _, _) = LoopSeqRouteModule(out _, out _, out _);
             BilTestHarness.CheckBilValid("带正确 loop hint 的混合形态模块过验证器", module);
         }
@@ -337,7 +335,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilInvalid(label + "：退回保守 §21.4 照报", module,
                 "$.s1\" 在赋值前被读取");
             var errors = BilVerifier.Verify(module);
-            TestHarness.CheckTrue(label + "：无 hint 相关新诊断",
+            CaseAssertions.CheckTrue(label + "：无 hint 相关新诊断",
                 errors.All(e => !e.Message.Contains("hint") && !e.Message.Contains("seq-route")),
                 string.Join("; ", errors.Select(e => e.ToString())));
         }
@@ -637,7 +635,7 @@ namespace RigiCompiler.Tests
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
         }

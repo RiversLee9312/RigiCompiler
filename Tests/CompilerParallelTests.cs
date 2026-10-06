@@ -5,9 +5,9 @@ namespace RigiCompiler.Tests;
 // 并行契约采用完整序列/字节对拍；不归一化隐藏名字，也不排序诊断。
 public static class CompilerParallelTests
 {
-    public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-    internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CompilerParallel",
+
+    internal static TestSuiteData Spec { get; } = new("CompilerParallel",
     [
         (nameof(TestFrontend), TestFrontend),
         (nameof(TestGraph), TestGraph),
@@ -32,13 +32,13 @@ public static class CompilerParallelTests
         }
         var serial = Render(1);
         for (var repeat = 0; repeat < 3; repeat++)
-            TestHarness.CheckTrue("frontend indexed AST/Span/sourceName 完整字节 " + repeat,
+            CaseAssertions.CheckTrue("frontend indexed AST/Span/sourceName 完整字节 " + repeat,
                 serial.SequenceEqual(Render(4)));
         sources[1] = sources[1] with { Text = "pub func broken( {" };
         sources[5] = sources[5] with { Text = "pub func broken2( {" };
         using var parallel = CompilerJobs.WithJobs(4);
         var errors = Frontend.ParseMany(sources);
-        TestHarness.CheckTrue("多文件失败保留全部 indexed 结果",
+        CaseAssertions.CheckTrue("多文件失败保留全部 indexed 结果",
             errors[1].Error is ParserException && errors[5].Error is ParserException
                 && errors.Where((_, i) => i != 1 && i != 5).All(r => r.Root != null));
         string[] ErrorSequence(int jobs)
@@ -49,13 +49,13 @@ public static class CompilerParallelTests
         }
         var serialErrors = ErrorSequence(1);
         for (var repeat = 0; repeat < 3; repeat++)
-            TestHarness.CheckTrue("原始异常类型/消息/源码坐标按文件序 " + repeat,
+            CaseAssertions.CheckTrue("原始异常类型/消息/源码坐标按文件序 " + repeat,
                 serialErrors.SequenceEqual(ErrorSequence(4)));
         using var cancel = new CancellationTokenSource(); cancel.Cancel();
         var canceled = false;
         try { Frontend.ParseMany(sources, cancel.Token); }
         catch (OperationCanceledException) { canceled = true; }
-        TestHarness.CheckTrue("开始前取消不发布部分 root", canceled);
+        CaseAssertions.CheckTrue("开始前取消不发布部分 root", canceled);
 
         // 明确观测真实同时执行，不能把被 lease 限到一槽的运行冒称 jobs=4。
         if (ResourceBudget.Shared.Capacity.CpuSlots >= 2)
@@ -72,16 +72,16 @@ public static class CompilerParallelTests
                 Interlocked.Decrement(ref active);
                 return index;
             });
-            TestHarness.CheckTrue("真实 worker active peak 至少2", peak >= 2,
+            CaseAssertions.CheckTrue("真实 worker active peak 至少2", peak >= 2,
                 $"capacity={ResourceBudget.Shared.Capacity.CpuSlots}, peak={peak}");
         }
-        else TestHarness.RecordSkip("真实并行需要至少2 CPU slots");
+        else CaseAssertions.RecordSkip("真实并行需要至少2 CPU slots");
 
         var oldError = Console.Error;
         using var output = new StringWriter();
         try
         {
-            Console.SetError(output);
+            WorkerConsole.SetError(output);
             var captures = CompilerJobs.Map(8, index =>
             {
                 using var logs = Logger.CaptureJob();
@@ -92,10 +92,10 @@ public static class CompilerParallelTests
             });
             foreach (var capture in captures) capture.Replay();
         }
-        finally { Console.SetError(oldError); }
+        finally { WorkerConsole.SetError(oldError); }
         var expected = string.Concat(Enumerable.Range(0, 8).Select(index =>
             $"WARNING [File]{index}:first{Environment.NewLine}WARNING [File]{index}:second{Environment.NewLine}"));
-        TestHarness.Check("文件日志按输入序且过滤verbose", output.ToString(), expected);
+        CaseAssertions.Check("文件日志按输入序且过滤verbose", output.ToString(), expected);
 
         var originalException = false;
         try
@@ -108,7 +108,7 @@ public static class CompilerParallelTests
             }, phase: "contract.exception.parallel");
         }
         catch (IOException exception) { originalException = exception.Message == "低序号原异常"; }
-        TestHarness.CheckTrue("多worker异常join后按index重抛且释放lease", originalException
+        CaseAssertions.CheckTrue("多worker异常join后按index重抛且释放lease", originalException
             && ResourceBudget.Shared.Usage == (0, 0, 0));
         var serialException = false;
         using (CompilerJobs.WithJobs(1))
@@ -116,7 +116,7 @@ public static class CompilerParallelTests
             try { CompilerJobs.Map<int>(2, _ => throw new IOException("串行原异常"), phase: "contract.exception.serial"); }
             catch (IOException exception) { serialException = exception.Message == "串行原异常"; }
         }
-        TestHarness.CheckTrue("串行异常仍保持原异常与预算", serialException
+        CaseAssertions.CheckTrue("串行异常仍保持原异常与预算", serialException
             && ResourceBudget.Shared.Usage == (0, 0, 0));
         using var runningCancel = new CancellationTokenSource();
         var runningCanceled = false;
@@ -129,7 +129,7 @@ public static class CompilerParallelTests
             }, cancellationToken: runningCancel.Token, phase: "contract.cancel.parallel");
         }
         catch (OperationCanceledException) { runningCanceled = true; }
-        TestHarness.CheckTrue("运行中取消不返回部分集合并释放lease", runningCanceled
+        CaseAssertions.CheckTrue("运行中取消不返回部分集合并释放lease", runningCanceled
             && ResourceBudget.Shared.Usage == (0, 0, 0));
     }
 
@@ -144,7 +144,7 @@ public static class CompilerParallelTests
         definition.BaseType = graph.GetConstructedType(wrapper, graph.GetConstructedType(definition, parameter));
         var values = new TypeSymbol[64];
         Parallel.For(0, values.Length, i => values[i] = graph.GetConstructedType(definition, graph.Bootstrap.Int32));
-        TestHarness.CheckTrue("同键并发驻留身份唯一且完整基类可见", values.All(value =>
+        CaseAssertions.CheckTrue("同键并发驻留身份唯一且完整基类可见", values.All(value =>
             ReferenceEquals(value, values[0]) && value.BaseType?.TypeArguments is { Count: 1 } args
                 && ReferenceEquals(args[0], value)));
         var a = new TypeSymbol("Fail", TypeKind.Class);
@@ -161,11 +161,11 @@ public static class CompilerParallelTests
         try { graph.GetConstructedType(a, graph.Bootstrap.Int32); }
         catch (ArgumentOutOfRangeException) { failed = true; }
         catch (IndexOutOfRangeException) { failed = true; }
-        TestHarness.CheckTrue("失败事务移除整次递归新增驻留", failed
+        CaseAssertions.CheckTrue("失败事务移除整次递归新增驻留", failed
             && before.SequenceEqual(graph.ConstructedTypeSnapshot()));
         var p = new GenericParameterSymbol("T") { StableIdentity = "owner1/gp/0" };
         var q = new GenericParameterSymbol("T") { StableIdentity = "owner2/gp/0" };
-        TestHarness.CheckTrue("同名不同 GP 宿主保留独立稳定键",
+        CaseAssertions.CheckTrue("同名不同 GP 宿主保留独立稳定键",
             graph.StableTypeIdentity(graph.GetNullable(new TypeSymbol("X", TypeKind.Class))) != ""
                 && graph.StableTypeIdentity(p) != graph.StableTypeIdentity(q));
     }
@@ -193,7 +193,7 @@ public static class CompilerParallelTests
         }
         var serial = Snapshot(1);
         for (var repeat = 0; repeat < 3; repeat++)
-            TestHarness.Check("P1/P2 完整诊断序列与GP类型身份 " + repeat, Snapshot(4), serial);
+            CaseAssertions.Check("P1/P2 完整诊断序列与GP类型身份 " + repeat, Snapshot(4), serial);
     }
 
     private static void TestBodies()
@@ -205,7 +205,7 @@ public static class CompilerParallelTests
             "wrap001_review_forward_da_negative" })
         {
             var path = TestCorpusPaths.Resolve("Tests/e2e/rigi/" + name + ".rg");
-            var user = TestHarness.ParseRoot(File.ReadAllText(path), name + ".rg");
+            var user = CompilerTestTools.ParseRoot(File.ReadAllText(path), name + ".rg");
             string Snapshot(int jobs)
             {
                 using var setting = CompilerJobs.WithJobs(jobs);
@@ -251,7 +251,7 @@ public static class CompilerParallelTests
             }
             var serial = Snapshot(1);
             for (var repeat = 0; repeat < 3; repeat++)
-                TestHarness.Check("P3/BIL/VM 完整序列 " + name + "/" + repeat, Snapshot(4), serial);
+                CaseAssertions.Check("P3/BIL/VM 完整序列 " + name + "/" + repeat, Snapshot(4), serial);
         }
     }
 }

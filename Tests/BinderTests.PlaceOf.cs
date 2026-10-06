@@ -4,7 +4,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestPlaceOfStorage()
         {
-            TestHarness.Section("Place 稳定存储与三树");
+            CompilerTestTools.Section("Place 稳定存储与三树");
             var result = BindUnitWithStdlib("func f() { var n: i32 = 1\n"
                 + "const p = placeOf n\n const q = placeOf n\n p.dispose()\n q.dispose() }");
             CheckNoErrors("Place 绑定", result.Unit);
@@ -12,20 +12,20 @@ namespace RigiCompiler.Tests
             var local = body.Locals.Single(l => l.Name == "n");
             var places = body.Body.Statements.OfType<BoundLocalDeclarationStatement>()
                 .Select(s => s.Initializer).OfType<BoundPlaceOfExpression>().ToArray();
-            TestHarness.CheckTrue("重复 placeOf 共用变量的同一 Cell",
+            CaseAssertions.CheckTrue("重复 placeOf 共用变量的同一 Cell",
                 places.Length == 2 && local.CellStorage != null
                 && places.All(p => ReferenceEquals(p.Storage, local.CellStorage)));
-            TestHarness.CheckTrue("Bound 描述保留 Place",
+            CaseAssertions.CheckTrue("Bound 描述保留 Place",
                 BoundDescribe.Block(body.Body).Contains("PlaceOf("));
             var lowered = Lowerer.Lower(result.Unit, result.Bodies);
             CheckNoErrors("Place 降级", result.Unit);
             var fn = lowered.Single(f => ReferenceEquals(f.Method, body.Method));
-            TestHarness.CheckTrue("Lowered 使用 Place 构造且保留来源",
+            CaseAssertions.CheckTrue("Lowered 使用 Place 构造且保留来源",
                 fn.Body.Statements.OfType<LoweredLocalDeclarationStatement>()
                     .Count(s => s.Initializer is LoweredNewExpression { Origin: BoundPlaceOfExpression }) == 2);
             var forged = BindUnit("namespace core\npub class Place\\<T> { }\n"
                 + "func f() { var n: i32 = 1\n const p = placeOf n }");
-            TestHarness.CheckTrue("同名用户类型不能认领 Place 特权",
+            CaseAssertions.CheckTrue("同名用户类型不能认领 Place 特权",
                 forged.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("from the standard library")));
             foreach (var source in new[]
             {
@@ -36,7 +36,7 @@ namespace RigiCompiler.Tests
             })
             {
                 var rejected = BindUnitWithStdlib(source);
-                TestHarness.CheckTrue("Handle 权限边界拒绝：" + source,
+                CaseAssertions.CheckTrue("Handle 权限边界拒绝：" + source,
                     rejected.Unit.Diagnostics.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error));
             }
             var privileged = BindUnitWithStdlib("class Local {}\n"

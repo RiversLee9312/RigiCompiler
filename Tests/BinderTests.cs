@@ -27,9 +27,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BinderTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Binder",
+
+        internal static TestSuiteData Spec { get; } = new("Binder",
         [
             (nameof(TestLiterals), TestLiterals),
             (nameof(TestLocalDeclarations), TestLocalDeclarations),
@@ -167,7 +167,7 @@ namespace RigiCompiler.Tests
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies) BindUnit(
             params string[] sources)
         {
-            var roots = sources.Select(TestHarness.ParseRoot).ToArray();
+            var roots = sources.Select(CompilerTestTools.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
             var decls = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, decls);
@@ -187,7 +187,7 @@ namespace RigiCompiler.Tests
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
             roots.AddRange(sources.Select(source => {
-                var root = TestHarness.ParseRoot(source);
+                var root = CompilerTestTools.ParseRoot(source);
                 root.IsCompilerLibrary = compilerLibraryFixture;
                 return root;
             }));
@@ -199,13 +199,13 @@ namespace RigiCompiler.Tests
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => $"{d.Phase}: {d.Message}")));
         }
 
         private static BoundFunctionBody BodyOf(IReadOnlyList<BoundFunctionBody> bodies, string name)
         {
-            return TestHarness.UniqueNamedBody(bodies, name, b => b.Method);
+            return CompilerTestTools.UniqueNamedBody(bodies, name, b => b.Method);
         }
 
     }

@@ -11,15 +11,15 @@ namespace RigiCompiler.Tests
     /// 3. await 和 yield 组合使用
     ///
     /// 驱动方式：
-    /// - await：TestHarness.ParseWithLayer(new ExpressionParserLayer(exprRoot), code)
-    /// - yield：TestHarness.ParseBlock(code)
+    /// - await：CompilerTestTools.ParseWithLayer(new ExpressionParserLayer(exprRoot), code)
+    /// - yield：CompilerTestTools.ParseBlock(code)
     /// </summary>
     public class CoroutineOpsTests
     {
         // ===== 1. await 表达式 =====
         public static void TestAwaitExpression()
         {
-            TestHarness.Section("Await Expression");
+            CompilerTestTools.Section("Await Expression");
 
             // 简单 await
             TestExpression("await task",
@@ -37,13 +37,13 @@ namespace RigiCompiler.Tests
             TestExpression("await getTask().execute()",
                 "Unary(await Path(getTask(), [.execute()]))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. yield 语句 =====
         public static void TestYieldStatement()
         {
-            TestHarness.Section("Yield Statement");
+            CompilerTestTools.Section("Yield Statement");
 
             // 裸 yield
             TestBlock("{ yield }",
@@ -60,13 +60,13 @@ namespace RigiCompiler.Tests
             TestBlock("{\n    yield\n    yield alarm\n}",
                 "[Yield, Yield(Path(alarm, []))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. await 和 yield 组合 =====
         public static void TestAwaitYieldCombination()
         {
-            TestHarness.Section("Await and Yield Combination");
+            CompilerTestTools.Section("Await and Yield Combination");
 
             // await 和 yield 混用
             TestBlock("{\n" +
@@ -85,13 +85,13 @@ namespace RigiCompiler.Tests
                       "}",
                 "[For(id, Path(ids, []), [const user = Unary(await Path(loadUser(Path(id, [])), [])), Yield])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. await 的不同上下文 =====
         public static void TestAwaitInDifferentContexts()
         {
-            TestHarness.Section("Await in Different Contexts");
+            CompilerTestTools.Section("Await in Different Contexts");
 
             // await 在 if 条件中
             TestBlock("{\n" +
@@ -109,7 +109,7 @@ namespace RigiCompiler.Tests
             TestBlock("{ return await compute() }",
                 "[Return(Unary(await Path(compute(), [])))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助方法 =====
@@ -121,12 +121,12 @@ namespace RigiCompiler.Tests
             {
                 var root = new RootASTNode();
                 var exprRoot = new ExpressionRootASTNode(root);
-                TestHarness.ParseWithLayer(new ExpressionParserLayer(exprRoot), source);
-                TestHarness.Check(source, AstDescribe.Expr(exprRoot.Expression), expected);
+                CompilerTestTools.ParseWithLayer(new ExpressionParserLayer(exprRoot), source);
+                CaseAssertions.Check(source, AstDescribe.Expr(exprRoot.Expression), expected);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source} => 意外异常", false, ex.Message);
             }
         }
 
@@ -135,19 +135,19 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(source);
-                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expected);
+                var block = CompilerTestTools.ParseBlock(source);
+                CaseAssertions.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expected);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CoroutineOps",
+
+        internal static TestSuiteData Spec { get; } = new("CoroutineOps",
         [
             (nameof(TestAwaitExpression), TestAwaitExpression),
             (nameof(TestYieldStatement), TestYieldStatement),

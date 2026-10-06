@@ -38,7 +38,7 @@ namespace RigiCompiler.Tests
                 "    return s.fetch(21)\n" +
                 "}\n");
             CheckOk("Method wrapper specific 环绕", result);
-            TestHarness.Check("Method wrapper stdout 顺序", result.Stdout,
+            CaseAssertions.Check("Method wrapper stdout 顺序", result.Stdout,
                 "before\n" +
                 "body\n" +
                 "after\n");
@@ -100,7 +100,7 @@ namespace RigiCompiler.Tests
                 "    return s.fetch(42)\n" +
                 "}\n");
             CheckOk("双 Method wrapper 顺序", result);
-            TestHarness.Check("双 Method wrapper stdout", result.Stdout,
+            CaseAssertions.Check("双 Method wrapper stdout", result.Stdout,
                 "A\n" +
                 "B\n" +
                 "body\n");
@@ -160,7 +160,7 @@ namespace RigiCompiler.Tests
                 "    return s.sum(1, 2, 3)\n" +
                 "}\n");
             CheckOk("Method wrapper 参数透传", result);
-            TestHarness.Check("实参插值 stdout", result.Stdout, "a=1 b=2 c=3\n");
+            CaseAssertions.Check("实参插值 stdout", result.Stdout, "a=1 b=2 c=3\n");
             CheckI32("sum(1,2,3) 返回 123", result, 123);
         }
 
@@ -179,7 +179,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("命名空间 @EntryPoint main", result);
             CheckI32("命名空间 main 返回 42", result, 42);
-            TestHarness.Check("命名空间 main stdout", result.Stdout, "ns main\n");
+            CaseAssertions.Check("命名空间 main stdout", result.Stdout, "ns main\n");
         }
 
         // 静态成员方法经 @EntryPoint 成为入口
@@ -203,7 +203,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 1 }\n" +
                 "@EntryPoint\n" +
                 "pub func other(): i32 { return 2 }\n");
-            TestHarness.CheckTrue("双入口编译无诊断", !unit.Diagnostics.HasErrors);
+            CaseAssertions.CheckTrue("双入口编译无诊断", !unit.Diagnostics.HasErrors);
 
             var autoRunFailed = false;
             try
@@ -213,13 +213,13 @@ namespace RigiCompiler.Tests
             catch (VmException ex)
             {
                 autoRunFailed = true;
-                TestHarness.CheckTrue("多入口报文提示 --entry-point",
+                CaseAssertions.CheckTrue("多入口报文提示 --entry-point",
                     ex.Message.Contains("--entry-point"), ex.Message);
-                TestHarness.CheckTrue("多入口报文列出候选符号",
+                CaseAssertions.CheckTrue("多入口报文列出候选符号",
                     ex.Message.Contains("$main()@.i32") && ex.Message.Contains("$other()@.i32"),
                     ex.Message);
             }
-            TestHarness.CheckTrue("多入口缺省运行抛 VmException", autoRunFailed);
+            CaseAssertions.CheckTrue("多入口缺省运行抛 VmException", autoRunFailed);
 
             var other = BilVm.Run(module, 0, "$other()@.i32");
             CheckOk("显式选择 other 无异常", other);
@@ -236,10 +236,10 @@ namespace RigiCompiler.Tests
             catch (VmException ex)
             {
                 badSymbolFailed = true;
-                TestHarness.CheckTrue("非 entrypoint 符号报文",
+                CaseAssertions.CheckTrue("非 entrypoint 符号报文",
                     ex.Message.Contains("不是 entrypoint"), ex.Message);
             }
-            TestHarness.CheckTrue("--entry-point 指定非入口符号抛 VmException", badSymbolFailed);
+            CaseAssertions.CheckTrue("--entry-point 指定非入口符号抛 VmException", badSymbolFailed);
         }
 
         // ===== 全局函数 Method wrapper（§14.4 修复——此前被静默忽略）=====
@@ -264,16 +264,16 @@ namespace RigiCompiler.Tests
                 "    return (r * 2)\n" +
                 "}\n";
             var (unit, module, text) = BilTestHarness.EmitBilUnit(source);
-            TestHarness.CheckTrue("全局函数 wrapper 编译无诊断", !unit.Diagnostics.HasErrors);
-            TestHarness.CheckTrue("合成宿主 singleton 声明",
+            CaseAssertions.CheckTrue("全局函数 wrapper 编译无诊断", !unit.Diagnostics.HasErrors);
+            CaseAssertions.CheckTrue("合成宿主 singleton 声明",
                 text.Contains(".type ..globals.host = class pub singleton shared compiler-generated"),
                 text);
-            TestHarness.CheckTrue("宿主 ..init.wrapper 安装 new.wrapper.method",
+            CaseAssertions.CheckTrue("宿主 ..init.wrapper 安装 new.wrapper.method",
                 text.Contains("new.wrapper.method fn(..globals.host$heavy()@.i32) type(Trace)"),
                 text);
             var result = BilVm.Run(module);
             CheckOk("全局函数 Method wrapper 执行", result);
-            TestHarness.Check("proxy 已执行（trace 打印）", result.Stdout, "trace\n");
+            CaseAssertions.Check("proxy 已执行（trace 打印）", result.Stdout, "trace\n");
             CheckI32("heavy()*2 返回 42", result, 42);
         }
 
@@ -307,7 +307,7 @@ namespace RigiCompiler.Tests
                 "    return work(42)\n" +
                 "}\n");
             CheckOk("全局函数双 wrapper 顺序", result);
-            TestHarness.Check("全局函数双 wrapper stdout", result.Stdout,
+            CaseAssertions.Check("全局函数双 wrapper stdout", result.Stdout,
                 "A\n" +
                 "B\n" +
                 "body\n");
@@ -335,7 +335,7 @@ namespace RigiCompiler.Tests
                 "    return helper(21)\n" +
                 "}\n");
             CheckOk("命名空间全局函数 wrapper", result);
-            TestHarness.Check("proxy 已执行", result.Stdout, "proxied\n");
+            CaseAssertions.Check("proxy 已执行", result.Stdout, "proxied\n");
             CheckI32("helper(21) 返回 42", result, 42);
         }
 

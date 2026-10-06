@@ -12,14 +12,13 @@ namespace RigiCompiler.Tests
     /// <summary>断链文件符号链接删除：宿主只创建 fixture，删除必须经 VM/Rigi 原语。</summary>
     public static class VmFsDanglingDeleteTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsDanglingDelete", Cases, sectionTitle: "VmFsDanglingDelete");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -51,17 +50,17 @@ namespace RigiCompiler.Tests
                             || ex is IOException io
                                 && (io.HResult & 0xffff) == 1314))
                     {
-                        TestHarness.RecordSkip("  UNSUPPORTED Windows 文件符号链接创建权限："
+                        CaseAssertions.RecordSkip("  UNSUPPORTED Windows 文件符号链接创建权限："
                             + ex.GetType().Name + " (非 PASS；VM/native 删除未测)");
                         return false;
                     }
-                    TestHarness.CheckTrue("宿主创建文件断链条目 " + name,
+                    CaseAssertions.CheckTrue("宿主创建文件断链条目 " + name,
                         new FileInfo(link).LinkTarget == missing);
                 }
-                TestHarness.CheckTrue("断链目标从未创建", !File.Exists(missing)
+                CaseAssertions.CheckTrue("断链目标从未创建", !File.Exists(missing)
                     && !Directory.Exists(missing));
                 run(root);
-                TestHarness.CheckTrue("删除过程未创建/误删目标", !File.Exists(missing)
+                CaseAssertions.CheckTrue("删除过程未创建/误删目标", !File.Exists(missing)
                     && !Directory.Exists(missing));
                 return true;
             }
@@ -81,7 +80,7 @@ namespace RigiCompiler.Tests
             var fsType = output.Trim();
             if (fsType != "ext4")
             {
-                TestHarness.RecordSkip("  UNSUPPORTED Linux fixture FS=" + fsType
+                CaseAssertions.RecordSkip("  UNSUPPORTED Linux fixture FS=" + fsType
                     + "（要求 ext4，不将 DrvFs 判为通过）");
                 return false;
             }
@@ -110,18 +109,18 @@ namespace RigiCompiler.Tests
                         || ex is PlatformNotSupportedException
                         || ex is IOException io && (io.HResult & 0xffff) == 1314))
                 {
-                    TestHarness.RecordSkip("  UNSUPPORTED Windows 文件符号链接权限："
+                    CaseAssertions.RecordSkip("  UNSUPPORTED Windows 文件符号链接权限："
                         + ex.GetType().Name + "（非 PASS）");
                     return false;
                 }
-                TestHarness.CheckTrue("CreateNew fixture 文件断链有效",
+                CaseAssertions.CheckTrue("CreateNew fixture 文件断链有效",
                     new FileInfo(link).LinkTarget == target);
-                TestHarness.CheckTrue("CreateNew 原目标从未创建",
+                CaseAssertions.CheckTrue("CreateNew 原目标从未创建",
                     !File.Exists(target) && !Directory.Exists(target));
                 run(link, target);
-                TestHarness.CheckTrue("CreateNew 链接条目保留",
+                CaseAssertions.CheckTrue("CreateNew 链接条目保留",
                     new FileInfo(link).LinkTarget == target);
-                TestHarness.CheckTrue("CreateNew 未生成断链目标",
+                CaseAssertions.CheckTrue("CreateNew 未生成断链目标",
                     !File.Exists(target) && !Directory.Exists(target));
                 return true;
             }
@@ -138,7 +137,7 @@ namespace RigiCompiler.Tests
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(
                     "pub func main(): i32 { return 0 }\n");
-                TestHarness.CheckTrue("CreateNew 原语宿主全管线无诊断",
+                CaseAssertions.CheckTrue("CreateNew 原语宿主全管线无诊断",
                     !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
                 if (unit.Diagnostics.HasErrors) return;
@@ -150,7 +149,7 @@ namespace RigiCompiler.Tests
                 {
                     new VmString(link), new VmI32(34), new VmI32(438), output,
                 })).Value;
-                TestHarness.CheckTrue("Rigi VM fs_open(34) 已存在 = -17",
+                CaseAssertions.CheckTrue("Rigi VM fs_open(34) 已存在 = -17",
                     rc == -17, "rc=" + rc);
             });
         }
@@ -211,7 +210,7 @@ namespace RigiCompiler.Tests
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(
                     "pub func main(): i32 { return 0 }\n");
-                TestHarness.CheckTrue("原语宿主全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("原语宿主全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
                 if (unit.Diagnostics.HasErrors) return;
                 var context = new VmContext(module);
@@ -224,28 +223,28 @@ namespace RigiCompiler.Tests
                 int Unlink() => ((VmI32)context.Dispatch.FsUnlink(
                     new VmValue[] { new VmString(link) })).Value;
                 var rc = Lstat();
-                TestHarness.CheckTrue("fs_lstat 识别断链条目", rc == 0,
+                CaseAssertions.CheckTrue("fs_lstat 识别断链条目", rc == 0,
                     "rc=" + rc);
                 if (rc == 0)
                 {
                     // FsStatInfo 首 4 字节为小端 kind；2 = Link。
                     var kind = ((VmU8)info.Elements[0]).Value;
-                    TestHarness.CheckTrue("fs_lstat 判为 Link", kind == 2,
+                    CaseAssertions.CheckTrue("fs_lstat 判为 Link", kind == 2,
                         "kind=" + kind);
                 }
                 rc = Unlink();
-                TestHarness.CheckTrue("fs_unlink 删除断链成功", rc == 0,
+                CaseAssertions.CheckTrue("fs_unlink 删除断链成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("fs_unlink 后仅链接条目消失",
+                CaseAssertions.CheckTrue("fs_unlink 后仅链接条目消失",
                     new FileInfo(link).LinkTarget == null);
                 rc = Lstat();
-                TestHarness.CheckTrue("fs_lstat 删除后 NotFound", rc == -2,
+                CaseAssertions.CheckTrue("fs_lstat 删除后 NotFound", rc == -2,
                     "rc=" + rc);
                 rc = Unlink();
-                TestHarness.CheckTrue("fs_unlink 再删 NotFound", rc == -2,
+                CaseAssertions.CheckTrue("fs_unlink 再删 NotFound", rc == -2,
                     "rc=" + rc);
                 foreach (var name in new[] { "delete", "ifexists", "remove" })
-                    TestHarness.CheckTrue("其它链接条目未动 " + name,
+                    CaseAssertions.CheckTrue("其它链接条目未动 " + name,
                         new FileInfo(Path.Combine(root, name)).LinkTarget
                             == Path.Combine(root, "missing.txt"));
             });
@@ -293,9 +292,9 @@ namespace RigiCompiler.Tests
         internal static void CheckPublicLinksGone(string root)
         {
             foreach (var name in new[] { "delete", "ifexists", "remove" })
-                TestHarness.CheckTrue("公共删除后链接条目消失 " + name,
+                CaseAssertions.CheckTrue("公共删除后链接条目消失 " + name,
                     new FileInfo(Path.Combine(root, name)).LinkTarget == null);
-            TestHarness.CheckTrue("公共删除未触及原语用链接",
+            CaseAssertions.CheckTrue("公共删除未触及原语用链接",
                 new FileInfo(Path.Combine(root, "primitive")).LinkTarget
                     == Path.Combine(root, "missing.txt"));
         }
@@ -319,11 +318,11 @@ namespace RigiCompiler.Tests
                         VmFsDanglingDeleteTests.CreateNewPublicSource(vmLink), label);
                     var vm = BilVm.Run(BilReader.Read(BilWriter.Write(module)),
                         maxSteps: 20_000_000);
-                    TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+                    CaseAssertions.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                         vm.Exception?.Message ?? "");
-                    TestHarness.Check(label + "：VM stdout", vm.Stdout,
+                    CaseAssertions.Check(label + "：VM stdout", vm.Stdout,
                         "fs-createnew-dangling-ok\n");
-                    TestHarness.CheckTrue(label + "：VM 退出码 0",
+                    CaseAssertions.CheckTrue(label + "：VM 退出码 0",
                         vm.ReturnValue is VmI32 { Value: 0 });
                 });
                 // 原语与公共入口分别走 VM/native，各使用独立新建断链。
@@ -336,11 +335,11 @@ namespace RigiCompiler.Tests
                         VmFsDanglingDeleteTests.CreateNewPrimitiveSource(vmLink), label);
                     var vm = BilVm.Run(BilReader.Read(BilWriter.Write(module)),
                         maxSteps: 20_000_000);
-                    TestHarness.CheckTrue(label + "：原语 VM 无异常",
+                    CaseAssertions.CheckTrue(label + "：原语 VM 无异常",
                         vm.Exception == null, vm.Exception?.Message ?? "");
-                    TestHarness.Check(label + "：原语 VM stdout", vm.Stdout,
+                    CaseAssertions.Check(label + "：原语 VM stdout", vm.Stdout,
                         "fs-createnew-primitive-ok\n");
-                    TestHarness.CheckTrue(label + "：原语 VM 退出码 0",
+                    CaseAssertions.CheckTrue(label + "：原语 VM 退出码 0",
                         vm.ReturnValue is VmI32 { Value: 0 });
                 });
                 RunCreateNewNativeFixture(dir, label, "public",
@@ -361,17 +360,17 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir, stage
                     + (OperatingSystem.IsWindows() ? ".exe" : ""));
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：" + stage + " native 编译链接成功",
+                CaseAssertions.CheckTrue(label + "：" + stage + " native 编译链接成功",
                     compiled.Code == 0, compiled.Err);
                 if (compiled.Code != 0) return;
                 var exit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var stdout, out var stderr, environment: MemtrackEnv,
                     closeStdin: true);
-                TestHarness.Check(label + "：" + stage + " native stdout",
+                CaseAssertions.Check(label + "：" + stage + " native stdout",
                     NormalizeNewlines(stdout), expected);
-                TestHarness.CheckTrue(label + "：" + stage + " native 退出码 0",
+                CaseAssertions.CheckTrue(label + "：" + stage + " native 退出码 0",
                     exit == 0, $"exit={exit} stderr={stderr}");
-                TestHarness.Check(label + "：" + stage + " native 无诊断", stderr, "");
+                CaseAssertions.Check(label + "：" + stage + " native 无诊断", stderr, "");
             });
         }
 
@@ -390,11 +389,11 @@ namespace RigiCompiler.Tests
                     var module = EmitNativeSource(source, label);
                     var text = BilWriter.Write(module);
                     var vm = BilVm.Run(BilReader.Read(text), maxSteps: 20_000_000);
-                    TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+                    CaseAssertions.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                         vm.Exception?.Message ?? "");
-                    TestHarness.Check(label + "：VM stdout", vm.Stdout,
+                    CaseAssertions.Check(label + "：VM stdout", vm.Stdout,
                         "fs-dangling-delete-ok\n");
-                    TestHarness.CheckTrue(label + "：VM 退出码 0",
+                    CaseAssertions.CheckTrue(label + "：VM 退出码 0",
                         vm.ReturnValue is VmI32 { Value: 0 });
                     VmFsDanglingDeleteTests.CheckPublicLinksGone(vmRoot);
                 });
@@ -411,17 +410,17 @@ namespace RigiCompiler.Tests
                         OperatingSystem.IsWindows() ? "case.exe" : "case");
                     var compiled = RunNative("native", "--file", bilPath,
                         "--out", exePath);
-                    TestHarness.CheckTrue(label + "：native 编译链接成功",
+                    CaseAssertions.CheckTrue(label + "：native 编译链接成功",
                         compiled.Code == 0, compiled.Err);
                     if (compiled.Code != 0) return;
                     var exit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                         out var stdout, out var stderr, environment: MemtrackEnv,
                         closeStdin: true);
-                    TestHarness.Check(label + "：native stdout",
+                    CaseAssertions.Check(label + "：native stdout",
                         NormalizeNewlines(stdout), "fs-dangling-delete-ok\n");
-                    TestHarness.CheckTrue(label + "：native 退出码 0",
+                    CaseAssertions.CheckTrue(label + "：native 退出码 0",
                         exit == 0, $"exit={exit} stderr={stderr}");
-                    TestHarness.Check(label + "：native 无诊断", stderr, "");
+                    CaseAssertions.Check(label + "：native 无诊断", stderr, "");
                     VmFsDanglingDeleteTests.CheckPublicLinksGone(nativeRoot);
                 });
             }

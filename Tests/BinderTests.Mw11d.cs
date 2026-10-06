@@ -5,7 +5,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestMw11dSerializationFront()
         {
-            TestHarness.Section("P3 MW11d @Terminal 局部组合");
+            CompilerTestTools.Section("P3 MW11d @Terminal 局部组合");
 
             var okInner = BindUnitWithStdlib(
                 "@WrapperTarget(.Value)\n@Terminal\nwrapper TermV { }\n" +
@@ -43,7 +43,7 @@ namespace RigiCompiler.Tests
                 "    @OtherV\n" +
                 "    var x: i32 = 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("局部：terminal 内层再嵌套",
+            CaseAssertions.CheckSemanticError("局部：terminal 内层再嵌套",
                 bad.Unit.Diagnostics,
                 "TermV is terminal and cannot contain another modifier.");
 
@@ -52,11 +52,11 @@ namespace RigiCompiler.Tests
                 "    @Terminal\n" +
                 "    var x: i32 = 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("@Terminal 挂局部变量",
+            CaseAssertions.CheckSemanticError("@Terminal 挂局部变量",
                 badOnLocal.Unit.Diagnostics,
                 "@Terminal can only be applied to wrapper declarations");
 
-            TestHarness.Section("P3 MW11d with Serializable/SerializationBase");
+            CompilerTestTools.Section("P3 MW11d with Serializable/SerializationBase");
 
             var withBaseOk = BindUnitWithStdlib(
                 "import core.SerializationBase\n" +
@@ -69,7 +69,7 @@ namespace RigiCompiler.Tests
                 "class Plain { pub init() }\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f() { take\\<Plain>(new Plain()) }\n");
-            TestHarness.CheckSemanticError("with SerializationBase 填入普通 class 拒绝",
+            CaseAssertions.CheckSemanticError("with SerializationBase 填入普通 class 拒绝",
                 withBaseBad.Unit.Diagnostics, "does not satisfy the 'With SerializationBase'");
 
             var withSerOk = BindUnitWithStdlib(
@@ -85,10 +85,10 @@ namespace RigiCompiler.Tests
                 "class Plain { pub init() }\n" +
                 "func take\\<T with Serializable>(x: T) { }\n" +
                 "func f() { take\\<Plain>(new Plain()) }\n");
-            TestHarness.CheckSemanticError("with Serializable 填入普通 class 拒绝",
+            CaseAssertions.CheckSemanticError("with Serializable 填入普通 class 拒绝",
                 withSerBad.Unit.Diagnostics, "does not satisfy the 'With Serializable'");
 
-            TestHarness.Section("P3 MW11d-B1 List/Map/Parcel with SerializationBase");
+            CompilerTestTools.Section("P3 MW11d-B1 List/Map/Parcel with SerializationBase");
 
             var withList = BindUnitWithStdlib(
                 "import core.SerializationBase\n" +
@@ -122,10 +122,10 @@ namespace RigiCompiler.Tests
                 "import core.collections.ListEnumerator\n" +
                 "func take\\<T with SerializationBase>(x: T) { }\n" +
                 "func f(e: ListEnumerator\\<i32>) { take\\<ListEnumerator\\<i32>>(e) }\n");
-            TestHarness.CheckSemanticError("with SerializationBase 填入 ListEnumerator 拒绝",
+            CaseAssertions.CheckSemanticError("with SerializationBase 填入 ListEnumerator 拒绝",
                 withListEnum.Unit.Diagnostics, "does not satisfy the 'With SerializationBase'");
 
-            TestHarness.Section("P3 MW11d-B2 toParcel/deepCopy 绑定");
+            CompilerTestTools.Section("P3 MW11d-B2 toParcel/deepCopy 绑定");
 
             var deep = BindUnitWithStdlib(
                 "import core.serialization.*\n" +
@@ -141,14 +141,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("@Serializable 宿主 toParcel/deepCopy/clone 绑定", deep.Unit);
             var marked = deep.Unit.Symbols.GlobalNamespace.Types
                 .FirstOrDefault(t => t.Name == "Marked");
-            TestHarness.CheckTrue("@Serializable 宿主已合成 toParcel",
+            CaseAssertions.CheckTrue("@Serializable 宿主已合成 toParcel",
                 marked != null && marked.Methods.Any(m =>
                     m.Name == RigiCompiler.Bil.BilSpellings.ToParcelMethodName));
-            TestHarness.CheckTrue("@Serializable 宿主已合成 fromParcel",
+            CaseAssertions.CheckTrue("@Serializable 宿主已合成 fromParcel",
                 marked != null && marked.Methods.Any(m =>
                     m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
 
-            TestHarness.Section("P3 SB 与 Serializable 必须独立声明");
+            CompilerTestTools.Section("P3 SB 与 Serializable 必须独立声明");
 
             var implied = BindUnitWithStdlibSources(true,
                 "namespace core.serialization\n" +
@@ -159,7 +159,7 @@ namespace RigiCompiler.Tests
                 .First(n => n.Name == "core").ChildNamespaces
                 .First(n => n.Name == "serialization").Types
                 .FirstOrDefault(t => t.Name == "BaseMarked");
-            TestHarness.CheckTrue("base-only 宿主不合成 Serializable 方法",
+            CaseAssertions.CheckTrue("base-only 宿主不合成 Serializable 方法",
                 baseMarked != null && !baseMarked.Methods.Any(m =>
                     m.Name == RigiCompiler.Bil.BilSpellings.ToParcelMethodName
                     || m.Name == RigiCompiler.Bil.BilSpellings.FromParcelMethodName));
@@ -170,7 +170,7 @@ namespace RigiCompiler.Tests
                 "class BaseTake { pub var n: i32 = 0 }\n" +
                 "func take\\<T with Serializable>(x: T) { }\n" +
                 "func f() { take\\<BaseTake>(new BaseTake()) }\n");
-            TestHarness.CheckSemanticError("只有 SB 的类型不能满足 Serializable", withSerImplied.Unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("只有 SB 的类型不能满足 Serializable", withSerImplied.Unit.Diagnostics,
                 "does not satisfy the 'With Serializable'");
 
             var withSerI32 = BindUnitWithStdlib(
@@ -184,18 +184,18 @@ namespace RigiCompiler.Tests
                 "import core.serialization.*\n" +
                 "func takeSer\\<T with Serializable>(x: T) { }\n" +
                 "func forward\\<U with SerializationBase>(x: U) { takeSer\\<U>(x) }\n");
-            TestHarness.CheckSemanticError("只有 SB 的泛型约束不能冒充 Serializable",
+            CaseAssertions.CheckSemanticError("只有 SB 的泛型约束不能冒充 Serializable",
                 withSerViaParameter.Unit.Diagnostics, "does not satisfy the 'With Serializable'");
             var fieldProof = BindUnitWithStdlib(
                 "import core.serialization.*\n" +
                 "@Serializable\nclass Envelope\\<T with SerializationBase> {\n" +
                 " pub var value: T\n pub init(_ -> value)\n}\n");
-            TestHarness.CheckSemanticError("仅 SB 泛型字段不能取得 Serializable 编码能力",
+            CaseAssertions.CheckSemanticError("仅 SB 泛型字段不能取得 Serializable 编码能力",
                 fieldProof.Unit.Diagnostics, "不可序列化");
             var unknownBase = BindUnitWithStdlibSources(true,
                 "namespace core.serialization\n@SerializationBase\n@Serializable\n" +
                 "class UnknownBase { pub var value: i32 = 0 }\n");
-            TestHarness.CheckSemanticError("未知 SB 编码器拒绝而非复制引用",
+            CaseAssertions.CheckSemanticError("未知 SB 编码器拒绝而非复制引用",
                 unknownBase.Unit.Diagnostics, "未实现对应的 Serializable 编解码");
         }
     }

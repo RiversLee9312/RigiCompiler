@@ -3,7 +3,7 @@ using System;
 namespace RigiCompiler.Tests
 {
     // Try-Catch-Finally 语句解析测试（roadmap #10，SYNTAX.md §8）：代码块独立驱动
-    // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。
+    // （CompilerTestTools.ParseBlock），断言 AstDescribe 精确描述串。
     // 覆盖：简单 try-catch / 多个 catch 子句 / 丢弃异常变量（_）/ try-finally /
     // try-catch-finally / 嵌套 try / 错误用例。
     public class TryCatchFinallyTests
@@ -11,18 +11,18 @@ namespace RigiCompiler.Tests
         // ===== 1. 简单 try-catch =====
         public static void TestSimpleTryCatch()
         {
-            TestHarness.Section("Testing Simple Try-Catch");
+            CompilerTestTools.Section("Testing Simple Try-Catch");
 
             TestBlock("{ try { riskyOperation() } catch (e: IOException) { handleIO(e) } }",
                 "[Try([Path(riskyOperation(), [])], [Catch(e: IOException, [Path(handleIO(Path(e, [])), [])])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 多个 catch 子句 =====
         public static void TestMultipleCatch()
         {
-            TestHarness.Section("Testing Multiple Catch Clauses");
+            CompilerTestTools.Section("Testing Multiple Catch Clauses");
 
             // SYNTAX.md §8 示例
             TestBlock("{\n" +
@@ -38,35 +38,35 @@ namespace RigiCompiler.Tests
                 "[Catch(e: IOException, [Path(handleIO(Path(e, [])), [])]), " +
                 "Catch(e: RuntimeException, [Path(handleRuntime(Path(e, [])), [])])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 丢弃异常变量（_） =====
         public static void TestDiscardedExceptionVariable()
         {
-            TestHarness.Section("Testing Discarded Exception Variable");
+            CompilerTestTools.Section("Testing Discarded Exception Variable");
 
             TestBlock("{ try { doSomething() } catch (_: RuntimeException) { log() } }",
                 "[Try([Path(doSomething(), [])], [Catch(_: RuntimeException, [Path(log(), [])])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. try-finally =====
         public static void TestTryFinally()
         {
-            TestHarness.Section("Testing Try-Finally");
+            CompilerTestTools.Section("Testing Try-Finally");
 
             TestBlock("{ try { openFile() } finally(e) { cleanup(e) } }",
                 "[Try([Path(openFile(), [])], [], Finally(e, [Path(cleanup(Path(e, [])), [])]))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. try-catch-finally =====
         public static void TestTryCatchFinally()
         {
-            TestHarness.Section("Testing Try-Catch-Finally");
+            CompilerTestTools.Section("Testing Try-Catch-Finally");
 
             // SYNTAX.md §8 完整示例
             TestBlock("{\n" +
@@ -85,13 +85,13 @@ namespace RigiCompiler.Tests
                 "Catch(_: RuntimeException, [Path(doNothing(), [])])], " +
                 "Finally(e, [Path(cleanup(), [])]))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 嵌套 try =====
         public static void TestNestedTry()
         {
-            TestHarness.Section("Testing Nested Try");
+            CompilerTestTools.Section("Testing Nested Try");
 
             TestBlock("{\n" +
                       "    try {\n" +
@@ -108,13 +108,13 @@ namespace RigiCompiler.Tests
                 "[Catch(e: InnerException, [Path(handleInner(Path(e, [])), [])])])], " +
                 "[Catch(e: OuterException, [Path(handleOuter(Path(e, [])), [])])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 错误用例 =====
         public static void TestInvalidCases()
         {
-            TestHarness.Section("Testing Invalid Cases");
+            CompilerTestTools.Section("Testing Invalid Cases");
 
             // try 后缺少 catch 或 finally
             TestInvalidBlock("{ try { operation() } }",
@@ -128,7 +128,7 @@ namespace RigiCompiler.Tests
             TestInvalidBlock("{ try { operation() } finally { cleanup() } }",
                 "Expected '(' after 'finally'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助 =====
@@ -138,24 +138,23 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(source);
-                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(source);
+                CaseAssertions.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         private static void TestInvalidBlock(string source, string expectedError)
         {
-            TestHarness.CheckParseError(source.Replace("\n", "\\n"),
-                () => TestHarness.ParseBlock(source), expectedError);
+            CaseAssertions.CheckParseError(source.Replace("\n", "\\n"),
+                () => CompilerTestTools.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("TryCatchFinally",
+        internal static TestSuiteData Spec { get; } = new("TryCatchFinally",
         [
             (nameof(TestSimpleTryCatch), TestSimpleTryCatch),
             (nameof(TestMultipleCatch), TestMultipleCatch),

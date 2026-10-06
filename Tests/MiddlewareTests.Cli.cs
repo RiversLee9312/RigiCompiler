@@ -45,10 +45,10 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "try.bil");
-            TestHarness.CheckTrue("try 模块门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("try 模块门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var tryMir = MirBuilder.Build(new MwContext(gate.Module!));
-            TestHarness.CheckTrue("try MIR 构造放行（MW9a）",
+            CaseAssertions.CheckTrue("try MIR 构造放行（MW9a）",
                 tryMir.Functions.Any(f => f.IsEntrypoint));
 
             // raw.hex/raw.bin：§19.3 字节序列物化已随 L5 定稿（字节缓冲区
@@ -90,7 +90,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var rawGate = BilGate.Accept(rawBil, "raw.bil");
-            TestHarness.CheckTrue("raw 用例门禁放行", rawGate.IsAccepted,
+            CaseAssertions.CheckTrue("raw 用例门禁放行", rawGate.IsAccepted,
                 string.Join("; ", rawGate.Errors));
             var rawCaught = false;
             try
@@ -104,7 +104,7 @@ namespace RigiCompiler.Tests
             {
                 rawCaught = ex.Message.Contains("array<u8>");
             }
-            TestHarness.CheckTrue("raw 资源受控拒绝（非 .array<u8> 目标）", rawCaught);
+            CaseAssertions.CheckTrue("raw 资源受控拒绝（非 .array<u8> 目标）", rawCaught);
 
             // CLI 路径：受控失败转退出码 2 而非崩溃（try 已随 MW9a 落地，
             // 受控失败样本改用 raw.hex 非 .array<u8> 目标）
@@ -116,8 +116,8 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(bilPath, rawBil, new UTF8Encoding(false));
                 var result = RunNative("native", "--file", bilPath,
                     "--emit-obj", Path.Combine(dir, "raw.o"));
-                TestHarness.CheckTrue("不支持形态 CLI 退出码 2", result.Code == 2);
-                TestHarness.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("array<u8>"),
+                CaseAssertions.CheckTrue("不支持形态 CLI 退出码 2", result.Code == 2);
+                CaseAssertions.CheckTrue("不支持形态错误走 stderr", result.Err.Contains("array<u8>"),
                     result.Err);
             }
             finally
@@ -207,8 +207,8 @@ namespace RigiCompiler.Tests
                 var objPath = Path.Combine(dir, "symtest.o");
 
                 var ok = ObjectEmitter.TryEmitObject(module, objPath, out var error);
-                TestHarness.CheckTrue("空模块 .o 发射成功", ok, error);
-                TestHarness.CheckTrue(".o 已落盘且非空",
+                CaseAssertions.CheckTrue("空模块 .o 发射成功", ok, error);
+                CaseAssertions.CheckTrue(".o 已落盘且非空",
                     File.Exists(objPath) && new FileInfo(objPath).Length > 0);
 
                 // 目标文件魔数：win-x64 → COFF（前 2 字节 machine 0x8664 小端）；
@@ -216,13 +216,13 @@ namespace RigiCompiler.Tests
                 var head = File.ReadAllBytes(objPath).Take(4).ToArray();
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
-                    TestHarness.CheckTrue(".o 为 COFF（x64 machine 魔数）",
+                    CaseAssertions.CheckTrue(".o 为 COFF（x64 machine 魔数）",
                         head[0] == 0x64 && head[1] == 0x86,
                         BitConverter.ToString(head));
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    TestHarness.CheckTrue(".o 为 ELF（魔数）",
+                    CaseAssertions.CheckTrue(".o 为 ELF（魔数）",
                         head[0] == 0x7F && head[1] == 0x45 && head[2] == 0x4C && head[3] == 0x46,
                         BitConverter.ToString(head));
                 }
@@ -230,8 +230,8 @@ namespace RigiCompiler.Tests
                 // 失败路径：不存在目录下的输出路径 → false + 可读错误（不抛崩）
                 var badPath = Path.Combine(dir, "no_such_dir", "x.o");
                 var fail = ObjectEmitter.TryEmitObject(module, badPath, out var failError);
-                TestHarness.CheckTrue("不可写路径发射返回 false", !fail);
-                TestHarness.CheckTrue("不可写路径错误可读", failError.Length > 0);
+                CaseAssertions.CheckTrue("不可写路径发射返回 false", !fail);
+                CaseAssertions.CheckTrue("不可写路径错误可读", failError.Length > 0);
             }
             finally
             {
@@ -244,10 +244,10 @@ namespace RigiCompiler.Tests
         private static void TestNativeCli()
         {
             var missingFile = RunNative("native");
-            TestHarness.CheckTrue("native 缺 --file 退出码 2", missingFile.Code == 2);
+            CaseAssertions.CheckTrue("native 缺 --file 退出码 2", missingFile.Code == 2);
 
             var missingOut = RunNative("native", "--file", "x.bil");
-            TestHarness.CheckTrue("native 缺 --out 退出码 2", missingOut.Code == 2);
+            CaseAssertions.CheckTrue("native 缺 --out 退出码 2", missingOut.Code == 2);
 
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_mw_cli_{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -257,28 +257,28 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(badPath, UndeclaredVarBil, new UTF8Encoding(false));
                 var rejected = RunNative("native", "--file", badPath,
                     "--out", Path.Combine(dir, "bad.o"));
-                TestHarness.CheckTrue("native 非法 BIL 退出码 1", rejected.Code == 1);
-                TestHarness.CheckTrue("native 非法 BIL 错误走 stderr", rejected.Err.Contains("$missing"));
-                TestHarness.CheckTrue("native 拒绝后不产 .o",
+                CaseAssertions.CheckTrue("native 非法 BIL 退出码 1", rejected.Code == 1);
+                CaseAssertions.CheckTrue("native 非法 BIL 错误走 stderr", rejected.Err.Contains("$missing"));
+                CaseAssertions.CheckTrue("native 拒绝后不产 .o",
                     !File.Exists(Path.Combine(dir, "bad.o")));
 
                 var okPath = Path.Combine(dir, "ok.bil");
                 File.WriteAllText(okPath, MinimalValidBil, new UTF8Encoding(false));
                 var objPath = Path.Combine(dir, "app.o");
                 var accepted = RunNative("native", "--file", okPath, "--emit-obj", objPath);
-                TestHarness.CheckTrue("native 合法 BIL 退出码 0", accepted.Code == 0, accepted.Err);
-                TestHarness.CheckTrue("native 发射 .o 落盘",
+                CaseAssertions.CheckTrue("native 合法 BIL 退出码 0", accepted.Code == 0, accepted.Err);
+                CaseAssertions.CheckTrue("native 发射 .o 落盘",
                     File.Exists(objPath) && new FileInfo(objPath).Length > 0);
-                TestHarness.CheckTrue("native stdout 纯净", accepted.Out.Length == 0,
+                CaseAssertions.CheckTrue("native stdout 纯净", accepted.Out.Length == 0,
                     accepted.Out);
 
                 // L6：--link 链接输入存在性校验（早失败，退出码 2）
                 var missingLink = RunNative("native", "--file", okPath,
                     "--emit-obj", Path.Combine(dir, "app2.o"),
                     "--link", Path.Combine(dir, "nope.lib"));
-                TestHarness.CheckTrue("native --link 输入不存在退出码 2",
+                CaseAssertions.CheckTrue("native --link 输入不存在退出码 2",
                     missingLink.Code == 2);
-                TestHarness.CheckTrue("native --link 错误走 stderr",
+                CaseAssertions.CheckTrue("native --link 错误走 stderr",
                     missingLink.Err.Contains("--link"), missingLink.Err);
             }
             finally
@@ -294,7 +294,7 @@ namespace RigiCompiler.Tests
             var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, file);
-            TestHarness.CheckTrue(file + " 门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue(file + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors.Take(3)));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -304,7 +304,7 @@ namespace RigiCompiler.Tests
         private static MirFunction FnOf(MwContext context, string needle)
         {
             var found = context.Mir!.Functions.FirstOrDefault(f => f.Symbol.Canonical.Contains(needle));
-            TestHarness.CheckTrue("找到函数 " + needle, found != null,
+            CaseAssertions.CheckTrue("找到函数 " + needle, found != null,
                 string.Join(", ", context.Mir.Functions.Select(f => f.Symbol.Canonical)));
             return found!;
         }

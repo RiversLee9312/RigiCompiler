@@ -2,9 +2,9 @@ using System.Text.Json;
 
 namespace RigiCompiler.Tests;
 
-/// <summary>稳定 ID 与旧驱动的机器映射；只表示明确列出的细粒度迁移范围。</summary>
+/// <summary>全量 provider 的稳定身份与来源映射；如实记录方法组、单输入或 seed 批次。</summary>
 public sealed record CaseDescriptor(string Id, string Suite, string Source, string Group,
-    string Trait, string LegacyRef);
+    string Trait, string LegacyRef, string Granularity = "provider-method", int InputCount = 1);
 
 public enum CaseStatus { Pass, Fail, Skip, Cancel }
 
@@ -79,68 +79,94 @@ public sealed record CaseOutcome(string CaseId, CaseStatus Status, int Assertion
 
 public static class CaseCatalog
 {
-    private sealed record Entry(CaseDescriptor Descriptor, Func<(int Assertions, int Failures)> Run,
-        Func<string?>? Skip = null);
+    private sealed record Entry(CaseDescriptor Descriptor, CaseSelection.TaskSpec Task);
+    private static readonly Entry[] Entries = Build().ToArray();
+    private static readonly IReadOnlyDictionary<string, Entry> ById = Entries.ToDictionary(entry => entry.Descriptor.Id, StringComparer.Ordinal);
+    public static IReadOnlyList<CaseDescriptor> All { get; } = Array.AsReadOnly(Entries.Select(entry => entry.Descriptor).ToArray());
 
-    private static Entry Harness(CaseDescriptor descriptor, Action run, Func<string?>? skip = null) =>
-        new(descriptor, () => { run(); return (TestHarness.PassCount + TestHarness.FailCount, TestHarness.FailCount); }, skip);
-
-    private static readonly Entry[] Entries =
-    [
-        new(new("lexer.slash", "Lexer", "Tests/LexerFuzzTests.cs", "slash", "positive",
-            "LexerFuzzTests.TestFixedCases:a / b"),
-            () => LexerFuzzTests.RunTokenCase("a / b", "W(a) N(/) W(b) EOF")),
-        new(new("lexer.multiline-comment", "Lexer", "Tests/LexerFuzzTests.cs", "comment", "positive",
-            "LexerFuzzTests.TestFixedCases:multiline-comment"),
-            () => LexerFuzzTests.RunTokenCase("/* multi\nline */a", "C( multi) LB C(line ) W(a) EOF")),
-        Harness(new("parser.add", "Parser", "Tests/ExpressionParserTests.cs", "expression", "positive",
-            "ExpressionParserTests.TestBinaryExpressions:var r = 1 + 2"),
-            () => ExpressionParserTests.TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))")),
-        Harness(new("parser.no-precedence", "Parser", "Tests/ExpressionParserTests.cs", "expression", "negative",
-            "ExpressionParserTests.TestErrorCases:var e1 = 1 + 2 * 3"),
-            () => TestHarness.CheckParseError("无优先级", () => TestHarness.ParseRoot("var e1 = 1 + 2 * 3"), "没有运算符优先级")),
-        Harness(new("semantic.wrapper-this-return-negative", "Semantic", "Tests/e2e/rigi/wrapper_this_return_negative.rg", "wrapper", "negative",
-            "E2eCorpusTests.RunCase:wrapper_this_return_negative"),
-            () => E2eCorpusTests.RunExactCase("wrapper_this_return_negative")),
-        Harness(new("bil.reader.scalar-roundtrip", "BIL", "Tests/BilReaderTests.cs", "reader", "positive",
-            "BilReaderTests.TestRoundTripBasics:基础字面量与运算"), BilReaderTests.RoundTripScalar),
-        Harness(new("bil.verifier.reserved-this", "BIL", "Tests/BilVerifierTests.cs", "verifier", "negative",
-            "BilVerifierTests.NegativeCases:保留名作局部变量"), BilVerifierTests.ReservedThisNegative),
-        Harness(new("vm.hello-world", "VM", "Tests/BilVmTests.cs", "execution", "positive",
-            "BilVmTests.TestHelloWorld"), BilVmTests.TestHelloWorld),
-        Harness(new("native.hello-world-bil", "Native", "Tests/NativeE2ETests.cs", "execution", "positive",
-            "NativeE2ETests.RunBilCase:hello world 小 BIL（Case hello world 的等价小模块）"),
-            NativeE2ETests.RunPilotHelloBil, () => NativeE2ETests.PilotSkipReason),
-    ];
-
-    public static IReadOnlyList<CaseDescriptor> All { get; } = Array.AsReadOnly(Entries.Select(e => e.Descriptor).ToArray());
-    public static CaseDescriptor? Find(string id) => All.FirstOrDefault(c => c.Id == id) ?? LegacyDispatcher.Describe(id);
+    // 稳定身份由 provider 标签派生，插入或重排其他动作不会改变既有 ID。
+    internal static string StableId(string suite, string label) => (suite, label) switch
+    {
+        ("LexerFuzz", "lexer.slash") => "lexer.slash",
+        ("LexerFuzz", "lexer.multiline-comment") => "lexer.multiline-comment",
+        ("Expression", "parser.add") => "parser.add",
+        ("Expression", "parser.no-precedence") => "parser.no-precedence",
+        ("E2e", "wrapper_this_return_negative") => "semantic.wrapper-this-return-negative",
+        ("BilReader", "bil.reader.scalar-roundtrip") => "bil.reader.scalar-roundtrip",
+        ("BilVerifier", "bil.verifier.reserved-this") => "bil.verifier.reserved-this",
+        ("BilVm", "TestHelloWorld") => "vm.hello-world",
+        ("NativeE2E", "native.hello-world-bil") => "native.hello-world-bil",
+        _ => "case." + suite + "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(label)))[..16].ToLowerInvariant(),
+    };
+    private static IEnumerable<Entry> Build()
+    {
+        foreach (var suite in TestSuiteCatalog.Names)
+        {
+            var inventory = TestInventory.Cases(suite)!.ToArray();
+            IEnumerable<int[]> rows;
+            if (suite is "SemanticsFuzz" or "StressFuzz") rows = inventory.Select(item => item.Index).Chunk(25);
+            else if (suite == "LexerFuzz") rows = inventory.Where(item => !item.Label.StartsWith("fuzz-", StringComparison.Ordinal)).Select(item => new[] { item.Index })
+                .Concat(inventory.Where(item => item.Label.StartsWith("fuzz-", StringComparison.Ordinal)).Select(item => item.Index).Chunk(100)).OrderBy(indices => indices[0]);
+            else rows = inventory.Select(item => new[] { item.Index });
+            foreach (var indices in rows)
+            {
+                var task = CaseSelection.Create(suite, indices);
+                var labels = indices.Select(index => inventory[index].Label).ToArray();
+                var granularity = task.Granularity;
+                yield return new(new(task.Id, suite, "静态 provider：" + suite, granularity, "Full", string.Join(";", labels), granularity, indices.Length), task);
+            }
+        }
+    }
+    internal static CaseSelection.TaskSpec? FindExecution(string id) => ById.TryGetValue(id, out var entry) ? entry.Task : null;
+    public static CaseDescriptor? Find(string id) => ById.TryGetValue(id, out var entry) ? entry.Descriptor : CaseSelection.Describe(id);
 
     public static CaseOutcome Run(string id)
     {
-        var entry = Entries.SingleOrDefault(e => e.Descriptor.Id == id);
-        if (entry == null) return LegacyDispatcher.RunWorker(id);
-        return ExecuteCaptured(id, entry.Run, entry.Skip);
+        var task = CaseSelection.Decode(id);
+        if (task == null) return new(id, CaseStatus.Fail, 1, 1, null, "未知 worker ID");
+        using var metric = PerformanceMetrics.Begin("test.suite", task.Suite);
+        PerformanceMetrics.Event("test.task", task.Suite, task.Granularity, id);
+        var outcome = ExecuteCaptured(id, () =>
+        {
+            if (task.Suite == "SemanticsFuzz") { SemanticsFuzzTests.RunSelected(task.Indices); return; }
+            if (task.Suite == "StressFuzz") { StressFuzzTests.RunSelected(task.Indices); return; }
+            var spec = TestInventory.Spec(task.Suite)!;
+            foreach (var index in task.Indices)
+            {
+                try { spec.Cases[index].Run(); }
+                catch (Exception exception) { CaseAssertions.CheckTrue(spec.Cases[index].Label + "：测试异常", false, exception.ToString()); }
+            }
+        }, () =>
+        {
+            if (task.Suite == "NativeE2E" && RigiCompiler.Middleware.Toolchain.ToolchainResolver.ResolveClang(null) == null) return "未找到 clang 工具链";
+            var gated = TestInventory.Cases(task.Suite)!.Where(item => task.Indices.Contains(item.Index) && item.Slow && item.Gate != null
+                && Environment.GetEnvironmentVariable(item.Gate) != "1").ToArray();
+            return gated.Length > 0 && Environment.GetEnvironmentVariable("RIGI_TEST_EXPLICIT_SELECTION") != "1"
+                ? "默认慢门控未开启：" + string.Join(", ", gated.Select(item => item.Label)) : null;
+        });
+        metric?.ExitCode(outcome.Status is CaseStatus.Pass or CaseStatus.Skip ? 0 : outcome.Status == CaseStatus.Cancel ? 130 : 1);
+        return outcome;
     }
 
-    internal static CaseOutcome ExecuteCaptured(string id, Func<(int Assertions, int Failures)> run, Func<string?>? skip = null)
+    internal static CaseOutcome ExecuteCaptured(string id, Action run, Func<string?>? skip = null)
     {
         var state = Logger.CaptureState();
         var oldOut = Console.Out;
         var oldErr = Console.Error;
         using var output = new StringWriter();
         using var error = new StringWriter();
-        Console.SetOut(output); Console.SetError(error);
-        TestHarness.Reset(); Logger.Reset();
+        WorkerConsole.SetOut(output); WorkerConsole.SetError(error);
+        using var assertions = CaseAssertions.Begin();
+        Logger.Reset();
         try
         {
             // 协议探针仅在显式环境门控下改变结果，默认目录仍是真实语义测试。
             var probe = Environment.GetEnvironmentVariable("RIGI_TEST_PROBE");
             if (probe == "environment") return new(id, CaseStatus.Pass, 1, 0, null,
-                $"cpu={Environment.GetEnvironmentVariable("DOTNET_PROCESSOR_COUNT")};compute={Environment.GetEnvironmentVariable("RIGI_COMPUTE_WORKERS")};lld={Environment.GetEnvironmentVariable("RIGI_LLD_THREADS")};gc={Environment.GetEnvironmentVariable("DOTNET_GCHeapHardLimit")};spawned={TestRunner.IsSpawned};tmp={Path.GetTempPath()}");
+                $"cpu={Environment.GetEnvironmentVariable("DOTNET_PROCESSOR_COUNT")};compute={Environment.GetEnvironmentVariable("RIGI_COMPUTE_WORKERS")};lld={Environment.GetEnvironmentVariable("RIGI_LLD_THREADS")};gc={Environment.GetEnvironmentVariable("DOTNET_GCHeapHardLimit")};spawned={WorkerEnvironment.IsWorker};tmp={Path.GetTempPath()}");
             if (probe == "nested")
             {
-                try { LegacyDispatcher.RunTasksAsync([]).GetAwaiter().GetResult(); }
+                try { CaseWorkers.RunTasksAsync([]).GetAwaiter().GetResult(); }
                 catch (InvalidOperationException) { return new(id, CaseStatus.Pass, 1, 0, null, "spawned 拒绝嵌套队列"); }
                 return new(id, CaseStatus.Fail, 1, 1, null, "spawned 错误允许嵌套队列");
             }
@@ -179,26 +205,25 @@ public static class CaseCatalog
                 Environment.Exit(17);
             }
             if (skip?.Invoke() is { } reason) return new(id, CaseStatus.Skip, 0, 0, reason, "");
-            var counts = probe == "fail-lexer"
-                ? LexerFuzzTests.RunTokenCase("a / b", "故意错误的 token 期望") : run();
-            if (probe == "fail-harness")
-            {
-                TestHarness.CheckTrue("故意 Harness 失败", false);
-                counts = (counts.Assertions + 1, counts.Failures + 1);
-            }
-            if (counts.Assertions == 0 && TestHarness.SkipReason is { } unsupported)
+            if (probe == "fail-lexer") LexerFuzzTests.RunTokenCase("a / b", "故意错误的 token 期望");
+            else run();
+            if (probe == "fail-harness") CaseAssertions.CheckTrue("故意断言失败", false);
+            if (assertions.AssertionCount == 0 && assertions.SkipReason is { } unsupported)
                 return new(id, CaseStatus.Skip, 0, 0, unsupported, output + error.ToString());
-            if (counts.Assertions == 0) return new(id, CaseStatus.Fail, 1, 1, null, "单 case 未执行任何断言");
-            return new(id, counts.Failures == 0 ? CaseStatus.Pass : CaseStatus.Fail,
-                counts.Assertions, counts.Failures, null, output + error.ToString());
+            if (assertions.AssertionCount == 0) CaseAssertions.CheckTrue("单 case 必须执行断言", false);
+            return new(id, assertions.FailureCount == 0 ? CaseStatus.Pass : CaseStatus.Fail,
+                assertions.AssertionCount, assertions.FailureCount, null, output + error.ToString());
         }
         catch (OperationCanceledException ex) { return new(id, CaseStatus.Cancel, 0, 0, null, ex.Message); }
-        catch (Exception ex) { return new(id, CaseStatus.Fail, TestHarness.PassCount + TestHarness.FailCount + 1,
-            TestHarness.FailCount + 1, null, output + error.ToString() + ex); }
+        catch (Exception exception)
+        {
+            CaseAssertions.CheckTrue("隔离动作异常", false, exception.ToString());
+            return new(id, CaseStatus.Fail, assertions.AssertionCount, assertions.FailureCount, null, output + error.ToString());
+        }
         finally
         {
-            Console.SetOut(oldOut); Console.SetError(oldErr);
-            Logger.RestoreState(state); TestHarness.Reset();
+            WorkerConsole.SetOut(oldOut); WorkerConsole.SetError(oldErr);
+            Logger.RestoreState(state);
         }
     }
 }

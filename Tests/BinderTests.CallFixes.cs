@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 
 namespace RigiCompiler.Tests
 {
@@ -13,7 +13,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestCallFixes()
         {
-            TestHarness.Section("P3 Call/Path/Binary Fixes");
+            CompilerTestTools.Section("P3 Call/Path/Binary Fixes");
 
             // ===== 收窄区域内复合赋值（S8b 剥壳修复）：读路径的 SmartCast
             // 包装不再落 place switch 的 default =====
@@ -33,10 +33,10 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（收窄区域内复合赋值：局部与参数）", unit1);
             // Target 保留收窄包装（读值按收窄类型参与运算定型）
-            TestHarness.CheckTrue("局部版 Target 保留 SmartCast 包装",
+            CaseAssertions.CheckTrue("局部版 Target 保留 SmartCast 包装",
                 BoundDescribe.Body(BodyOf(bodies1, "f")).Contains(
                     "CompoundAssign(Add, SmartCast(Local(s,String?), String)"));
-            TestHarness.CheckTrue("参数版 Target 保留 SmartCast 包装",
+            CaseAssertions.CheckTrue("参数版 Target 保留 SmartCast 包装",
                 BoundDescribe.Body(BodyOf(bodies1, "g")).Contains(
                     "CompoundAssign(Add, SmartCast(Param(p,String?), String)"));
 
@@ -73,7 +73,7 @@ namespace RigiCompiler.Tests
             var (unit4, _) = BindUnit(
                 "class A { pub func m(): i32 { return 1 } }\n" +
                 "class B { pub func f(): i32 { return A.m() } }\n");
-            TestHarness.CheckSemanticError("他类实例方法盲补 this 拦截", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("他类实例方法盲补 this 拦截", unit4.Diagnostics,
                 "instance method 'm' requires a receiver ('this' is not an instance of 'A')");
             // 正例：基类在 this 链上（A.m() 等价 this.m()）
             var (unit5, _) = BindUnit(
@@ -105,7 +105,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（泛型参数 null 判等）", unit9);
             var eqReturn = (BoundBinaryExpression)((BoundReturnStatement)
                 BodyOf(bodies9, "eq").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("null 侧定型为泛型参数 T",
+            CaseAssertions.CheckTrue("null 侧定型为泛型参数 T",
                 eqReturn.Right is BoundLiteralExpression { Type: GenericParameterSymbol });
 
             // ===== 裸名调用宿主代入（S9b）：receiverType = 当前宿主 =====
@@ -129,7 +129,7 @@ namespace RigiCompiler.Tests
                 "class Derived : Base\\<i32> {\n" +
                 "    pub func f(): i32 { return foo\\<String>(\"s\") }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("单候选实参类型检查落实", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("单候选实参类型检查落实", unit11.Diagnostics,
                 "Cannot pass 'String' as 'i32'");
             // 宿主泛型形参与返回类型同时代入（任务书触发形态）
             var (unit12, _) = BindUnit(
@@ -149,7 +149,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（可变参数链头调用）", unit13);
             var chainCall = (BoundInstanceCallExpression)((BoundReturnStatement)
                 BodyOf(bodies13, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("链头 receiver 定型 Array<i32>",
+            CaseAssertions.CheckTrue("链头 receiver 定型 Array<i32>",
                 chainCall.Receiver.Type is TypeSymbol { ConstructedFrom: not null } rc
                 && ReferenceEquals(rc.ConstructedFrom, unit13.Symbols.Bootstrap.ArrayDefinition));
 
@@ -169,7 +169,7 @@ namespace RigiCompiler.Tests
                 "    var bag = new Bag(0)\n" +
                 "    bag[0] = (bag[0] if? (0 + 5))\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("索引复合赋值写回类型校验", unit14.Diagnostics,
+            CaseAssertions.CheckSemanticError("索引复合赋值写回类型校验", unit14.Diagnostics,
                 "Cannot assign 'i32' to 'String'");
             // 正例：读写元素类型一致
             var (unit15, _) = BindUnit(
@@ -205,7 +205,7 @@ namespace RigiCompiler.Tests
                 "class Secret { }\n",
                 "pub func f\\<T>(): i32 { return 0 }\n" +
                 "pub func g(): i32 { return f\\<Secret>() }\n");
-            TestHarness.CheckSemanticError("显式泛型实参跨文件不可见拦截", unit17.Diagnostics,
+            CaseAssertions.CheckSemanticError("显式泛型实参跨文件不可见拦截", unit17.Diagnostics,
                 "'Secret' is inaccessible due to its accessibility level");
             // 可见实参对照（独立编译单元——不可见拦截的 must-return 级联
             // 不混入）
@@ -227,12 +227,12 @@ namespace RigiCompiler.Tests
             var itemGetter = bodies18.Single(b => b.Method.Kind == MethodKind.Getter
                 && b.Method.Name == "item");
             var getterReturn = (BoundReturnStatement)itemGetter.Body.Statements[0];
-            TestHarness.CheckTrue("getter 体 value → this.item（backing 直达）",
+            CaseAssertions.CheckTrue("getter 体 value → this.item（backing 直达）",
                 getterReturn.Value is BoundFieldAccessExpression { Field.Name: "item" } gacc
                 && gacc.Type is GenericParameterSymbol);
             var itemSetter = bodies18.Single(b => b.Method.Kind == MethodKind.Setter
                 && b.Method.Name == "item");
-            TestHarness.CheckTrue("setter 体 value 赋值到 backing",
+            CaseAssertions.CheckTrue("setter 体 value 赋值到 backing",
                 BoundDescribe.Body(itemSetter).Contains("InstField(..value, This(Box<T>), T)"));
 
             // ===== const 字段收窄区域内赋值（诊断归位：const 检查优先于
@@ -247,7 +247,7 @@ namespace RigiCompiler.Tests
                 "        }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("const 实例字段收窄区域内赋值", unit19.Diagnostics,
+            CaseAssertions.CheckSemanticError("const 实例字段收窄区域内赋值", unit19.Diagnostics,
                 "Cannot assign to const field 'field'");
             var (unit20, _) = BindUnit(
                 "const g: String? = \"a\"\n" +
@@ -256,7 +256,7 @@ namespace RigiCompiler.Tests
                 "        g = \"x\"\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("const 全局字段收窄区域内赋值", unit20.Diagnostics,
+            CaseAssertions.CheckSemanticError("const 全局字段收窄区域内赋值", unit20.Diagnostics,
                 "Cannot assign to const field 'g'");
 
             // ===== 可变参数空包 Syntax 契约（BoundNode.Syntax 非空）=====
@@ -266,7 +266,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（空包调用）", unit21);
             var emptyPackCall = (BoundCallExpression)((BoundReturnStatement)
                 BodyOf(bodies21, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("空包 BoundVarArgsArgument.Syntax 非空",
+            CaseAssertions.CheckTrue("空包 BoundVarArgsArgument.Syntax 非空",
                 emptyPackCall.Arguments[^1] is BoundVarArgsArgument pack
                 && pack.Syntax != null);
 
@@ -316,21 +316,21 @@ namespace RigiCompiler.Tests
             var (unit25, _) = BindUnitWithStdlib(
                 "import core.collections.*\n" +
                 "func f(a: Array\\<i32>): i32 { return a[0] }\n");
-            TestHarness.CheckSemanticError("Q6：T? 直赋非空拒绝", unit25.Diagnostics,
+            CaseAssertions.CheckSemanticError("Q6：T? 直赋非空拒绝", unit25.Diagnostics,
                 "Cannot return 'Nullable<i32>'");
             // 声明形状：getAtIndex 返回非 T? → P2 拒绝
             var (unit26, _) = BindUnit(
                 "class Bag {\n" +
                 "    pub operator getAtIndex(index: i32): i32 { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Q6：getAtIndex 返回非 T? 形状拒绝", unit26.Diagnostics,
+            CaseAssertions.CheckSemanticError("Q6：getAtIndex 返回非 T? 形状拒绝", unit26.Diagnostics,
                 "Operator 'getAtIndex' must return a nullable type");
             // 声明形状：getAtIndex 恰 1 形参
             var (unit27, _) = BindUnit(
                 "class Bag {\n" +
                 "    pub operator getAtIndex(a: i32, b: i32): i32? { return 0 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Q6：getAtIndex 恰一形参形状", unit27.Diagnostics,
+            CaseAssertions.CheckSemanticError("Q6：getAtIndex 恰一形参形状", unit27.Diagnostics,
                 "Operator 'getAtIndex' must have exactly one parameter");
             // for-in 不经 getAtIndex（协议锁定）：实现 IEnumerable<T> 而无
             // 索引运算符的类型照常 for-in，循环变量保持 T（非 T?）

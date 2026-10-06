@@ -25,7 +25,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("try 落 catch", caught);
-            TestHarness.Check("catch+finally 顺序", caught.Stdout, "catch\nfin\n");
+            CaseAssertions.Check("catch+finally 顺序", caught.Stdout, "catch\nfin\n");
             CheckI32("catch 返回 7", caught, 7);
             var normal = Run(
                 "pub func main(): i32 {\n" +
@@ -37,7 +37,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("try 正常 + finally", normal);
-            TestHarness.Check("正常路径 finally", normal.Stdout, "try\nfin\n");
+            CaseAssertions.Check("正常路径 finally", normal.Stdout, "try\nfin\n");
             CheckI32("正常路径返回", normal, 1);
             var inherit = Run(
                 "pub func main(): i32 {\n" +
@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
                 "        return 1\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckTrue("未命中 catch 传播",
+            CaseAssertions.CheckTrue("未命中 catch 传播",
                 miss.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("IOException"),
                 miss.Exception?.ToString() ?? "<null>");
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("嵌套 try", nested);
-            TestHarness.Check("嵌套 catch 外层", nested.Stdout, "io\n");
+            CaseAssertions.Check("嵌套 catch 外层", nested.Stdout, "io\n");
             CheckI32("嵌套返回 5", nested, 5);
             var rethrow = Run(
                 "pub func main(): i32 {\n" +
@@ -90,8 +90,8 @@ namespace RigiCompiler.Tests
                 "        core.io.Console.println(\"f\")\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.Check("catch 再抛仍跑 finally", rethrow.Stdout, "f\n");
-            TestHarness.CheckTrue("finally 后传播新异常",
+            CaseAssertions.Check("catch 再抛仍跑 finally", rethrow.Stdout, "f\n");
+            CaseAssertions.CheckTrue("finally 后传播新异常",
                 rethrow.Exception?.ExceptionObject is VmObject re
                 && re.TypeRef.Contains("RuntimeException"),
                 rethrow.Exception?.ToString() ?? "<null>");
@@ -103,7 +103,7 @@ namespace RigiCompiler.Tests
                 "        throw new core.RuntimeException(\"fin\")\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckTrue("finally throw 覆盖 ret",
+            CaseAssertions.CheckTrue("finally throw 覆盖 ret",
                 finThrow.Exception?.ExceptionObject is VmObject ft
                 && ft.TypeRef.Contains("RuntimeException"),
                 finThrow.Exception?.ToString() ?? "<null>");
@@ -146,7 +146,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return boom()\n" +
                 "}\n");
-            TestHarness.CheckTrue("无人捕获则 Failed",
+            CaseAssertions.CheckTrue("无人捕获则 Failed",
                 uncaught.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("RuntimeException"),
                 uncaught.Exception?.ToString() ?? "<null>");
@@ -163,7 +163,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("ret 穿越 finally", ret);
-            TestHarness.Check("ret 前 finally", ret.Stdout, "fin\n");
+            CaseAssertions.Check("ret 前 finally", ret.Stdout, "fin\n");
             CheckI32("ret 值保留", ret, 3);
             var brk = Run(
                 "pub func main(): i32 {\n" +
@@ -179,7 +179,7 @@ namespace RigiCompiler.Tests
                 "    return i\n" +
                 "}\n");
             CheckOk("break 穿越 finally", brk);
-            TestHarness.Check("break 前 finally", brk.Stdout, "f\n");
+            CaseAssertions.Check("break 前 finally", brk.Stdout, "f\n");
             CheckI32("break 后 i", brk, 1);
             var cont = Run(
                 "pub func main(): i32 {\n" +
@@ -379,7 +379,7 @@ namespace RigiCompiler.Tests
                 "    return 5\n" +
                 "}\n");
             CheckOk("Normal 进 finally(e)", normal);
-            TestHarness.Check("Normal 路径 e 为 null", normal.Stdout, "null\n");
+            CaseAssertions.Check("Normal 路径 e 为 null", normal.Stdout, "null\n");
             CheckI32("Normal 后续行", normal, 5);
 
             var ret = Run(
@@ -392,7 +392,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("Return 进 finally(e)", ret);
-            TestHarness.Check("Return 路径 e 为 null", ret.Stdout, "null\n");
+            CaseAssertions.Check("Return 路径 e 为 null", ret.Stdout, "null\n");
             CheckI32("Return 值保留", ret, 3);
 
             var brk = Run(
@@ -410,7 +410,7 @@ namespace RigiCompiler.Tests
                 "    return i\n" +
                 "}\n");
             CheckOk("Break 进 finally(e)", brk);
-            TestHarness.Check("Break 路径 e 为 null", brk.Stdout, "null\n");
+            CaseAssertions.Check("Break 路径 e 为 null", brk.Stdout, "null\n");
             CheckI32("Break 后 i", brk, 1);
 
             // Throw 路径回归：未捕获异常进入 finally 时 e 为异常对象
@@ -429,7 +429,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Throw 进 finally(e)", thr);
-            TestHarness.Check("Throw 路径 e 为异常对象", thr.Stdout, "exc\n");
+            CaseAssertions.Check("Throw 路径 e 为异常对象", thr.Stdout, "exc\n");
             CheckI32("外层 catch 捕获", thr, 1);
         }
 

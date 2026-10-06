@@ -108,9 +108,9 @@ namespace RigiCompiler.Tests
         {
             var text = BilWriter.Write(NewWrappedCaseModule(mismatch: true));
             var vm = BilVm.Run(BilReader.Read(text));
-            TestHarness.CheckTrue("new.wrapped.case init 失配：VM 有异常",
+            CaseAssertions.CheckTrue("new.wrapped.case init 失配：VM 有异常",
                 vm.Exception != null);
-            TestHarness.CheckTrue("new.wrapped.case init 失配：VM 消息含关键字",
+            CaseAssertions.CheckTrue("new.wrapped.case init 失配：VM 消息含关键字",
                 vm.Exception != null && vm.Exception.Message.Contains("不匹配任何 init"),
                 vm.Exception?.Message ?? "");
 
@@ -122,9 +122,9 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(bilPath, text, new UTF8Encoding(false));
                 var compiled = RunNative("native", "--file", bilPath,
                     "--out", Path.Combine(dir, "case.exe"));
-                TestHarness.CheckTrue("new.wrapped.case init 失配：native 门禁拒绝（退出 1）",
+                CaseAssertions.CheckTrue("new.wrapped.case init 失配：native 门禁拒绝（退出 1）",
                     compiled.Code == 1, $"code={compiled.Code} err={compiled.Err}");
-                TestHarness.CheckTrue("new.wrapped.case init 失配：native 消息含关键字",
+                CaseAssertions.CheckTrue("new.wrapped.case init 失配：native 消息含关键字",
                     compiled.Err.Contains("不匹配"), compiled.Err);
             }
             finally
@@ -184,7 +184,7 @@ namespace RigiCompiler.Tests
             // 取证钉住：VM 对 raw 资源 load 拒绝（无物化语义可对照，
             // 故本面只能 native-only 验证，不走 RunBilCase 对拍）
             var vm = BilVm.Run(BilReader.Read(bil));
-            TestHarness.CheckTrue("raw → Span：VM 拒绝 raw load（取证）",
+            CaseAssertions.CheckTrue("raw → Span：VM 拒绝 raw load（取证）",
                 vm.Exception != null
                 && vm.Exception.Message.Contains("不支持的标量资源类型"),
                 vm.Exception?.Message ?? "");
@@ -198,7 +198,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue("raw → Span：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue("raw → Span：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -206,9 +206,9 @@ namespace RigiCompiler.Tests
                 }
                 var runExit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var nativeOut, out var nativeErr, environment: MemtrackEnv);
-                TestHarness.CheckTrue("raw → Span：退出码 6（两 length 之和）",
+                CaseAssertions.CheckTrue("raw → Span：退出码 6（两 length 之和）",
                     runExit == 6, $"exit={runExit} stderr={nativeErr}");
-                TestHarness.CheckTrue("raw → Span：stdout 为空", nativeOut.Length == 0,
+                CaseAssertions.CheckTrue("raw → Span：stdout 为空", nativeOut.Length == 0,
                     nativeOut);
             }
             finally

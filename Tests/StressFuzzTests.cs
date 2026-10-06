@@ -48,8 +48,7 @@ namespace RigiCompiler.Tests
         private const int DeterminismEvery = 60;
         private const int ProgressEvery = 25;
 
-        private static int passCount;
-        private static int failCount;
+
         // 异常分类计数（crash = 编译器/VM bug；parseFailure = 生成器或前端 bug）
         private static int crashes;
         private static int parseFailures;
@@ -72,45 +71,7 @@ namespace RigiCompiler.Tests
         private static int dumpedFailures;     // 落盘计数（上限保护）
 
         // --suite-args <from> <to>：含两端的 case 序号区间（种子固定，区间可复现）
-        public static int RunWithArgs(IReadOnlyList<string> args)
-        {
-            if (args.Count != 2
-                || !int.TryParse(args[0], out int from)
-                || !int.TryParse(args[1], out int to)
-                || from < 0 || to < from)
-            {
-                Console.Error.WriteLine(
-                    "StressFuzz --suite-args 需要 <from> <to>（含两端的 case 序号，from>=0 且 to>=from）");
-                Console.Error.Flush();
-                return 1;
-            }
-            return RunRange(from, to);
-        }
 
-        public static int RunAll()
-        {
-            int caseCount = DefaultCaseCount;
-            // CI（GitHub Actions）默认冒烟量，本地默认全量；env 显式覆盖优先
-            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
-            {
-                caseCount = CiSmokeCaseCount;
-            }
-            if (int.TryParse(Environment.GetEnvironmentVariable("RIGI_STRESSFUZZ_CASES"),
-                    out int overrideCount) && overrideCount > 0)
-            {
-                caseCount = overrideCount;
-            }
-            return RunRange(0, caseCount - 1);
-        }
-
-        private static int RunRange(int from, int to)
-        {
-            if (!TestRunner.IsSpawned) return LegacyDispatcher.RunIndices("StressFuzz", Enumerable.Range(from, to - from + 1).ToArray(),
-                null);
-            return RunSelected(Enumerable.Range(from, to - from + 1).ToArray());
-        }
-
-        internal static (int Assertions, int Failures) SelectedCounts => (passCount + failCount, failCount);
 
         internal static int RunSelected(IReadOnlyList<int> indices)
         {
@@ -120,7 +81,6 @@ namespace RigiCompiler.Tests
             Console.WriteLine("╚════════════════════════════════════╝\n");
             Console.Out.Flush();
 
-            passCount = failCount = 0;
             crashes = parseFailures = verifierFailures = vmFailures = 0;
             legalRejected = injectionMissed = nondeterministic = duplicateDiagnostics = 0;
             cleanCases = errorCases = softMissCases = softMissCompiled = 0;
@@ -148,7 +108,7 @@ namespace RigiCompiler.Tests
             stopwatch.Stop();
 
             Console.WriteLine($"  fuzz 汇总：{caseCount} 用例（种子 {Seed}），" +
-                $"{passCount} passed, {failCount} failed，耗时 {stopwatch.ElapsedMilliseconds} ms");
+                $"{CaseAssertions.Current.PassedCount} passed, {CaseAssertions.Current.FailureCount} failed，耗时 {stopwatch.ElapsedMilliseconds} ms");
             Console.WriteLine($"  分类：编译器/VM 崩溃 {crashes} / 前端或生成器异常 {parseFailures} / " +
                 $"BIL 验证失败 {verifierFailures} / VM 异常 {vmFailures} / " +
                 $"合法被拒 {legalRejected} / 注入未报 {injectionMissed} / " +
@@ -172,9 +132,9 @@ namespace RigiCompiler.Tests
             {
                 Console.WriteLine($"  ...（其余 {failureLog.Count - 10} 条省略）");
             }
-            Console.WriteLine($"=== Stress Fuzz Tests Complete: {passCount} passed, {failCount} failed ===");
+            Console.WriteLine($"=== Stress Fuzz Tests Complete: {CaseAssertions.Current.PassedCount} passed, {CaseAssertions.Current.FailureCount} failed ===");
             Console.Out.Flush();
-            return failCount;
+            return CaseAssertions.Current.FailureCount;
         }
 
         private static void ReportProgress(string message)
@@ -211,7 +171,7 @@ namespace RigiCompiler.Tests
             roots.AddRange(StdlibSources.ParseAll());
             foreach (var (name, source) in kase.Files)
             {
-                roots.Add(TestHarness.ParseRoot(source, name));
+                roots.Add(CompilerTestTools.ParseRoot(source, name));
             }
             var unit = new CompilationUnit(roots.ToArray());
             var declarations = DeclarationCollector.Collect(unit);
@@ -369,7 +329,7 @@ namespace RigiCompiler.Tests
                 }
             }
 
-            if (ok) passCount++; else failCount++;
+            if (ok) CaseAssertions.Record(true); else CaseAssertions.Record(false);
         }
 
         private static string KeyOf(Diagnostic d)
@@ -406,7 +366,7 @@ namespace RigiCompiler.Tests
             {
                 sb.Append($"      落盘: {dumpDir}\n");
             }
-            int suiteNumber = TestRunner.GetSuiteNumber("StressFuzz");
+            int suiteNumber = TestSuiteCatalog.GetNumber("StressFuzz");
             sb.Append($"      复现: dotnet run -- test --run {suiteNumber} --suite-args {index} {index}\n");
             foreach (var (name, source) in kase.Files)
             {
@@ -446,7 +406,7 @@ namespace RigiCompiler.Tests
                     File.WriteAllText(
                         Path.Combine(dir, $"fail-case{index}{suffix}"), source);
                 }
-                int suiteNumber = TestRunner.GetSuiteNumber("StressFuzz");
+                int suiteNumber = TestSuiteCatalog.GetNumber("StressFuzz");
                 File.WriteAllText(Path.Combine(dir, $"fail-case{index}.txt"),
                     $"case#{index} 种子 {Seed}\n" +
                     $"领域: {kase.Domain}/{kase.Template}\n" +

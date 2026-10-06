@@ -14,13 +14,12 @@ namespace RigiCompiler.Tests
     /// <summary>Windows junction 删除：每次调用使用独立 GUID 根和非空目标。</summary>
     public static class VmFsJunctionDeleteTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
+
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsJunctionDelete", Cases, sectionTitle: "VmFsJunctionDelete");
         private static readonly (string Label, Action Run)[] Cases =
         {
@@ -43,7 +42,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
+                CaseAssertions.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
                 return;
             }
             // 不创建或清理共享父目录；仅拥有其下本次 GUID fixture。
@@ -111,7 +110,7 @@ namespace RigiCompiler.Tests
                 finally
                 {
                     // target/sentinel 连同 GUID 根保留为证据；从不递归删除 alias/target。
-                    TestHarness.CheckTrue("非空目标 sentinel 原字节保留 " + root,
+                    CaseAssertions.CheckTrue("非空目标 sentinel 原字节保留 " + root,
                         File.Exists(sentinel)
                         && File.ReadAllBytes(sentinel).SequenceEqual(Sentinel));
                 }
@@ -132,11 +131,11 @@ namespace RigiCompiler.Tests
         {
             var alias = Path.Combine(root, name);
             var target = Path.Combine(root, "target");
-            TestHarness.CheckTrue(name + (present ? " 仍为自有 junction" : " 链接条目消失"),
+            CaseAssertions.CheckTrue(name + (present ? " 仍为自有 junction" : " 链接条目消失"),
                 present ? IsOwnedAlias(alias, target) : !Directory.Exists(alias)
                     && !File.Exists(alias));
             var sentinel = Path.Combine(target, "sentinel.bin");
-            TestHarness.CheckTrue(name + " 未触及非空目标原字节",
+            CaseAssertions.CheckTrue(name + " 未触及非空目标原字节",
                 File.Exists(sentinel) && File.ReadAllBytes(sentinel).SequenceEqual(Sentinel));
         }
 
@@ -146,7 +145,7 @@ namespace RigiCompiler.Tests
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(
                     "pub func main(): i32 { return 0 }\n");
-                TestHarness.CheckTrue("原语宿主全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("原语宿主全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
                 if (unit.Diagnostics.HasErrors) return;
                 var context = new VmContext(module);
@@ -156,11 +155,11 @@ namespace RigiCompiler.Tests
                 var info = new VmSpan(".u8", 48, new VmU8(0), isShared: false);
                 var rc = ((VmI32)context.Dispatch.FsLstat(new VmValue[]
                     { new VmString(path), info })).Value;
-                TestHarness.CheckTrue("fs_lstat junction 成功且 Link", rc == 0
+                CaseAssertions.CheckTrue("fs_lstat junction 成功且 Link", rc == 0
                     && ((VmU8)info.Elements[0]).Value == 2, "rc=" + rc);
                 rc = ((VmI32)context.Dispatch.FsUnlink(new VmValue[]
                     { new VmString(path) })).Value;
-                TestHarness.CheckTrue("VM fs_unlink junction 成功", rc == 0,
+                CaseAssertions.CheckTrue("VM fs_unlink junction 成功", rc == 0,
                     "rc=" + rc);
                 CheckAlias(root, "primitive", present: false);
                 CheckAlias(root, "directory", present: true);
@@ -238,15 +237,15 @@ namespace RigiCompiler.Tests
             WithFixture(root =>
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(PublicSource(root));
-                TestHarness.CheckTrue("公共面全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("公共面全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
                 if (unit.Diagnostics.HasErrors) return;
                 var vm = BilVm.Run(BilReader.Read(BilWriter.Write(module)),
                     maxSteps: 20_000_000);
-                TestHarness.CheckTrue("VM 无异常", vm.Exception == null,
+                CaseAssertions.CheckTrue("VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
-                TestHarness.Check("VM stdout", vm.Stdout, "junction-delete-ok\n");
-                TestHarness.CheckTrue("VM 退出码 0", vm.ReturnValue is VmI32 { Value: 0 });
+                CaseAssertions.Check("VM stdout", vm.Stdout, "junction-delete-ok\n");
+                CaseAssertions.CheckTrue("VM 退出码 0", vm.ReturnValue is VmI32 { Value: 0 });
                 CheckAlias(root, "delete", present: false);
                 CheckAlias(root, "remove", present: false);
                 CheckAlias(root, "directory", present: true);
@@ -329,7 +328,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction move 未测）");
+                CaseAssertions.RecordSkip("  UNSUPPORTED 非 Windows（junction move 未测）");
                 return;
             }
             // playground/ 含已跟踪文件，干净 checkout 即存在；不依赖
@@ -547,22 +546,22 @@ namespace RigiCompiler.Tests
         internal static void CheckMoveResult(MoveFixture f)
         {
             // stdout/退出码外仍独立按真实文件字节及末段链接身份判别。
-            TestHarness.CheckTrue("NoReplace 源原字节留存",
+            CaseAssertions.CheckTrue("NoReplace 源原字节留存",
                 File.ReadAllBytes(f.SourceNoReplace).SequenceEqual(f.SourceBytes));
-            TestHarness.CheckTrue("NoReplace junction tag 与目标留存",
+            CaseAssertions.CheckTrue("NoReplace junction tag 与目标留存",
                 IsOwnedMountPoint(f.AliasNoReplace, f.Target));
-            TestHarness.CheckTrue("Replace 源消失", IsAbsent(f.SourceReplace));
-            TestHarness.CheckTrue("Replace alias 是原字节普通文件",
+            CaseAssertions.CheckTrue("Replace 源消失", IsAbsent(f.SourceReplace));
+            CaseAssertions.CheckTrue("Replace alias 是原字节普通文件",
                 (File.GetAttributes(f.AliasReplace) &
                     (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0
                 && File.ReadAllBytes(f.AliasReplace).SequenceEqual(f.SourceBytes));
-            TestHarness.CheckTrue("原目标 sentinel 原字节留存",
+            CaseAssertions.CheckTrue("原目标 sentinel 原字节留存",
                 File.ReadAllBytes(f.SentinelPath).SequenceEqual(f.SentinelBytes));
-            TestHarness.CheckTrue("空目录未覆盖且源原字节留存",
+            CaseAssertions.CheckTrue("空目录未覆盖且源原字节留存",
                 (File.GetAttributes(f.EmptyDirectory) & FileAttributes.Directory) != 0
                 && Directory.GetFileSystemEntries(f.EmptyDirectory).Length == 0
                 && File.ReadAllBytes(f.EmptySource).SequenceEqual(f.SourceBytes));
-            TestHarness.CheckTrue("非空目录未覆盖且源/内层 sentinel 原字节留存",
+            CaseAssertions.CheckTrue("非空目录未覆盖且源/内层 sentinel 原字节留存",
                 (File.GetAttributes(f.NonemptyDirectory) & FileAttributes.Directory) != 0
                 && File.ReadAllBytes(f.NonemptySentinel).SequenceEqual(f.SentinelBytes)
                 && File.ReadAllBytes(f.NonemptySource).SequenceEqual(f.SourceBytes));
@@ -592,17 +591,17 @@ namespace RigiCompiler.Tests
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(
                     MoveSource(fixture));
-                TestHarness.CheckTrue("junction move 公共面编译零诊断",
+                CaseAssertions.CheckTrue("junction move 公共面编译零诊断",
                     !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(d => d.Message)));
                 if (unit.Diagnostics.HasErrors) return;
                 var vm = BilVm.Run(BilReader.Read(BilWriter.Write(module)),
                     maxSteps: 5_000_000);
-                TestHarness.CheckTrue("junction move VM 无异常", vm.Exception == null,
+                CaseAssertions.CheckTrue("junction move VM 无异常", vm.Exception == null,
                     vm.Exception?.Message ?? "");
-                TestHarness.Check("junction move VM 独立 stdout", vm.Stdout,
+                CaseAssertions.Check("junction move VM 独立 stdout", vm.Stdout,
                     "junction-move-ok\n");
-                TestHarness.CheckTrue("junction move VM 退出码 0",
+                CaseAssertions.CheckTrue("junction move VM 退出码 0",
                     vm.ReturnValue is VmI32 { Value: 0 });
                 CheckMoveResult(fixture);
                 if (vm.Exception != null || vm.Stdout != "junction-move-ok\n"
@@ -618,7 +617,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                TestHarness.RecordSkip("  SKIP Windows junction Replace：非 Windows 宿主");
+                CaseAssertions.RecordSkip("  SKIP Windows junction Replace：非 Windows 宿主");
                 return;
             }
             VmFsJunctionDeleteTests.WithMoveFixture(fixture =>
@@ -632,17 +631,17 @@ namespace RigiCompiler.Tests
                     new UTF8Encoding(false));
                 var compiled = RunNative("native", "--file", bilPath,
                     "--out", exePath);
-                TestHarness.CheckTrue(label + " 编译链接成功",
+                CaseAssertions.CheckTrue(label + " 编译链接成功",
                     compiled.Code == 0, compiled.Err);
                 if (compiled.Code != 0) return; // 失败现场不删。
                 var exit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var stdout, out var stderr, environment: MemtrackEnv,
                     closeStdin: true);
-                TestHarness.Check(label + " 独立 stdout",
+                CaseAssertions.Check(label + " 独立 stdout",
                     NormalizeNewlines(stdout), "junction-move-ok\n");
-                TestHarness.CheckTrue(label + " 独立退出码 0", exit == 0,
+                CaseAssertions.CheckTrue(label + " 独立退出码 0", exit == 0,
                     $"exit={exit} stderr={stderr}");
-                TestHarness.Check(label + " 无诊断/泄漏", stderr, "");
+                CaseAssertions.Check(label + " 无诊断/泄漏", stderr, "");
                 VmFsJunctionDeleteTests.CheckMoveResult(fixture);
                 if (exit != 0 || NormalizeNewlines(stdout) != "junction-move-ok\n"
                     || stderr.Length != 0)
@@ -655,7 +654,7 @@ namespace RigiCompiler.Tests
         {
             if (!OperatingSystem.IsWindows())
             {
-                TestHarness.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
+                CaseAssertions.RecordSkip("  UNSUPPORTED 非 Windows（junction 未测）");
                 return;
             }
             // 两种入口各用独立 GUID 根；构建产物只放入独占 playground。
@@ -676,17 +675,17 @@ namespace RigiCompiler.Tests
                 File.WriteAllText(bilPath, BilWriter.Write(module), new UTF8Encoding(false));
                 var exePath = Path.Combine(root, stage + ".exe");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：" + stage + " native 编译链接成功",
+                CaseAssertions.CheckTrue(label + "：" + stage + " native 编译链接成功",
                     compiled.Code == 0, compiled.Err);
                 if (compiled.Code != 0) return;
                 var exit = ExternalProcess.Run(exePath, Array.Empty<string>(),
                     out var stdout, out var stderr, environment: MemtrackEnv,
                     closeStdin: true);
-                TestHarness.Check(label + "：" + stage + " stdout",
+                CaseAssertions.Check(label + "：" + stage + " stdout",
                     NormalizeNewlines(stdout), expected);
-                TestHarness.CheckTrue(label + "：" + stage + " 退出码 0", exit == 0,
+                CaseAssertions.CheckTrue(label + "：" + stage + " 退出码 0", exit == 0,
                     $"exit={exit} stderr={stderr}");
-                TestHarness.Check(label + "：" + stage + " 无诊断", stderr, "");
+                CaseAssertions.Check(label + "：" + stage + " 无诊断", stderr, "");
                 foreach (var name in new[] { "primitive", "delete", "remove", "directory" })
                     VmFsJunctionDeleteTests.CheckAlias(root, name,
                         present: !deleted.Contains(name));

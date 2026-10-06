@@ -22,15 +22,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVmWakeupTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilVmWakeup", Cases, sectionTitle: "BilVmWakeup");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -57,7 +55,7 @@ namespace RigiCompiler.Tests
         // 驱动到 Running（挂起转换的唯一合法前置态）
         private static void MakeRunning(VmCoroutine coroutine)
         {
-            TestHarness.CheckTrue("Created→Running 驱动",
+            CaseAssertions.CheckTrue("Created→Running 驱动",
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Running),
                 "状态机驱动失败");
         }
@@ -67,7 +65,7 @@ namespace RigiCompiler.Tests
             try
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-                TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                         d => $"{d.Phase}: {d.Message}")));
                 if (unit.Diagnostics.HasErrors)
@@ -79,7 +77,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue("全管线无诊断", false, exception.ToString());
+                CaseAssertions.CheckTrue("全管线无诊断", false, exception.ToString());
                 return new BilVmResult("", "", null,
                     new VmException(exception.Message, inner: exception));
             }
@@ -87,13 +85,13 @@ namespace RigiCompiler.Tests
 
         private static void CheckOk(string label, BilVmResult result)
         {
-            TestHarness.CheckTrue(label + " 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
         }
 
         private static void CheckI32(string label, BilVmResult result, int expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmI32 n && n.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -107,16 +105,16 @@ namespace RigiCompiler.Tests
         private static void TestTrySuspendDiscipline()
         {
             var coroutine = new VmCoroutine(NewDispatch());
-            TestHarness.CheckTrue("Created 时 TrySuspend 拒绝", !coroutine.TrySuspend(),
+            CaseAssertions.CheckTrue("Created 时 TrySuspend 拒绝", !coroutine.TrySuspend(),
                 "状态 " + coroutine.State);
             MakeRunning(coroutine);
-            TestHarness.CheckTrue("Running 时 TrySuspend 成功", coroutine.TrySuspend(),
+            CaseAssertions.CheckTrue("Running 时 TrySuspend 成功", coroutine.TrySuspend(),
                 "状态 " + coroutine.State);
-            TestHarness.CheckTrue("挂起后 Suspended",
+            CaseAssertions.CheckTrue("挂起后 Suspended",
                 coroutine.State == VmCoroutineState.Suspended, "状态 " + coroutine.State);
-            TestHarness.CheckTrue("Suspended 时再 TrySuspend 拒绝", !coroutine.TrySuspend(),
+            CaseAssertions.CheckTrue("Suspended 时再 TrySuspend 拒绝", !coroutine.TrySuspend(),
                 "状态 " + coroutine.State);
-            TestHarness.CheckTrue("恢复→Running→再挂起",
+            CaseAssertions.CheckTrue("恢复→Running→再挂起",
                 coroutine.TryTransition(VmCoroutineState.Suspended, VmCoroutineState.Runnable)
                     && coroutine.TryTransition(VmCoroutineState.Runnable, VmCoroutineState.Running)
                     && coroutine.TrySuspend(),
@@ -130,13 +128,13 @@ namespace RigiCompiler.Tests
             var dispatch = NewDispatch();
             var coroutine = new VmCoroutine(dispatch);
             dispatch.RegisterCoroutine(coroutine);
-            TestHarness.CheckTrue("驱动 Runnable",
+            CaseAssertions.CheckTrue("驱动 Runnable",
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Runnable),
                 "状态机驱动失败");
             dispatch.Publish(coroutine, "单元测试源");
-            TestHarness.CheckTrue("Runnable 重复发布静默，状态不变",
+            CaseAssertions.CheckTrue("Runnable 重复发布静默，状态不变",
                 coroutine.State == VmCoroutineState.Runnable, "状态 " + coroutine.State);
-            TestHarness.CheckTrue("Runnable 不注入 Failure", coroutine.Failure == null,
+            CaseAssertions.CheckTrue("Runnable 不注入 Failure", coroutine.Failure == null,
                 "Failure 被误设");
         }
 
@@ -151,13 +149,13 @@ namespace RigiCompiler.Tests
                 var dispatch = NewDispatch();
                 var coroutine = new VmCoroutine(dispatch);
                 dispatch.RegisterCoroutine(coroutine);
-                TestHarness.CheckTrue("驱动终态 " + terminal,
+                CaseAssertions.CheckTrue("驱动终态 " + terminal,
                     coroutine.TryTransition(VmCoroutineState.Created, terminal),
                     "状态机驱动失败");
                 dispatch.Publish(coroutine, "单元测试源");
-                TestHarness.CheckTrue(terminal + " 保持终态无操作",
+                CaseAssertions.CheckTrue(terminal + " 保持终态无操作",
                     coroutine.State == terminal, "状态 " + coroutine.State);
-                TestHarness.CheckTrue(terminal + " 不注入 Failure",
+                CaseAssertions.CheckTrue(terminal + " 不注入 Failure",
                     coroutine.Failure == null, "Failure 被误设");
             }
         }
@@ -171,16 +169,16 @@ namespace RigiCompiler.Tests
             var coroutine = new VmCoroutine(dispatch);
             dispatch.RegisterCoroutine(coroutine);
             MakeRunning(coroutine);
-            TestHarness.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
+            CaseAssertions.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
             dispatch.FailPublishesForTest = true;
             dispatch.Publish(coroutine, "单元测试源");
-            TestHarness.CheckTrue("协程转 Failed", coroutine.State == VmCoroutineState.Failed,
+            CaseAssertions.CheckTrue("协程转 Failed", coroutine.State == VmCoroutineState.Failed,
                 "状态 " + coroutine.State);
-            TestHarness.CheckTrue("失败证据留存", coroutine.Failure != null,
+            CaseAssertions.CheckTrue("失败证据留存", coroutine.Failure != null,
                 "Failure 为 null");
-            TestHarness.CheckTrue("消息含「丢失唤醒」",
+            CaseAssertions.CheckTrue("消息含「丢失唤醒」",
                 coroutine.Failure!.Message.Contains("丢失唤醒"), coroutine.Failure.Message);
-            TestHarness.CheckTrue("消息含唤醒来源",
+            CaseAssertions.CheckTrue("消息含唤醒来源",
                 coroutine.Failure.Message.Contains("单元测试源"), coroutine.Failure.Message);
         }
 
@@ -194,14 +192,14 @@ namespace RigiCompiler.Tests
             var coroutine = new VmCoroutine(dispatch);
             dispatch.RegisterCoroutine(coroutine);
             MakeRunning(coroutine);
-            TestHarness.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
+            CaseAssertions.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
             // 挂起态直接 resume（无对应发布）= stale 唤醒路径
             var code = dispatch.ResumeSegment(coroutine);
-            TestHarness.CheckTrue("Suspended 上 resume 返回 SKIPPED",
+            CaseAssertions.CheckTrue("Suspended 上 resume 返回 SKIPPED",
                 code == VmDispatch.ResumeSkipped, "code=" + code);
-            TestHarness.CheckTrue("仍 Suspended 未被误执行",
+            CaseAssertions.CheckTrue("仍 Suspended 未被误执行",
                 coroutine.State == VmCoroutineState.Suspended, "状态 " + coroutine.State);
-            TestHarness.CheckTrue("stale 唤醒不注入 Failure", coroutine.Failure == null,
+            CaseAssertions.CheckTrue("stale 唤醒不注入 Failure", coroutine.Failure == null,
                 "Failure 被误设");
         }
 
@@ -214,7 +212,7 @@ namespace RigiCompiler.Tests
                 "    yield\n" +
                 "    return 7\n" +
                 "}\n");
-            TestHarness.CheckTrue("全管线无诊断（三段式）",
+            CaseAssertions.CheckTrue("全管线无诊断（三段式）",
                 !result.Unit.Diagnostics.HasErrors, "编译失败");
             var context = new VmContext(result.Module);
             // Dispatcher.publish 走 Rigi 解释，需要 singleton 已初始化
@@ -226,20 +224,20 @@ namespace RigiCompiler.Tests
             context.Dispatch.RegisterCoroutine(coroutine);
             // 首次发布：Created→Runnable 由 Publish 完成（空 Dispatcher
             // 模块缺 stdlib？本模块含 stdlib——这里直驱状态机，不经队列）
-            TestHarness.CheckTrue("驱动 Runnable",
+            CaseAssertions.CheckTrue("驱动 Runnable",
                 coroutine.TryTransition(VmCoroutineState.Created, VmCoroutineState.Runnable),
                 "状态机驱动失败");
             var first = context.Dispatch.ResumeSegment(coroutine);
-            TestHarness.CheckTrue("裸 yield 段归宿 YIELDED",
+            CaseAssertions.CheckTrue("裸 yield 段归宿 YIELDED",
                 first == VmDispatch.ResumeYielded, "code=" + first);
-            TestHarness.CheckTrue("yield 后重发布为 Runnable",
+            CaseAssertions.CheckTrue("yield 后重发布为 Runnable",
                 coroutine.State == VmCoroutineState.Runnable, "状态 " + coroutine.State);
             var second = context.Dispatch.ResumeSegment(coroutine);
-            TestHarness.CheckTrue("终态段归宿 DONE", second == VmDispatch.ResumeDone,
+            CaseAssertions.CheckTrue("终态段归宿 DONE", second == VmDispatch.ResumeDone,
                 "code=" + second);
-            TestHarness.CheckTrue("协程 Completed",
+            CaseAssertions.CheckTrue("协程 Completed",
                 coroutine.State == VmCoroutineState.Completed, "状态 " + coroutine.State);
-            TestHarness.CheckTrue("返回值 7",
+            CaseAssertions.CheckTrue("返回值 7",
                 coroutine.Result is VmI32 n && n.Value == 7,
                 coroutine.Result?.ToStandardText() ?? "<null>");
         }
@@ -262,13 +260,13 @@ namespace RigiCompiler.Tests
             alarm.WriteField("core.coroutine::EventAlarm#handle@.i64",
                 new VmI64(timerHandle));
             MakeRunning(coroutine);
-            TestHarness.CheckTrue("未触发 alarm 挂起登记",
+            CaseAssertions.CheckTrue("未触发 alarm 挂起登记",
                 dispatch.TryAwaitTimer(alarm, coroutine),
                 "状态 " + coroutine.State);
             // delay=0 响铃在 ThreadPool 上立即回调：登记返回后状态可能
             // 已从 Suspended 被 Publish 成 Runnable（TryAwaitTimer 在
             // 记录闸外才 NoteSuspended，与 RingTimer 竞态）
-            TestHarness.CheckTrue("登记后 Suspended 或已唤醒",
+            CaseAssertions.CheckTrue("登记后 Suspended 或已唤醒",
                 coroutine.State == VmCoroutineState.Suspended
                 || coroutine.State == VmCoroutineState.Runnable,
                 "状态 " + coroutine.State);
@@ -280,14 +278,14 @@ namespace RigiCompiler.Tests
             {
                 Thread.Sleep(5);
             }
-            TestHarness.CheckTrue("响铃唤醒生效",
+            CaseAssertions.CheckTrue("响铃唤醒生效",
                 coroutine.State != VmCoroutineState.Suspended, "状态 " + coroutine.State);
             var second = new VmCoroutine(dispatch);
             MakeRunning(second);
-            TestHarness.CheckTrue("触发后粘滞就绪",
+            CaseAssertions.CheckTrue("触发后粘滞就绪",
                 !dispatch.TryAwaitTimer(alarm, second),
                 "second 状态 " + second.State);
-            TestHarness.CheckTrue("粘滞分支不挂起",
+            CaseAssertions.CheckTrue("粘滞分支不挂起",
                 second.State == VmCoroutineState.Running, "状态 " + second.State);
         }
 
@@ -298,14 +296,14 @@ namespace RigiCompiler.Tests
             var dispatch = NewDispatch();
             var coroutine = new VmCoroutine(dispatch);
             MakeRunning(coroutine);
-            TestHarness.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
+            CaseAssertions.CheckTrue("挂起成功", coroutine.TrySuspend(), "状态 " + coroutine.State);
             dispatch.SchedulePoll(coroutine);
-            TestHarness.CheckTrue("SchedulePoll 后有在途 timer", coroutine.HasPollTimer,
+            CaseAssertions.CheckTrue("SchedulePoll 后有在途 timer", coroutine.HasPollTimer,
                 "timer 未挂入");
             coroutine.Fail(new VmException("单元测试失败注入"));
-            TestHarness.CheckTrue("Fail 后 timer 已释放", !coroutine.HasPollTimer,
+            CaseAssertions.CheckTrue("Fail 后 timer 已释放", !coroutine.HasPollTimer,
                 "timer 仍持有");
-            TestHarness.CheckTrue("协程转 Failed", coroutine.State == VmCoroutineState.Failed,
+            CaseAssertions.CheckTrue("协程转 Failed", coroutine.State == VmCoroutineState.Failed,
                 "状态 " + coroutine.State);
         }
 
@@ -346,9 +344,9 @@ namespace RigiCompiler.Tests
                 "    yield\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("未观察失败进汇总", result.Exception != null,
+            CaseAssertions.CheckTrue("未观察失败进汇总", result.Exception != null,
                 "Exception 为 null");
-            TestHarness.CheckTrue("失败消息可辨认",
+            CaseAssertions.CheckTrue("失败消息可辨认",
                 result.Exception == null || result.Exception.Message.Contains("火")
                     || result.Exception.Message.Contains("RuntimeException"),
                 result.Exception?.Message ?? "<null>");

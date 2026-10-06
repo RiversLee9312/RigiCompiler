@@ -7,7 +7,7 @@ namespace RigiCompiler.Tests
         // ===== 循环（S7c-1：while/do-while 形态、条件 bool、DA 规则、for 拦截）=====
         private static void TestLoops()
         {
-            TestHarness.Section("P3 Loops");
+            CompilerTestTools.Section("P3 Loops");
 
             var (unit, bodies) = BindUnit(
                 "func f(a: i32) {\n" +
@@ -23,26 +23,26 @@ namespace RigiCompiler.Tests
                 "    } while (x < a)\n" +
                 "}\n");
             CheckNoErrors("无诊断（while/do-while）", unit);
-            TestHarness.Check("while 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+            CaseAssertions.Check("while 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [x: i32], [Decl(x, i32, = Int(0,i32)); " +
                 "Loop(while, Binary(CmpLt, Local(x,i32), Param(a,i32), bool), " +
                 "[Assign(Local(x,i32), Binary(Add, Local(x,i32), Int(1,i32), i32))])])");
-            TestHarness.Check("do-while 绑定形态", BoundDescribe.Body(BodyOf(bodies, "g")),
+            CaseAssertions.Check("do-while 绑定形态", BoundDescribe.Body(BodyOf(bodies, "g")),
                 "Body(g, [x: i32], [Decl(x, i32, = Int(0,i32)); " +
                 "Loop(do-while, Binary(CmpLt, Local(x,i32), Param(a,i32), bool), " +
                 "[Assign(Local(x,i32), Binary(Add, Local(x,i32), Int(1,i32), i32))])])");
 
             var (unit2, _) = BindUnit("func f(x: i32) { while (x) { } }\n");
-            TestHarness.CheckSemanticError("while 条件非 bool", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("while 条件非 bool", unit2.Diagnostics,
                 "loop condition must be bool (got 'i32')");
 
             var (unit3, _) = BindUnit("func f(x: i32) { do { } while (x) }\n");
-            TestHarness.CheckSemanticError("do-while 条件非 bool", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("do-while 条件非 bool", unit3.Diagnostics,
                 "loop condition must be bool (got 'i32')");
 
             // stdlib 缺席（BindUnit 不带 stdlib）：范围循环先报 operator 缺失
             var (unit4, _) = BindUnit("func f() { for (i in 0 to 3) { } }\n");
-            TestHarness.CheckSemanticError("stdlib 缺席（无 EnumerateInRange operator）",
+            CaseAssertions.CheckSemanticError("stdlib 缺席（无 EnumerateInRange operator）",
                 unit4.Diagnostics, "has no EnumerateInRange operator");
 
             // DA：while 后 = before（体可能零次执行）——循环内赋值不生效
@@ -54,7 +54,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("DA：while 后仍报未赋值", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("DA：while 后仍报未赋值", unit5.Diagnostics,
                 "Use of unassigned local variable 'x'");
 
             // DA：do-while 后 = 体尾集合（体至少执行一次）
@@ -67,7 +67,7 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("DA：do-while 后视为已赋值", unit6);
-            TestHarness.Check("do-while 赋值生效形态", BoundDescribe.Body(BodyOf(bodies6, "f")),
+            CaseAssertions.Check("do-while 赋值生效形态", BoundDescribe.Body(BodyOf(bodies6, "f")),
                 "Body(f, [x: i32], [Decl(x, i32); " +
                 "Loop(do-while, Binary(CmpGt, Param(a,i32), Int(0,i32), bool), " +
                 "[Assign(Local(x,i32), Int(1,i32))]); Return(Local(x,i32))])");
@@ -77,7 +77,7 @@ namespace RigiCompiler.Tests
                 "func f(a: i32): i32 {\n" +
                 "    while (a > 0) { return 1 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("循环内 return 不保证返回（保守）", unit7.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环内 return 不保证返回（保守）", unit7.Diagnostics,
                 "must return a value on all code paths");
 
             // DA：do-while 体内 break 跳过赋值——出环点与体尾取交
@@ -90,7 +90,7 @@ namespace RigiCompiler.Tests
                 "    } while (false)\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("DA：do-while break 跳过赋值", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("DA：do-while break 跳过赋值", unit8.Diagnostics,
                 "Use of unassigned local variable 'x'");
 
             // DA：do-while 赋值后再 break——出环点已赋值
@@ -117,7 +117,7 @@ namespace RigiCompiler.Tests
                 "    } while (false)\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("DA：named break 跨层不计入内层体尾", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("DA：named break 跨层不计入内层体尾", unit10.Diagnostics,
                 "Use of unassigned local variable 'x'");
 
             // DA：finally 叠到 break 出环点
@@ -139,7 +139,7 @@ namespace RigiCompiler.Tests
         // ===== break/continue（S7c-1：标签栈解析、穿透值块、诊断）=====
         private static void TestLoopControl()
         {
-            TestHarness.Section("P3 Loop Control");
+            CompilerTestTools.Section("P3 Loop Control");
 
             var (unit, bodies) = BindUnit(
                 "func f(a: i32) {\n" +
@@ -150,7 +150,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（break/continue）", unit);
-            TestHarness.Check("无标签 break/continue 形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+            CaseAssertions.Check("无标签 break/continue 形态", BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [Loop(while, Binary(CmpGt, Param(a,i32), Int(0,i32), bool), " +
                 "[If(Binary(CmpEq, Param(a,i32), Int(5,i32), bool), [Break]); " +
                 "If(Binary(CmpEq, Param(a,i32), Int(2,i32), bool), [Continue]); " +
@@ -159,7 +159,7 @@ namespace RigiCompiler.Tests
             var loop = (BoundLoop)BodyOf(bodies, "f").Body.Statements[0];
             var breakStmt = (BoundLoopControl)((BoundIfStatement)
                 loop.Body.Statements[0]).TrueBlock.Statements[0];
-            TestHarness.CheckTrue("break 引用命中目标循环",
+            CaseAssertions.CheckTrue("break 引用命中目标循环",
                 ReferenceEquals(breakStmt.Target, loop));
 
             // named 嵌套标签：break@outer 穿透内层循环命中外层
@@ -174,7 +174,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（named 标签）", unit2);
-            TestHarness.Check("嵌套标签循环形态", BoundDescribe.Body(BodyOf(bodies2, "f")),
+            CaseAssertions.Check("嵌套标签循环形态", BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [], [Loop(while@outer, Binary(CmpGt, Param(a,i32), Int(0,i32), bool), " +
                 "[Loop(while, Binary(CmpGt, Param(a,i32), Int(1,i32), bool), " +
                 "[Break@outer; Continue]); " +
@@ -182,21 +182,21 @@ namespace RigiCompiler.Tests
             // 结构性事实：break@outer 命中外层、无标签 continue 命中内层
             var outerLoop = (BoundLoop)BodyOf(bodies2, "f").Body.Statements[0];
             var innerLoop = (BoundLoop)outerLoop.Body.Statements[0];
-            TestHarness.CheckTrue("break@outer 引用命中外层循环",
+            CaseAssertions.CheckTrue("break@outer 引用命中外层循环",
                 ReferenceEquals(((BoundLoopControl)innerLoop.Body.Statements[0]).Target, outerLoop));
-            TestHarness.CheckTrue("无标签 continue 引用命中内层循环",
+            CaseAssertions.CheckTrue("无标签 continue 引用命中内层循环",
                 ReferenceEquals(((BoundLoopControl)innerLoop.Body.Statements[1]).Target, innerLoop));
 
             var (unit3, _) = BindUnit("func f() { while (true) { break@nope } }\n");
-            TestHarness.CheckSemanticError("未定义循环标签", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("未定义循环标签", unit3.Diagnostics,
                 "Undefined loop label: 'nope'");
 
             var (unit4, _) = BindUnit("func f() { break }\n");
-            TestHarness.CheckSemanticError("循环外 break", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环外 break", unit4.Diagnostics,
                 "'break' outside of a loop");
 
             var (unit5, _) = BindUnit("func f() { continue }\n");
-            TestHarness.CheckSemanticError("循环外 continue", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环外 continue", unit5.Diagnostics,
                 "'continue' outside of a loop");
 
             // do-while 内 break
@@ -207,7 +207,7 @@ namespace RigiCompiler.Tests
                 "    } while (a > 0)\n" +
                 "}\n");
             CheckNoErrors("无诊断（do-while 内 break）", unit6);
-            TestHarness.Check("do-while 内 break 形态", BoundDescribe.Body(BodyOf(bodies6, "f")),
+            CaseAssertions.Check("do-while 内 break 形态", BoundDescribe.Body(BodyOf(bodies6, "f")),
                 "Body(f, [], [Loop(do-while, Binary(CmpGt, Param(a,i32), Int(0,i32), bool), " +
                 "[Break])])");
 
@@ -223,7 +223,7 @@ namespace RigiCompiler.Tests
                 "    return r\n" +
                 "}\n");
             CheckNoErrors("无诊断（值块内 break 穿透）", unit7);
-            TestHarness.Check("值块内 break 穿透形态", BoundDescribe.Body(BodyOf(bodies7, "f")),
+            CaseAssertions.Check("值块内 break 穿透形态", BoundDescribe.Body(BodyOf(bodies7, "f")),
                 "Body(f, [r: i32], [Decl(r, i32, = Int(0,i32)); " +
                 "Loop(while, Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[Assign(Local(r,i32), " +
@@ -236,7 +236,7 @@ namespace RigiCompiler.Tests
             var outerWhile = (BoundLoop)BodyOf(bodies7, "f").Body.Statements[1];
             var assign = (BoundAssignmentStatement)outerWhile.Body.Statements[0];
             var ifExpr = (BoundIfExpression)assign.Value;
-            TestHarness.CheckTrue("值块内 break 引用命中外层循环",
+            CaseAssertions.CheckTrue("值块内 break 引用命中外层循环",
                 ReferenceEquals(((BoundLoopControl)
                     ifExpr.TrueBranch.Block.Statements[0]).Target, outerWhile));
 
@@ -251,7 +251,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（return@ 值块目标跨循环）", unit8);
-            TestHarness.Check("return@ 跨循环绑定形态", BoundDescribe.Body(BodyOf(bodies8, "f")),
+            CaseAssertions.Check("return@ 跨循环绑定形态", BoundDescribe.Body(BodyOf(bodies8, "f")),
                 "Body(f, [], [Return(IfExpr(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "ValueBlock(_, i32, [Loop(while, Binary(CmpGt, Param(x,i32), Int(1,i32), bool), " +
                 "[ReturnValue(_, Int(1,i32))]); ReturnValue(_, Int(2,i32))]), " +
@@ -259,7 +259,7 @@ namespace RigiCompiler.Tests
             var trueBranch = ((BoundIfExpression)((BoundReturnStatement)
                 BodyOf(bodies8, "f").Body.Statements[0]).Value!).TrueBranch;
             var whileInBranch = (BoundLoop)trueBranch.Block.Statements[0];
-            TestHarness.CheckTrue("循环体内 return@ 命中外层值块",
+            CaseAssertions.CheckTrue("循环体内 return@ 命中外层值块",
                 ReferenceEquals(((BoundReturnValueStatement)
                     whileInBranch.Body.Statements[0]).Target, trueBranch));
 
@@ -271,7 +271,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("无诊断（do-while 体保证产值）", unit9);
-            TestHarness.Check("do-while 唯一产值路径", BoundDescribe.Body(BodyOf(bodies9, "g")),
+            CaseAssertions.Check("do-while 唯一产值路径", BoundDescribe.Body(BodyOf(bodies9, "g")),
                 "Body(g, [], [Return(SeqExpr([], ValueBlock(_, i32, " +
                 "[Loop(do-while, Bool(False,bool), [ReturnValue(_, Int(7,i32))])])))])");
 
@@ -285,7 +285,7 @@ namespace RigiCompiler.Tests
                 "        return@_ 0\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("循环体内 return@ 类型不一致", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环体内 return@ 类型不一致", unit11.Diagnostics,
                 "produces different types");
 
             // while 可零次执行：末语句是 while 仍不保证（保守）
@@ -295,14 +295,14 @@ namespace RigiCompiler.Tests
                 "        while (true) { return@_ 1 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("while 末语句不保证产值（保守）", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("while 末语句不保证产值（保守）", unit10.Diagnostics,
                 "must explicitly return@ a value");
         }
 
         // ===== for 双形态（S7c-2：范围循环/for-each 协议，带 stdlib）=====
         private static void TestForLoops()
         {
-            TestHarness.Section("P3 For Loops");
+            CompilerTestTools.Section("P3 For Loops");
 
             // 范围循环：EnumerateInRange operator 调用 + 协议判定
             var (unit, bodies) = BindUnitWithStdlib(
@@ -314,7 +314,7 @@ namespace RigiCompiler.Tests
                 "    return sum\n" +
                 "}\n");
             CheckNoErrors("无诊断（范围循环）", unit);
-            TestHarness.Check("范围循环绑定形态", BoundDescribe.Body(BodyOf(bodies, "main")),
+            CaseAssertions.Check("范围循环绑定形态", BoundDescribe.Body(BodyOf(bodies, "main")),
                 "Body(main, [sum: i32, i: i32], [Decl(sum, i32, = Int(0,i32)); " +
                 "For(i, InstCall(EnumerateInRange, Int(0,i32), [Int(5,i32)], IEnumerable<i32>), " +
                 "[Assign(Local(sum,i32), Binary(Add, Local(sum,i32), Local(i,i32), i32))]); " +
@@ -323,10 +323,10 @@ namespace RigiCompiler.Tests
             // 协议三方法挂好（接口方法符号引用）
             var rangeLoop = (BoundLoop)BodyOf(bodies, "main").Body.Statements[1];
             var iterable = rangeLoop.Iterable as BoundInstanceCallExpression;
-            TestHarness.CheckTrue("Iterable = EnumerateInRange operator 调用",
+            CaseAssertions.CheckTrue("Iterable = EnumerateInRange operator 调用",
                 iterable != null && iterable.Method.Kind == MethodKind.Operator
                 && iterable.Method.Name == "EnumerateInRange");
-            TestHarness.CheckTrue("循环变量 const i32",
+            CaseAssertions.CheckTrue("循环变量 const i32",
                 rangeLoop.LoopVariable != null && rangeLoop.LoopVariable.IsConst
                 && ReferenceEquals(rangeLoop.LoopVariable.Type,
                     unit.Symbols.Bootstrap.Int32));
@@ -335,7 +335,7 @@ namespace RigiCompiler.Tests
                 .Single(n => n.Name == "collections");
             var enumerableDef = collectionsNs.Types.Single(t => t.Name == "IEnumerable");
             var enumeratorDef = collectionsNs.Types.Single(t => t.Name == "IEnumerator");
-            TestHarness.CheckTrue("协议三方法符号引用（接口成员）",
+            CaseAssertions.CheckTrue("协议三方法符号引用（接口成员）",
                 ReferenceEquals(rangeLoop.IterateMethod,
                     enumerableDef.Methods.Single(m => m.Name == "iterate"))
                 && ReferenceEquals(rangeLoop.MoveNextMethod,
@@ -354,7 +354,7 @@ namespace RigiCompiler.Tests
                 "    return sum\n" +
                 "}\n");
             CheckNoErrors("无诊断（for-each）", unit2);
-            TestHarness.Check("for-each 绑定形态", BoundDescribe.Body(BodyOf(bodies2, "main")),
+            CaseAssertions.Check("for-each 绑定形态", BoundDescribe.Body(BodyOf(bodies2, "main")),
                 "Body(main, [sum: i32, r: RangeI32, x: i32], [Decl(sum, i32, = Int(0,i32)); " +
                 "Decl(r, RangeI32, = New(RangeI32, init, [Int(0,i32), Int(3,i32)])); " +
                 "For(x, Local(r,RangeI32), " +
@@ -367,7 +367,7 @@ namespace RigiCompiler.Tests
                 "    for (x in 42) { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("迭代源未实现 IEnumerable", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("迭代源未实现 IEnumerable", unit3.Diagnostics,
                 "does not implement core.collections.IEnumerable<T>");
 
             // 诊断：右操作数无法绑定到左操作数类型的 EnumerateInRange 形参
@@ -376,7 +376,7 @@ namespace RigiCompiler.Tests
                 "    for (i in 0 to \"s\") { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("右操作数不匹配 EnumerateInRange 形参",
+            CaseAssertions.CheckSemanticError("右操作数不匹配 EnumerateInRange 形参",
                 unit4.Diagnostics, "No applicable overload of 'EnumerateInRange'");
 
             // 诊断：循环变量 const 写入
@@ -387,7 +387,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("循环变量 const 写入拒绝", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环变量 const 写入拒绝", unit5.Diagnostics,
                 "Cannot assign to const 'i'");
 
             // DA：for 后 = before（体可能零次执行）
@@ -399,7 +399,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("DA：for 后仍报未赋值", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("DA：for 后仍报未赋值", unit6.Diagnostics,
                 "Use of unassigned local variable 'x'");
 
             // 泛型参数经约束：T extends i32 走 i32 的 EnumerateInRange
@@ -412,7 +412,7 @@ namespace RigiCompiler.Tests
                 "    return total\n" +
                 "}\n");
             CheckNoErrors("无诊断（T extends i32 范围循环）", unit7);
-            TestHarness.Check("T extends i32 范围循环绑定形态",
+            CaseAssertions.Check("T extends i32 范围循环绑定形态",
                 BoundDescribe.Body(BodyOf(bodies7, "sum")),
                 "Body(sum, [total: i32, i: i32], [Decl(total, i32, = Int(0,i32)); " +
                 "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +
@@ -437,7 +437,7 @@ namespace RigiCompiler.Tests
                 "    return total\n" +
                 "}\n");
             CheckNoErrors("无诊断（T extends Step 范围循环）", unit8);
-            TestHarness.Check("T extends Step 范围循环绑定形态",
+            CaseAssertions.Check("T extends Step 范围循环绑定形态",
                 BoundDescribe.Body(BodyOf(bodies8, "count")),
                 "Body(count, [total: i32, i: i32], [Decl(total, i32, = Int(0,i32)); " +
                 "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +
@@ -456,7 +456,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（自定义类型范围循环）", unit9);
             var customLoop = (BoundLoop)BodyOf(bodies9, "walk").Body.Statements[1];
             var customCall = customLoop.Iterable as BoundInstanceCallExpression;
-            TestHarness.CheckTrue("自定义类型 Iterable = 本类型 EnumerateInRange",
+            CaseAssertions.CheckTrue("自定义类型 Iterable = 本类型 EnumerateInRange",
                 customCall != null && customCall.Method.Kind == MethodKind.Operator
                 && customCall.Method.Name == "EnumerateInRange"
                 && customCall.Method.Owner is TypeSymbol owner && owner.Name == "Step");
@@ -469,7 +469,7 @@ namespace RigiCompiler.Tests
                 "pub func main(a: BadRet, b: BadRet) {\n" +
                 "    for (i in a to b) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("返回类型不是 IEnumerable", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("返回类型不是 IEnumerable", unit10.Diagnostics,
                 "does not implement core.collections.IEnumerable<T>");
 
             // 负例：无 operator
@@ -478,7 +478,7 @@ namespace RigiCompiler.Tests
                 "pub func main(a: NoOp, b: NoOp) {\n" +
                 "    for (i in a to b) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("自定义类型无 EnumerateInRange", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("自定义类型无 EnumerateInRange", unit11.Diagnostics,
                 "has no EnumerateInRange operator");
 
             // 形参为 i32：两端不同型合法（此前类型洞场景，现因形参匹配而合法）
@@ -502,7 +502,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（Step to i32，形参为 i32）", unit12);
             var stepI32Loop = (BoundLoop)BodyOf(bodies12, "walk").Body.Statements[1];
             var stepI32Call = stepI32Loop.Iterable as BoundInstanceCallExpression;
-            TestHarness.CheckTrue("Step to i32 命中本类型 EnumerateInRange",
+            CaseAssertions.CheckTrue("Step to i32 命中本类型 EnumerateInRange",
                 stepI32Call != null && stepI32Call.Method.Name == "EnumerateInRange"
                 && stepI32Call.Method.Parameters[0].Type is TypeSymbol pI32
                 && pI32.Name == "i32");
@@ -513,7 +513,7 @@ namespace RigiCompiler.Tests
                 "    for (i in a to 5) { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("Step 形参为 Step 时 b: i32 拒绝",
+            CaseAssertions.CheckSemanticError("Step 形参为 Step 时 b: i32 拒绝",
                 unit13.Diagnostics, "No applicable overload of 'EnumerateInRange'");
 
             // 重载选择：end: i32 / end: Step 各选对
@@ -546,10 +546,10 @@ namespace RigiCompiler.Tests
                 .Iterable as BoundInstanceCallExpression;
             var ovStep = ((BoundLoop)BodyOf(bodies14, "byStep").Body.Statements[1])
                 .Iterable as BoundInstanceCallExpression;
-            TestHarness.CheckTrue("step to 5 选 end: i32",
+            CaseAssertions.CheckTrue("step to 5 选 end: i32",
                 ovI32 != null && ovI32.Method.Parameters[0].Type is TypeSymbol ovP0
                 && ovP0.Name == "i32");
-            TestHarness.CheckTrue("step to otherStep 选 end: StepOv",
+            CaseAssertions.CheckTrue("step to otherStep 选 end: StepOv",
                 ovStep != null && ovStep.Method.Parameters[0].Type is TypeSymbol ovP1
                 && ovP1.Name == "StepOv");
 
@@ -558,7 +558,7 @@ namespace RigiCompiler.Tests
                 "pub func bad(a: StepOv) {\n" +
                 "    for (i in a to \"s\") { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无可匹配 EnumerateInRange 重载",
+            CaseAssertions.CheckSemanticError("无可匹配 EnumerateInRange 重载",
                 unit15.Diagnostics, "No applicable overload of 'EnumerateInRange'");
 
             // 二义：两端接口均可赋且互不更具体
@@ -579,7 +579,7 @@ namespace RigiCompiler.Tests
                 "pub func walk(a: StepAmb, b: Both) {\n" +
                 "    for (i in a to b) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("EnumerateInRange 重载二义",
+            CaseAssertions.CheckSemanticError("EnumerateInRange 重载二义",
                 unit16.Diagnostics, "Call to 'EnumerateInRange' is ambiguous");
 
             // 泛型 operator：约束满足 / 违反 / 推断失败
@@ -599,7 +599,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（泛型 EnumerateInRange 约束满足）", unit17);
             var genCall = ((BoundLoop)BodyOf(bodies17, "ok").Body.Statements[0])
                 .Iterable as BoundInstanceCallExpression;
-            TestHarness.CheckTrue("泛型 EnumerateInRange 推断 U=Good",
+            CaseAssertions.CheckTrue("泛型 EnumerateInRange 推断 U=Good",
                 genCall != null && genCall.TypeArguments.Count == 1
                 && genCall.TypeArguments[0] is TypeSymbol genU
                 && genU.Name == "Good");
@@ -608,7 +608,7 @@ namespace RigiCompiler.Tests
                 "pub func bad(a: StepGen) {\n" +
                 "    for (i in a to 5) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("泛型 EnumerateInRange 违反约束",
+            CaseAssertions.CheckSemanticError("泛型 EnumerateInRange 违反约束",
                 unit18.Diagnostics,
                 "does not satisfy the 'Extends Marker' constraint");
 
@@ -622,7 +622,7 @@ namespace RigiCompiler.Tests
                 "pub func bad(a: StepInf) {\n" +
                 "    for (i in a to 5) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("泛型 EnumerateInRange 推断失败",
+            CaseAssertions.CheckSemanticError("泛型 EnumerateInRange 推断失败",
                 unit19.Diagnostics, "cannot infer type arguments from the given arguments");
 
             // T extends B，B 的形参为基类型、b 为 T（可赋）
@@ -639,7 +639,7 @@ namespace RigiCompiler.Tests
                 "    return n\n" +
                 "}\n");
             CheckNoErrors("无诊断（T extends B，形参为 B，b: T 可赋）", unit20);
-            TestHarness.Check("T extends B 范围循环绑定形态",
+            CaseAssertions.Check("T extends B 范围循环绑定形态",
                 BoundDescribe.Body(BodyOf(bodies20, "walk")),
                 "Body(walk, [n: i32, i: i32], [Decl(n, i32, = Int(0,i32)); " +
                 "For(i, InstCall(EnumerateInRange, Param(a,T), [Param(b,T)], IEnumerable<i32>), " +

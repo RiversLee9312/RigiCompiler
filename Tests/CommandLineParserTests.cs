@@ -22,8 +22,8 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class CommandLineParserTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
+
+
 
         public static void TestRegistryIntegrity()
         {
@@ -202,7 +202,7 @@ namespace RigiCompiler.Tests
             if (condition)
             {
                 Console.WriteLine($"  [PASS] {name}");
-                passCount++;
+                CaseAssertions.Record(true);
             }
             else
             {
@@ -236,7 +236,7 @@ namespace RigiCompiler.Tests
         {
             Console.WriteLine($"  [FAIL] {name}");
             Console.WriteLine($"      => {message}");
-            failCount++;
+            CaseAssertions.Record(false);
         }
 
         // ===== CLI 端到端：输出路径不可写 =====
@@ -481,8 +481,8 @@ namespace RigiCompiler.Tests
             var oldErr = Console.Error;
             var outWriter = new StringWriter();
             var errWriter = new StringWriter();
-            Console.SetOut(outWriter);
-            Console.SetError(errWriter);
+            WorkerConsole.SetOut(outWriter);
+            WorkerConsole.SetError(errWriter);
             try
             {
                 int code = new VmCommand().Execute(result!);
@@ -490,8 +490,8 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Console.SetOut(oldOut);
-                Console.SetError(oldErr);
+                WorkerConsole.SetOut(oldOut);
+                WorkerConsole.SetError(oldErr);
             }
         }
 
@@ -506,36 +506,13 @@ namespace RigiCompiler.Tests
             CheckParseError("inventory 不接受参数", new[] { "test", "--inventory", "x" }, "参数个数");
         }
 
-        public static int RunWithArgs(IReadOnlyList<string> args)
-        {
-            if (args.Count == 0) return RunAll();
-            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("CommandLineParser"), args);
-            if (args.Count != 1 || args[0] != "PERF-001")
-            {
-                Console.Error.WriteLine("CommandLineParser 仅支持定向组 PERF-001。");
-                return 2;
-            }
-            // 纯解析组不启动编译器/native，避免性能契约检查隐式扩展为慢集成测试。
-            passCount = 0;
-            failCount = 0;
-            TestRegistryIntegrity();
-            TestCommandMatching();
-            TestSubCommandMatching();
-            TestArgCountValidation();
-            TestMutualExclusion();
-            TestStrayArgs();
-            TestInventoryOption();
-            Console.WriteLine($"=== CommandLineParser PERF-001 Complete: {passCount} passed, {failCount} failed ===");
-            return failCount;
-        }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
         internal static IReadOnlyList<string> GroupLabels { get; } =
         [nameof(TestRegistryIntegrity), nameof(TestCommandMatching), nameof(TestSubCommandMatching),
             nameof(TestArgCountValidation), nameof(TestMutualExclusion), nameof(TestStrayArgs), nameof(TestInventoryOption)];
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("CommandLineParser",
+        internal static TestSuiteData Spec { get; } = new("CommandLineParser",
         [
             (nameof(TestRegistryIntegrity), TestRegistryIntegrity),
             (nameof(TestCommandMatching), TestCommandMatching),
@@ -547,6 +524,6 @@ namespace RigiCompiler.Tests
             (nameof(TestOutputPathErrors), TestOutputPathErrors),
             (nameof(TestVmCommand), TestVmCommand),
             (nameof(TestEmitBilSlicesAndEntryPoint), TestEmitBilSlicesAndEntryPoint),
-        ], () => passCount = failCount = 0, () => (passCount, failCount));
+        ]);
     }
 }

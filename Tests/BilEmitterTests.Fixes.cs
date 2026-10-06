@@ -48,18 +48,18 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（?. 调 void 方法）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（?. 调 void 方法）", module);
             // 结构性事实：两处调用均 invoke.noret，无带结果 invoke 形态
-            TestHarness.CheckTrue("两处 ?.void 调用均发 invoke.noret",
+            CaseAssertions.CheckTrue("两处 ?.void 调用均发 invoke.noret",
                 System.Text.RegularExpressions.Regex.Matches(text,
                     System.Text.RegularExpressions.Regex.Escape(
                         "invoke.noret fn(Hit$bang()@.void)")).Count == 2
                 && !text.Contains("invoke fn(Hit$bang"), text);
             // 端到端 VM：非空调用一次，null 不调用——stdout 恰一行 bang
             var runResult = BilVm.Run(module);
-            TestHarness.CheckTrue("VM 运行无异常（?. 调 void 方法）",
+            CaseAssertions.CheckTrue("VM 运行无异常（?. 调 void 方法）",
                 runResult.Exception == null, runResult.Exception?.ToString() ?? "");
-            TestHarness.CheckTrue("VM stdout=bang 恰一次（null 不调用）",
+            CaseAssertions.CheckTrue("VM stdout=bang 恰一次（null 不调用）",
                 runResult.Stdout == "bang\n", runResult.Stdout);
-            TestHarness.CheckTrue("VM 返回值 0（?. 调 void 方法）",
+            CaseAssertions.CheckTrue("VM 返回值 0（?. 调 void 方法）",
                 runResult.ReturnValue is VmI32 n && n.Value == 0,
                 runResult.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -88,14 +88,14 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（Nullable<泛型参数>）", module);
 
             // null 资源键 = §7.5 canonical（.generic<$.generic.T> 形态）
-            TestHarness.CheckTrue("null 资源按 §7.5 泛型投影登记",
+            CaseAssertions.CheckTrue("null 资源按 §7.5 泛型投影登记",
                 module.Resources.Any(r => r is BilNullResource n
                     && n.TypeRef == ".generic<$.generic.T>"));
 
             // .vars 的 T? 局部声明 = .nullable<.generic<$.generic.T>>
             var setNullFn = module.Functions.Single(f => f.Symbol
                 == "$setNull()@.nullable<.generic<$.generic.T>>");
-            TestHarness.CheckTrue("setNull 的 .vars 含 .nullable<.generic<$.generic.T>> 条目",
+            CaseAssertions.CheckTrue("setNull 的 .vars 含 .nullable<.generic<$.generic.T>> 条目",
                 setNullFn.Vars.Any(v => v.TypeRef == ".nullable<.generic<$.generic.T>>"));
         }
 
@@ -138,7 +138,7 @@ namespace RigiCompiler.Tests
             // 打包结果临时变量的 .vars 类型 = .array<core::Pair<.string, .any>>
             // （core::Pair 非内建，canonical 投影而非 .pair 构造头别名）
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.void");
-            TestHarness.CheckTrue("具名包结果 .vars 类型 = .array<core::Pair<.string, .any>>",
+            CaseAssertions.CheckTrue("具名包结果 .vars 类型 = .array<core::Pair<.string, .any>>",
                 mainFn.Vars.Any(v => v.TypeRef == ".array<core::Pair<.string, .any>>"));
         }
 
@@ -286,10 +286,10 @@ namespace RigiCompiler.Tests
 
             // 模型断言：get.array 结果临时按 .nullable<ABI 元素> 登记（.vars）
             var sumFn = module.Functions.Single(f => f.Symbol == "$sum()@.i32");
-            TestHarness.CheckTrue("vargs get.array 结果临时类型 .nullable<.any>",
+            CaseAssertions.CheckTrue("vargs get.array 结果临时类型 .nullable<.any>",
                 sumFn.Vars.Any(v => v.TypeRef == ".nullable<.any>"));
             var fFn = module2.Functions.Single(f => f.Symbol == "$f()@.string");
-            TestHarness.CheckTrue("kwargs get.array 结果临时类型 .nullable<core::Pair<.string, .any>>",
+            CaseAssertions.CheckTrue("kwargs get.array 结果临时类型 .nullable<core::Pair<.string, .any>>",
                 fFn.Vars.Any(v => v.TypeRef == ".nullable<core::Pair<.string, .any>>"));
         }
 
@@ -302,7 +302,7 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             CheckNoErrors("全管线无诊断（ext 字段声明）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（ext 字段声明）", module);
-            TestHarness.CheckTrue("ext 字段声明带 ext 修饰符",
+            CaseAssertions.CheckTrue("ext 字段声明带 ext 修饰符",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol == "Local")
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
@@ -334,17 +334,17 @@ namespace RigiCompiler.Tests
                 .Single(d => d.Symbol == "Config#name@.string");
             var sizeField = config.Members.OfType<BilSimpleMemberDeclaration>()
                 .Single(d => d.Symbol == "Config#size@.i32");
-            TestHarness.CheckTrue("const 字段声明带 const 修饰符（紧随访问级）",
+            CaseAssertions.CheckTrue("const 字段声明带 const 修饰符（紧随访问级）",
                 nameField.Modifiers.Count == 2
                 && nameField.Modifiers[1] is BilKeywordModifier { Keyword: BilKeyword.Const });
-            TestHarness.CheckTrue("var 字段声明带 var 修饰符（紧随访问级）",
+            CaseAssertions.CheckTrue("var 字段声明带 var 修饰符（紧随访问级）",
                 sizeField.Modifiers.Count == 2
                 && sizeField.Modifiers[1] is BilKeywordModifier { Keyword: BilKeyword.Var });
 
             // 文本断言（BilWriter 输出契约）：声明行渲染含 const/var
-            TestHarness.CheckTrue("声明行渲染 .field Config#name@.string pub const",
+            CaseAssertions.CheckTrue("声明行渲染 .field Config#name@.string pub const",
                 text.Contains(".field Config#name@.string pub const"));
-            TestHarness.CheckTrue("声明行渲染 .field Config#size@.i32 pub var",
+            CaseAssertions.CheckTrue("声明行渲染 .field Config#size@.i32 pub var",
                 text.Contains(".field Config#size@.i32 pub var"));
         }
 
@@ -371,7 +371,7 @@ namespace RigiCompiler.Tests
             // 剥壳后写原 place：set.var $s（参数 s 原变量，非合成临时）
             var fn = module.Functions.Single(f => f.Symbol
                 == "$f(s:.nullable<.string>)@.nullable<.string>");
-            TestHarness.CheckTrue("复合赋值写回原 place（set.var $s）",
+            CaseAssertions.CheckTrue("复合赋值写回原 place（set.var $s）",
                 fn.Blocks.SelectMany(b => b.Instructions)
                     .OfType<SetVarInstruction>()
                     .Any(i => i.Target.Name == "s"));
@@ -403,11 +403,11 @@ namespace RigiCompiler.Tests
             var funcAAt = entryInvokes.IndexOf("$funcA()@A");
             var funcCAt = entryInvokes.IndexOf("$funcC()@.bool");
             var methodBAt = entryInvokes.IndexOf("A$methodB(x:.bool)@.i32");
-            TestHarness.CheckTrue("求值序：funcA（receiver）先于 funcC（实参前置）",
+            CaseAssertions.CheckTrue("求值序：funcA（receiver）先于 funcC（实参前置）",
                 funcAAt >= 0 && funcCAt > funcAAt);
-            TestHarness.CheckTrue("求值序：funcC 先于 methodB 调用",
+            CaseAssertions.CheckTrue("求值序：funcC 先于 methodB 调用",
                 funcCAt >= 0 && methodBAt > funcCAt);
-            TestHarness.CheckTrue("funcD 在短路 then 块内（entry 块无 funcD）",
+            CaseAssertions.CheckTrue("funcD 在短路 then 块内（entry 块无 funcD）",
                 !entryInvokes.Contains("$funcD()@.bool")
                 && mainFn.Blocks.Skip(1).Any(b => b.Instructions
                     .OfType<InvokeInstruction>()
@@ -428,9 +428,9 @@ namespace RigiCompiler.Tests
                 .OfType<InvokeInstruction>().Select(i => i.Method.Symbol).ToList();
             var leftAt = entryInvokes2.IndexOf("$left()@.bool");
             var rightAAt = entryInvokes2.IndexOf("$rightA()@.bool");
-            TestHarness.CheckTrue("求值序：左操作数 left() 先于短路前置 rightA()",
+            CaseAssertions.CheckTrue("求值序：左操作数 left() 先于短路前置 rightA()",
                 leftAt >= 0 && rightAAt > leftAt);
-            TestHarness.CheckTrue("rightB() 在短路 then 块内（entry 块无 rightB）",
+            CaseAssertions.CheckTrue("rightB() 在短路 then 块内（entry 块无 rightB）",
                 !entryInvokes2.Contains("$rightB()@.bool")
                 && mainFn2.Blocks.Skip(1).Any(b => b.Instructions
                     .OfType<InvokeInstruction>()
@@ -451,14 +451,14 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（兄弟 seq 同名局部）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（兄弟 seq 同名局部）", module);
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("撞名局部改名「名_N」（.vars 含 v 与 v_1）",
+            CaseAssertions.CheckTrue("撞名局部改名「名_N」（.vars 含 v 与 v_1）",
                 mainFn.Vars.Any(v => v.Name == "v")
                 && mainFn.Vars.Any(v => v.Name == "v_1"));
             // 端到端 VM：改名后声明/引用一致，正常运行返回 0
             var runResult = BilVm.Run(module);
-            TestHarness.CheckTrue("VM 运行无异常（兄弟 seq 同名局部）",
+            CaseAssertions.CheckTrue("VM 运行无异常（兄弟 seq 同名局部）",
                 runResult.Exception == null, runResult.Exception?.ToString() ?? "");
-            TestHarness.CheckTrue("VM 返回值 0（兄弟 seq 同名局部）",
+            CaseAssertions.CheckTrue("VM 返回值 0（兄弟 seq 同名局部）",
                 runResult.ReturnValue is VmI32 n && n.Value == 0,
                 runResult.ReturnValue?.ToStandardText() ?? "<null>");
 
@@ -487,15 +487,15 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（双 catch 同名异常变量）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（双 catch 同名异常变量）", module2);
             var mainFn2 = module2.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("双 catch 同名异常变量改名（.vars 含 e 与 e_1）",
+            CaseAssertions.CheckTrue("双 catch 同名异常变量改名（.vars 含 e 与 e_1）",
                 mainFn2.Vars.Any(v => v.Name == "e")
                 && mainFn2.Vars.Any(v => v.Name == "e_1"));
             var runResult2 = BilVm.Run(module2);
-            TestHarness.CheckTrue("VM 运行无异常（双 catch 同名异常变量）",
+            CaseAssertions.CheckTrue("VM 运行无异常（双 catch 同名异常变量）",
                 runResult2.Exception == null, runResult2.Exception?.ToString() ?? "");
-            TestHarness.CheckTrue("VM 第二 catch 绑定自身 e（stdout=B）",
+            CaseAssertions.CheckTrue("VM 第二 catch 绑定自身 e（stdout=B）",
                 runResult2.Stdout == "B\n", runResult2.Stdout);
-            TestHarness.CheckTrue("VM 返回值 0（双 catch 同名异常变量）",
+            CaseAssertions.CheckTrue("VM 返回值 0（双 catch 同名异常变量）",
                 runResult2.ReturnValue is VmI32 n2 && n2.Value == 0,
                 runResult2.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -529,7 +529,7 @@ namespace RigiCompiler.Tests
                 .OfType<TryInstruction>()
                 .Select(t => (BilCatchTableResource)t.CatchTable!)
                 .Distinct().ToList();
-            TestHarness.CheckTrue("两函数各登记独立 catch-table（跨函数不去重）",
+            CaseAssertions.CheckTrue("两函数各登记独立 catch-table（跨函数不去重）",
                 tables.Count == 2, "实际 " + tables.Count);
             foreach (var function in module.Functions.Where(
                 f => f.Symbol == "$helper()@.i32" || f.Symbol == "$main()@.i32"))
@@ -538,16 +538,16 @@ namespace RigiCompiler.Tests
                     .SelectMany(b => b.Instructions)
                     .OfType<TryInstruction>().Single();
                 var table = (BilCatchTableResource)tryInstruction.CatchTable!;
-                TestHarness.CheckTrue("catch-table 条目 block 属本 fn（" + function.Symbol + "）",
+                CaseAssertions.CheckTrue("catch-table 条目 block 属本 fn（" + function.Symbol + "）",
                     table.Entries.All(e => function.Blocks.Contains(e.Handler)));
             }
             // 端到端 VM：正常路径打印 a、helper 返回 1
             var runResult = BilVm.Run(module);
-            TestHarness.CheckTrue("VM 运行无异常（跨函数同形 try/catch）",
+            CaseAssertions.CheckTrue("VM 运行无异常（跨函数同形 try/catch）",
                 runResult.Exception == null, runResult.Exception?.ToString() ?? "");
-            TestHarness.CheckTrue("VM stdout=a（跨函数同形 try/catch）",
+            CaseAssertions.CheckTrue("VM stdout=a（跨函数同形 try/catch）",
                 runResult.Stdout == "a\n", runResult.Stdout);
-            TestHarness.CheckTrue("VM 返回值 1（helper 正常路径）",
+            CaseAssertions.CheckTrue("VM 返回值 1（helper 正常路径）",
                 runResult.ReturnValue is VmI32 n && n.Value == 1,
                 runResult.ReturnValue?.ToStandardText() ?? "<null>");
         }

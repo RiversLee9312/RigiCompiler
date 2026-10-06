@@ -1,0 +1,9 @@
+<!-- 独立测试程序集中的坏节点必须保留真实成员元数据，才能让 AST 类型审计发现错误。
+     精确保留三个 fixture 的字段、属性和私有 backing 字段；不将测试类型加入生产反射根。 -->
+<linker>
+  <assembly fullname="RigiCompiler.Tests">
+    <type fullname="RigiCompiler.Tests.ASTIntegrityValidatorTests/UnannotatedFieldNode" preserve="all" />
+    <type fullname="RigiCompiler.Tests.ASTIntegrityValidatorTests/UnannotatedPropertyNode" preserve="all" />
+    <type fullname="RigiCompiler.Tests.ASTIntegrityValidatorTests/MisannotatedNode" preserve="all" />
+  </assembly>
+</linker>

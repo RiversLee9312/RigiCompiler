@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
         // 视图可赋值、if?/?. 认 Nullable<GP>、反例不误放 =====
         private static void TestGenericNullableFixes()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 泛型参数可空（g8/g10）");
+            CompilerTestTools.Section("P3 GenericTypeFixes: 泛型参数可空（g8/g10）");
 
             // 1. g8：T → T? return（无约束泛型参数的 Nullable 装箱视图）
             var (wrap, wrapBodies) = BindUnit(
@@ -21,9 +21,9 @@ namespace RigiCompiler.Tests
             var wrapT = wrapMethod.GenericParameters.Single(p => p.Name == "T");
             var wrapReturn = (BoundReturnStatement)
                 BodyOf(wrapBodies, "wrapNull").Body.Statements[0];
-            TestHarness.CheckTrue("g8 return 值类型即 T（引用相等）",
+            CaseAssertions.CheckTrue("g8 return 值类型即 T（引用相等）",
                 ReferenceEquals(wrapReturn.Value!.Type, wrapT));
-            TestHarness.CheckTrue("g8 返回类型 Nullable<T> 内层即 T（引用相等）",
+            CaseAssertions.CheckTrue("g8 返回类型 Nullable<T> 内层即 T（引用相等）",
                 wrapMethod.ReturnType is TypeSymbol { ConstructedFrom: not null,
                     TypeArguments: { } wrapArgs }
                 && ReferenceEquals(wrapArgs[0], wrapT));
@@ -37,7 +37,7 @@ namespace RigiCompiler.Tests
                 .GenericParameters.Single(p => p.Name == "T");
             var fallbackReturn = (BoundReturnStatement)
                 BodyOf(unwrapBodies, "unwrap").Body.Statements[0];
-            TestHarness.CheckTrue("g10 if? 绑定形态与定型（Type = T）",
+            CaseAssertions.CheckTrue("g10 if? 绑定形态与定型（Type = T）",
                 fallbackReturn.Value is BoundNullFallbackExpression nullFallback
                 && ReferenceEquals(nullFallback.Type, unwrapT)
                 && nullFallback.Left.Type is TypeSymbol { ConstructedFrom: not null,
@@ -53,7 +53,7 @@ namespace RigiCompiler.Tests
                 .GenericParameters.Single(p => p.Name == "T");
             var safeReturn = (BoundReturnStatement)
                 BodyOf(safeBodies, "nameOf").Body.Statements[0];
-            TestHarness.CheckTrue("g10 ?. 绑定形态与定型（结果 String?）",
+            CaseAssertions.CheckTrue("g10 ?. 绑定形态与定型（结果 String?）",
                 safeReturn.Value is BoundSafeAccessExpression safeAccess
                 && ReferenceEquals(safeAccess.Placeholder.Type, safeT)
                 && safeAccess.Type is TypeSymbol { ConstructedFrom: not null,
@@ -68,7 +68,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("g8/g10 无诊断（unwrap\\<i32>(null, -1) 端到端）", e2e);
             var mainReturn = (BoundReturnStatement)
                 BodyOf(e2eBodies, "main").Body.Statements[0];
-            TestHarness.CheckTrue("g8/g10 端到端调用定型 i32",
+            CaseAssertions.CheckTrue("g8/g10 端到端调用定型 i32",
                 mainReturn.Value is BoundCallExpression call
                 && call.Method.Name == "unwrap"
                 && call.TypeArguments.Count == 1
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
             // 5. 反例：无约束 T → Nullable<U>（U 是另一不同型参）不误放
             var (bad, _) = BindUnit(
                 "pub func bad\\<T, U>(x: T): U? { return x }\n");
-            TestHarness.CheckSemanticError("g8 反例：无约束 T → Nullable\\<U\\> 仍报错",
+            CaseAssertions.CheckSemanticError("g8 反例：无约束 T → Nullable\\<U\\> 仍报错",
                 bad.Diagnostics, "Cannot return 'T' from function returning 'Nullable<U>'");
 
             // 6. 具体类型可空回归：i32 → i32? 装箱视图与 if? 依旧
@@ -88,7 +88,7 @@ namespace RigiCompiler.Tests
                 "    return (x if? -1)\n" +
                 "}\n");
             CheckNoErrors("g8/g10 回归：具体类型可空行为不变", concrete);
-            TestHarness.CheckTrue("g8/g10 回归：if? 定型 i32",
+            CaseAssertions.CheckTrue("g8/g10 回归：if? 定型 i32",
                 ((BoundReturnStatement)BodyOf(concreteBodies, "f").Body.Statements[1])
                 .Value is BoundNullFallbackExpression concreteFallback
                 && ReferenceEquals(concreteFallback.Type, concrete.Symbols.Bootstrap.Int32));
@@ -102,7 +102,7 @@ namespace RigiCompiler.Tests
                 BodyOf(boundBoxBodies, "wrapBound").Body.Statements[0];
             var boundBoxT = BodyOf(boundBoxBodies, "wrapBound").Method
                 .GenericParameters.Single(p => p.Name == "T");
-            TestHarness.CheckTrue("W8 return 值类型即 T",
+            CaseAssertions.CheckTrue("W8 return 值类型即 T",
                 ReferenceEquals(boundBoxReturn.Value!.Type, boundBoxT));
 
             // 8. W8：T extends U（外层 GP）→ U? 保留 U 身份，不压扁到 Any
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("W8 无诊断（T extends U → U?）", outerGp);
             var outerWrap = BodyOf(outerGpBodies, "wrap");
-            TestHarness.CheckTrue("W8 外层 GP 界装箱返回 U?",
+            CaseAssertions.CheckTrue("W8 外层 GP 界装箱返回 U?",
                 outerWrap.Method.ReturnType is TypeSymbol { ConstructedFrom: not null,
                     TypeArguments: { } outerArgs }
                 && outerArgs[0] is GenericParameterSymbol { Name: "U" }
@@ -124,7 +124,7 @@ namespace RigiCompiler.Tests
             var (badBound, _) = BindUnit(
                 "pub open class Animal { pub init() }\n" +
                 "pub func badBound\\<T extends Animal, U>(x: T): U? { return x }\n");
-            TestHarness.CheckSemanticError("W8 反例：T extends Animal → U? 仍报错",
+            CaseAssertions.CheckSemanticError("W8 反例：T extends Animal → U? 仍报错",
                 badBound.Diagnostics,
                 "Cannot return 'T' from function returning 'Nullable<U>'");
         }
@@ -133,7 +133,7 @@ namespace RigiCompiler.Tests
         // 非法；裸名访问不碰 T 的静态成员合法；BoxFactory 方法级泛型替代 =====
         private static void TestConstructedTypeStaticMembers()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 静态成员×类级泛型禁令（W2）");
+            CompilerTestTools.Section("P3 GenericTypeFixes: 静态成员×类级泛型禁令（W2）");
 
             var (wrap, _) = BindUnit(
                 "pub class Box\\<T> {\n" +
@@ -145,9 +145,9 @@ namespace RigiCompiler.Tests
                 "    const b = Box\\<i32>.wrap(8)\n" +
                 "    return b.v\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W2 静态方法签名用 T", wrap.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 静态方法签名用 T", wrap.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
-            TestHarness.CheckSemanticError("W2 Box\\<i32>.wrap 经构造类型访问", wrap.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 Box\\<i32>.wrap 经构造类型访问", wrap.Diagnostics,
                 "cannot access static member 'wrap' via constructed type 'Box<i32>'");
 
             var (zero, _) = BindUnit(
@@ -160,9 +160,9 @@ namespace RigiCompiler.Tests
                 "    Box\\<i32>.zero = 41\n" +
                 "    return Box\\<i32>.zero\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W2 静态字段类型用 T", zero.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 静态字段类型用 T", zero.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
-            TestHarness.CheckSemanticError("W2 Box\\<i32>.zero 经构造类型访问", zero.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 Box\\<i32>.zero 经构造类型访问", zero.Diagnostics,
                 "cannot access static member 'zero' via constructed type 'Box<i32>'");
 
             var (body, _) = BindUnit(
@@ -171,7 +171,7 @@ namespace RigiCompiler.Tests
                 "    pub init(_ -> v)\n" +
                 "    pub static func mention(): i32 { var x: T? = null\n        return 0 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W2 静态方法体内用 T", body.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 静态方法体内用 T", body.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
             var (nested, _) = BindUnit(
@@ -183,7 +183,7 @@ namespace RigiCompiler.Tests
                 "        return 0\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("W2 静态方法内 lambda 用 T", nested.Diagnostics,
+            CaseAssertions.CheckSemanticError("W2 静态方法内 lambda 用 T", nested.Diagnostics,
                 "static members cannot use type parameter 'T' of enclosing type 'Box'");
 
             var (countUnit, countBodies) = BindUnit(
@@ -194,7 +194,7 @@ namespace RigiCompiler.Tests
                 "}\n" +
                 "pub func main(): i32 { return Box.count() }\n");
             CheckNoErrors("W2 裸名 Box.count() 不碰 T 合法", countUnit);
-            TestHarness.CheckTrue("W2 Box.count 静态调用定型 i32",
+            CaseAssertions.CheckTrue("W2 Box.count 静态调用定型 i32",
                 ((BoundReturnStatement)BodyOf(countBodies, "main").Body.Statements[0])
                 .Value is BoundCallExpression countCall
                 && countCall.Method.Name == "count" && countCall.Method.IsStatic
@@ -207,7 +207,7 @@ namespace RigiCompiler.Tests
                 "    pub static func count(): i32 { return 0 }\n" +
                 "}\n" +
                 "pub func main(): i32 { return Box\\<i32>.count() }\n");
-            TestHarness.CheckSemanticError("W2 Box\\<i32>.count 即使不碰 T 也禁",
+            CaseAssertions.CheckSemanticError("W2 Box\\<i32>.count 即使不碰 T 也禁",
                 constructedCount.Diagnostics,
                 "cannot access static member 'count' via constructed type 'Box<i32>'");
 
@@ -229,7 +229,7 @@ namespace RigiCompiler.Tests
             var wrapCall = (BoundCallExpression)
                 ((BoundLocalDeclarationStatement)BodyOf(factoryBodies, "main").Body.Statements[0])
                 .Initializer!;
-            TestHarness.CheckTrue("W2 BoxFactory.wrap 方法实参 i32 返回 Box<i32>",
+            CaseAssertions.CheckTrue("W2 BoxFactory.wrap 方法实参 i32 返回 Box<i32>",
                 wrapCall.Method.Name == "wrap" && wrapCall.Method.IsStatic
                 && wrapCall.TypeArguments.Count == 1
                 && ReferenceEquals(wrapCall.TypeArguments[0], factory.Symbols.Bootstrap.Int32)
@@ -241,7 +241,7 @@ namespace RigiCompiler.Tests
         // ===== A7：泛型类体内 this 定型为自身具化 Box\<T\> =====
         private static void TestThisSelfConstructed()
         {
-            TestHarness.Section("P3 GenericTypeFixes: this 自身具化");
+            CompilerTestTools.Section("P3 GenericTypeFixes: this 自身具化");
 
             var (unit, bodies) = BindUnit(
                 "pub class Box\\<T> {\n" +
@@ -254,7 +254,7 @@ namespace RigiCompiler.Tests
                 "    return b.me().item\n" +
                 "}\n");
             CheckNoErrors("无诊断（this 返回 Box<T>）", unit);
-            TestHarness.CheckTrue("this 定型为 Box<T>",
+            CaseAssertions.CheckTrue("this 定型为 Box<T>",
                 BoundDescribe.Body(BodyOf(bodies, "me")).Contains("This(Box<T>)"));
 
             // 嵌套泛型 Box<Box<i32>> 上调 me
@@ -277,7 +277,7 @@ namespace RigiCompiler.Tests
                 "    pub func asBox(): Box\\<T> { return this }\n" +
                 "}\n");
             CheckNoErrors("无诊断（继承链 this 返回）", inherit);
-            TestHarness.CheckTrue("派生 this 定型为 Child<T>",
+            CaseAssertions.CheckTrue("派生 this 定型为 Child<T>",
                 BoundDescribe.Body(BodyOf(inheritBodies, "myself")).Contains("This(Child<T>)"));
 
             // 反例：返回类型与 this 具化不一致
@@ -285,14 +285,14 @@ namespace RigiCompiler.Tests
                 "pub class Box\\<T> {\n" +
                 "    pub func asOther(): Box\\<i32> { return this }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("this 不能当成无关具化返回", bad.Diagnostics,
+            CaseAssertions.CheckSemanticError("this 不能当成无关具化返回", bad.Diagnostics,
                 "Cannot return 'Box<T>' from function returning 'Box<i32>'");
         }
 
         // ===== A8：同形嵌套构造类型互赋（型参身份统一）=====
         private static void TestNestedGenericFieldIdentity()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 嵌套构造字段身份");
+            CompilerTestTools.Section("P3 GenericTypeFixes: 嵌套构造字段身份");
 
             var (unit, _) = BindUnit(
                 "pub class Node\\<T> {\n" +
@@ -337,14 +337,14 @@ namespace RigiCompiler.Tests
                 "    pub init() { head = null }\n" +
                 "}\n" +
                 "pub func bad(h: Holder\\<i32>, n: Node\\<String>?) { h.head = n }\n");
-            TestHarness.CheckSemanticError("Node<String>? 不可赋给 Node<i32>?", bad.Diagnostics,
+            CaseAssertions.CheckSemanticError("Node<String>? 不可赋给 Node<i32>?", bad.Diagnostics,
                 "Cannot assign 'Nullable<Node<String>>' to 'Nullable<Node<i32>>'");
         }
 
         // ===== C3：实例字段访问路径代入宿主实参 =====
         private static void TestGenericFieldSubstitution()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 字段访问路径代入");
+            CompilerTestTools.Section("P3 GenericTypeFixes: 字段访问路径代入");
 
             var (unit, bodies) = BindUnit(
                 "pub class Repo\\<TItem> {\n" +
@@ -355,7 +355,7 @@ namespace RigiCompiler.Tests
                 "    r.data[0] = 7\n" +
                 "}\n");
             CheckNoErrors("无诊断（Array<TItem> 字段代入 i32）", unit);
-            TestHarness.CheckTrue("字段访问定型为 Array<i32>",
+            CaseAssertions.CheckTrue("字段访问定型为 Array<i32>",
                 BoundDescribe.Body(BodyOf(bodies, "write")).Contains(
                     "InstField(data, Param(r,Repo<i32>), Array<i32>)"));
 
@@ -381,14 +381,14 @@ namespace RigiCompiler.Tests
                 "    pub var data: Array\\<TItem>\n" +
                 "}\n" +
                 "pub func bad(r: Repo\\<i32>, a: Array\\<String>) { r.data = a }\n");
-            TestHarness.CheckSemanticError("Array<String> 不可赋给 Array<i32> 字段",
+            CaseAssertions.CheckSemanticError("Array<String> 不可赋给 Array<i32> 字段",
                 bad.Diagnostics, "Cannot assign 'Array<String>' to 'Array<i32>'");
         }
 
         // ===== A3：for-in 按具化接口判定 =====
         private static void TestForEachConstructedInterface()
         {
-            TestHarness.Section("P3 GenericTypeFixes: for-in 具化协议");
+            CompilerTestTools.Section("P3 GenericTypeFixes: for-in 具化协议");
 
             var bagSrc =
                 "import core.collections.*\n" +
@@ -417,11 +417,11 @@ namespace RigiCompiler.Tests
                 "    return n\n" +
                 "}\n");
             CheckNoErrors("无诊断（Bag<i32> 直接 for-in）", unit);
-            TestHarness.CheckTrue("循环变量定型为 i32",
+            CaseAssertions.CheckTrue("循环变量定型为 i32",
                 BoundDescribe.Body(BodyOf(bodies, "main")).Contains("For(x, Local(b,Bag<i32>)"));
             var loop = BodyOf(bodies, "main").Body.Statements
                 .OfType<BoundLoop>().Single();
-            TestHarness.CheckTrue("元素类型为 i32",
+            CaseAssertions.CheckTrue("元素类型为 i32",
                 loop.LoopVariable != null
                 && ReferenceEquals(loop.LoopVariable.Type, unit.Symbols.Bootstrap.Int32));
 
@@ -447,7 +447,7 @@ namespace RigiCompiler.Tests
                 "    return n\n" +
                 "}\n");
             CheckNoErrors("无诊断（Bag<Bag<i32>> 嵌套 for-in）", nested);
-            TestHarness.CheckTrue("外层元素为 Bag<i32>",
+            CaseAssertions.CheckTrue("外层元素为 Bag<i32>",
                 BoundDescribe.Body(BodyOf(nestedBodies, "main")).Contains("For(b, Local(outer,Bag<Bag<i32>>)"));
 
             // 接口继承链：IBag<T> implements IEnumerable<T>
@@ -485,14 +485,14 @@ namespace RigiCompiler.Tests
                 "    for (x in new NotBag()) { }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("未实现 IEnumerable 仍拒绝", bad.Diagnostics,
+            CaseAssertions.CheckSemanticError("未实现 IEnumerable 仍拒绝", bad.Diagnostics,
                 "does not implement core.collections.IEnumerable<T>");
         }
 
         // ===== A1：协变类型经 init 构造后再经协变引用读取 =====
         private static void TestCovariantInitUsage()
         {
-            TestHarness.Section("P3 GenericTypeFixes: 协变 init 使用");
+            CompilerTestTools.Section("P3 GenericTypeFixes: 协变 init 使用");
 
             var (unit, _) = BindUnit(
                 "pub open class Animal { }\n" +
@@ -513,7 +513,7 @@ namespace RigiCompiler.Tests
                 "pub class Box\\<out T> {\n" +
                 "    pub func put(item: T) { }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("out T 仍不可用于普通方法参数",
+            CaseAssertions.CheckSemanticError("out T 仍不可用于普通方法参数",
                 badMethod.Diagnostics,
                 "covariant parameter 'T' cannot be used in parameter 'item' of method 'put'");
         }

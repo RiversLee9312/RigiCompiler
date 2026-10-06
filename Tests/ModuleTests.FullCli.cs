@@ -13,17 +13,17 @@ public static partial class ModuleTests
     {
         ["mode"] = NativeObjectIdentity.UsesManagedImages ? "CoreCLR" : "native-process-image",
         ["dynamicCodeSupported"] = System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported,
-        ["path"] = typeof(ModuleTests).Assembly.Location,
+        ["path"] = typeof(Frontend).Assembly.Location,
         ["processPath"] = Environment.ProcessPath,
         ["effectiveOverride"] = Environment.GetEnvironmentVariable("RIGI_TEST_RIGIC"),
         ["contentSha"] = NativeObjectIdentity.CompilerContentIdentity(),
-        ["diskSha"] = typeof(ModuleTests).Assembly.Location is { Length: > 0 } path ? ArtifactCache.HashFile(path) : null,
-        ["mvid"] = typeof(ModuleTests).Assembly.ManifestModule.ModuleVersionId.ToString()
+        ["diskSha"] = typeof(Frontend).Assembly.Location is { Length: > 0 } path ? ArtifactCache.HashFile(path) : null,
+        ["mvid"] = typeof(Frontend).Assembly.ManifestModule.ModuleVersionId.ToString()
     };
 
     private static void TestFullModuleCli()
     {
-        if (!OperatingSystem.IsLinux()) { TestHarness.RecordSkip("完整 Native CLI 产品门禁当前仅 Linux；Windows 未实测"); return; }
+        if (!OperatingSystem.IsLinux()) { CaseAssertions.RecordSkip("完整 Native CLI 产品门禁当前仅 Linux；Windows 未实测"); return; }
         var folder = InterfaceProbeFolder(); Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "worker-identity.json"), ModuleWorkerIdentity().ToJsonString());
         var root = Path.Combine(folder, "cli app with space");
@@ -38,7 +38,7 @@ public static partial class ModuleTests
             return result;
         }
         var initialized = Call("init", "module", "--init", "--root", root);
-        TestHarness.CheckTrue("正式CLI init创建可继续全流程模板", initialized.Code == 0, initialized.Err);
+        CaseAssertions.CheckTrue("正式CLI init创建可继续全流程模板", initialized.Code == 0, initialized.Err);
         Directory.CreateDirectory(Path.Combine(root, "resources"));
         File.WriteAllText(Path.Combine(root, "resources/info.txt"), "module-resource");
         const string start = "cliapp::$start(args:.array<.string>)@.i32";
@@ -53,34 +53,34 @@ public static partial class ModuleTests
             + " if ((args[0] as String) != \"\") { return 10 }\n if ((args[1] as String) != \"two words\") { return 11 }\n"
             + " core.io.Console.println(args[2] as String)\n return 37\n}\n");
         var vm = Call("vm", "module", "--run", "--root", root, "--profile", "debug", "--", "", "two words", "中文🦊");
-        TestHarness.CheckTrue("CLI debug真实VM选配置入口/argv/资源发布hook", vm.Code == 37 && vm.Out == "中文🦊\n", vm.Err);
+        CaseAssertions.CheckTrue("CLI debug真实VM选配置入口/argv/资源发布hook", vm.Code == 37 && vm.Out == "中文🦊\n", vm.Err);
         var published = Call("publish", "module", "--publish", "--root", root, "--profile", "debug");
         var product = Path.Combine(root, "product/debug/modules/cliapp/1.0.0");
         var executable = Path.Combine(product, "app");
-        TestHarness.CheckTrue("publish即使VM profile仍生成真实exe与Std archive", published.Code == 0 && File.Exists(executable)
+        CaseAssertions.CheckTrue("publish即使VM profile仍生成真实exe与Std archive", published.Code == 0 && File.Exists(executable)
             && File.Exists(Path.Combine(root, "product/debug/modules/stdlib/1.0.0/libstdlib.a")), published.Err);
         var direct = ExternalProcess.Run(executable, ["", "two words", "中文🦊"], out var stdout, out var stderr,
             environment: new Dictionary<string, string> { ["RIGI_RT_MEMTRACK"] = "1" }, closeStdin: true);
         File.WriteAllText(Path.Combine(folder, "standalone.stdout"), stdout); File.WriteAllText(Path.Combine(folder, "standalone.stderr"), stderr);
         File.WriteAllText(Path.Combine(folder, "standalone.exit"), direct.ToString());
-        TestHarness.CheckTrue("已publish standalone真实OSargv/配置入口/MEMTRACK", direct == 37 && stdout == "中文🦊\n" && stderr.Length == 0, stderr);
+        CaseAssertions.CheckTrue("已publish standalone真实OSargv/配置入口/MEMTRACK", direct == 37 && stdout == "中文🦊\n" && stderr.Length == 0, stderr);
         var native = Call("native", "module", "--run", "--root", root, "--profile", "release", "--", "", "two words", "中文🦊");
-        TestHarness.CheckTrue("CLI release读YAML native并转递真实argv/exit", native.Code == 37 && native.Out == "中文🦊\n", native.Err);
+        CaseAssertions.CheckTrue("CLI release读YAML native并转递真实argv/exit", native.Code == 37 && native.Out == "中文🦊\n", native.Err);
         var zip = Path.Combine(folder, "cli bundle.zip");
         var bundled = Call("bundle", "module", "--bundle", "--root", root, "--profile", "debug", "--output", zip);
         using (var archive = File.Exists(zip) ? ZipFile.OpenRead(zip) : null)
-            TestHarness.CheckTrue("CLI bundle先发布后包含根配置/源码/资源/真实Native产品", bundled.Code == 0 && archive != null
+            CaseAssertions.CheckTrue("CLI bundle先发布后包含根配置/源码/资源/真实Native产品", bundled.Code == 0 && archive != null
                 && archive.GetEntry("module.yaml") != null && archive.GetEntry("source/main.rg") != null
                 && archive.GetEntry("resources/info.txt") != null && archive.GetEntry("artifact/debug/product/app") != null, bundled.Err);
         var client = Path.Combine(folder, "install-client");
         var clientInit = Call("client-init", "module", "--init", "--root", client);
         var installed = Call("install", "module", "--install", zip, "--root", client);
         var target = Path.Combine(client, "dependencies/cliapp/1.0.0");
-        TestHarness.CheckTrue("CLI第五操作install真实exe/API资源及幂等", clientInit.Code == 0 && installed.Code == 0
+        CaseAssertions.CheckTrue("CLI第五操作install真实exe/API资源及幂等", clientInit.Code == 0 && installed.Code == 0
             && File.Exists(Path.Combine(target, "artifact/debug/product/app"))
             && ArtifactCache.HashFile(executable) == ArtifactCache.HashFile(Path.Combine(target, "artifact/debug/product/app"))
             && Call("install-again", "module", "--install", zip, "--root", client).Code == 0, installed.Err);
-        TestHarness.CheckTrue("缓存命中也执行after-publish且资源在hook前可见", File.ReadAllText(Path.Combine(root, "events")) == "AAAA");
+        CaseAssertions.CheckTrue("缓存命中也执行after-publish且资源在hook前可见", File.ReadAllText(Path.Combine(root, "events")) == "AAAA");
         File.WriteAllText(Path.Combine(folder, "cli-evidence.json"), new JsonObject
         { ["calls"] = results, ["exeSha"] = ArtifactCache.HashFile(executable), ["zipSha"] = ArtifactCache.HashFile(zip) }.ToJsonString());
     }

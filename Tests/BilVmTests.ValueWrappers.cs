@@ -34,7 +34,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("Method wrapper wildcard 全形状 inner", result);
             CheckI32("普通方法经 wildcard 返回 42", result, 42);
-            TestHarness.CheckTrue(".name = 完整 BIL 方法符号",
+            CaseAssertions.CheckTrue(".name = 完整 BIL 方法符号",
                 result.Stdout.Contains("name=Service$fetch(x:.i32)@.i32") == true,
                 result.Stdout);
         }
@@ -57,7 +57,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("lambda Method wrapper wildcard 全形状 inner", result);
             CheckI32("lambda 经 wildcard 返回 42", result, 42);
-            TestHarness.CheckTrue(".name = $$call 合成符号",
+            CaseAssertions.CheckTrue(".name = $$call 合成符号",
                 result.Stdout.Contains("name=..lambda..")
                 && result.Stdout.Contains("$$call(x:.i32)@.i32"),
                 result.Stdout);
@@ -96,7 +96,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("wildcard 在双 wrapper 链中间", result);
             CheckI32("双链 wildcard 透传返回 42", result, 42);
-            TestHarness.CheckTrue("wildcard 环收到正确 symbol",
+            CaseAssertions.CheckTrue("wildcard 环收到正确 symbol",
                 result.Stdout.Contains("inner:Service$ping(x:.i32)@.i32") == true,
                 result.Stdout);
         }
@@ -139,7 +139,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("WrapperA init 实参透传 + get proxy 状态持久", result);
-            TestHarness.Check("WrapperA stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("WrapperA stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("WrapperA main 返回 0", result, 0);
         }
 
@@ -180,7 +180,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("Clamped 局部 var 写夹取", result);
-            TestHarness.Check("Clamped stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Clamped stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Clamped main 返回 0", result, 0);
         }
 
@@ -222,7 +222,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("双层 Value wrapper 读序内层先/写序外层先", result);
-            TestHarness.Check("双层 Value wrapper 顺序 stdout", result.Stdout,
+            CaseAssertions.Check("双层 Value wrapper 顺序 stdout", result.Stdout,
                 "A.set\n" +
                 "B.set\n" +
                 "A.set\n" +
@@ -274,7 +274,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("String 插值 i32 与 class 实例", result);
-            TestHarness.Check("插值 stdout", result.Stdout,
+            CaseAssertions.Check("插值 stdout", result.Stdout,
                 "n=42!\n" +
                 "p=Point\n");
             CheckI32("插值 main 返回 0", result, 0);

@@ -39,7 +39,7 @@ namespace RigiCompiler.Tests
 
         private static void TestEnumCases()
         {
-            TestHarness.Section("P3 enum case（S11）");
+            CompilerTestTools.Section("P3 enum case（S11）");
             TestEnumCaseFixedForms();
             TestEnumCaseParameterizedForms();
             TestEnumCaseIsCase();
@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
                 "    const result: RequestResult = .Success\n" +
                 "}\n");
             CheckNoErrors("固定 case 变量初始化无诊断", unit);
-            TestHarness.Check("固定 case 变量初始化形态",
+            CaseAssertions.Check("固定 case 变量初始化形态",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [result: RequestResult], " +
                 "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, []))])");
@@ -70,7 +70,7 @@ namespace RigiCompiler.Tests
                 "    consume(.Success)\n" +
                 "}\n");
             CheckNoErrors("固定 case 实参无诊断", unit2);
-            TestHarness.Check("固定 case 实参形态",
+            CaseAssertions.Check("固定 case 实参形态",
                 BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [], [CallStmt(consume, [EnumCase(RequestResult.Success, [])])])");
 
@@ -80,7 +80,7 @@ namespace RigiCompiler.Tests
                 "    return .Success\n" +
                 "}\n");
             CheckNoErrors("固定 case 返回值无诊断", unit3);
-            TestHarness.Check("固定 case 返回值形态",
+            CaseAssertions.Check("固定 case 返回值形态",
                 BoundDescribe.Body(BodyOf(bodies3, "f")),
                 "Body(f, [], [Return(EnumCase(RequestResult.Success, []))])");
 
@@ -101,10 +101,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("嵌套 .Case 固定实参无诊断", unit4);
             var wrappedType = unit4.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Wrapped");
             var defaultCase = wrappedType.Cases.Single(c => c.Name == "Default");
-            TestHarness.CheckTrue("嵌套固定实参模板落定",
+            CaseAssertions.CheckTrue("嵌套固定实参模板落定",
                 defaultCase.ResolvedInit != null && defaultCase.HoleParameters is { Count: 0 });
             var levelType = unit4.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Level");
-            TestHarness.CheckTrue("零实参 case 默认零参构造落定（ResolvedInit 保持 null）",
+            CaseAssertions.CheckTrue("零实参 case 默认零参构造落定（ResolvedInit 保持 null）",
                 levelType.Cases.All(c => c.ResolvedInit == null
                     && c.HoleParameters is { Count: 0 }));
         }
@@ -118,7 +118,7 @@ namespace RigiCompiler.Tests
                 "    const failed: RequestResult = .Failed(404)\n" +
                 "}\n");
             CheckNoErrors("参数化 case 位置实参无诊断", unit);
-            TestHarness.Check("参数化 case 位置实参形态",
+            CaseAssertions.Check("参数化 case 位置实参形态",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [failed: RequestResult], " +
                 "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
@@ -129,7 +129,7 @@ namespace RigiCompiler.Tests
                 "    const failed: RequestResult = .Failed(errorCode = 404)\n" +
                 "}\n");
             CheckNoErrors("参数化 case 具名实参无诊断", unit2);
-            TestHarness.Check("参数化 case 具名实参形态",
+            CaseAssertions.Check("参数化 case 具名实参形态",
                 BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [failed: RequestResult], " +
                 "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
@@ -140,13 +140,13 @@ namespace RigiCompiler.Tests
                 "    const e: DataResult = .Error(text = \"bad\", code = 7)\n" +
                 "}\n");
             CheckNoErrors("乱序具名实参无诊断", unit3);
-            TestHarness.Check("乱序具名归位规范序（init 参数序）",
+            CaseAssertions.Check("乱序具名归位规范序（init 参数序）",
                 BoundDescribe.Body(BodyOf(bodies3, "f")),
                 "Body(f, [e: DataResult], [Decl(e, DataResult, = EnumCase(DataResult.Error, " +
                 "[Int(7,i32), Str(\"bad\",String)]))])");
             var errorCall = (BoundEnumCaseExpression)((BoundLocalDeclarationStatement)
                 BodyOf(bodies3, "f").Body.Statements[0]).Initializer!;
-            TestHarness.CheckTrue("洞签名结构事实（名/类型/索引取自 init 参数）",
+            CaseAssertions.CheckTrue("洞签名结构事实（名/类型/索引取自 init 参数）",
                 errorCall.Case.HoleParameters is { Count: 2 }
                 && errorCall.Case.HoleParameters[0].Name == "code"
                 && ReferenceEquals(errorCall.Case.HoleParameters[0].Type,
@@ -170,7 +170,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("is .Case if 条件无诊断", unit);
-            TestHarness.Check("is .Case 判别形态（不收窄——体内引用无 SmartCast）",
+            CaseAssertions.Check("is .Case 判别形态（不收窄——体内引用无 SmartCast）",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [If(IsCase(Param(result,RequestResult), RequestResult.Failed), " +
                 "[CallStmt(consume, [Param(result,RequestResult)])]); Return(Int(0,i32))])");
@@ -178,7 +178,7 @@ namespace RigiCompiler.Tests
                 ((BoundBlock)BodyOf(bodies, "f").Body).Statements[0]).Condition;
             var requestResult = unit.Symbols.GlobalNamespace.Types
                 .Single(t => t.Name == "RequestResult");
-            TestHarness.CheckTrue("is .Case 结构事实（Bool 定型 + 三态互斥 + 符号引用相等）",
+            CaseAssertions.CheckTrue("is .Case 结构事实（Bool 定型 + 三态互斥 + 符号引用相等）",
                 isCase.Kind == BoundTypeCheckKind.IsCase
                 && ReferenceEquals(isCase.Type, unit.Symbols.Bootstrap.Bool)
                 && isCase.TargetType == null && isCase.TargetValue == null
@@ -194,7 +194,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("switch pattern is .Case 无诊断", unit2);
-            TestHarness.Check("switch pattern is .Case 形态",
+            CaseAssertions.Check("switch pattern is .Case 形态",
                 BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [], [Switch(Param(result,RequestResult), " +
                 "[CaseP(IsCase(Placeholder(RequestResult), RequestResult.Success), " +
@@ -211,10 +211,10 @@ namespace RigiCompiler.Tests
             var init = enumType.Methods.Single(m => m.Kind == MethodKind.Init);
             var successCase = enumType.Cases.Single(c => c.Name == "Success");
             var failedCase = enumType.Cases.Single(c => c.Name == "Failed");
-            TestHarness.CheckTrue("固定 case 模板落定（ResolvedInit + 空洞表）",
+            CaseAssertions.CheckTrue("固定 case 模板落定（ResolvedInit + 空洞表）",
                 ReferenceEquals(successCase.ResolvedInit, init)
                 && successCase.HoleParameters is { Count: 0 });
-            TestHarness.CheckTrue("参数化 case 模板落定（ResolvedInit + 洞签名）",
+            CaseAssertions.CheckTrue("参数化 case 模板落定（ResolvedInit + 洞签名）",
                 ReferenceEquals(failedCase.ResolvedInit, init)
                 && failedCase.HoleParameters is { Count: 1 }
                 && failedCase.HoleParameters[0].Name == "errorCode"
@@ -239,7 +239,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("priv init 固定 case 合法", unit2);
             var tokenKind = unit2.Symbols.GlobalNamespace.Types
                 .Single(t => t.Name == "TokenKind");
-            TestHarness.CheckTrue("priv init 固定 case 模板落定",
+            CaseAssertions.CheckTrue("priv init 固定 case 模板落定",
                 tokenKind.Cases.All(c => c.ResolvedInit != null
                     && c.HoleParameters is { Count: 0 }));
         }
@@ -259,7 +259,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("switch 表达式分支体 .Case 无诊断", unit);
-            TestHarness.Check("switch 表达式分支体 .Case 形态",
+            CaseAssertions.Check("switch 表达式分支体 .Case 形态",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [Return(SwitchExpr(Param(result,RequestResult), " +
                 "[CaseP(IsCase(Placeholder(RequestResult), RequestResult.Success), " +
@@ -284,7 +284,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("switch 语句分支体（嵌套）.Case 无诊断", unit2);
-            TestHarness.CheckTrue("switch 语句分支体（嵌套）.Case 解析为 selector 类型",
+            CaseAssertions.CheckTrue("switch 语句分支体（嵌套）.Case 解析为 selector 类型",
                 BoundDescribe.Body(BodyOf(bodies2, "f"))
                     .Contains("EnumCase(RequestResult.Failed, [Int(2,i32)])"));
 
@@ -298,7 +298,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("异质分支不受影响（i32 selector / String 分支）", unit3);
-            TestHarness.CheckTrue("异质分支产值类型仍为 String",
+            CaseAssertions.CheckTrue("异质分支产值类型仍为 String",
                 BoundDescribe.Body(BodyOf(bodies3, "f")).Contains(", String))])"));
 
             // 负对照：非 enum selector 的分支体内 `.Case` 维持既有拒绝
@@ -309,7 +309,7 @@ namespace RigiCompiler.Tests
                 "        default -> { return 0 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("非 enum selector 分支体 .Case 仍拒绝",
+            CaseAssertions.CheckSemanticError("非 enum selector 分支体 .Case 仍拒绝",
                 e1.Diagnostics, "Cannot infer the enum type of '.Success' from context");
         }
 
@@ -323,7 +323,7 @@ namespace RigiCompiler.Tests
                 "    const result = RequestResult.Success\n" +
                 "}\n");
             CheckNoErrors("全形固定 case 无诊断", unit);
-            TestHarness.Check("全形固定 case 形态",
+            CaseAssertions.Check("全形固定 case 形态",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [result: RequestResult], " +
                 "[Decl(result, RequestResult, = EnumCase(RequestResult.Success, []))])");
@@ -334,7 +334,7 @@ namespace RigiCompiler.Tests
                 "    const failed = RequestResult.Failed(404)\n" +
                 "}\n");
             CheckNoErrors("全形参数化 case 位置实参无诊断", unit2);
-            TestHarness.Check("全形参数化 case 位置实参形态",
+            CaseAssertions.Check("全形参数化 case 位置实参形态",
                 BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [failed: RequestResult], " +
                 "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
@@ -345,7 +345,7 @@ namespace RigiCompiler.Tests
                 "    const failed = RequestResult.Failed(errorCode = 404)\n" +
                 "}\n");
             CheckNoErrors("全形参数化 case 具名实参无诊断", unit3);
-            TestHarness.Check("全形参数化 case 具名实参形态",
+            CaseAssertions.Check("全形参数化 case 具名实参形态",
                 BoundDescribe.Body(BodyOf(bodies3, "f")),
                 "Body(f, [failed: RequestResult], " +
                 "[Decl(failed, RequestResult, = EnumCase(RequestResult.Failed, [Int(404,i32)]))])");
@@ -358,7 +358,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全形 case 续链无诊断", unit4);
             var chainAccess = (BoundFieldAccessExpression)((BoundReturnStatement)
                 ((BoundBlock)BodyOf(bodies4, "f").Body).Statements[0]).Value!;
-            TestHarness.CheckTrue("全形 case 续链结构事实（receiver 是 case 构造）",
+            CaseAssertions.CheckTrue("全形 case 续链结构事实（receiver 是 case 构造）",
                 chainAccess.Field.Name == "errorCode"
                 && chainAccess.Receiver is BoundEnumCaseExpression { Case.Name: "Failed" });
 
@@ -369,7 +369,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("全形参数化 case 语句无诊断", unit5);
-            TestHarness.Check("全形参数化 case 语句形态（值丢弃）",
+            CaseAssertions.Check("全形参数化 case 语句形态（值丢弃）",
                 BoundDescribe.Body(BodyOf(bodies5, "f")),
                 "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
                 "Return(Int(0,i32))])");
@@ -381,7 +381,7 @@ namespace RigiCompiler.Tests
                 unit5.SourceFiles[0].Declarations
                     .OfType<CallableDeclarationASTNode>().Single(c => c.Name == "f")
                 .Body!.Statements[0]).Expression.Expression;
-            TestHarness.CheckTrue("全形 case 语句 Syntax = 调用 path 节点",
+            CaseAssertions.CheckTrue("全形 case 语句 Syntax = 调用 path 节点",
                 ReferenceEquals(caseStmt.Syntax, casePath));
 
             // 命名空间限定全形 case 语句（跨文件；§16.1 跨文件引用需 pub）
@@ -392,7 +392,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("命名空间限定 enum case 语句无诊断", unit6);
-            TestHarness.Check("命名空间限定 enum case 语句形态（值丢弃）",
+            CaseAssertions.Check("命名空间限定 enum case 语句形态（值丢弃）",
                 BoundDescribe.Body(BodyOf(bodies6, "f")),
                 "Body(f, [], [ExprStmt(EnumCase(RequestResult.Failed, [Int(1,i32)])); " +
                 "Return(Int(0,i32))])");
@@ -406,7 +406,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    var x = .Success\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("裸 case 上下文缺失拒绝", e1.Diagnostics,
+            CaseAssertions.CheckSemanticError("裸 case 上下文缺失拒绝", e1.Diagnostics,
                 "Cannot infer the enum type of '.Success' from context");
 
             // 期望类型非 enum struct
@@ -414,7 +414,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: i32 = .Success\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("期望类型非 enum 拒绝", e2.Diagnostics,
+            CaseAssertions.CheckSemanticError("期望类型非 enum 拒绝", e2.Diagnostics,
                 "Cannot infer the enum type of '.Success' from context");
 
             // 未知 case 名
@@ -422,7 +422,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .NoSuch\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("未知 case 名拒绝", e3.Diagnostics,
+            CaseAssertions.CheckSemanticError("未知 case 名拒绝", e3.Diagnostics,
                 "Undefined case 'NoSuch' on 'RequestResult'");
 
             // 参数化 case 裸引用
@@ -430,7 +430,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Failed\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("参数化裸引用拒绝", e4.Diagnostics,
+            CaseAssertions.CheckSemanticError("参数化裸引用拒绝", e4.Diagnostics,
                 "Case 'Failed' requires 1 argument(s)");
 
             // 洞实参缺失（洞无默认值）
@@ -438,7 +438,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Failed()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("洞实参缺失拒绝", e5.Diagnostics,
+            CaseAssertions.CheckSemanticError("洞实参缺失拒绝", e5.Diagnostics,
                 "Missing argument for hole 'errorCode'");
 
             // 洞实参过多
@@ -446,7 +446,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Failed(1, 2)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("洞实参过多拒绝", e6.Diagnostics,
+            CaseAssertions.CheckSemanticError("洞实参过多拒绝", e6.Diagnostics,
                 "Too many arguments for case 'Failed'");
 
             // 洞实参类型不符
@@ -454,7 +454,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Failed(\"oops\")\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("洞实参类型不符拒绝", e7.Diagnostics,
+            CaseAssertions.CheckSemanticError("洞实参类型不符拒绝", e7.Diagnostics,
                 "Cannot pass 'String' as 'i32'");
 
             // 洞具名不匹配
@@ -462,7 +462,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Failed(code = 1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("洞具名不匹配拒绝", e8.Diagnostics,
+            CaseAssertions.CheckSemanticError("洞具名不匹配拒绝", e8.Diagnostics,
                 "Case 'Failed' has no hole named 'code'");
 
             // 固定 case 带实参
@@ -470,7 +470,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: RequestResult = .Success(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("固定 case 带实参拒绝", e9.Diagnostics,
+            CaseAssertions.CheckSemanticError("固定 case 带实参拒绝", e9.Diagnostics,
                 "Case 'Success' takes no arguments");
 
             // 声明点：非 pub init 有洞（§12.2）
@@ -483,7 +483,7 @@ namespace RigiCompiler.Tests
                 "    Identifier(1),\n" +
                 "    Custom(code = _)\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("非 pub init 有洞拒绝（声明点）", e10.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 pub init 有洞拒绝（声明点）", e10.Diagnostics,
                 "Parameterized enum case 'Custom' requires a pub init");
 
             // 声明点：无匹配 init（实参个数不符）
@@ -494,7 +494,7 @@ namespace RigiCompiler.Tests
                 "}[\n" +
                 "    Odd(1, 2)\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("无匹配 init（个数不符）拒绝", e11.Diagnostics,
+            CaseAssertions.CheckSemanticError("无匹配 init（个数不符）拒绝", e11.Diagnostics,
                 "Enum case 'Odd' has no matching init template");
 
             // 声明点：无匹配 init（具名不匹配——对应位置参数名不符）
@@ -505,7 +505,7 @@ namespace RigiCompiler.Tests
                 "}[\n" +
                 "    Stray(other = 1)\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("无匹配 init（具名不符）拒绝", e12.Diagnostics,
+            CaseAssertions.CheckSemanticError("无匹配 init（具名不符）拒绝", e12.Diagnostics,
                 "Enum case 'Stray' has no matching init template");
 
             // 声明点：固定实参类型不符
@@ -516,7 +516,7 @@ namespace RigiCompiler.Tests
                 "}[\n" +
                 "    Bad(\"x\")\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("固定实参类型不符拒绝（声明点）", e13.Diagnostics,
+            CaseAssertions.CheckSemanticError("固定实参类型不符拒绝（声明点）", e13.Diagnostics,
                 "Enum case 'Bad' has no matching init template");
 
             // 声明点：多候选歧义（固定实参类型两可）
@@ -530,7 +530,7 @@ namespace RigiCompiler.Tests
                 "}[\n" +
                 "    Which(new Derived())\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("模板绑定歧义拒绝（声明点）", e14.Diagnostics,
+            CaseAssertions.CheckSemanticError("模板绑定歧义拒绝（声明点）", e14.Diagnostics,
                 "Enum case 'Which' matches multiple init templates");
 
             // 模板绑定失败的使用侧静默（声明点诊断已报，不二次报）
@@ -544,11 +544,11 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    var x: Broken = .Bad\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("模板失败声明点诊断", e15.Diagnostics,
+            CaseAssertions.CheckSemanticError("模板失败声明点诊断", e15.Diagnostics,
                 "Enum case 'Bad' has no matching init template");
             var errorCount = e15.Diagnostics.Diagnostics
                 .Count(d => d.Severity == DiagnosticSeverity.Error);
-            TestHarness.CheckTrue("模板失败使用侧静默（不二次报）", errorCount == 1,
+            CaseAssertions.CheckTrue("模板失败使用侧静默（不二次报）", errorCount == 1,
                 string.Join("; ", e15.Diagnostics.Diagnostics.Select(d => d.Message)));
 
             // 泛型 enum 归口（声明侧：模板绑定跳过）
@@ -559,7 +559,7 @@ namespace RigiCompiler.Tests
                 "}[\n" +
                 "    A(1)\n" +
                 "]\n");
-            TestHarness.CheckSemanticError("泛型 enum 归口（声明侧）", e16.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型 enum 归口（声明侧）", e16.Diagnostics,
                 "generic enum cases are not supported yet (S11)");
 
             // 泛型 enum 归口（使用侧：expectedType 为构造 enum 类型）
@@ -573,7 +573,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x: Box\\<i32> = .A\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("泛型 enum 归口（使用侧）", e17.Diagnostics,
+            CaseAssertions.CheckSemanticError("泛型 enum 归口（使用侧）", e17.Diagnostics,
                 "generic enum cases are not supported yet (S11)");
 
             // new 永久规则（§12.2：enum 值只能经具名 case 入口产生）
@@ -581,7 +581,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    var x = new RequestResult(-1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("new enum 永久规则", e18.Diagnostics,
+            CaseAssertions.CheckSemanticError("new enum 永久规则", e18.Diagnostics,
                 "Cannot construct enum struct 'RequestResult' directly; use its named cases");
 
             // switch 值匹配位置 enum case 非常量锁定（M49 规则不扩展）
@@ -592,7 +592,7 @@ namespace RigiCompiler.Tests
                 "        default -> { return 0 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("值匹配位置非常量锁定", e19.Diagnostics,
+            CaseAssertions.CheckSemanticError("值匹配位置非常量锁定", e19.Diagnostics,
                 "switch value-match case requires a compile-time constant");
 
             // is .Case 操作数非 enum struct
@@ -600,7 +600,7 @@ namespace RigiCompiler.Tests
                 "func f(): bool {\n" +
                 "    return (1 is .Failed)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("is .Case 操作数非 enum 拒绝", e20.Diagnostics,
+            CaseAssertions.CheckSemanticError("is .Case 操作数非 enum 拒绝", e20.Diagnostics,
                 "Left operand of 'is .Case' must be an enum struct type (got 'i32')");
 
             // is .Case 未知 case 名
@@ -608,7 +608,7 @@ namespace RigiCompiler.Tests
                 "func f(result: RequestResult): bool {\n" +
                 "    return (result is .NoSuch)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("is .Case 未知 case 拒绝", e21.Diagnostics,
+            CaseAssertions.CheckSemanticError("is .Case 未知 case 拒绝", e21.Diagnostics,
                 "Undefined case 'NoSuch' on 'RequestResult'");
 
             // 全形未知 case 名
@@ -616,7 +616,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x = RequestResult.NoSuch\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("全形未知 case 名拒绝", e22.Diagnostics,
+            CaseAssertions.CheckSemanticError("全形未知 case 名拒绝", e22.Diagnostics,
                 "Undefined case 'NoSuch' on 'RequestResult'");
 
             // 全形参数化 case 裸引用（缺洞实参）
@@ -624,7 +624,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    const x = RequestResult.Failed\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("全形参数化裸引用拒绝", e23.Diagnostics,
+            CaseAssertions.CheckSemanticError("全形参数化裸引用拒绝", e23.Diagnostics,
                 "Case 'Failed' requires 1 argument(s)");
 
             // 全形固定 case 带实参
@@ -632,7 +632,7 @@ namespace RigiCompiler.Tests
                 "func f(): i32 {\n" +
                 "    return RequestResult.Success(1)\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("全形固定 case 带实参拒绝", e24.Diagnostics,
+            CaseAssertions.CheckSemanticError("全形固定 case 带实参拒绝", e24.Diagnostics,
                 "Case 'Success' takes no arguments");
 
             // 对照：语句语境真正未定义函数仍走普通调用诊断
@@ -641,7 +641,7 @@ namespace RigiCompiler.Tests
                 "    nosuch()\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("语句语境未定义函数仍拒绝", e25.Diagnostics,
+            CaseAssertions.CheckSemanticError("语句语境未定义函数仍拒绝", e25.Diagnostics,
                 "Undefined function: 'nosuch'");
         }
     }

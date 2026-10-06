@@ -142,17 +142,12 @@ namespace RigiCompiler.Tests
             "    }\n" +
             "}\n";
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args.Count == 1 && args[0] == "COMP-003"
-                ? new[] { "label" }.Concat(Cases.Where(c => c.Label.StartsWith("TestComp003", StringComparison.Ordinal)).Select(c => c.Label)).ToArray()
-                : args);
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "Middleware", Cases, sectionTitle: "Middleware");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -254,8 +249,8 @@ namespace RigiCompiler.Tests
             var oldErr = Console.Error;
             var outWriter = new StringWriter();
             var errWriter = new StringWriter();
-            Console.SetOut(outWriter);
-            Console.SetError(errWriter);
+            WorkerConsole.SetOut(outWriter);
+            WorkerConsole.SetError(errWriter);
             try
             {
                 int code = new NativeCommand().Execute(result!);
@@ -263,8 +258,8 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Console.SetOut(oldOut);
-                Console.SetError(oldErr);
+                WorkerConsole.SetOut(oldOut);
+                WorkerConsole.SetError(oldErr);
             }
         }
     }

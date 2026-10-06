@@ -18,7 +18,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("hello", result);
-            TestHarness.Check("hello stdout", result.Stdout, "Hello, world!\n");
+            CaseAssertions.Check("hello stdout", result.Stdout, "Hello, world!\n");
             CheckI32("hello 返回值", result, 0);
         }
 
@@ -87,7 +87,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("字符串拼接", result);
-            TestHarness.Check("拼接 stdout", result.Stdout, "Hello, world!\n");
+            CaseAssertions.Check("拼接 stdout", result.Stdout, "Hello, world!\n");
             CheckI32("拼接返回值", result, 0);
         }
 

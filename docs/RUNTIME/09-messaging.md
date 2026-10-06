@@ -124,7 +124,10 @@ Task 与 Task<T> 共享原生协程资源时使用 CoroutineHandle/CoroutineCarr
 
 ## 27.10 可选压力入口与观测口径
 
-tools/Run-MqStress.ps1 提供可选压力入口，百万负载不进入 test --all。
+tools/Run-MqStress.ps1 提供可选压力入口，百万负载不进入 test --all
+兼容转发的 TUnit 默认全量；该压力运行仍需显式选择。
+CI 的 provider 分片不改变该显式选择边界，完整目录与结果证明见
+[开发指南](../../DEVELOPMENT.md)。
 脚本默认先 build，-UseExistingBuild 只用于已构建阶段。计时与 RSS 仅
 覆盖最终 exe，watchdog 管理完整进程树；非零退出或 stderr 视为失败。
 RSS 不能代替日志回收证据，应结合 live bytes/gates 和退出 MEMTRACK。

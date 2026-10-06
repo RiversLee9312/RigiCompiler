@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("call blk seq", seq);
-            TestHarness.Check("seq stdout", seq.Stdout, "a\nb\n");
+            CaseAssertions.Check("seq stdout", seq.Stdout, "a\nb\n");
         }
 
         private static void TestWhileAndDoWhile()

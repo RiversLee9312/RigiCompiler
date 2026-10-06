@@ -35,8 +35,8 @@ namespace RigiCompiler.Tests
 
                 // VM 侧：应有未捕获语言级异常，消息含关键字
                 var vm = BilVm.Run(BilReader.Read(text));
-                TestHarness.CheckTrue(label + "：VM 有异常", vm.Exception != null);
-                TestHarness.CheckTrue(label + "：VM 消息含关键字",
+                CaseAssertions.CheckTrue(label + "：VM 有异常", vm.Exception != null);
+                CaseAssertions.CheckTrue(label + "：VM 消息含关键字",
                     vm.Exception != null && vm.Exception.Message.Contains(keyword),
                     vm.Exception?.Message ?? "");
 
@@ -46,7 +46,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -59,11 +59,11 @@ namespace RigiCompiler.Tests
                     // 继承测试宿主可能无效/未知的句柄，不如统一口径；
                     // 不读 stdin 的既有用例不受影响
                     closeStdin: true);
-                TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
+                CaseAssertions.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit}");
-                TestHarness.CheckTrue(label + "：native stderr 含关键字",
+                CaseAssertions.CheckTrue(label + "：native stderr 含关键字",
                     nativeErr.Contains(nativeNeedle ?? keyword), nativeErr);
-                TestHarness.Check(label + "：stdout 一致",
+                CaseAssertions.Check(label + "：stdout 一致",
                     NormalizeNewlines(nativeOut), NormalizeNewlines(vm.Stdout));
             }
             finally
@@ -110,8 +110,8 @@ namespace RigiCompiler.Tests
                 {
                     cycle = ex;
                 }
-                TestHarness.CheckTrue(label + "：VM 抛构造环异常", cycle != null);
-                TestHarness.CheckTrue(label + "：VM 消息含循环链前缀",
+                CaseAssertions.CheckTrue(label + "：VM 抛构造环异常", cycle != null);
+                CaseAssertions.CheckTrue(label + "：VM 消息含循环链前缀",
                     cycle != null && cycle.Message.Contains("singleton 初始化循环依赖"),
                     cycle?.Message ?? "");
 
@@ -121,7 +121,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0)
                 {
@@ -134,11 +134,11 @@ namespace RigiCompiler.Tests
                     // 继承测试宿主可能无效/未知的句柄，不如统一口径；
                     // 不读 stdin 的既有用例不受影响
                     closeStdin: true);
-                TestHarness.CheckTrue(label + "：native 退出码 1", runExit == 1,
+                CaseAssertions.CheckTrue(label + "：native 退出码 1", runExit == 1,
                     $"exit={runExit} stderr={nativeErr}");
-                TestHarness.CheckTrue(label + "：native stderr 含循环链前缀",
+                CaseAssertions.CheckTrue(label + "：native stderr 含循环链前缀",
                     nativeErr.Contains("singleton 初始化循环依赖"), nativeErr);
-                TestHarness.CheckTrue(label + "：native stdout 为空（与 VM 一致）",
+                CaseAssertions.CheckTrue(label + "：native stdout 为空（与 VM 一致）",
                     NormalizeNewlines(nativeOut) == "", nativeOut);
             }
             finally

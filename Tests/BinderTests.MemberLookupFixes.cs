@@ -12,7 +12,7 @@ namespace RigiCompiler.Tests
         // ===== A2/C4：接口默认实现隐式继承，具体类上可直接调用 =====
         private static void TestInterfaceDefaultOnConcrete()
         {
-            TestHarness.Section("P3 MemberLookupFixes: 接口默认方法");
+            CompilerTestTools.Section("P3 MemberLookupFixes: 接口默认方法");
 
             var (unit, bodies) = BindUnit(
                 "pub interface INamed {\n" +
@@ -25,15 +25,15 @@ namespace RigiCompiler.Tests
                 "pub func viaClass(d: Dog): String { return d.greet() }\n" +
                 "pub func viaIface(i: INamed): String { return i.greet() }\n");
             CheckNoErrors("无诊断（具体类调默认方法）", unit);
-            TestHarness.CheckTrue("具体类接收者命中接口默认 greet",
+            CaseAssertions.CheckTrue("具体类接收者命中接口默认 greet",
                 BoundDescribe.Body(BodyOf(bodies, "viaClass")).Contains(
                     "InstCall(greet, Param(d,Dog), [], String)"));
-            TestHarness.CheckTrue("接口接收者对照仍合法",
+            CaseAssertions.CheckTrue("接口接收者对照仍合法",
                 BoundDescribe.Body(BodyOf(bodies, "viaIface")).Contains(
                     "InstCall(greet, Param(i,INamed), [], String)"));
             var named = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "INamed");
             var viaClass = (BoundReturnStatement)BodyOf(bodies, "viaClass").Body.Statements[0];
-            TestHarness.CheckTrue("具体类调用绑定接口默认方法符号",
+            CaseAssertions.CheckTrue("具体类调用绑定接口默认方法符号",
                 ReferenceEquals(((BoundInstanceCallExpression)viaClass.Value!).Method,
                     named.Methods.Single(m => m.Name == "greet")));
 
@@ -56,7 +56,7 @@ namespace RigiCompiler.Tests
                 "    pub func speak(): String { return greet() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（体内裸名默认方法）", bare);
-            TestHarness.CheckTrue("裸名 greet 补 this",
+            CaseAssertions.CheckTrue("裸名 greet 补 this",
                 BoundDescribe.Body(BodyOf(bareBodies, "speak")).Contains(
                     "InstCall(greet, This(Dog), [], String)"));
 
@@ -70,7 +70,7 @@ namespace RigiCompiler.Tests
                 "pub func useWrap(b: IntBox): i32 { return b.wrap(7) }\n" +
                 "pub func useTag(b: IntBox): String { return b.tag() }\n");
             CheckNoErrors("无诊断（泛型接口默认方法）", generic);
-            TestHarness.CheckTrue("wrap 代入 T→i32",
+            CaseAssertions.CheckTrue("wrap 代入 T→i32",
                 BoundDescribe.Body(BodyOf(genericBodies, "useWrap")).Contains(
                     "InstCall(wrap, Param(b,IntBox), [Int(7,i32)], i32)"));
 
@@ -86,7 +86,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（override 覆盖默认）", over);
             var intBox = over.Symbols.GlobalNamespace.Types.Single(t => t.Name == "IntBox");
             var overRet = (BoundReturnStatement)BodyOf(overBodies, "f").Body.Statements[0];
-            TestHarness.CheckTrue("命中类上 override 而非接口默认",
+            CaseAssertions.CheckTrue("命中类上 override 而非接口默认",
                 ReferenceEquals(((BoundInstanceCallExpression)overRet.Value!).Method,
                     intBox.Methods.Single(m => m.Name == "wrap")));
 
@@ -98,7 +98,7 @@ namespace RigiCompiler.Tests
                 "pub class Dog implements INamed {\n" +
                 "    pub override func greet(): String { return super() }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("super 不能调接口默认方法", super.Diagnostics,
+            CaseAssertions.CheckSemanticError("super 不能调接口默认方法", super.Diagnostics,
                 "direct base type has no method 'greet' for super(...)");
 
             // 反例：无体接口成员未实现仍报未实现；已实现的才能调
@@ -106,7 +106,7 @@ namespace RigiCompiler.Tests
                 "pub interface INamed { func getName(): String }\n" +
                 "pub class Dog implements INamed { }\n" +
                 "pub func f(d: Dog): String { return d.getName() }\n");
-            TestHarness.CheckSemanticError("无体接口成员必须实现", missing.Diagnostics,
+            CaseAssertions.CheckSemanticError("无体接口成员必须实现", missing.Diagnostics,
                 "does not implement abstract member 'getName'");
 
             // 反例：具体类上不存在的成员仍未定义
@@ -114,14 +114,14 @@ namespace RigiCompiler.Tests
                 "pub interface INamed { func greet(): String { return \"hi\" } }\n" +
                 "pub class Dog implements INamed { }\n" +
                 "pub func f(d: Dog): i32 { return d.missing() }\n");
-            TestHarness.CheckSemanticError("未声明成员仍未定义", undef.Diagnostics,
+            CaseAssertions.CheckSemanticError("未声明成员仍未定义", undef.Diagnostics,
                 "Undefined member 'missing' on type 'Dog'");
         }
 
         // ===== A4：赋值 LHS 接收者与读取同等收窄 =====
         private static void TestAssignmentLhsSmartCast()
         {
-            TestHarness.Section("P3 MemberLookupFixes: 赋值 LHS smart cast");
+            CompilerTestTools.Section("P3 MemberLookupFixes: 赋值 LHS smart cast");
 
             var (unit, bodies) = BindUnit(
                 "pub class Node { pub var v: i32 }\n" +
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
                 "    return t.v\n" +
                 "}\n");
             CheckNoErrors("无诊断（guard 后写字段）", unit);
-            TestHarness.CheckTrue("赋值 LHS 接收者包 SmartCast",
+            CaseAssertions.CheckTrue("赋值 LHS 接收者包 SmartCast",
                 BoundDescribe.Body(BodyOf(bodies, "f")).Contains(
                     "Assign(InstField(v, SmartCast(Param(t,Node?), Node), i32), Int(2,i32))"));
 
@@ -146,7 +146,7 @@ namespace RigiCompiler.Tests
                 "    return a.mid.leaf.v\n" +
                 "}\n");
             CheckNoErrors("无诊断（深路径赋值 LHS）", deep);
-            TestHarness.CheckTrue("深路径头接收者收窄",
+            CaseAssertions.CheckTrue("深路径头接收者收窄",
                 BoundDescribe.Body(BodyOf(deepBodies, "f")).Contains(
                     "InstField(v, InstField(leaf, InstField(mid, SmartCast(Param(a,Outer?), Outer), Mid), Leaf), i32)"));
 
@@ -161,7 +161,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("无诊断（循环内赋值 LHS）", loop);
-            TestHarness.CheckTrue("while 真边赋值接收者收窄",
+            CaseAssertions.CheckTrue("while 真边赋值接收者收窄",
                 BoundDescribe.Body(BodyOf(loopBodies, "f")).Contains(
                     "Assign(InstField(v, SmartCast(Param(t,Node?), Node), i32), Int(1,i32))"));
 
@@ -174,7 +174,7 @@ namespace RigiCompiler.Tests
                 "    return t.v\n" +
                 "}\n");
             CheckNoErrors("无诊断（复合赋值 LHS）", compound);
-            TestHarness.CheckTrue("复合赋值接收者收窄",
+            CaseAssertions.CheckTrue("复合赋值接收者收窄",
                 BoundDescribe.Body(BodyOf(compoundBodies, "f")).Contains(
                     "CompoundAssign(Add, InstField(v, SmartCast(Param(t,Node?), Node), i32)"));
 
@@ -187,7 +187,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckNoErrors("无诊断（对自身赋值）", self);
-            TestHarness.CheckTrue("对自身赋值目标不包 SmartCast",
+            CaseAssertions.CheckTrue("对自身赋值目标不包 SmartCast",
                 BoundDescribe.Body(BodyOf(selfBodies, "f")).Contains(
                     "Assign(Param(t,Node?), Null(Node?))"));
 
@@ -206,7 +206,7 @@ namespace RigiCompiler.Tests
             var (noGuard, _) = BindUnit(
                 "pub class Node { pub var v: i32 }\n" +
                 "pub func f(t: Node?) { t.v = 2 }\n");
-            TestHarness.CheckSemanticError("无收窄仍拒绝可空写", noGuard.Diagnostics,
+            CaseAssertions.CheckSemanticError("无收窄仍拒绝可空写", noGuard.Diagnostics,
                 "cannot be accessed on nullable type");
 
             // 反例：var 字段不可收窄，中间可空仍拒绝
@@ -217,14 +217,14 @@ namespace RigiCompiler.Tests
                 "    if (a.mid == null) { return }\n" +
                 "    a.mid.v = 2\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("var 字段不收窄", varField.Diagnostics,
+            CaseAssertions.CheckSemanticError("var 字段不收窄", varField.Diagnostics,
                 "cannot be accessed on nullable type");
         }
 
         // ===== C1：裸字段名在调用接收者位置先按实例成员解析 =====
         private static void TestBareFieldCallReceiver()
         {
-            TestHarness.Section("P3 MemberLookupFixes: 裸字段调用接收者");
+            CompilerTestTools.Section("P3 MemberLookupFixes: 裸字段调用接收者");
 
             var (unit, bodies) = BindUnit(
                 "pub class Counter {\n" +
@@ -236,10 +236,10 @@ namespace RigiCompiler.Tests
                 "    pub func viaThis(): i32 { return this.c.inc() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（裸字段作调用接收者）", unit);
-            TestHarness.CheckTrue("c.inc 绑实例调用",
+            CaseAssertions.CheckTrue("c.inc 绑实例调用",
                 BoundDescribe.Body(BodyOf(bodies, "run")).Contains(
                     "InstCall(inc, InstField(c, This(Holder), Counter), [], i32)"));
-            TestHarness.CheckTrue("this.c.inc 对照",
+            CaseAssertions.CheckTrue("this.c.inc 对照",
                 BoundDescribe.Body(BodyOf(bodies, "viaThis")).Contains(
                     "InstCall(inc, InstField(c, This(Holder), Counter), [], i32)"));
 
@@ -277,7 +277,7 @@ namespace RigiCompiler.Tests
                 "    pub func run(): i32 { return Counter.inc() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（同名字段优先于类型）", same);
-            TestHarness.CheckTrue("同名时走字段实例调用",
+            CaseAssertions.CheckTrue("同名时走字段实例调用",
                 BoundDescribe.Body(BodyOf(sameBodies, "run")).Contains(
                     "InstCall(inc, InstField(Counter, This(Holder), Counter), [], i32)"));
 
@@ -290,7 +290,7 @@ namespace RigiCompiler.Tests
                 "    pub func run(): i32 { return Counter.zero() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（无同名字段走类型）", typeOnly);
-            TestHarness.CheckTrue("无字段时走静态调用",
+            CaseAssertions.CheckTrue("无字段时走静态调用",
                 BoundDescribe.Body(BodyOf(typeBodies, "run")).Contains(
                     "Call(zero, [], i32)"));
 
@@ -313,7 +313,7 @@ namespace RigiCompiler.Tests
                 "    pub var c: Counter\n" +
                 "    pub static func run(): i32 { return c.inc() }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("静态上下文裸实例字段", stat.Diagnostics,
+            CaseAssertions.CheckSemanticError("静态上下文裸实例字段", stat.Diagnostics,
                 "instance field 'c' requires a receiver");
 
             // 反例：未定义字段仍按类型/名失败
@@ -321,14 +321,14 @@ namespace RigiCompiler.Tests
                 "pub class Holder {\n" +
                 "    pub func run(): i32 { return missing.inc() }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("未定义字段接收者", missing.Diagnostics,
+            CaseAssertions.CheckSemanticError("未定义字段接收者", missing.Diagnostics,
                 "Unresolved type or namespace: 'missing'");
         }
 
         // ===== O4：无限定调用 override 方法按最派生槽单候选（与 this.m() 同口径）=====
         private static void TestUnqualifiedOverrideShadowing()
         {
-            TestHarness.Section("P3 MemberLookupFixes: 无限定 override 遮蔽");
+            CompilerTestTools.Section("P3 MemberLookupFixes: 无限定 override 遮蔽");
 
             // bug O4 本体：裸名 show() 不再歧义，绑定子类 override
             var (unit, bodies) = BindUnit(
@@ -340,12 +340,12 @@ namespace RigiCompiler.Tests
                 "    pub func own(): String { return show() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（裸名调 override 方法）", unit);
-            TestHarness.CheckTrue("裸名 show 补 this",
+            CaseAssertions.CheckTrue("裸名 show 补 this",
                 BoundDescribe.Body(BodyOf(bodies, "own")).Contains(
                     "InstCall(show, This(Child), [], String)"));
             var child = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Child");
             var ownRet = (BoundReturnStatement)BodyOf(bodies, "own").Body.Statements[0];
-            TestHarness.CheckTrue("裸名 show 命中最派生槽（Child.show）",
+            CaseAssertions.CheckTrue("裸名 show 命中最派生槽（Child.show）",
                 ReferenceEquals(((BoundInstanceCallExpression)ownRet.Value!).Method,
                     child.Methods.Single(m => m.Name == "show")));
 
@@ -364,7 +364,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（多层链裸名调用）", chain);
             var cType = chain.Symbols.GlobalNamespace.Types.Single(t => t.Name == "C");
             var chainRet = (BoundReturnStatement)BodyOf(chainBodies, "own").Body.Statements[0];
-            TestHarness.CheckTrue("多层链裸名命中 C 版",
+            CaseAssertions.CheckTrue("多层链裸名命中 C 版",
                 ReferenceEquals(((BoundInstanceCallExpression)chainRet.Value!).Method,
                     cType.Methods.Single(m => m.Name == "tag")));
 
@@ -382,7 +382,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（叶层不 override）", mid);
             var bType = mid.Symbols.GlobalNamespace.Types.Single(t => t.Name == "B");
             var midRet = (BoundReturnStatement)BodyOf(midBodies, "own").Body.Statements[0];
-            TestHarness.CheckTrue("叶层不 override 时命中 B 版",
+            CaseAssertions.CheckTrue("叶层不 override 时命中 B 版",
                 ReferenceEquals(((BoundInstanceCallExpression)midRet.Value!).Method,
                     bType.Methods.Single(m => m.Name == "tag")));
 
@@ -397,7 +397,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（未 override 继承方法）", noOver);
             var baseType = noOver.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Base");
             var noOverRet = (BoundReturnStatement)BodyOf(noOverBodies, "own").Body.Statements[0];
-            TestHarness.CheckTrue("未 override 时命中基类版",
+            CaseAssertions.CheckTrue("未 override 时命中基类版",
                 ReferenceEquals(((BoundInstanceCallExpression)noOverRet.Value!).Method,
                     baseType.Methods.Single(m => m.Name == "show")));
 
@@ -413,7 +413,7 @@ namespace RigiCompiler.Tests
                 "    pub func ownArg(): String { return show(1) }\n" +
                 "}\n");
             CheckNoErrors("无诊断（基类重载共存）", ovl);
-            TestHarness.CheckTrue("带参重载仍命中基类版本",
+            CaseAssertions.CheckTrue("带参重载仍命中基类版本",
                 BoundDescribe.Body(BodyOf(ovlBodies, "ownArg")).Contains(
                     "InstCall(show, This(Child), [Int(1,i32)], String)"));
 
@@ -428,7 +428,7 @@ namespace RigiCompiler.Tests
                 "    pub func own(): i32 { return make() }\n" +
                 "}\n");
             CheckNoErrors("无诊断（基类静态裸名）", stat);
-            TestHarness.CheckTrue("基类静态方法裸名仍可命中",
+            CaseAssertions.CheckTrue("基类静态方法裸名仍可命中",
                 BoundDescribe.Body(BodyOf(statBodies, "own")).Contains("Call(make, [], i32)"));
         }
     }

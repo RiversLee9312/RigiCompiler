@@ -28,7 +28,7 @@ namespace RigiCompiler.Tests
 
         private static void TestNamedImportValueConsumption()
         {
-            TestHarness.Section("P3 Named Import Functions/Fields (S4)");
+            CompilerTestTools.Section("P3 Named Import Functions/Fields (S4)");
 
             // ===== 具名导入顶层函数：同名重载全部入池，按签名消歧 =====
             var (unit, bodies) = BindUnit(NamedImportLib,
@@ -39,11 +39,11 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（具名导入函数双形态调用）", unit);
             var geom = GeomNs(unit);
             var retA = (BoundReturnStatement)BodyOf(bodies, "a").Body.Statements[0];
-            TestHarness.CheckTrue("pickAxis(v) 命中 Vec2 重载",
+            CaseAssertions.CheckTrue("pickAxis(v) 命中 Vec2 重载",
                 ReferenceEquals(((BoundCallExpression)retA.Value!).Method,
                     geom.Methods.Single(m => m.Name == "pickAxis" && m.Parameters.Count == 1)));
             var retB = (BoundReturnStatement)BodyOf(bodies, "b").Body.Statements[0];
-            TestHarness.CheckTrue("pickAxis(1, 2) 命中 (i32, i32) 重载（重载全导入）",
+            CaseAssertions.CheckTrue("pickAxis(1, 2) 命中 (i32, i32) 重载（重载全导入）",
                 ReferenceEquals(((BoundCallExpression)retB.Value!).Method,
                     geom.Methods.Single(m => m.Name == "pickAxis" && m.Parameters.Count == 2)));
 
@@ -53,7 +53,7 @@ namespace RigiCompiler.Tests
                 "pub func read(): i32 { return axisBoost }\n");
             CheckNoErrors("无诊断（具名导入全局 const）", constUnit);
             var readRet = (BoundReturnStatement)BodyOf(constBodies, "read").Body.Statements[0];
-            TestHarness.CheckTrue("axisBoost 绑定 geom 全局字段",
+            CaseAssertions.CheckTrue("axisBoost 绑定 geom 全局字段",
                 readRet.Value is BoundFieldReferenceExpression readField
                 && ReferenceEquals(readField.Field,
                     GeomNs(constUnit).Fields.Single(f => f.Name == "axisBoost")));
@@ -65,7 +65,7 @@ namespace RigiCompiler.Tests
                 "pub func use(): String { return pickAxis() }\n");
             CheckNoErrors("无诊断（本地同名遮蔽 import）", local);
             var useRet = (BoundReturnStatement)BodyOf(localBodies, "use").Body.Statements[0];
-            TestHarness.CheckTrue("本地 pickAxis() 优先",
+            CaseAssertions.CheckTrue("本地 pickAxis() 优先",
                 ReferenceEquals(((BoundCallExpression)useRet.Value!).Method,
                     local.Symbols.GlobalNamespace.Methods.Single(m => m.Name == "pickAxis")));
 
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
                 "pub func use(): String { return pickAxis(1, 2) }\n");
             CheckNoErrors("无诊断（具名 + 通配同名）", both);
             var bothRet = (BoundReturnStatement)BodyOf(bothBodies, "use").Body.Statements[0];
-            TestHarness.CheckTrue("同名时具名 import 优先于通配",
+            CaseAssertions.CheckTrue("同名时具名 import 优先于通配",
                 ReferenceEquals(((BoundCallExpression)bothRet.Value!).Method,
                     GeomNs(both).Methods.Single(m => m.Name == "pickAxis"
                         && m.Parameters.Count == 2)));
@@ -90,7 +90,7 @@ namespace RigiCompiler.Tests
                 "import scene.geom.pickAxis\n" +
                 "import other.pickAxis\n" +
                 "pub func use(): String { return pickAxis(1, 2) }\n");
-            TestHarness.CheckSemanticError("双具名同名函数歧义", amb.Diagnostics,
+            CaseAssertions.CheckSemanticError("双具名同名函数歧义", amb.Diagnostics,
                 "Ambiguous import: 'pickAxis'");
 
             // ===== 导入不存在的函数名：P2 统一报 Unresolved import，
@@ -98,7 +98,7 @@ namespace RigiCompiler.Tests
             var (missing, _) = BindUnit(NamedImportLib,
                 "import scene.geom.missing\n" +
                 "pub func use(): i32 { return 0 }\n");
-            TestHarness.CheckSemanticError("导入不存在函数名", missing.Diagnostics,
+            CaseAssertions.CheckSemanticError("导入不存在函数名", missing.Diagnostics,
                 "Unresolved import: 'scene.geom.missing'");
         }
     }

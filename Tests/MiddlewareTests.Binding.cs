@@ -30,72 +30,72 @@ namespace RigiCompiler.Tests
             // string + 是 op 级内建 → 运行时面；别名 core::String 与 .string 同键
             var concat = ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
                 ".string", "core::String", ".string");
-            TestHarness.CheckTrue("string + → rigi_string_concat 运行时面",
+            CaseAssertions.CheckTrue("string + → rigi_string_concat 运行时面",
                 concat is RuntimeFaceBinding { FaceSymbol: RuntimeFaces.StringConcat });
 
-            TestHarness.CheckTrue("i32 + → IntAdd 指令选择",
+            CaseAssertions.CheckTrue("i32 + → IntAdd 指令选择",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
                     ".i32", ".i32", ".i32")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntAdd });
-            TestHarness.CheckTrue("u64 / → IntUDiv",
+            CaseAssertions.CheckTrue("u64 / → IntUDiv",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
                     ".u64", ".u64", ".u64")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntUDiv });
-            TestHarness.CheckTrue("i64 / → IntSDiv",
+            CaseAssertions.CheckTrue("i64 / → IntSDiv",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Div,
                     ".i64", ".i64", ".i64")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntSDiv });
-            TestHarness.CheckTrue("f64 >= → FloatCmpGe",
+            CaseAssertions.CheckTrue("f64 >= → FloatCmpGe",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpGe,
                     ".f64", ".f64", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.FloatCmpGe });
-            TestHarness.CheckTrue("bool and → LogicAnd",
+            CaseAssertions.CheckTrue("bool and → LogicAnd",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.And,
                     ".bool", ".bool", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicAnd });
-            TestHarness.CheckTrue("i32 取负 → IntNeg",
+            CaseAssertions.CheckTrue("i32 取负 → IntNeg",
                 ImplBinder.BindUnary(Bil.BilUnaryOp.Opposite,
                     ".i32", ".i32")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntNeg });
-            TestHarness.CheckTrue("bool not → LogicNot",
+            CaseAssertions.CheckTrue("bool not → LogicNot",
                 ImplBinder.BindUnary(Bil.BilUnaryOp.Not,
                     ".bool", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.LogicNot });
 
             // string 比较 → 比较面（六种比较同一面，次序判定归 Emit）
-            TestHarness.CheckTrue("string cmp.eq → StringCompareBinding",
+            CaseAssertions.CheckTrue("string cmp.eq → StringCompareBinding",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpEq,
                     ".string", "core::String", ".bool")
                     is StringCompareBinding);
-            TestHarness.CheckTrue("string cmp.lt → StringCompareBinding",
+            CaseAssertions.CheckTrue("string cmp.lt → StringCompareBinding",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpLt,
                     ".string", ".string", ".bool")
                     is StringCompareBinding);
 
             // 窄宽度整数：与 i32 同族绑定（LLVM 指令同宽两侧天然满足）
-            TestHarness.CheckTrue("i8 + → IntAdd",
+            CaseAssertions.CheckTrue("i8 + → IntAdd",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.Add,
                     ".i8", ".i8", ".i8")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntAdd });
-            TestHarness.CheckTrue("u16 >> → ShiftRightUnsigned",
+            CaseAssertions.CheckTrue("u16 >> → ShiftRightUnsigned",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.ShiftRight,
                     ".u16", ".u16", ".u16")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.ShiftRightUnsigned });
-            TestHarness.CheckTrue("i16 >> → ShiftRightSigned",
+            CaseAssertions.CheckTrue("i16 >> → ShiftRightSigned",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.ShiftRight,
                     ".i16", ".i16", ".i16")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.ShiftRightSigned });
-            TestHarness.CheckTrue("u8 < → IntCmpULt",
+            CaseAssertions.CheckTrue("u8 < → IntCmpULt",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpLt,
                     ".u8", ".u8", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntCmpULt });
 
             // char 比较按 UTF-16 码元无符号序（VM 同口径）；char 无算术/一元
-            TestHarness.CheckTrue("char == → IntCmpEq",
+            CaseAssertions.CheckTrue("char == → IntCmpEq",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpEq,
                     ".char", ".char", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntCmpEq });
-            TestHarness.CheckTrue("char < → IntCmpULt",
+            CaseAssertions.CheckTrue("char < → IntCmpULt",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpLt,
                     ".char", ".char", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.IntCmpULt });
@@ -108,7 +108,7 @@ namespace RigiCompiler.Tests
             {
                 charArith = true;
             }
-            TestHarness.CheckTrue("char 算术受控拒绝（VM 同口径）", charArith);
+            CaseAssertions.CheckTrue("char 算术受控拒绝（VM 同口径）", charArith);
             var charUnary = false;
             try
             {
@@ -118,15 +118,15 @@ namespace RigiCompiler.Tests
             {
                 charUnary = true;
             }
-            TestHarness.CheckTrue("char 一元受控拒绝（VM 同口径）", charUnary);
+            CaseAssertions.CheckTrue("char 一元受控拒绝（VM 同口径）", charUnary);
 
             // .nullable<T>：eq/ne → 胖引用恒等（null 双段零天然成立）；
             // 排序比较不适用（受控拒绝）
-            TestHarness.CheckTrue("nullable cmp.eq → RefCmpEq",
+            CaseAssertions.CheckTrue("nullable cmp.eq → RefCmpEq",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpEq,
                     ".nullable<.string>", ".nullable<.string>", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.RefCmpEq });
-            TestHarness.CheckTrue("nullable cmp.ne → RefCmpNe",
+            CaseAssertions.CheckTrue("nullable cmp.ne → RefCmpNe",
                 ImplBinder.BindBinary(Bil.BilBinaryOp.CmpNe,
                     ".nullable<.i32>", "core::Nullable<core::i32>", ".bool")
                     is PrimitiveOpBinding { Kind: PrimitiveOpKind.RefCmpNe });
@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
             {
                 nullableOrder = true;
             }
-            TestHarness.CheckTrue("nullable 排序比较受控拒绝", nullableOrder);
+            CaseAssertions.CheckTrue("nullable 排序比较受控拒绝", nullableOrder);
 
             // bool 位运算不绑定（§11.4 收紧：内建位运算仅整数族；此类
             // BIL 已过不了 Gate，此处为纵深防御断言）
@@ -159,7 +159,7 @@ namespace RigiCompiler.Tests
                     boolBitwise++;
                 }
             }
-            TestHarness.CheckTrue("bool bin.and/or/xor 受控拒绝", boolBitwise == 3);
+            CaseAssertions.CheckTrue("bool bin.and/or/xor 受控拒绝", boolBitwise == 3);
 
             // 实例方法派发细分（VM 同口径）：class → 虚调用；interface →
             // iMap 派发；init → 直调
@@ -174,19 +174,19 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 { return 0 }\n");
             classText = BilWriter.Write(classTextModule);
             var classGate = BilGate.Accept(classText, "bindclass.bil");
-            TestHarness.CheckTrue("派发用例门禁放行", classGate.IsAccepted,
+            CaseAssertions.CheckTrue("派发用例门禁放行", classGate.IsAccepted,
                 string.Join("; ", classGate.Errors));
             var classContext = new MwContext(classGate.Module!);
-            TestHarness.CheckTrue("class 实例方法 → VirtualCallBinding",
+            CaseAssertions.CheckTrue("class 实例方法 → VirtualCallBinding",
                 ImplBinder.BindCall(classContext.Symbols.FindMember("Base$who()@.i32")!)
                     is VirtualCallBinding);
-            TestHarness.CheckTrue("override 方法 → VirtualCallBinding",
+            CaseAssertions.CheckTrue("override 方法 → VirtualCallBinding",
                 ImplBinder.BindCall(classContext.Symbols.FindMember("Derived$who()@.i32")!)
                     is VirtualCallBinding);
-            TestHarness.CheckTrue("interface 方法 → InterfaceCallBinding",
+            CaseAssertions.CheckTrue("interface 方法 → InterfaceCallBinding",
                 ImplBinder.BindCall(classContext.Symbols.FindMember("Named$name()@.string")!)
                     is InterfaceCallBinding);
-            TestHarness.CheckTrue("init → DirectCallBinding",
+            CaseAssertions.CheckTrue("init → DirectCallBinding",
                 ImplBinder.BindCall(classContext.Symbols.FindMember("Derived$init()@.void")!)
                     is DirectCallBinding);
 
@@ -201,29 +201,29 @@ namespace RigiCompiler.Tests
             {
                 unsupported = true;
             }
-            TestHarness.CheckTrue("string + i32 受控拒绝", unsupported);
+            CaseAssertions.CheckTrue("string + i32 受控拒绝", unsupported);
 
             // 调用绑定：native 声明 → NativeDirectBinding；本地 fn → DirectCallBinding
             var gate = BilGate.Accept(HelloConcatBil, "bind.bil");
             var context = new MwContext(gate.Module!);
             var nativePrint = context.Symbols.FindMember(
                 "core.io::Console$.static.print(value:.string)@.void");
-            TestHarness.CheckTrue("native print → NativeDirectBinding(rigi_rt, print)",
+            CaseAssertions.CheckTrue("native print → NativeDirectBinding(rigi_rt, print)",
                 ImplBinder.BindCall(nativePrint!) is NativeDirectBinding
                 { Library: "rigi_rt", Symbol: "print" });
             var main = context.Symbols.FindMember("$main()@.i32");
-            TestHarness.CheckTrue("本地 fn → DirectCallBinding",
+            CaseAssertions.CheckTrue("本地 fn → DirectCallBinding",
                 ImplBinder.BindCall(main!) is DirectCallBinding);
 
             // canonical 签名解析（native 声明无 fn 体，签名从符号文本解析）
             var signature = CanonicalSignature.Parse(
                 "core.io::Console$.static.print(value:.string)@.void");
-            TestHarness.CheckTrue("签名解析：参数 名:类型",
+            CaseAssertions.CheckTrue("签名解析：参数 名:类型",
                 signature.Parameters.Count == 1 && signature.Parameters[0].Name == "value"
                 && signature.Parameters[0].TypeRef == ".string");
-            TestHarness.CheckTrue("签名解析：返回类型", signature.ReturnTypeRef == ".void");
+            CaseAssertions.CheckTrue("签名解析：返回类型", signature.ReturnTypeRef == ".void");
             var nested = CanonicalSignature.Parse("f(m:.map<.string, .i64>, x:.i32)@.void");
-            TestHarness.CheckTrue("签名解析：嵌套泛型逗号不分割",
+            CaseAssertions.CheckTrue("签名解析：嵌套泛型逗号不分割",
                 nested.Parameters.Count == 2
                 && nested.Parameters[0].TypeRef == ".map<.string, .i64>");
         }

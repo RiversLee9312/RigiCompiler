@@ -31,7 +31,7 @@ namespace RigiCompiler.Tests
                 "    return f(41)\n" +
                 "}\n");
             CheckOk("lambda Method wrapper 环绕", surround);
-            TestHarness.Check("lambda 环绕 stdout", surround.Stdout,
+            CaseAssertions.Check("lambda 环绕 stdout", surround.Stdout,
                 "before\n" +
                 "after\n");
             CheckI32("lambda 经 wrapper 返回 43", surround, 43);
@@ -92,7 +92,7 @@ namespace RigiCompiler.Tests
                 "    return f(41)\n" +
                 "}\n");
             CheckOk("lambda 双 Method wrapper", doubleLayer);
-            TestHarness.Check("lambda 双 wrapper stdout", doubleLayer.Stdout,
+            CaseAssertions.Check("lambda 双 wrapper stdout", doubleLayer.Stdout,
                 "A\n" +
                 "B\n");
             CheckI32("lambda 双 wrapper 返回 42", doubleLayer, 42);
@@ -113,7 +113,7 @@ namespace RigiCompiler.Tests
                 "    return f(41)\n" +
                 "}\n");
             CheckOk("lambda Method wrapper init 实参透传", initArg);
-            TestHarness.Check("init 实参 stdout", initArg.Stdout, "tag=hi\n");
+            CaseAssertions.Check("init 实参 stdout", initArg.Stdout, "tag=hi\n");
             CheckI32("init 实参透传后返回 42", initArg, 42);
         }
 

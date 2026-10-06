@@ -17,7 +17,7 @@ namespace RigiCompiler.Tests
 
         public static void TestContent()
         {
-            TestHarness.Section("Multiline Content");
+            CompilerTestTools.Section("Multiline Content");
 
             // 基本：无缩进
             ExpectString("\"\"\"\nhello\n\"\"\"", "hello");
@@ -42,14 +42,14 @@ namespace RigiCompiler.Tests
             // 行尾归一：\r\n 内容换行恒为 \n
             ExpectString("\"\"\"\r\na\r\nb\r\n\"\"\"", "a\nb");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 错误路径 =====
 
         public static void TestErrors()
         {
-            TestHarness.Section("Multiline Errors");
+            CompilerTestTools.Section("Multiline Errors");
 
             // 开界 """ 同行直接写内容
             ExpectError("\"\"\"hello\n\"\"\"", "must begin with a newline");
@@ -65,14 +65,14 @@ namespace RigiCompiler.Tests
             ExpectError("\"\"\"", "Unterminated multi-line string literal");
             ExpectError("\"\"\"\nabc\n", "Unterminated multi-line string literal");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 引号分流回归（"" 与单行串不受影响）=====
 
         public static void TestQuoteRegression()
         {
-            TestHarness.Section("Quote Dispatch Regression");
+            CompilerTestTools.Section("Quote Dispatch Regression");
 
             // 空字符串 ""：内容与 token 序列
             ExpectString("\"\"", "");
@@ -90,41 +90,41 @@ namespace RigiCompiler.Tests
             ExpectTokens("\"\"\"\nhi\n\"\"\" x",
                 new[] { typeof(StringToken), typeof(WordToken), typeof(EndOfFileToken) });
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. token span =====
 
         public static void TestSpans()
         {
-            TestHarness.Section("Multiline Spans");
+            CompilerTestTools.Section("Multiline Spans");
 
             // 多行 token 覆盖开界 """ 到闭界 """（左闭右开）
             var str = (StringToken)new Lexer().Tokenize("\"\"\"\nhi\n\"\"\"")[0];
-            TestHarness.Check("多行 span Start", Pos(str.CharRange.Start), "1:1");
-            TestHarness.Check("多行 span End", Pos(str.CharRange.End), "3:4");
+            CaseAssertions.Check("多行 span Start", Pos(str.CharRange.Start), "1:1");
+            CaseAssertions.Check("多行 span End", Pos(str.CharRange.End), "3:4");
             // 空串 "" 占两列
             var empty = (StringToken)new Lexer().Tokenize("\"\"")[0];
-            TestHarness.Check("空串 span Start", Pos(empty.CharRange.Start), "1:1");
-            TestHarness.Check("空串 span End", Pos(empty.CharRange.End), "1:3");
+            CaseAssertions.Check("空串 span Start", Pos(empty.CharRange.Start), "1:1");
+            CaseAssertions.Check("空串 span End", Pos(empty.CharRange.End), "1:3");
 
             // 插值首段 span 修正（在 PushToken 之后以 token 头为基准）：
             // 开界 """ 与强制换行不属于段内容——Start 为开界行下一行行首（2:1），
             // End 回收引导的 $（"ab " 占 2:1–2:3，End 排他指向 $ 的 2:4）
             var interpTokens = new Lexer().Tokenize("\"\"\"\nab ${x}\n\"\"\"");
             var firstSeg = (StringToken)interpTokens[0];
-            TestHarness.Check("多行插值首段内容", firstSeg.Content, "ab ");
-            TestHarness.Check("多行插值首段 span Start", Pos(firstSeg.CharRange.Start), "2:1");
-            TestHarness.Check("多行插值首段 span End", Pos(firstSeg.CharRange.End), "2:4");
+            CaseAssertions.Check("多行插值首段内容", firstSeg.Content, "ab ");
+            CaseAssertions.Check("多行插值首段 span Start", Pos(firstSeg.CharRange.Start), "2:1");
+            CaseAssertions.Check("多行插值首段 span End", Pos(firstSeg.CharRange.End), "2:4");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 插值标记（词法期判定，\$ 转义不算）=====
 
         public static void TestInterpolationFlag()
         {
-            TestHarness.Section("Interpolation Flag");
+            CompilerTestTools.Section("Interpolation Flag");
 
             // 单行
             ExpectInterp("\"${x}\"", true);
@@ -137,14 +137,14 @@ namespace RigiCompiler.Tests
             // ${ 必须同行相邻（行间有 \n 分隔）
             ExpectInterp("\"\"\"\na$\n{b}\n\"\"\"", false);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. Parser AST 级 =====
 
         public static void TestAst()
         {
-            TestHarness.Section("Multiline AST");
+            CompilerTestTools.Section("Multiline AST");
 
             TestLit("\"\"\"\nhello\n\"\"\"", "Str(\"hello\")");
             TestLit("\"\"\"\n    a\n\n    b\n    \"\"\"", "Str(\"a\n\nb\")");
@@ -169,16 +169,16 @@ namespace RigiCompiler.Tests
                 "StrInterp(Path(items, [.map(Lambda([i: i32]): i32 -> Group(Binary(Path(i, []) + Int(1,I32))))]))");
 
             // 结构断言（快照不作为唯一验证方式，AGENTS §5）
-            var node = TestHarness.ParseFirstDecl("\"\"\"\nhi\n\"\"\"");
-            TestHarness.CheckTrue("顶层字面量以 LiteralExpression 包装", node is LiteralExpressionASTNode);
+            var node = CompilerTestTools.ParseFirstDecl("\"\"\"\nhi\n\"\"\"");
+            CaseAssertions.CheckTrue("顶层字面量以 LiteralExpression 包装", node is LiteralExpressionASTNode);
             var lit = (LiteralExpressionASTNode)node;
-            TestHarness.CheckTrue("Literal 是 StringLiteralASTNode", lit.Literal is StringLiteralASTNode);
+            CaseAssertions.CheckTrue("Literal 是 StringLiteralASTNode", lit.Literal is StringLiteralASTNode);
             var s = (StringLiteralASTNode)lit.Literal;
-            TestHarness.CheckTrue("无插值标记", !s.HasInterpolation);
-            TestHarness.CheckTrue("字面量的 Parent 是包装节点", ReferenceEquals(s.Parent, lit));
-            TestHarness.CheckTrue("span 非空", lit.Span != null);
+            CaseAssertions.CheckTrue("无插值标记", !s.HasInterpolation);
+            CaseAssertions.CheckTrue("字面量的 Parent 是包装节点", ReferenceEquals(s.Parent, lit));
+            CaseAssertions.CheckTrue("span 非空", lit.Span != null);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助 =====
@@ -191,17 +191,17 @@ namespace RigiCompiler.Tests
                 var tokens = new Lexer().Tokenize(code);
                 if (tokens.Count == 2 && tokens[0] is StringToken str && tokens[1] is EndOfFileToken)
                 {
-                    TestHarness.Check($"lex {Describe(code)}", str.Content, expectedContent);
+                    CaseAssertions.Check($"lex {Describe(code)}", str.Content, expectedContent);
                 }
                 else
                 {
-                    TestHarness.CheckTrue($"lex {Describe(code)} => token 流不是单字符串", false,
+                    CaseAssertions.CheckTrue($"lex {Describe(code)} => token 流不是单字符串", false,
                         string.Join(" ", tokens.Select(t => t.ToString())));
                 }
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"lex {Describe(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"lex {Describe(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -211,13 +211,13 @@ namespace RigiCompiler.Tests
             {
                 var tokens = new Lexer().Tokenize(code);
                 var actual = tokens.Select(t => t.GetType()).ToArray();
-                TestHarness.CheckTrue($"tok {Describe(code)}",
+                CaseAssertions.CheckTrue($"tok {Describe(code)}",
                     actual.SequenceEqual(expectedTypes),
                     string.Join(" ", actual.Select(t => t.Name)));
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"tok {Describe(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"tok {Describe(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -229,18 +229,18 @@ namespace RigiCompiler.Tests
             {
                 var tokens = new Lexer().Tokenize(code);
                 var hasFrame = tokens.Any(t => t is InterpolationStartToken);
-                TestHarness.CheckTrue($"interp {Describe(code)}", hasFrame == expected,
+                CaseAssertions.CheckTrue($"interp {Describe(code)}", hasFrame == expected,
                     $"InterpolationStart={(hasFrame ? "有" : "无")}；流={string.Join(" ", tokens.Select(t => t.ToString()))}");
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"interp {Describe(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"interp {Describe(code)} => 意外异常", false, ex.Message);
             }
         }
 
         private static void ExpectError(string code, string messagePart)
         {
-            TestHarness.CheckParseError($"err {Describe(code)}",
+            CaseAssertions.CheckParseError($"err {Describe(code)}",
                 () => new Lexer().Tokenize(code), messagePart);
         }
 
@@ -249,12 +249,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var node = TestHarness.ParseFirstDecl(code);
-                TestHarness.Check($"ast {Describe(code)}", AstDescribe.Expr(node), expectedDesc);
+                var node = CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check($"ast {Describe(code)}", AstDescribe.Expr(node), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"ast {Describe(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"ast {Describe(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -263,9 +263,8 @@ namespace RigiCompiler.Tests
         private static string Describe(string code) =>
             code.Replace("\r", "\\r").Replace("\n", "\\n");
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("MultilineString",
+        internal static TestSuiteData Spec { get; } = new("MultilineString",
         [
             (nameof(TestContent), TestContent),
             (nameof(TestErrors), TestErrors),

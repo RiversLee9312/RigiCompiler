@@ -30,25 +30,12 @@ namespace RigiCompiler.Tests
             NameFilter,
         }
 
-        // 完整文件流等慢例仅手动按名执行；显式环境变量可并入默认跑。
-        private static bool SlowGateEnabled =>
-            string.Equals(Environment.GetEnvironmentVariable("RIGI_NATIVE_E2E_SLOW"),
-                "1", StringComparison.Ordinal);
-
-        private static (string Label, Action Run)[] DefaultCases =>
-            SlowGateEnabled ? Cases.Concat(SlowCases).ToArray() : Cases;
-
-        public static int RunAll()
-        {
-            return TrySkipEntireSuite() ?? ParallelSuiteRunner.RunAll(Spec);
-        }
-
-        // suite-args 选择语义（纯函数，供解析测试与 RunWithArgs 共用）：
+        // suite-args 选择语义（纯函数，仅保留兼容输入的纯解析契约）：
         //   list                    —— 列出索引+Label；
         //   首参为整数              —— 数字 from/to 区间（原语义原样转发，
         //                              含不完整区间的用法报错）；
         //   其余非空参数序列        —— 按 Label 子串过滤；
-        //   空参数                  —— Range 转发（由 runner 打印用法并报
+        //   空参数                  —— Range 转发（由兼容入口打印用法并报
         //                              非 0，与历史行为一致）。
         internal static (NativeE2eRunKind Kind, int From, int To,
             IReadOnlyList<string> Filters) ParseRunArgs(IReadOnlyList<string> args)
@@ -59,7 +46,7 @@ namespace RigiCompiler.Tests
             }
             if (args.Count == 0)
             {
-                // 空参数保持历史行为：交回 runner 打印用法并报非 0。
+                // 空参数保持历史行为：交回兼容入口打印用法并报非 0。
                 return (NativeE2eRunKind.Range, 0, 0, Array.Empty<string>());
             }
             if (args.Count > 0 && int.TryParse(args[0], out var from))
@@ -70,85 +57,14 @@ namespace RigiCompiler.Tests
             return (NativeE2eRunKind.NameFilter, 0, 0, args);
         }
 
-        public static int RunWithArgs(IReadOnlyList<string> args)
-        {
-            // `list` 优先于工具链跳过判定：无 clang 的环境同样要能列出
-            // 真实索引与标签（定位/验收的基准面）。
-            var parsed = ParseRunArgs(args);
-            if (parsed.Kind == NativeE2eRunKind.List)
-            {
-                var listed = DefaultCases;
-                for (var i = 0; i < listed.Length; i++)
-                {
-                    Console.WriteLine($"{i}: {listed[i].Label}");
-                }
-                Console.WriteLine($"  （默认共 {listed.Length} 例；慢例可按标签指定，或设 RIGI_NATIVE_E2E_SLOW=1 并入默认）");
-                return 0;
-            }
-            var skip = TrySkipEntireSuite();
-            if (skip != null) return skip.Value;
-            // 非数字参数按 Label 子串过滤（对齐 E2e 套件 RunNameFilter 语义：
-            // OrdinalIgnoreCase Contains，进程内执行，[PASS]/[FAIL] 行自带
-            // 标签），零匹配退出 2。数字开头（含不完整区间）保持
-            // ParallelSuiteRunner 原有 from/to 语义与其用法报错不变。
-            if (parsed.Kind == NativeE2eRunKind.NameFilter)
-            {
-                TestHarness.Reset();
-                TestHarness.Section("native 对拍（VM vs 原生可执行）");
-                var matched = 0;
-                // 单个参数恰为正式标签时优先精确匹配：默认核心标签是
-                // 完整慢例标签的前缀，不能因子串过滤把慢例也启动。
-                var exactLabel = parsed.Filters.Count == 1 &&
-                    Cases.Concat(SlowCases).Any(c => string.Equals(c.Label,
-                        parsed.Filters[0], StringComparison.OrdinalIgnoreCase))
-                    ? parsed.Filters[0] : null;
-                foreach (var entry in Cases.Concat(SlowCases))
-                {
-                    if (exactLabel != null
-                        ? !string.Equals(entry.Label, exactLabel, StringComparison.OrdinalIgnoreCase)
-                        : !parsed.Filters.Any(f => entry.Label.Contains(f,
-                            StringComparison.OrdinalIgnoreCase)))
-                    {
-                        continue;
-                    }
-                    matched++;
-                    if (!SlowGateEnabled && SlowCases.Any(c => c.Label == entry.Label))
-                    {
-                        Console.WriteLine($"  [slow-gate] {entry.Label} 为手动慢例");
-                    }
-                    entry.Run();
-                }
-                if (matched == 0)
-                {
-                    Console.WriteLine(
-                        $"  （按名过滤零匹配：{string.Join(", ", args)}）");
-                    return 2;
-                }
-                return TestHarness.Summary("NativeE2E");
-            }
-            return ParallelSuiteRunner.RunWithArgs(Spec, args);
-        }
-
-        private static int? TrySkipEntireSuite()
-        {
-            if (ToolchainResolver.ResolveClang(null) != null)
-            {
-                return null;
-            }
-            TestHarness.Reset();
-            TestHarness.Section("native 对拍（VM vs 原生可执行）");
-            Console.WriteLine("  （跳过：未找到 clang 工具链；" +
-                "开发机跑 tools/Fetch-LlvmToolchain.ps1 后本套件生效）");
-            return TestHarness.Summary("NativeE2E");
-        }
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
-            Cases.Concat(SlowCases).Select((entry, index) => new TestInventory.Case(index, entry.Label,
+            Cases.Concat(SlowCases).Append((Label: "native.hello-world-bil", Run: (Action)RunPilotHelloBil)).Select((entry, index) => new TestInventory.Case(index, entry.Label,
                 SlowCases.Any(c => c.Label == entry.Label), "RIGI_NATIVE_E2E_SLOW", RequiresConcurrentCompute(entry.Label) ? 4 : 1,
                 // JSON 写侧整程序冷编译的 LLVM O2/对象码生成占用超过 2GiB；
                 // 单核已需二十余分钟，共享预算满载时须有独立的有限期限余量。
                 MemoryMiB: entry.Label == "JSON 写侧对拍" ? 4096 : 512,
-                TimeoutMinutes: entry.Label == "JSON 写侧对拍" ? 75 : null));
+                TimeoutMinutes: entry.Label == "JSON 写侧对拍" ? 75 : entry.Label == "native.hello-world-bil" ? 9 : null));
 
         private static readonly HashSet<string> ConcurrentSourceLabels = new(StringComparer.Ordinal);
         private static (string Label, Action Run) RegisterCase(string label, string source, Action run)
@@ -164,26 +80,11 @@ namespace RigiCompiler.Tests
             "并发", "concurrent", "coroutine", "async", "Worker", "Compute", "唤醒", "MQ", "消息", "生产者", "跨执行器", "广播", "协程", "Executor", "Atomic", "多线程"
         }.Any(marker => label.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
-        internal static ParallelSuiteRunner.SuiteSpec ExecutionSpec => new("NativeE2E", Cases.Concat(SlowCases).ToArray(),
+        internal static TestSuiteData ExecutionSpec => new("NativeE2E", Cases.Concat(SlowCases).Append((Label: "native.hello-world-bil", Run: (Action)RunPilotHelloBil)).ToArray(),
             sectionTitle: "native 对拍（VM vs 原生可执行）");
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
-            "NativeE2E",
-            DefaultCases,
-            sectionTitle: "native 对拍（VM vs 原生可执行）",
-            beforeSpawn: PreheatRigiRt);
-
-        private static void PreheatRigiRt()
-        {
-            var clang = ToolchainResolver.ResolveClang(null);
-            if (clang != null)
-            {
-                // 与 NativeCommand 同一 libuv 解析（预热同一份内容哈希缓存，
-                // 否则并行用例会各自重建带 RIGI_HAS_LIBUV 的 bitcode）
-                using var prepared = RigiRtBuilder.PrepareBitcode(clang, LlvmHost.HostTriple,
-                    out _, LibuvResolver.Resolve(null));
-            }
-        }
+        // rigi_rt 的 ArtifactCache 按内容身份持有跨进程文件锁，并验证请求副本；
+        // 独立 worker 冷启动仍单次构建，不再需要旧整套驱动的 BeforeSpawn 预热。
 
         // 注：声明须在 Cases 之前（静态初始化按文本序，EnvCase 合并要用）
         private static readonly Dictionary<string, string> MemtrackEnv =
@@ -237,7 +138,7 @@ namespace RigiCompiler.Tests
                 throw new InvalidOperationException(label + "：正向源码必须零 Error；" +
                     string.Join("; ", unit.Diagnostics.Diagnostics
                         .Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.Phase + ": " + d.Message)));
-            TestHarness.CheckTrue(label + "：源码编译零 Error", true);
+            CaseAssertions.CheckTrue(label + "：源码编译零 Error", true);
             return module;
         }
 
@@ -274,8 +175,8 @@ namespace RigiCompiler.Tests
             var oldErr = Console.Error;
             var outWriter = new StringWriter();
             var errWriter = new StringWriter();
-            Console.SetOut(outWriter);
-            Console.SetError(errWriter);
+            WorkerConsole.SetOut(outWriter);
+            WorkerConsole.SetError(errWriter);
             try
             {
                 int code = new NativeCommand().Execute(result!);
@@ -283,8 +184,8 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Console.SetOut(oldOut);
-                Console.SetError(oldErr);
+                WorkerConsole.SetOut(oldOut);
+                WorkerConsole.SetError(oldErr);
             }
         }
     }

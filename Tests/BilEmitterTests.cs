@@ -56,9 +56,8 @@ namespace RigiCompiler.Tests
             "    return 0\n" +
             "}\n";
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilEmitter",
+        internal static TestSuiteData Spec { get; } = new("BilEmitter",
         [
             (nameof(TestUnsafeProjection), TestUnsafeProjection),
             (nameof(TestGoldenOutput), TestGoldenOutput),
@@ -208,7 +207,7 @@ namespace RigiCompiler.Tests
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
         }

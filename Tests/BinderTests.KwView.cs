@@ -18,7 +18,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestKwArgsBodyView()
         {
-            TestHarness.Section("P3 kwargs Body View (named variadic)");
+            CompilerTestTools.Section("P3 kwargs Body View (named variadic)");
 
             // ===== 1. 参数引用定型：Array\<Pair\<String, String\>\>
             // （PathVisitors 首段参数分支）=====
@@ -29,7 +29,7 @@ namespace RigiCompiler.Tests
                 BodyOf(bodies, "f").Body.Statements[0]).Value!;
             var pairDefinition = unit.Symbols.GlobalNamespace.ChildNamespaces
                 .Single(n => n.Name == "core").Types.Single(t => t.Name == "Pair");
-            TestHarness.CheckTrue("kwargs 体内视角 = Array<Pair<String, String>>",
+            CaseAssertions.CheckTrue("kwargs 体内视角 = Array<Pair<String, String>>",
                 reference.Type is TypeSymbol { ConstructedFrom: not null } arrayType
                 && ReferenceEquals(arrayType.ConstructedFrom,
                     unit.Symbols.Bootstrap.ArrayDefinition)
@@ -45,7 +45,7 @@ namespace RigiCompiler.Tests
             var element = (TypeSymbol)((TypeSymbol)reference.Type).TypeArguments![0];
             var keyField = SymbolLookup.FindInstanceField(element, "key");
             var valueField = SymbolLookup.FindInstanceField(element, "value");
-            TestHarness.CheckTrue("元素 key/value 字段解析（宿主代入 → String）",
+            CaseAssertions.CheckTrue("元素 key/value 字段解析（宿主代入 → String）",
                 keyField != null && valueField != null
                 && ReferenceEquals(SymbolLookup.SubstituteFieldType(keyField, element,
                     unit.Symbols),
@@ -62,7 +62,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（kwargs 链头调用）", unit3);
             var chainCall = (BoundInstanceCallExpression)((BoundReturnStatement)
                 BodyOf(bodies3, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("kwargs 链头 receiver = Array<Pair<String, String>>",
+            CaseAssertions.CheckTrue("kwargs 链头 receiver = Array<Pair<String, String>>",
                 chainCall.Receiver.Type is TypeSymbol { ConstructedFrom: not null } chainArray
                 && ReferenceEquals(chainArray.ConstructedFrom,
                     unit3.Symbols.Bootstrap.ArrayDefinition)
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（vargs 参数引用）", unit4);
             var vargsReference = (BoundValueReferenceExpression)((BoundReturnStatement)
                 BodyOf(bodies4, "g").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("vargs 体内视角保持 Array<i32>",
+            CaseAssertions.CheckTrue("vargs 体内视角保持 Array<i32>",
                 vargsReference.Type is TypeSymbol { ConstructedFrom: not null } vargsArray
                 && ReferenceEquals(vargsArray.ConstructedFrom,
                     unit4.Symbols.Bootstrap.ArrayDefinition)
@@ -91,7 +91,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("无诊断（泛型 kwargs 参数引用）", unit5);
             var genericReference = (BoundValueReferenceExpression)((BoundReturnStatement)
                 BodyOf(bodies5, "u").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("泛型 kwargs 视角 = Array<Pair<String, TValues>>",
+            CaseAssertions.CheckTrue("泛型 kwargs 视角 = Array<Pair<String, TValues>>",
                 genericReference.Type is TypeSymbol { ConstructedFrom: not null } genericArray
                 && ReferenceEquals(genericArray.ConstructedFrom,
                     unit5.Symbols.Bootstrap.ArrayDefinition)

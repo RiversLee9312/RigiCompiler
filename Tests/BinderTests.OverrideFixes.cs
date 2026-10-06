@@ -12,7 +12,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestOverrideFixes()
         {
-            TestHarness.Section("P3 Override Async Consistency Fixes (§9.2.1, bug A1)");
+            CompilerTestTools.Section("P3 Override Async Consistency Fixes (§9.2.1, bug A1)");
 
             var (closed, _) = BindUnit("""
                 pub interface Parent\<T> { }
@@ -43,7 +43,7 @@ namespace RigiCompiler.Tests
                 pub class Derived: Base\<i32> { }
                 func reject(d: Derived) { const p: Parent\<String> = d }
                 """);
-            TestHarness.CheckSemanticError("传递泛型接口不同实参仍拒绝", incompatible.Diagnostics,
+            CaseAssertions.CheckSemanticError("传递泛型接口不同实参仍拒绝", incompatible.Diagnostics,
                 "Cannot assign");
             // 负例：接口 sync 成员 + async override 实现（bug A1 本体）
             var (unit, _) = BindUnit(
@@ -54,7 +54,7 @@ namespace RigiCompiler.Tests
                 "    pub init()\n" +
                 "    pub async override func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("接口 sync + async override 实现", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("接口 sync + async override 实现", unit.Diagnostics,
                 "'run': 'async' modifier does not match the inherited member");
 
             // 负例：反向——接口 async 成员 + sync override 实现
@@ -67,7 +67,7 @@ namespace RigiCompiler.Tests
                 "    pub init()\n" +
                 "    pub override func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("接口 async + sync override 实现", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("接口 async + sync override 实现", unit2.Diagnostics,
                 "'run': 'async' modifier does not match the inherited member");
 
             // 负例：基类 sync open + 子类 async override（类继承版本）
@@ -78,7 +78,7 @@ namespace RigiCompiler.Tests
                 "pub shared class Sub : Base {\n" +
                 "    pub async override func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("基类 sync open + 子类 async override", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("基类 sync open + 子类 async override", unit3.Diagnostics,
                 "'run': 'async' modifier does not match the inherited member");
 
             // 正例：双 async——shared 接口 async 成员 + async override 实现
@@ -122,7 +122,7 @@ namespace RigiCompiler.Tests
                 "pub shared class Sub : Base {\n" +
                 "    pub async func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无 override 的 async 隐藏 sync 继承成员", unit7.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 override 的 async 隐藏 sync 继承成员", unit7.Diagnostics,
                 "'run': 'async' modifier does not match the inherited member");
 
             // 负例：hiding 反向——无 override 的 sync 方法隐藏继承 async 成员
@@ -133,7 +133,7 @@ namespace RigiCompiler.Tests
                 "pub shared class Sub : Base {\n" +
                 "    pub func run(x: i32): i32 { return (x + 1) }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无 override 的 sync 隐藏 async 继承成员", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 override 的 sync 隐藏 async 继承成员", unit8.Diagnostics,
                 "'run': 'async' modifier does not match the inherited member");
         }
 
@@ -144,7 +144,7 @@ namespace RigiCompiler.Tests
         //（..init.field.<名> 按名成族，静默隐藏会吞掉基类槽初值）
         private static void TestFieldOverrideRules()
         {
-            TestHarness.Section("P2/P3 Field Override Rules (§9.2.1)");
+            CompilerTestTools.Section("P2/P3 Field Override Rules (§9.2.1)");
 
             // 正例：open + override——OverriddenField 落定、宿主表移除、
             // 名称解析落基类槽
@@ -160,7 +160,7 @@ namespace RigiCompiler.Tests
             CheckNoErrors("open + override 正例", ok);
             var hero = ok.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Hero");
             var baseType = ok.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Base");
-            TestHarness.CheckTrue("override 字段移出宿主 Fields 表（存储归基类槽）",
+            CaseAssertions.CheckTrue("override 字段移出宿主 Fields 表（存储归基类槽）",
                 !hero.Fields.Any(f => f.Name == "hp")
                 && baseType.Fields.Single(f => f.Name == "hp").IsOpen);
 
@@ -168,28 +168,28 @@ namespace RigiCompiler.Tests
             var (notOpen, _) = BindUnit(
                 "pub open class Base { pub var hp: i32 = 10 }\n" +
                 "pub class Hero : Base { pub override var hp: i32 = 99 }\n");
-            TestHarness.CheckSemanticError("非 open 字段被 override", notOpen.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 open 字段被 override", notOpen.Diagnostics,
                 "'hp': inherited field is not 'open'");
 
             // 负例：override 无新初始值
             var (noInit, _) = BindUnit(
                 "pub open class Base { pub open var hp: i32 = 10 }\n" +
                 "pub class Hero : Base { pub override var hp: i32 }\n");
-            TestHarness.CheckSemanticError("override 无新初始值", noInit.Diagnostics,
+            CaseAssertions.CheckSemanticError("override 无新初始值", noInit.Diagnostics,
                 "'hp': field override requires a new initial value");
 
             // 负例：类型不一致
             var (mismatch, _) = BindUnit(
                 "pub open class Base { pub open var hp: i32 = 10 }\n" +
                 "pub class Hero : Base { pub override var hp: String = \"x\" }\n");
-            TestHarness.CheckSemanticError("override 类型不一致", mismatch.Diagnostics,
+            CaseAssertions.CheckSemanticError("override 类型不一致", mismatch.Diagnostics,
                 "'hp': field type must match the overridden field");
 
             // 负例：双侧带初始值的 hiding（无 override）
             var (hiding, _) = BindUnit(
                 "pub open class Base { pub var hp: i32 = 10 }\n" +
                 "pub class Hero : Base { pub var hp: i32 = 99 }\n");
-            TestHarness.CheckSemanticError("双侧初始值 hiding 拒绝", hiding.Diagnostics,
+            CaseAssertions.CheckSemanticError("双侧初始值 hiding 拒绝", hiding.Diagnostics,
                 "'hp' hides an inherited field with an initial value; declare it 'override'");
 
             // 放行：单侧初始值的 hiding 沿用既有行为（无 ..init.field 碰撞）
@@ -201,13 +201,13 @@ namespace RigiCompiler.Tests
             // 负例：无继承同名字段
             var (noBase, _) = BindUnit(
                 "pub class C { pub override var v: i32 = 1 }\n");
-            TestHarness.CheckSemanticError("无继承字段", noBase.Diagnostics,
+            CaseAssertions.CheckSemanticError("无继承字段", noBase.Diagnostics,
                 "'v': no inherited field to override");
 
             // 负例：static 字段写 override（静态无多态）
             var (staticOverride, _) = BindUnit(
                 "pub class C { pub static override var v: i32 = 1 }\n");
-            TestHarness.CheckSemanticError("static 字段 override", staticOverride.Diagnostics,
+            CaseAssertions.CheckSemanticError("static 字段 override", staticOverride.Diagnostics,
                 "'open'/'override' cannot be applied to static or global fields");
         }
     }

@@ -31,15 +31,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class EscapingSeqPositionTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "EscapingSeqPosition", Cases, sectionTitle: "EscapingSeqPosition");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -67,7 +65,7 @@ namespace RigiCompiler.Tests
         // 执行（route 经 loop region 逐层 relay 到外层值块）
         private static void TestWhileConditionReturnAtLabel()
         {
-            TestHarness.Section("4a：while 条件位逃逸（return@外层值块）");
+            CompilerTestTools.Section("4a：while 条件位逃逸（return@外层值块）");
             var source =
                 "pub func pick(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -89,14 +87,14 @@ namespace RigiCompiler.Tests
         // 穿透值块边界——P3 专门诊断（要离开函数请改用 return@标签 或 throw）
         private static void TestWhileConditionBareReturnRejected()
         {
-            TestHarness.Section("4a 负例：while 条件位裸 return 穿透值块拒绝");
+            CompilerTestTools.Section("4a 负例：while 条件位裸 return 穿透值块拒绝");
             var (unit, _) = BindUnit(
                 "func pick(): String {\n" +
                 "    while (seq { return \"escaped\" }) {\n" +
                 "    }\n" +
                 "    return \"after\"\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("while 条件位裸 return 穿透值块拒绝",
+            CaseAssertions.CheckSemanticError("while 条件位裸 return 穿透值块拒绝",
                 unit.Diagnostics, "Bare 'return' cannot cross a value block boundary");
         }
 
@@ -104,7 +102,7 @@ namespace RigiCompiler.Tests
         // try 捕获，body 永不执行
         private static void TestWhileConditionThrow()
         {
-            TestHarness.Section("4a：while 条件位逃逸（throw）");
+            CompilerTestTools.Section("4a：while 条件位逃逸（throw）");
             var source =
                 "class Boom : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
@@ -129,7 +127,7 @@ namespace RigiCompiler.Tests
         // do-while 条件位逃逸：体先执行一次，随后条件求值逃逸
         private static void TestDoWhileConditionEscape()
         {
-            TestHarness.Section("4a：do-while 条件位逃逸");
+            CompilerTestTools.Section("4a：do-while 条件位逃逸");
             var source =
                 "pub func pick(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -151,7 +149,7 @@ namespace RigiCompiler.Tests
         // 逃逸值依路径不同——route relay 正确性依输出可辨）
         private static void TestWhileConditionMultiPathEscape()
         {
-            TestHarness.Section("4a：while 条件位多路径逃逸 seq");
+            CompilerTestTools.Section("4a：while 条件位多路径逃逸 seq");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -180,7 +178,7 @@ namespace RigiCompiler.Tests
         // 同一 Judge 协议保护的姊妹形态
         private static void TestWhileConditionEscapingIfExpression()
         {
-            TestHarness.Section("4a：while 条件位逃逸 if 表达式");
+            CompilerTestTools.Section("4a：while 条件位逃逸 if 表达式");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -203,7 +201,7 @@ namespace RigiCompiler.Tests
         // 照常发生
         private static void TestIfStatementConditionEscape()
         {
-            TestHarness.Section("4a：if 语句条件位逃逸");
+            CompilerTestTools.Section("4a：if 语句条件位逃逸");
             var source =
                 "pub func pick(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -227,7 +225,7 @@ namespace RigiCompiler.Tests
         // 本用例钉住回归——true 路径循环两轮后落 "after"、false 路径逃逸
         private static void TestWhileConditionMixedSeq()
         {
-            TestHarness.Section("4a：混合 seq 条件位（hint 覆盖回归）");
+            CompilerTestTools.Section("4a：混合 seq 条件位（hint 覆盖回归）");
             var source =
                 "pub func pick(flag: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -259,7 +257,7 @@ namespace RigiCompiler.Tests
         // 逃逸 seq 定型——钉住「a type annotation is required」
         private static void TestForIterableEscapeRejected()
         {
-            TestHarness.Section("4a 负例：for iterable 位保持清晰诊断");
+            CompilerTestTools.Section("4a 负例：for iterable 位保持清晰诊断");
             var (unit, _) = BindUnit(
                 "func f(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -269,14 +267,14 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return result\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("for iterable 位逃逸 seq 拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("for iterable 位逃逸 seq 拒绝", unit.Diagnostics,
                 "a type annotation is required");
         }
 
         // switch selector 位：匹配类型由 selector 自身决定——同口径拒绝
         private static void TestSwitchSelectorEscapeRejected()
         {
-            TestHarness.Section("4a 负例：switch selector 位保持清晰诊断");
+            CompilerTestTools.Section("4a 负例：switch selector 位保持清晰诊断");
             var (unit, _) = BindUnit(
                 "func f(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -287,7 +285,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return result\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("switch selector 位逃逸 seq 拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("switch selector 位逃逸 seq 拒绝", unit.Diagnostics,
                 "a type annotation is required");
         }
 
@@ -295,7 +293,7 @@ namespace RigiCompiler.Tests
         // 下传——同口径拒绝
         private static void TestBinaryOperandEscapeRejected()
         {
-            TestHarness.Section("4a 负例：二元运算操作数位保持清晰诊断");
+            CompilerTestTools.Section("4a 负例：二元运算操作数位保持清晰诊断");
             var (unit, _) = BindUnit(
                 "func f(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -304,14 +302,14 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return result\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("二元操作数位逃逸 seq 拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("二元操作数位逃逸 seq 拒绝", unit.Diagnostics,
                 "a type annotation is required");
         }
 
         // 插值段：段类型任意（toString 协议），无期望类型——同口径拒绝
         private static void TestInterpolationEscapeRejected()
         {
-            TestHarness.Section("4a 负例：插值段位保持清晰诊断");
+            CompilerTestTools.Section("4a 负例：插值段位保持清晰诊断");
             var (unit, _) = BindUnit(
                 "func f(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -320,7 +318,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return result\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("插值段位逃逸 seq 拒绝", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("插值段位逃逸 seq 拒绝", unit.Diagnostics,
                 "a type annotation is required");
         }
 
@@ -332,7 +330,7 @@ namespace RigiCompiler.Tests
         // 代码副作用绝不执行
         private static void TestDeadFollowUpsAcrossInnerBlock()
         {
-            TestHarness.Section("4b：内层块边界外的静态死后续");
+            CompilerTestTools.Section("4b：内层块边界外的静态死后续");
             var source =
                 "pub func pick(): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -357,7 +355,7 @@ namespace RigiCompiler.Tests
         // 再嵌 seq 表达式（死中套死）——全部不执行
         private static void TestDeadFollowUpsMultiLayerNesting()
         {
-            TestHarness.Section("4b：多层嵌套 + 死中套死");
+            CompilerTestTools.Section("4b：多层嵌套 + 死中套死");
             var source =
                 "pub func pick(c: bool): String {\n" +
                 "    var result: String = seq named decide {\n" +
@@ -390,7 +388,7 @@ namespace RigiCompiler.Tests
         // sideEffect 的 println 与 throw 的 Boom 均不得出现）
         private static void TestDeadFollowUpsWithSideEffects()
         {
-            TestHarness.Section("4b：死语句含赋值/调用/throw");
+            CompilerTestTools.Section("4b：死语句含赋值/调用/throw");
             var source =
                 "class Boom : core.Exception {\n" +
                 "    pub override func getMessage(): String { return message }\n" +
@@ -428,10 +426,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors(label + " 无诊断", unit);
             BilTestHarness.CheckBilValid(label + " BIL 过验证器", module);
             var result = BilVm.Run(module);
-            TestHarness.CheckTrue(label + " VM 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " VM 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
-            TestHarness.Check(label + " VM 输出", result.Stdout, expectedStdout);
-            TestHarness.CheckTrue(label + " main 返回 0",
+            CaseAssertions.Check(label + " VM 输出", result.Stdout, expectedStdout);
+            CaseAssertions.CheckTrue(label + " main 返回 0",
                 result.ReturnValue is VmI32 exitCode && exitCode.Value == 0,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -441,7 +439,7 @@ namespace RigiCompiler.Tests
         private static (CompilationUnit Unit, IReadOnlyList<BoundFunctionBody> Bodies) BindUnit(
             params string[] sources)
         {
-            var roots = sources.Select(TestHarness.ParseRoot).ToArray();
+            var roots = sources.Select(CompilerTestTools.ParseRoot).ToArray();
             var unit = new CompilationUnit(roots);
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
@@ -450,7 +448,7 @@ namespace RigiCompiler.Tests
 
         private static void CheckNoErrors(string label, CompilationUnit unit)
         {
-            TestHarness.CheckTrue(label, !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label, !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
         }

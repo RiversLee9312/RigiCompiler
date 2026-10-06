@@ -32,7 +32,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("Temporary 懒恢复读/写后读/resume 捕获 this", result);
-            TestHarness.Check("Temporary stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Temporary stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Temporary main 返回 0", result, 0);
         }
 
@@ -63,7 +63,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("List 增删读越界 null / 枚举", result);
-            TestHarness.Check("List stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("List stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("List main 返回 0", result, 0);
         }
 
@@ -94,7 +94,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Map set/tryGet/containsKey/remove/枚举", result);
-            TestHarness.Check("Map stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Map stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Map main 返回 0", result, 0);
         }
 
@@ -120,7 +120,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Map 对象键身份判等不互相覆盖", result);
-            TestHarness.Check("Map 对象键 stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Map 对象键 stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Map 对象键 main 返回 0", result, 0);
         }
 
@@ -146,7 +146,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Map String/标量键内容合并语义不变", result);
-            TestHarness.Check("Map 内容键 stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Map 内容键 stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Map 内容键 main 返回 0", result, 0);
         }
 
@@ -174,7 +174,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Map 自定义 hash 按用户哈希判等", result);
-            TestHarness.Check("Map 自定义 hash stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Map 自定义 hash stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Map 自定义 hash main 返回 0", result, 0);
         }
 
@@ -210,7 +210,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Map 自定义 equals 键按 equals 判等", result);
-            TestHarness.Check("Map 自定义 equals 键 stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Map 自定义 equals 键 stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Map 自定义 equals 键 main 返回 0", result, 0);
         }
 
@@ -250,7 +250,7 @@ namespace RigiCompiler.Tests
                 "    return 1\n" +
                 "}\n");
             CheckOk("Parcel set/get/嵌套/枚举/absent/存 null", result);
-            TestHarness.Check("Parcel stdout 精确 ok", result.Stdout, "ok\n");
+            CaseAssertions.Check("Parcel stdout 精确 ok", result.Stdout, "ok\n");
             CheckI32("Parcel main 返回 0", result, 0);
         }
 

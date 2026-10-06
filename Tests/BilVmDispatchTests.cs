@@ -15,15 +15,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BilVmDispatchTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilVmDispatch", Cases, sectionTitle: "BilVmDispatch");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -148,7 +146,7 @@ namespace RigiCompiler.Tests
                 "    return b.m(42)\n" +
                 "}\n");
             CheckOk("转发形态 override", result);
-            TestHarness.Check("经基类静态类型命中 D\\<T2> override", result.Stdout,
+            CaseAssertions.Check("经基类静态类型命中 D\\<T2> override", result.Stdout,
                 "derived\n");
             CheckI32("返回值", result, 42);
         }
@@ -247,7 +245,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("open 方法多态", result);
-            TestHarness.Check("基类引用命中 derived override", result.Stdout,
+            CaseAssertions.Check("基类引用命中 derived override", result.Stdout,
                 "derived:x\n" +
                 "base:x\n");
         }
@@ -334,7 +332,7 @@ namespace RigiCompiler.Tests
             CheckOk("接口派发", result);
             // sq.describe() 走接口默认体，体内 area() 虚派发到 Sq.area = 9；
             // lbl.describe() 被类 override → L
-            TestHarness.Check("默认体 + override 默认", result.Stdout,
+            CaseAssertions.Check("默认体 + override 默认", result.Stdout,
                 "area=9\n" +
                 "L\n");
             CheckI32("无体成员 → 类实现", result, 16);
@@ -368,7 +366,7 @@ namespace RigiCompiler.Tests
                 "    return (a.id() + b.id())\n" +
                 "}\n");
             CheckOk("双接口冲突显式 override 后编译运行", result);
-            TestHarness.Check("A/B 双视图派发到类实现", result.Stdout,
+            CaseAssertions.Check("A/B 双视图派发到类实现", result.Stdout,
                 "C\n" +
                 "C\n");
             CheckI32("双视图无体成员 → 类实现", result, 2);
@@ -498,7 +496,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("native toString 派发感知", result);
-            TestHarness.Check("override 经 Any/Object 静态类型命中 + 默认不回归", result.Stdout,
+            CaseAssertions.Check("override 经 Any/Object 静态类型命中 + 默认不回归", result.Stdout,
                 "P(7)\n" +
                 "P(8)\n" +
                 "Plain\n");
@@ -530,7 +528,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("native toString 多级继承", result);
-            TestHarness.Check("叶子走中间类 override、未 override 走默认", result.Stdout,
+            CaseAssertions.Check("叶子走中间类 override、未 override 走默认", result.Stdout,
                 "B!\n" +
                 "D\n");
         }
@@ -546,7 +544,7 @@ namespace RigiCompiler.Tests
                 "    return (n + 1)\n" +
                 "}\n");
             CheckOk("基元插值回归", result);
-            TestHarness.Check("i32/bool 标准文本", result.Stdout, "n=41 flag=true\n");
+            CaseAssertions.Check("i32/bool 标准文本", result.Stdout, "n=41 flag=true\n");
             CheckI32("返回值", result, 42);
         }
 
@@ -577,7 +575,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("显式 toString 派发", result);
-            TestHarness.Check("Object/Any 静态类型 + 基元接收者", result.Stdout,
+            CaseAssertions.Check("Object/Any 静态类型 + 基元接收者", result.Stdout,
                 "PT\n" +
                 "PT\n" +
                 "Plain\n" +
@@ -589,7 +587,7 @@ namespace RigiCompiler.Tests
             try
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-                TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                         d => $"{d.Phase}: {d.Message}")));
                 if (unit.Diagnostics.HasErrors)
@@ -601,7 +599,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue("全管线无诊断", false, exception.ToString());
+                CaseAssertions.CheckTrue("全管线无诊断", false, exception.ToString());
                 return new BilVmResult("", "", null,
                     new VmException(exception.Message, inner: exception));
             }
@@ -609,13 +607,13 @@ namespace RigiCompiler.Tests
 
         private static void CheckOk(string label, BilVmResult result)
         {
-            TestHarness.CheckTrue(label + " 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
         }
 
         private static void CheckI32(string label, BilVmResult result, int expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmI32 n && n.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }

@@ -25,15 +25,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class VmFsNoReplaceTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsNoReplace", Cases, sectionTitle: "VmFsNoReplace");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -59,7 +57,7 @@ namespace RigiCompiler.Tests
         private static VmDispatch NewDispatch()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(ModuleSource);
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var context = new VmContext(module);
@@ -105,7 +103,7 @@ namespace RigiCompiler.Tests
             catch (Exception ex) when (ex is UnauthorizedAccessException
                 or IOException or PlatformNotSupportedException)
             {
-                TestHarness.RecordSkip("  （符号链接不可用，受控跳过："
+                CaseAssertions.RecordSkip("  （符号链接不可用，受控跳过："
                     + ex.GetType().Name + "）");
                 return false;
             }
@@ -126,11 +124,11 @@ namespace RigiCompiler.Tests
                 WriteFile(src, "SRC-CONTENT");
                 WriteFile(dst, "DST-OLD");
                 var rc = Rename(dispatch, src, dst, replace: 0);
-                TestHarness.CheckTrue("已存在文件目标报 AlreadyExists(-17)",
+                CaseAssertions.CheckTrue("已存在文件目标报 AlreadyExists(-17)",
                     rc == -17, "rc=" + rc);
-                TestHarness.CheckTrue("源内容未动",
+                CaseAssertions.CheckTrue("源内容未动",
                     ContentIs(src, "SRC-CONTENT"));
-                TestHarness.CheckTrue("目标内容未动",
+                CaseAssertions.CheckTrue("目标内容未动",
                     ContentIs(dst, "DST-OLD"));
             }
             finally
@@ -160,13 +158,13 @@ namespace RigiCompiler.Tests
                 Directory.CreateDirectory(emptyDst);
                 WriteFile(Path.Combine(srcDir, "inner.txt"), "IN");
                 var rc = Rename(dispatch, srcDir, emptyDst, replace: 0);
-                TestHarness.CheckTrue("已存在空目录目标报 AlreadyExists(-17)"
+                CaseAssertions.CheckTrue("已存在空目录目标报 AlreadyExists(-17)"
                     + "（POSIX rename 可覆盖空目录，必须系统 flag 拦截）",
                     rc == -17, "rc=" + rc);
-                TestHarness.CheckTrue("空目标仍存在且仍为空",
+                CaseAssertions.CheckTrue("空目标仍存在且仍为空",
                     Directory.Exists(emptyDst)
                         && Directory.GetFileSystemEntries(emptyDst).Length == 0);
-                TestHarness.CheckTrue("源目录与条目未动",
+                CaseAssertions.CheckTrue("源目录与条目未动",
                     ContentIs(Path.Combine(srcDir, "inner.txt"), "IN"));
 
                 // ② 非空目录目标（补充例）
@@ -177,11 +175,11 @@ namespace RigiCompiler.Tests
                 WriteFile(Path.Combine(srcDir2, "inner2.txt"), "IN2");
                 WriteFile(Path.Combine(nonEmptyDst, "victim.txt"), "OLD");
                 rc = Rename(dispatch, srcDir2, nonEmptyDst, replace: 0);
-                TestHarness.CheckTrue("已存在非空目录目标报 AlreadyExists(-17)",
+                CaseAssertions.CheckTrue("已存在非空目录目标报 AlreadyExists(-17)",
                     rc == -17, "rc=" + rc);
-                TestHarness.CheckTrue("非空形态源目录未动",
+                CaseAssertions.CheckTrue("非空形态源目录未动",
                     ContentIs(Path.Combine(srcDir2, "inner2.txt"), "IN2"));
-                TestHarness.CheckTrue("非空形态目标条目未动",
+                CaseAssertions.CheckTrue("非空形态目标条目未动",
                     ContentIs(Path.Combine(nonEmptyDst, "victim.txt"), "OLD"));
             }
             finally
@@ -208,11 +206,11 @@ namespace RigiCompiler.Tests
                     return; // 受控跳过（无链接权限平台）
                 }
                 var rc = Rename(dispatch, src, link, replace: 0);
-                TestHarness.CheckTrue("已存在断链目标报 AlreadyExists(-17)",
+                CaseAssertions.CheckTrue("已存在断链目标报 AlreadyExists(-17)",
                     rc == -17, "rc=" + rc);
-                TestHarness.CheckTrue("源内容未动",
+                CaseAssertions.CheckTrue("源内容未动",
                     ContentIs(src, "SRC-CONTENT"));
-                TestHarness.CheckTrue("断链条目未动（LinkTarget 保留）",
+                CaseAssertions.CheckTrue("断链条目未动（LinkTarget 保留）",
                     new FileInfo(link).LinkTarget
                         == Path.Combine(root, "gone_target"));
             }
@@ -233,10 +231,10 @@ namespace RigiCompiler.Tests
                 var dst = Path.Combine(root, "b.bin");
                 WriteFile(src, "PAYLOAD");
                 var rc = Rename(dispatch, src, dst, replace: 0);
-                TestHarness.CheckTrue("文件 NoReplace 移动成功", rc == 0,
+                CaseAssertions.CheckTrue("文件 NoReplace 移动成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("源条目消失", !File.Exists(src));
-                TestHarness.CheckTrue("目标内容一致",
+                CaseAssertions.CheckTrue("源条目消失", !File.Exists(src));
+                CaseAssertions.CheckTrue("目标内容一致",
                     ContentIs(dst, "PAYLOAD"));
             }
             finally
@@ -257,10 +255,10 @@ namespace RigiCompiler.Tests
                 Directory.CreateDirectory(srcDir);
                 WriteFile(Path.Combine(srcDir, "inner.txt"), "IN-DIR");
                 var rc = Rename(dispatch, srcDir, dstDir, replace: 0);
-                TestHarness.CheckTrue("目录 NoReplace 移动成功", rc == 0,
+                CaseAssertions.CheckTrue("目录 NoReplace 移动成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("源目录消失", !Directory.Exists(srcDir));
-                TestHarness.CheckTrue("条目随迁",
+                CaseAssertions.CheckTrue("源目录消失", !Directory.Exists(srcDir));
+                CaseAssertions.CheckTrue("条目随迁",
                     ContentIs(Path.Combine(dstDir, "inner.txt"), "IN-DIR"));
             }
             finally
@@ -292,12 +290,12 @@ namespace RigiCompiler.Tests
                     return; // 受控跳过
                 }
                 var rc = Rename(dispatch, link, moved, replace: 0);
-                TestHarness.CheckTrue("链接条目移动成功", rc == 0, "rc=" + rc);
-                TestHarness.CheckTrue("旧链接条目消失",
+                CaseAssertions.CheckTrue("链接条目移动成功", rc == 0, "rc=" + rc);
+                CaseAssertions.CheckTrue("旧链接条目消失",
                     new FileInfo(link).LinkTarget == null);
-                TestHarness.CheckTrue("移动后仍指向原目标（不跟随）",
+                CaseAssertions.CheckTrue("移动后仍指向原目标（不跟随）",
                     new FileInfo(moved).LinkTarget == target);
-                TestHarness.CheckTrue("链接目标文件内容未动",
+                CaseAssertions.CheckTrue("链接目标文件内容未动",
                     ContentIs(target, "TARGET-DATA"));
 
                 // ② 断链源：也可以移动（rename 系不跟随末段链接）
@@ -309,10 +307,10 @@ namespace RigiCompiler.Tests
                     return; // 受控跳过
                 }
                 rc = Rename(dispatch, broken, brokenMoved, replace: 0);
-                TestHarness.CheckTrue("断链源移动成功", rc == 0, "rc=" + rc);
-                TestHarness.CheckTrue("断链移动后仍断链（目标保留）",
+                CaseAssertions.CheckTrue("断链源移动成功", rc == 0, "rc=" + rc);
+                CaseAssertions.CheckTrue("断链移动后仍断链（目标保留）",
                     new FileInfo(brokenMoved).LinkTarget == gone);
-                TestHarness.CheckTrue("缺失目标仍未被创建", !File.Exists(gone));
+                CaseAssertions.CheckTrue("缺失目标仍未被创建", !File.Exists(gone));
             }
             finally
             {
@@ -389,22 +387,22 @@ namespace RigiCompiler.Tests
                     var done2 = t2.Join(TimeSpan.FromSeconds(30));
                     if (!done1 || !done2)
                     {
-                        TestHarness.CheckTrue(
+                        CaseAssertions.CheckTrue(
                             $"争用轮 {round}：双 worker 30s 内退出（不无限等）",
                             false, "joined=" + done1 + "," + done2);
                         return;
                     }
-                    TestHarness.CheckTrue(
+                    CaseAssertions.CheckTrue(
                         $"争用轮 {round}：worker 无异常逃逸",
                         errors.Count == 0,
                         string.Join("; ", errors));
                     var pair = new[] { rcFirst, rcSecond };
-                    TestHarness.CheckTrue(
+                    CaseAssertions.CheckTrue(
                         $"争用轮 {round}：恰好一个成功一个 AlreadyExists",
                         pair.Count(rc => rc == 0) == 1
                             && pair.Count(rc => rc == -17) == 1,
                         "rcs=" + rcFirst + "," + rcSecond);
-                    TestHarness.CheckTrue(
+                    CaseAssertions.CheckTrue(
                         $"争用轮 {round}：目标为胜者内容未被覆盖",
                         ContentIs(dst, rcFirst == 0 ? firstContent
                             : secondContent),
@@ -413,7 +411,7 @@ namespace RigiCompiler.Tests
                     var loser = rcFirst == 0 ? second : first;
                     var loserContent = rcFirst == 0 ? secondContent
                         : firstContent;
-                    TestHarness.CheckTrue(
+                    CaseAssertions.CheckTrue(
                         $"争用轮 {round}：败者源条目仍在",
                         ContentIs(loser, loserContent));
                 }
@@ -435,14 +433,14 @@ namespace RigiCompiler.Tests
         {
             if (!IsLinux)
             {
-                TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：非 "
+                CaseAssertions.RecordSkip("  SKIP TestCrossDeviceNoFallback：非 "
                     + "Linux 宿主（Windows 跨卷形态无独立定向，本用例不覆盖）");
                 return;
             }
             const string shm = "/dev/shm";
             if (!Directory.Exists(shm))
             {
-                TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：宿主无 "
+                CaseAssertions.RecordSkip("  SKIP TestCrossDeviceNoFallback：宿主无 "
                     + "/dev/shm，跨FS fixture 不可用，EXDEV 未测");
                 return;
             }
@@ -463,7 +461,7 @@ namespace RigiCompiler.Tests
                     && TryGetDeviceId(root, out devDst, out errDst);
                 if (!probedSrc || !probedDst)
                 {
-                    TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：设"
+                    CaseAssertions.RecordSkip("  SKIP TestCrossDeviceNoFallback：设"
                         + "备号探测不可用（" + (errSrc ?? errDst)
                         + "），EXDEV 未测");
                     return;
@@ -474,7 +472,7 @@ namespace RigiCompiler.Tests
                 {
                     // 确为同设备：EXDEV 语义本环境不可构造——明确 SKIP，
                     // 不造通过断言（也不给「成功当同设备」留口子）
-                    TestHarness.RecordSkip("  SKIP TestCrossDeviceNoFallback：两"
+                    CaseAssertions.RecordSkip("  SKIP TestCrossDeviceNoFallback：两"
                         + "测试根确为同设备（st_dev=" + devSrc
                         + "），EXDEV 不可构造未测");
                     return;
@@ -483,13 +481,13 @@ namespace RigiCompiler.Tests
                 var rc = Rename(dispatch, shmSrc, dst, replace: 0);
                 // 跨设备必须 CrossDevice；rc==0 意味着发生了复制删除退化
                 //（无论实现形态），必须 FAIL
-                TestHarness.CheckTrue(
+                CaseAssertions.CheckTrue(
                     $"跨文件系统（st_dev {devSrc}≠{devDst}）必须报 "
                     + "CrossDevice(-18)，rc==0 即复制删除退化逃逸",
                     rc == -18, "rc=" + rc);
-                TestHarness.CheckTrue("跨FS源未删（不复制删除）",
+                CaseAssertions.CheckTrue("跨FS源未删（不复制删除）",
                     ContentIs(shmSrc, "XDEV-PAYLOAD"));
-                TestHarness.CheckTrue("跨FS目标未创建（无复制）",
+                CaseAssertions.CheckTrue("跨FS目标未创建（无复制）",
                     !File.Exists(dst));
                 // 同一已确认跨设备 fixture 再验证 Replace：File.Move
                 // (overwrite:true) 在 Unix 会复制+删除，必须由原始 rename
@@ -498,11 +496,11 @@ namespace RigiCompiler.Tests
                 WriteFile(replaceDst, "OLD-TARGET");
                 var replaceRc = Rename(dispatch, shmSrc, replaceDst,
                     replace: 1);
-                TestHarness.CheckTrue("跨FS Replace 必须报 CrossDevice(-18)",
+                CaseAssertions.CheckTrue("跨FS Replace 必须报 CrossDevice(-18)",
                     replaceRc == -18, "rc=" + replaceRc);
-                TestHarness.CheckTrue("跨FS Replace 源未删",
+                CaseAssertions.CheckTrue("跨FS Replace 源未删",
                     ContentIs(shmSrc, "XDEV-PAYLOAD"));
-                TestHarness.CheckTrue("跨FS Replace 旧目标未改写",
+                CaseAssertions.CheckTrue("跨FS Replace 旧目标未改写",
                     ContentIs(replaceDst, "OLD-TARGET"));
             }
             finally
@@ -587,10 +585,10 @@ namespace RigiCompiler.Tests
                 WriteFile(src, "NEW-CONTENT");
                 WriteFile(dst, "OLD-CONTENT");
                 var rc = Rename(dispatch, src, dst, replace: 1);
-                TestHarness.CheckTrue("Replace 覆盖文件成功", rc == 0,
+                CaseAssertions.CheckTrue("Replace 覆盖文件成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("Replace 源条目消失", !File.Exists(src));
-                TestHarness.CheckTrue("Replace 目标内容被替换",
+                CaseAssertions.CheckTrue("Replace 源条目消失", !File.Exists(src));
+                CaseAssertions.CheckTrue("Replace 目标内容被替换",
                     ContentIs(dst, "NEW-CONTENT"));
             }
             finally
@@ -628,11 +626,11 @@ namespace RigiCompiler.Tests
                     }
                     var rc = Rename(dispatch, src, dst, replace: 1);
                     var expected = kind == "empty" && IsLinux ? -21 : -17;
-                    TestHarness.CheckTrue("目录 Replace 已存目标 " + kind,
+                    CaseAssertions.CheckTrue("目录 Replace 已存目标 " + kind,
                         rc == expected, "rc=" + rc);
-                    TestHarness.CheckTrue("目录源内容未动 " + kind,
+                    CaseAssertions.CheckTrue("目录源内容未动 " + kind,
                         ContentIs(Path.Combine(src, "inner"), "SOURCE"));
-                    TestHarness.CheckTrue("旧目标未动 " + kind,
+                    CaseAssertions.CheckTrue("旧目标未动 " + kind,
                         kind == "empty" ? Directory.Exists(dst)
                             && Directory.GetFileSystemEntries(dst).Length == 0
                             : kind == "file" ? ContentIs(dst, "OLD")
@@ -662,9 +660,9 @@ namespace RigiCompiler.Tests
                     return;
                 }
                 var rc = Rename(dispatch, src, dst, replace: 1);
-                TestHarness.CheckTrue("Replace 链接条目覆盖成功", rc == 0,
+                CaseAssertions.CheckTrue("Replace 链接条目覆盖成功", rc == 0,
                     "rc=" + rc);
-                TestHarness.CheckTrue("Replace 仅移动链接不跟随末段",
+                CaseAssertions.CheckTrue("Replace 仅移动链接不跟随末段",
                     new FileInfo(dst).LinkTarget == target
                         && new FileInfo(src).LinkTarget == null);
             }
@@ -717,19 +715,19 @@ namespace RigiCompiler.Tests
                     creator.Start();
                     var done = mover.Join(TimeSpan.FromSeconds(30));
                     done &= creator.Join(TimeSpan.FromSeconds(30));
-                    TestHarness.CheckTrue("Replace 目录争用线程完成 " + round,
+                    CaseAssertions.CheckTrue("Replace 目录争用线程完成 " + round,
                         done && moveError == null && createError == null,
                         $"done={done} move={moveError} create={createError}");
                     if (!done) { return; }
-                    TestHarness.CheckTrue("Replace 目录争用结果 " + round,
+                    CaseAssertions.CheckTrue("Replace 目录争用结果 " + round,
                         rc == 0 || rc == -21 || (!IsLinux && rc == -17),
                         "rc=" + rc);
                     if (rc == -21 || rc == -17)
                     {
-                        TestHarness.CheckTrue("Replace 失败保留目录源 " + round,
+                        CaseAssertions.CheckTrue("Replace 失败保留目录源 " + round,
                             ContentIs(Path.Combine(src, "inner"), "SOURCE"));
                     }
-                    TestHarness.CheckTrue("Replace 目标目录存在 " + round,
+                    CaseAssertions.CheckTrue("Replace 目标目录存在 " + round,
                         Directory.Exists(dst));
                 }
             }

@@ -22,16 +22,16 @@ public static partial class ModuleTests
             + " if (args.length != 4) { return 1 }\n if ((args[0] as String) != \"first\") { return 2 }\n"
             + " if ((args[1] as String) != \"\") { return 3 }\n if ((args[2] as String) != \"two words\") { return 4 }\n"
             + " if ((args[3] as String) != \"中文🦊\") { return 5 }\n core.io.Console.println(args[3] as String)\n return 42\n}\n";
-        var (app, unit) = CompileInterfaceProbe("argv@1.0.0", [TestHarness.ParseRoot(source, "source/argv.rg")], [std], finalApplication: true);
+        var (app, unit) = CompileInterfaceProbe("argv@1.0.0", [CompilerTestTools.ParseRoot(source, "source/argv.rg")], [std], finalApplication: true);
         var linked = ModuleApplicationLinker.Link([std], app.ReadBil(), unit.Symbols);
         File.WriteAllText(Path.Combine(folder, "source.rg"), source); File.WriteAllText(Path.Combine(folder, "input.bil"), BilWriter.Write(linked));
         string[] arguments = ["first", "", "two words", "中文🦊"];
         var vm = BilVm.Run(linked, programArguments: arguments);
-        TestHarness.CheckTrue("入口VM " + (coroutine ? "协程" : "同步") + " argv实际42", vm.Exception == null && vm.ReturnValue is VmI32 { Value: 42 } && vm.Stdout == "中文🦊\n", vm.Exception?.ToString() ?? "");
+        CaseAssertions.CheckTrue("入口VM " + (coroutine ? "协程" : "同步") + " argv实际42", vm.Exception == null && vm.ReturnValue is VmI32 { Value: 42 } && vm.Stdout == "中文🦊\n", vm.Exception?.ToString() ?? "");
         var executable = Path.Combine(folder, OperatingSystem.IsWindows() ? "argv.exe" : "argv");
         var compiled = NativeCommand.EmitAndLink(linked, executable, null, null, null, null, null, null, "module argv");
         File.WriteAllText(Path.Combine(folder, "compile.exit"), compiled.ToString());
-        TestHarness.CheckTrue("真实默认O2 Native Array<String>入口发射", compiled == 0 && File.Exists(executable));
+        CaseAssertions.CheckTrue("真实默认O2 Native Array<String>入口发射", compiled == 0 && File.Exists(executable));
         var events = new JsonArray();
         foreach (var (label, args, expected, stdout) in new (string, string[], int, string)[]
         { ("many", arguments, 42, "中文🦊\n"), ("empty", [], 7, "empty\n"), ("exception", ["fail"], 1, "") })
@@ -43,7 +43,7 @@ public static partial class ModuleTests
             File.WriteAllText(Path.Combine(folder, label + ".stdout"), actualOut);
             File.WriteAllText(Path.Combine(folder, label + ".stderr"), actualErr);
             File.WriteAllText(Path.Combine(folder, label + ".exit"), code.ToString());
-            TestHarness.CheckTrue("同一Native产物OSargv " + label + "顺序/空串/空格/Unicode/生命周期", code == expected && actualOut == stdout
+            CaseAssertions.CheckTrue("同一Native产物OSargv " + label + "顺序/空串/空格/Unicode/生命周期", code == expected && actualOut == stdout
                 && (label == "exception" ? actualErr.Contains("argv-exception", StringComparison.Ordinal) && !actualErr.Contains("memory leak", StringComparison.Ordinal) : actualErr.Length == 0), actualErr);
             events.Add((JsonNode)new JsonObject { ["label"] = label, ["exit"] = code, ["out"] = actualOut, ["err"] = actualErr });
         }
@@ -53,7 +53,7 @@ public static partial class ModuleTests
             var code = ExternalProcess.Run("python3", ["-c", "import os,sys; os.execve(os.fsencode(sys.argv[1]),[os.fsencode(sys.argv[1]),b'\\xff'],os.environ)", executable],
                 out var stdout, out var stderr, environment: new Dictionary<string, string> { ["RIGI_RT_MEMTRACK"] = "1" }, closeStdin: true);
             File.WriteAllText(Path.Combine(folder, "invalid.stderr"), stderr); File.WriteAllText(Path.Combine(folder, "invalid.exit"), code.ToString());
-            TestHarness.CheckTrue("实际execve非法UTF8参数在托管图分配前拒且无泄漏", code == 1 && stdout.Length == 0 && stderr.Contains("UTF-8", StringComparison.Ordinal)
+            CaseAssertions.CheckTrue("实际execve非法UTF8参数在托管图分配前拒且无泄漏", code == 1 && stdout.Length == 0 && stderr.Contains("UTF-8", StringComparison.Ordinal)
                 && !stderr.Contains("memory leak", StringComparison.Ordinal), stderr);
         }
         File.WriteAllText(Path.Combine(folder, "evidence.json"), new JsonObject { ["coroutine"] = coroutine, ["compileExit"] = compiled,

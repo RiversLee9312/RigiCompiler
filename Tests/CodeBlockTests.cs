@@ -15,7 +15,7 @@ namespace RigiCompiler.Tests
     /// 7. 错误用例
     /// 8. 栈上变量的 @ 注解（wrapper 应用）
     ///
-    /// 驱动方式：TestHarness.ParseBlock（TestRootParserLayer 垫底 + CodeBlockParserLayer
+    /// 驱动方式：CompilerTestTools.ParseBlock（TestRootParserLayer 垫底 + CodeBlockParserLayer
     /// 独立入口），源码以 { ... } 包裹；断言统一走 AstDescribe 描述串（M31 基建）。
     /// </summary>
     public class CodeBlockTests
@@ -23,7 +23,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 变量声明语句 =====
         public static void TestVariableDeclarations()
         {
-            TestHarness.Section("Variable Declarations in Block");
+            CompilerTestTools.Section("Variable Declarations in Block");
 
             TestBlock("{ }", "[]");
             TestBlock("{ var x = 42 }", "[var x = Int(42,I32)]");
@@ -33,25 +33,25 @@ namespace RigiCompiler.Tests
             // 无初始化声明（} 终止）
             TestBlock("{ var count: i64 }", "[var count: i64]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 表达式语句 =====
         public static void TestExpressionStatements()
         {
-            TestHarness.Section("Expression Statements");
+            CompilerTestTools.Section("Expression Statements");
 
             TestBlock("{ foo(1) }", "[Path(foo(Int(1,I32)), [])]");
             TestBlock("{\n    foo(1)\n    obj.field\n}",
                 "[Path(foo(Int(1,I32)), []), Path(obj, [.field])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 赋值语句 =====
         public static void TestAssignStatements()
         {
-            TestHarness.Section("Assign Statements");
+            CompilerTestTools.Section("Assign Statements");
 
             TestBlock("{ x = 5 }", "[Assign(Path(x, []) = Int(5,I32))]");
             // 纯符号路径目标保持 Symbol 形态
@@ -61,13 +61,13 @@ namespace RigiCompiler.Tests
                 "[Assign(Path(foo(), [.field]) = Group(Binary(Int(1,I32) + Int(2,I32))))]");
             TestBlock("{ a[0] = v }", "[Assign(Path(a[Int(0,I32)], []) = Path(v, []))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. return 语句 =====
         public static void TestReturnStatements()
         {
-            TestHarness.Section("return Statements");
+            CompilerTestTools.Section("return Statements");
 
             TestBlock("{ return }", "[Return]");
             TestBlock("{ return 42 }", "[Return(Int(42,I32))]");
@@ -76,25 +76,25 @@ namespace RigiCompiler.Tests
             TestBlock("{ return@_ (x * 2) }",
                 "[Return@_(Group(Binary(Path(x, []) * Int(2,I32))))]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. break / continue 语句 =====
         public static void TestLoopControlStatements()
         {
-            TestHarness.Section("break/continue Statements");
+            CompilerTestTools.Section("break/continue Statements");
 
             TestBlock("{ break }", "[Break]");
             TestBlock("{ continue }", "[Continue]");
             TestBlock("{\n    break@outer\n    continue@inner\n}", "[Break@outer, Continue@inner]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. if 语句 =====
         public static void TestIfStatements()
         {
-            TestHarness.Section("if Statements");
+            CompilerTestTools.Section("if Statements");
 
             // 无 else
             TestBlock("{ if (x > 0) { foo() } }",
@@ -120,13 +120,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ if ((a and b) or c) { f() } }",
                 "[IfStmt(Binary(Group(Binary(Path(a, []) and Path(b, []))) or Path(c, [])), [Path(f(), [])], <none>)]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Code Block Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Code Block Error Cases (expect ParserException)");
 
             // 变量声明缺初始化
             TestError("{ var x = }", "Unexpected token at start of expression");
@@ -143,13 +143,13 @@ namespace RigiCompiler.Tests
             TestError("{ if (a or b or c) { f() } }", "没有运算符优先级");
             TestError("{ if (a and b or c) { f() } }", "没有运算符优先级");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 8. 栈上变量的 @ 注解（wrapper 应用，SYNTAX §14.3/§14.5，P5）=====
         public static void TestAnnotatedDeclarations()
         {
-            TestHarness.Section("Annotated Declarations in Block");
+            CompilerTestTools.Section("Annotated Declarations in Block");
 
             // 规范 §14.3 示例形态：值 wrapper 修饰栈上变量
             TestBlock("{\n    @Clamped(0, 100)\n    var health: i32 = 50\n}",
@@ -158,7 +158,7 @@ namespace RigiCompiler.Tests
             TestBlock("{\n    @Logged\n    var x: i32\n}",
                 "[@Logged var x: i32]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -168,28 +168,28 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(code);
-                TestHarness.Check(Label(code), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
         // 错误校验：解析必须抛出 ParserException/LexerException 且消息含片段
         private static void TestError(string code, string expectedMessagePart)
         {
-            TestHarness.CheckParseError(Label(code), () => TestHarness.ParseBlock(code), expectedMessagePart);
+            CaseAssertions.CheckParseError(Label(code), () => CompilerTestTools.ParseBlock(code), expectedMessagePart);
         }
 
         // 标签：多行源码的 \n 转义显示
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("CodeBlock",
+
+        internal static TestSuiteData Spec { get; } = new("CodeBlock",
         [
             (nameof(TestVariableDeclarations), TestVariableDeclarations),
             (nameof(TestExpressionStatements), TestExpressionStatements),

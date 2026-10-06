@@ -17,15 +17,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static partial class BilVmTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "BilVm", Cases, sectionTitle: "BilVm");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -202,7 +200,7 @@ namespace RigiCompiler.Tests
         {
             var context = new VmContext(module);
             var function = context.FindFunction(functionSymbol);
-            TestHarness.CheckTrue("预备 fn 存在", function != null, functionSymbol);
+            CaseAssertions.CheckTrue("预备 fn 存在", function != null, functionSymbol);
             // 直建模块（无 stdlib Dispatcher）走降级通道；否则完整调度链
             if (!context.Dispatch.HasDispatcher)
             {
@@ -224,7 +222,7 @@ namespace RigiCompiler.Tests
             try
             {
                 var (unit, module, _) = BilTestHarness.EmitBilUnit(source);
-                TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+                CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                     string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                         d => $"{d.Phase}: {d.Message}")));
                 if (unit.Diagnostics.HasErrors)
@@ -236,7 +234,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue("全管线无诊断", false, exception.ToString());
+                CaseAssertions.CheckTrue("全管线无诊断", false, exception.ToString());
                 return new BilVmResult("", "", null,
                     new VmException(exception.Message, inner: exception));
             }
@@ -244,20 +242,20 @@ namespace RigiCompiler.Tests
 
         private static void CheckOk(string label, BilVmResult result)
         {
-            TestHarness.CheckTrue(label + " 无异常", result.Exception == null,
+            CaseAssertions.CheckTrue(label + " 无异常", result.Exception == null,
                 result.Exception?.ToString() ?? "");
         }
 
         private static void CheckI32(string label, BilVmResult result, int expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmI32 n && n.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }
 
         private static void CheckBool(string label, BilVmResult result, bool expected)
         {
-            TestHarness.CheckTrue(label,
+            CaseAssertions.CheckTrue(label,
                 result.ReturnValue is VmBool flag && flag.Value == expected,
                 result.ReturnValue?.ToStandardText() ?? "<null>");
         }

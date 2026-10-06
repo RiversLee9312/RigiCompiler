@@ -33,11 +33,11 @@ namespace RigiCompiler.Tests
             // ext 成员声明在目标 .type 内（§8.3/§8.4），带 ext 修饰符
             var counter = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Counter");
-            TestHarness.CheckTrue("ext 字段声明（目标 .type 内 + ext 修饰符）",
+            CaseAssertions.CheckTrue("ext 字段声明（目标 .type 内 + ext 修饰符）",
                 counter.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Field && d.Symbol == "Counter#extra@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })));
-            TestHarness.CheckTrue("ext 方法声明（ext 修饰符）",
+            CaseAssertions.CheckTrue("ext 方法声明（ext 修饰符）",
                 counter.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Method && d.Symbol == "Counter$twice()@.i32"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })));
@@ -93,7 +93,7 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol == "Meter");
             var kmField = meter.Members.OfType<BilSimpleMemberDeclaration>()
                 .Single(d => d.Symbol == "Meter#km@.i32");
-            TestHarness.CheckTrue("ext 字段声明带 backing/readable/writable/compiler-generated",
+            CaseAssertions.CheckTrue("ext 字段声明带 backing/readable/writable/compiler-generated",
                 kmField.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })
                 && meter.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "Meter$.get.km@.i32"
@@ -146,11 +146,11 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（内建 ext 访问器）", module);
 
             // §8.4.1 裸条目：字段 + getter 声明（M80 修复后随字段随迁）
-            TestHarness.CheckTrue("内建 ext 字段裸条目（ext computed readable）",
+            CaseAssertions.CheckTrue("内建 ext 字段裸条目（ext computed readable）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Field && d.Symbol == "core::String#isEmpty@.bool"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })));
-            TestHarness.CheckTrue("内建 ext getter 声明随迁（getter(FIELD) + ext）",
+            CaseAssertions.CheckTrue("内建 ext getter 声明随迁（getter(FIELD) + ext）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "core::String$.get.isEmpty@.bool"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })
@@ -194,7 +194,7 @@ namespace RigiCompiler.Tests
             // 声明形态：.static-field/.static-method + .static. canonical + ext
             var config = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Config");
-            TestHarness.CheckTrue("ext static 字段声明（.static-field + ext）",
+            CaseAssertions.CheckTrue("ext static 字段声明（.static-field + ext）",
                 config.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.StaticField
                     && d.Symbol == "Config#.static.defaultSize@.i32"
@@ -274,12 +274,12 @@ namespace RigiCompiler.Tests
             // 内建 String 不进符号段，ext 字段按 §8.4.1 裸条目落地：
             // core::String#length@.i64 + pub/const/ext；无 backing 存储、
             // 无访问器（值由 VM get.field 直读，同 Array.length 通道）
-            TestHarness.CheckTrue("String.length 裸条目（pub const ext i64）",
+            CaseAssertions.CheckTrue("String.length 裸条目（pub const ext i64）",
                 module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Kind == BilMemberKind.Field && d.Symbol == "core::String#length@.i64"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Const })
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Ext })));
-            TestHarness.CheckTrue("String.length 无访问器随迁",
+            CaseAssertions.CheckTrue("String.length 无访问器随迁",
                 !module.LocalSymbols.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains("length") && d.Symbol.Contains("$.get.")
                     && d.Symbol.StartsWith("core::String", StringComparison.Ordinal)));

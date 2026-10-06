@@ -19,16 +19,16 @@ namespace RigiCompiler.Tests
                 "    return s as? String\n" +
                 "}\n");
             CheckNoErrors("无诊断（cast）", unit);
-            TestHarness.Check("as 降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("as 降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [], [Return(Cast(Param(s,String), String, String))])");
-            TestHarness.Check("as? 降级形态", LoweredDescribe.Body(BodyOf(lowered, "g")),
+            CaseAssertions.Check("as? 降级形态", LoweredDescribe.Body(BodyOf(lowered, "g")),
                 "Body(g, [], [Return(SafeCast(Param(s,String), String, String?))])");
             // Origin 回指引用相等（恒等降级）
             var boundCast = (BoundCastExpression)((BoundReturnStatement)
                 ((BoundBlock)bound.Single(b => b.Method.Name == "f").Body).Statements[0]).Value!;
             var loweredCast = (LoweredCastExpression)((LoweredReturnStatement)
                 BodyOf(lowered, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("cast Origin 回指 Bound 节点",
+            CaseAssertions.CheckTrue("cast Origin 回指 Bound 节点",
                 ReferenceEquals(loweredCast.Origin, boundCast));
         }
 
@@ -43,7 +43,7 @@ namespace RigiCompiler.Tests
                 "    var s = \"n=${n}\"\n" +
                 "}\n");
             CheckNoErrors("无诊断（插值降级）", unit);
-            TestHarness.Check("值类型段 toString 的 receiver 装箱 cast",
+            CaseAssertions.Check("值类型段 toString 的 receiver 装箱 cast",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [n: i32, s: String], [Decl(n, i32, = Int(42,i32)); " +
                 "Decl(s, String, = Binary(Add, Str(\"n=\",String), " +
@@ -55,7 +55,7 @@ namespace RigiCompiler.Tests
                 "class Dog : Animal { }\n" +
                 "func f(d: Dog): Animal { return d }\n");
             CheckNoErrors("无诊断（return cast 物化）", unit2);
-            TestHarness.Check("return 子类型 cast 物化",
+            CaseAssertions.Check("return 子类型 cast 物化",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [], [Return(Cast(Param(d,Dog), Animal, Animal))])");
 
@@ -67,7 +67,7 @@ namespace RigiCompiler.Tests
                 "    var g: Greeter = new Bot()\n" +
                 "}\n");
             CheckNoErrors("无诊断（初始化 cast 物化）", unit3);
-            TestHarness.Check("局部初始化子类型 cast 物化",
+            CaseAssertions.Check("局部初始化子类型 cast 物化",
                 LoweredDescribe.Body(BodyOf(lowered3, "f")),
                 "Body(f, [g: Greeter], [Decl(g, Greeter, = Cast(New(Bot, []), Greeter, Greeter))])");
         }
@@ -80,7 +80,7 @@ namespace RigiCompiler.Tests
                 "func f(u: User?): String? { return u?.name }\n");
             CheckNoErrors("无诊断（?. 降级）", unit);
             // 物化 receiver + null 检查 + 非空分支 unwrap/成员/wrap
-            TestHarness.Check("?. 脱糖形态（字段）",
+            CaseAssertions.Check("?. 脱糖形态（字段）",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: User?, .s1: String?, .b0: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
@@ -96,7 +96,7 @@ namespace RigiCompiler.Tests
                 "class A { pub var b: B\n    pub init(_ -> b) { } }\n" +
                 "func f(a: A?): String? { return a?.b?.c }\n");
             CheckNoErrors("无诊断（链式 ?. 降级）", unit2);
-            TestHarness.Check("链式 ?. 脱糖形态",
+            CaseAssertions.Check("链式 ?. 脱糖形态",
                 LoweredDescribe.Body(BodyOf(lowered2, "f")),
                 "Body(f, [.s0: A?, .s1: B?, .b0: .breakid, .s2: B?, .s3: String?, .b1: .breakid], [" +
                 "Assign(Local(.s0,A?), Param(a,A?)); " +
@@ -120,7 +120,7 @@ namespace RigiCompiler.Tests
                 "func f(u: User?): User { return u if? new User(\"anon\") }\n");
             CheckNoErrors("无诊断（if? 降级）", unit);
             // 非空分支 unwrap，空分支求回退值（延迟求值由 if 结构保证）
-            TestHarness.Check("if? 脱糖形态",
+            CaseAssertions.Check("if? 脱糖形态",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [.s0: User?, .s1: User, .b0: .breakid], [" +
                 "Assign(Local(.s0,User?), Param(u,User?)); " +
@@ -142,7 +142,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("无诊断（解构降级）", unit);
             // pair 物化一次 + 逐字段读取（分量类型 = 构造实参）
-            TestHarness.Check("解构脱糖形态",
+            CaseAssertions.Check("解构脱糖形态",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [k: String, v: i32, .s0: Entry], [" +
                 "[Assign(Local(.s0,Entry), New(Entry, init, [Str(\"a\",String), Int(1,i32)])); " +
@@ -159,15 +159,15 @@ namespace RigiCompiler.Tests
                 "class Dog : Animal { }\n" +
                 "func f(d: Dog): bool { return d is Animal }\n");
             CheckNoErrors("无诊断（is 静态降级）", unit);
-            TestHarness.Check("is 静态降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
+            CaseAssertions.Check("is 静态降级形态", LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [], [Return(Is(Param(d,Dog), Animal))])");
             var boundIs = (BoundTypeCheckExpression)((BoundReturnStatement)
                 bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Value!;
             var loweredIs = (LoweredTypeCheckExpression)((LoweredReturnStatement)
                 BodyOf(lowered, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("is Origin 回指 Bound 节点",
+            CaseAssertions.CheckTrue("is Origin 回指 Bound 节点",
                 ReferenceEquals(loweredIs.Origin, boundIs));
-            TestHarness.CheckTrue("is 目标类型符号透传（静态无 TargetValue）",
+            CaseAssertions.CheckTrue("is 目标类型符号透传（静态无 TargetValue）",
                 ReferenceEquals(loweredIs.TargetType, boundIs.TargetType)
                 && loweredIs.TargetValue == null);
 
@@ -180,7 +180,7 @@ namespace RigiCompiler.Tests
                 "    return d is t\n" +
                 "}\n");
             CheckNoErrors("无诊断（is 动态降级）", unit2);
-            TestHarness.Check("is 动态降级形态", LoweredDescribe.Body(BodyOf(lowered2, "k")),
+            CaseAssertions.Check("is 动态降级形态", LoweredDescribe.Body(BodyOf(lowered2, "k")),
                 "Body(k, [t: Type<Dog>], " +
                 "[Decl(t, Type<Dog>, = TypeOf(Param(d,Dog), Type<Dog>)); " +
                 "Return(Is(Param(d,Dog), dyn Local(t,Type<Dog>)))])");
@@ -188,7 +188,7 @@ namespace RigiCompiler.Tests
                 bound2.Single(b => b.Method.Name == "k").Body.Statements[1]).Value!;
             var loweredDynIs = (LoweredTypeCheckExpression)((LoweredReturnStatement)
                 BodyOf(lowered2, "k").Body.Statements[1]).Value!;
-            TestHarness.CheckTrue("动态 is Origin 回指 + TargetValue 递归降级",
+            CaseAssertions.CheckTrue("动态 is Origin 回指 + TargetValue 递归降级",
                 ReferenceEquals(loweredDynIs.Origin, boundDynIs)
                 && loweredDynIs.TargetValue != null
                 && !ReferenceEquals(loweredDynIs.TargetValue, boundDynIs.TargetValue)
@@ -204,14 +204,14 @@ namespace RigiCompiler.Tests
                 "class Dog : Animal { }\n" +
                 "func f(d: Dog): Type\\<Dog> { return typeOf(d) }\n");
             CheckNoErrors("无诊断（typeOf 值形态降级）", unit);
-            TestHarness.Check("typeOf 值形态降级形态",
+            CaseAssertions.Check("typeOf 值形态降级形态",
                 LoweredDescribe.Body(BodyOf(lowered, "f")),
                 "Body(f, [], [Return(TypeOf(Param(d,Dog), Type<Dog>))])");
             var boundTypeOf = (BoundTypeOfExpression)((BoundReturnStatement)
                 bound.Single(b => b.Method.Name == "f").Body.Statements[0]).Value!;
             var loweredTypeOf = (LoweredTypeOfExpression)((LoweredReturnStatement)
                 BodyOf(lowered, "f").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("typeOf 值形态 Origin 回指 + Operand 递归降级",
+            CaseAssertions.CheckTrue("typeOf 值形态 Origin 回指 + Operand 递归降级",
                 ReferenceEquals(loweredTypeOf.Origin, boundTypeOf)
                 && loweredTypeOf.Operand != null
                 && ReferenceEquals(loweredTypeOf.Operand!.Origin, boundTypeOf.Operand!)
@@ -223,14 +223,14 @@ namespace RigiCompiler.Tests
                 "class Dog : Animal { }\n" +
                 "func m(): Type\\<Animal> { return typeOf(Animal) }\n");
             CheckNoErrors("无诊断（typeOf 类型形态降级）", unit2);
-            TestHarness.Check("typeOf 类型形态降级形态",
+            CaseAssertions.Check("typeOf 类型形态降级形态",
                 LoweredDescribe.Body(BodyOf(lowered2, "m")),
                 "Body(m, [], [Return(TypeOf(type Animal, Type<Animal>))])");
             var boundTypeForm = (BoundTypeOfExpression)((BoundReturnStatement)
                 bound2.Single(b => b.Method.Name == "m").Body.Statements[0]).Value!;
             var loweredTypeForm = (LoweredTypeOfExpression)((LoweredReturnStatement)
                 BodyOf(lowered2, "m").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("typeOf 类型形态 Origin 回指 + 目标类型符号透传",
+            CaseAssertions.CheckTrue("typeOf 类型形态 Origin 回指 + 目标类型符号透传",
                 ReferenceEquals(loweredTypeForm.Origin, boundTypeForm)
                 && ReferenceEquals(loweredTypeForm.TargetType, boundTypeForm.TargetType)
                 && loweredTypeForm.Operand == null);
@@ -244,14 +244,14 @@ namespace RigiCompiler.Tests
             var (unit, bound, lowered) = LowerUnit(
                 "func makeIt\\<TResult extends i32>(): TResult { return TResult() }\n");
             CheckNoErrors("无诊断（具化构造降级）", unit);
-            TestHarness.Check("具化构造降级形态",
+            CaseAssertions.Check("具化构造降级形态",
                 LoweredDescribe.Body(BodyOf(lowered, "makeIt")),
                 "Body(makeIt, [], [Return(DynamicNew(generic TResult, [], TResult))])");
             var boundReified = (BoundDynamicNewExpression)((BoundReturnStatement)
                 bound.Single(b => b.Method.Name == "makeIt").Body.Statements[0]).Value!;
             var loweredReified = (LoweredDynamicNewExpression)((LoweredReturnStatement)
                 BodyOf(lowered, "makeIt").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("具化构造降级 Origin 回指 + 泛型参数透传",
+            CaseAssertions.CheckTrue("具化构造降级 Origin 回指 + 泛型参数透传",
                 ReferenceEquals(loweredReified.Origin, boundReified)
                 && ReferenceEquals(loweredReified.GenericParameter, boundReified.GenericParameter)
                 && loweredReified.TypeValue == null
@@ -267,7 +267,7 @@ namespace RigiCompiler.Tests
                 "    return b2.size\n" +
                 "}\n");
             CheckNoErrors("无诊断（动态 new 降级）", unit2);
-            TestHarness.Check("动态 new 降级形态",
+            CaseAssertions.Check("动态 new 降级形态",
                 LoweredDescribe.Body(BodyOf(lowered2, "m")),
                 "Body(m, [b: Box, t: Type<Box>, b2: Box], " +
                 "[Decl(b, Box, = New(Box, init, [Int(12,i32)])); " +
@@ -278,7 +278,7 @@ namespace RigiCompiler.Tests
                 bound2.Single(b => b.Method.Name == "m").Body.Statements[2]).Initializer!;
             var loweredDynamic = (LoweredDynamicNewExpression)((LoweredLocalDeclarationStatement)
                 BodyOf(lowered2, "m").Body.Statements[2]).Initializer!;
-            TestHarness.CheckTrue("动态 new 降级 Origin 回指 + TypeValue 递归降级",
+            CaseAssertions.CheckTrue("动态 new 降级 Origin 回指 + TypeValue 递归降级",
                 ReferenceEquals(loweredDynamic.Origin, boundDynamic)
                 && loweredDynamic.GenericParameter == null
                 && loweredDynamic.TypeValue != null

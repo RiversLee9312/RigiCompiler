@@ -20,7 +20,7 @@ namespace RigiCompiler.Tests
                 .Select(s => s.Value)
                 .OfType<LoweredCallExpression>()
                 .Single();
-            TestHarness.CheckTrue("pass 调用 TypeArguments 含类级 TItem",
+            CaseAssertions.CheckTrue("pass 调用 TypeArguments 含类级 TItem",
                 passCall.TypeArguments.Count == 1
                 && passCall.TypeArguments[0] is GenericParameterSymbol { Name: "TItem" });
 
@@ -30,7 +30,7 @@ namespace RigiCompiler.Tests
                 .Select(s => s.Value)
                 .OfType<LoweredCallExpression>()
                 .Single();
-            TestHarness.CheckTrue("mix 调用 TypeArguments 含方法级 U（不丢类级混用）",
+            CaseAssertions.CheckTrue("mix 调用 TypeArguments 含方法级 U（不丢类级混用）",
                 mixCall.TypeArguments.Count == 1
                 && mixCall.TypeArguments[0] is GenericParameterSymbol { Name: "U" });
         }

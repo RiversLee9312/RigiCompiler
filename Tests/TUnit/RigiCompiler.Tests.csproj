@@ -8,11 +8,20 @@
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
     <PublishAot Condition="'$(Configuration)'=='Release'">true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateTestingPlatformEntryPoint>false</GenerateTestingPlatformEntryPoint>
+    <GenerateTestingPlatformApplicationHelper>true</GenerateTestingPlatformApplicationHelper>
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="TUnit" Version="1.72.10" />
     <ProjectReference Include="../../RigiCompiler.csproj" />
+    <Compile Include="../*.cs" />
+    <Compile Include="../e2e/cs/**/*.cs" />
+    <Content Include="../e2e/rigi/**/*.rg" Link="Tests/e2e/rigi/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../native/rigi/**/*.rg" Link="Tests/native/rigi/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <!-- 编译器反射节点的保留约定也适用于加载编译器程序集的 AOT 测试宿主。 -->
     <TrimmerRootDescriptor Include="../../ILLink.Roots.xml" />
+    <!-- 测试专用坏节点的反射成员独立保留，继续验证真实类型审计拒绝。 -->
+    <TrimmerRootDescriptor Include="ILLink.TestFixtures.xml" />
   </ItemGroup>
 </Project>

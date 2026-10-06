@@ -44,7 +44,7 @@ namespace RigiCompiler.Tests
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.Add(TestHarness.ParseRoot(userSource, UserSourceName));
+            roots.Add(CompilerTestTools.ParseRoot(userSource, UserSourceName));
             var unit = new CompilationUnit(roots.ToArray());
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
@@ -60,7 +60,7 @@ namespace RigiCompiler.Tests
         {
             var roots = new List<RootASTNode>();
             roots.AddRange(StdlibSources.ParseAll());
-            roots.Add(TestHarness.ParseRoot(userSource, UserSourceName));
+            roots.Add(CompilerTestTools.ParseRoot(userSource, UserSourceName));
             var unit = new CompilationUnit(roots.ToArray());
             var declarations = DeclarationCollector.Collect(unit);
             DeclarationResolver.Resolve(unit, declarations);
@@ -75,7 +75,7 @@ namespace RigiCompiler.Tests
         public static void CheckBilValid(string label, BilModule module)
         {
             var errors = BilVerifier.Verify(module);
-            TestHarness.CheckTrue(label, errors.Count == 0,
+            CaseAssertions.CheckTrue(label, errors.Count == 0,
                 string.Join("; ", errors.Select(e => e.ToString())));
         }
 
@@ -87,11 +87,11 @@ namespace RigiCompiler.Tests
             {
                 if (error.Message.Contains(expectedMessagePart))
                 {
-                    TestHarness.CheckTrue(label, true);
+                    CaseAssertions.CheckTrue(label, true);
                     return;
                 }
             }
-            TestHarness.CheckTrue(label, false,
+            CaseAssertions.CheckTrue(label, false,
                 errors.Count == 0
                     ? "验证器未报告任何错误"
                     : "缺少预期错误；实际: " + string.Join("; ", errors.Select(e => e.ToString())));
@@ -109,11 +109,11 @@ namespace RigiCompiler.Tests
             var function = module.Functions.FirstOrDefault(f => f.Symbol == fnSymbol);
             if (function == null)
             {
-                TestHarness.CheckTrue(label, false,
+                CaseAssertions.CheckTrue(label, false,
                     $"模块中找不到 fn {fnSymbol}（实际: {string.Join(", ", module.Functions.Select(f => f.Symbol))}）");
                 return;
             }
-            TestHarness.Check(label, NormalizeLambdaUuids(RenderFnShape(function)),
+            CaseAssertions.Check(label, NormalizeLambdaUuids(RenderFnShape(function)),
                 NormalizeLambdaUuids(expected));
         }
 
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
                 sb.Append('#').Append(ResourceIdOf(resourceIds, resource));
                 sb.Append(" = ").Append(RenderResourceBody(resource));
             }
-            TestHarness.Check(label, sb.ToString(), expected);
+            CaseAssertions.Check(label, sb.ToString(), expected);
         }
 
         // 资源表会随 stdlib 增长；资源语义测试应锁定所关心的值与去重，
@@ -141,7 +141,7 @@ namespace RigiCompiler.Tests
         {
             var count = module.Resources.OfType<BilScalarResource>().Count(resource =>
                 resource.Type == type && resource.LiteralText == literalText);
-            TestHarness.CheckTrue(label, count == 1,
+            CaseAssertions.CheckTrue(label, count == 1,
                 $"{BilSpellings.Of(type)} {literalText}: {count}");
         }
 
@@ -150,7 +150,7 @@ namespace RigiCompiler.Tests
         {
             var count = module.Resources.OfType<BilNullResource>()
                 .Count(resource => resource.TypeRef == typeRef);
-            TestHarness.CheckTrue(label, count == 1, $"null type({typeRef}): {count}");
+            CaseAssertions.CheckTrue(label, count == 1, $"null type({typeRef}): {count}");
         }
 
         private static string RenderFnShape(BilFunction function)

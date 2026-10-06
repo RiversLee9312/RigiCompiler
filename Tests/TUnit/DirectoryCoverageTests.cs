@@ -5,8 +5,8 @@ using TUnit.Core;
 
 namespace RigiCompiler.TUnitTests;
 
-[Category("Dispatcher")]
-public class LegacyParallelTests
+[Category("DirectoryCoverage")]
+public class DirectoryCoverageTests
 {
     private static void Check(bool condition, string message)
     { if (!condition) throw new InvalidOperationException(message); }
@@ -14,6 +14,9 @@ public class LegacyParallelTests
     [Test]
     public void EverySuiteHasEnumerableCoverage()
     {
+        MigrationCoverageBaseline.Verify();
+        FullRunProof.VerifyGuard();
+        CiShardSelection.VerifyGuard();
         using var output = new MemoryStream();
         TestInventory.Write(output);
         using var manifest = JsonDocument.Parse(output.ToArray());
@@ -23,7 +26,7 @@ public class LegacyParallelTests
             var inventory = suite.GetProperty("cases").EnumerateArray().ToArray();
             Check(inventory.Length > 0 && inventory.Select(c => c.GetProperty("label").GetString()).Distinct().Count() == inventory.Length,
                 "目录不能漏套件、空覆盖或重复标签：" + name);
-            var tasks = LegacyDispatcher.Select(TestRunner.GetSuiteNumber(name));
+            var tasks = CaseSelection.Select(TestSuiteCatalog.GetNumber(name));
             var expected = inventory.Where(c => !c.GetProperty("slow").GetBoolean() || c.GetProperty("gateEnabled").GetBoolean())
                 .Select(c => c.GetProperty("index").GetInt32()).ToArray();
             Check(tasks.All(t => t.Indices.Count > 0) && tasks.SelectMany(t => t.Indices).SequenceEqual(expected),
@@ -42,7 +45,7 @@ public class LegacyParallelTests
         Directory.CreateDirectory(directory);
         try
         {
-            var tasks = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("Literal"), ["0", "1"]);
+            var tasks = CaseSelection.Select(TestSuiteCatalog.GetNumber("Literal"), ["0", "1"]);
             Check(tasks.Count == 2, "两个测试方法须有独立 worker 身份");
             var worker = new CaseWorkerClient(new BoundedCaseWorkerLeases(2));
             var results = await Task.WhenAll(tasks.Select(t => worker.RunAsync(t.Id,
@@ -57,13 +60,13 @@ public class LegacyParallelTests
     }
 
     [Test]
-    public async Task PrivateCountersRemainRealAssertions()
+    public async Task ScopedEvidencePreservesAssertions()
     {
-        var selected = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("CommandLineParser"), ["label", "TestRegistryIntegrity"])
-            .Concat(LegacyDispatcher.Select(TestRunner.GetSuiteNumber("LexerFuzz"), ["5", "6"])).ToArray();
-        var outcomes = await LegacyDispatcher.RunTasksAsync(selected);
+        var selected = CaseSelection.Select(TestSuiteCatalog.GetNumber("CommandLineParser"), ["label", "TestRegistryIntegrity"])
+            .Concat(CaseSelection.Select(TestSuiteCatalog.GetNumber("LexerFuzz"), ["label", "fuzz-0000-纯随机", "fuzz-0001-纯随机"])).ToArray();
+        var outcomes = await CaseWorkers.RunTasksAsync(selected);
         Check(outcomes.All(o => o.Status == CaseStatus.Pass), string.Join('\n', outcomes.Select(o => o.Diagnostics)));
         Check(outcomes[0].Assertions > 5 && outcomes[1].Assertions == 2,
-            "旧私有计数器与两个全局 fuzz 输入须保留实际断言数，不能变成退出码计数");
+            "每 worker scope 与两个真实全局 fuzz 输入须保留实际断言数，不能变成退出码计数");
     }
 }

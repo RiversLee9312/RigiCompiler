@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
                 "    var d = (a as Dog)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("失败 cast 抛 CastException",
+            CaseAssertions.CheckTrue("失败 cast 抛 CastException",
                 fail.Exception?.ExceptionObject is VmObject obj
                 && obj.TypeRef.Contains("CastException"),
                 fail.Exception?.ToString() ?? "<null>");

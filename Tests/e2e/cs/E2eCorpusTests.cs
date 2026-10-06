@@ -25,8 +25,8 @@ namespace RigiCompiler.Tests
     ///   // expect-error: &lt;诊断子串&gt;       可多条；出现即负例——断言编译失败
     ///                                     且每条子串都能在 Error 级诊断中找到。
     ///   // e2e-slow-gate: &lt;理由&gt;        慢速压力用例门控（慢例评审，块 4-3
-    ///                                     收尾）：默认套件跑（RunAll/数值区间，
-    ///                                     含并行子进程——子进程继承环境变量，
+    ///                                     收尾）：默认 TUnit 全量/兼容数值区间
+    ///                                     （含隔离 worker，子进程继承环境变量，
     ///                                     过滤口径一致、区间索引不错位）跳过
     ///                                     该用例；环境变量 RIGI_E2E_SLOW=1
     ///                                     时并入默认跑。按用例名过滤（非数字
@@ -63,36 +63,18 @@ namespace RigiCompiler.Tests
             string.Equals(Environment.GetEnvironmentVariable("RIGI_E2E_SLOW"), "1",
                 StringComparison.Ordinal);
 
-        public static int RunAll()
-        {
-            if (Discover().Count == 0)
-            {
-                return FailNoCases();
-            }
-            return ParallelSuiteRunner.RunAll(Spec);
-        }
 
         // --suite-args 双模：两个非负整数且 from<=to → 数值区间（基座可并行）；
         // 否则按用例名子串过滤（恒进程内，单例调试语义）
-        public static int RunWithArgs(IReadOnlyList<string> args)
-        {
-            if (args.Count >= 2
-                && int.TryParse(args[0], out var from)
-                && int.TryParse(args[1], out var to)
-                && from >= 0 && to >= from)
-            {
-                return ParallelSuiteRunner.RunWithArgs(Spec, args);
-            }
-            return RunNameFilter(args);
-        }
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Discover().Select((entry, index) => new TestInventory.Case(index, entry.Name, entry.SlowGate, "RIGI_E2E_SLOW"));
 
-        internal static ParallelSuiteRunner.SuiteSpec ExecutionSpec => new("E2e", Discover()
+        internal static TestSuiteData ExecutionSpec => new("E2e", Discover()
             .Select(kase => (kase.Name, (Action)(() => RunCase(kase)))).ToArray(), sectionTitle: "E2e");
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec
+        internal static TestSuiteData Spec
         {
             get
             {
@@ -110,53 +92,17 @@ namespace RigiCompiler.Tests
                 }
                 // 门控跳过只在非派生进程汇报一次（子进程同样过滤，口径一致，
                 // 但汇报行重复 16 份只会刷屏）
-                if (skipped.Count > 0 && !TestRunner.IsSpawned)
+                if (skipped.Count > 0 && !WorkerEnvironment.IsWorker)
                 {
                     Console.WriteLine(
                         $"  [slow-gate] e2e 慢速压力用例跳过 {skipped.Count} 例" +
                         $"（{string.Join(", ", skipped)}）；RIGI_E2E_SLOW=1 并入默认跑，" +
                         "或 test --run 56 --suite-args <名字> 单独调试");
                 }
-                return new ParallelSuiteRunner.SuiteSpec("E2e", cases, sectionTitle: "E2e");
+                return new TestSuiteData("E2e", cases, sectionTitle: "E2e");
             }
         }
 
-        private static int RunNameFilter(IReadOnlyList<string> filters)
-        {
-            TestHarness.Reset();
-            TestHarness.Section("E2e");
-            var stopwatch = Stopwatch.StartNew();
-            var cases = Discover().Where(c => filters.Any(f =>
-                c.Name.Contains(f, StringComparison.OrdinalIgnoreCase))).ToList();
-            if (cases.Count == 0)
-            {
-                TestHarness.CheckTrue("语料发现", false,
-                    $"未找到任何用例（语料根: {CorpusRoot()}）");
-                return TestHarness.Summary("E2e");
-            }
-            foreach (var kase in cases)
-            {
-                // 按名显式过滤不受慢速门控限制（单例调试语义），但给出提示
-                if (kase.SlowGate && !SlowGateEnabled)
-                {
-                    Console.WriteLine(
-                        $"  [slow-gate] {kase.Name} 为慢速压力用例（RIGI_E2E_SLOW=1 默认并入）");
-                }
-                RunCase(kase);
-            }
-            stopwatch.Stop();
-            Console.WriteLine($"  （e2e 语料 {cases.Count} 条，耗时 {stopwatch.ElapsedMilliseconds} ms）");
-            return TestHarness.Summary("E2e");
-        }
-
-        private static int FailNoCases()
-        {
-            TestHarness.Reset();
-            TestHarness.Section("E2e");
-            TestHarness.CheckTrue("语料发现", false,
-                $"未找到任何用例（语料根: {CorpusRoot()}）");
-            return TestHarness.Summary("E2e");
-        }
 
         // 输出/发布语料优先；开发源码回退由统一定位器控制。
         private static string CorpusRoot([CallerFilePath] string selfPath = "") =>
@@ -273,11 +219,11 @@ namespace RigiCompiler.Tests
 
                 if (unit.Diagnostics.HasErrors)
                 {
-                    TestHarness.CheckTrue(kase.Name + "：编译零诊断", false,
+                    CaseAssertions.CheckTrue(kase.Name + "：编译零诊断", false,
                         DescribeErrors(unit));
                     return;
                 }
-                TestHarness.CheckTrue(kase.Name + "：编译零诊断", true);
+                CaseAssertions.CheckTrue(kase.Name + "：编译零诊断", true);
 
                 var lowered = Lowerer.Lower(unit, bodies);
                 var module = BilEmitter.Emit(unit, lowered, SanitizeModuleName(kase.Name));
@@ -285,27 +231,27 @@ namespace RigiCompiler.Tests
 
                 if (result.Exception != null)
                 {
-                    TestHarness.CheckTrue(kase.Name + "：VM 无异常", false,
+                    CaseAssertions.CheckTrue(kase.Name + "：VM 无异常", false,
                         result.Exception.ToString());
                     return;
                 }
-                TestHarness.CheckTrue(kase.Name + "：VM 无异常", true);
+                CaseAssertions.CheckTrue(kase.Name + "：VM 无异常", true);
 
                 var expectedStdout = kase.ExpectOutputs.Count == 0
                     ? ""
                     : string.Join("\n", kase.ExpectOutputs) + "\n";
-                TestHarness.Check(kase.Name + "：stdout", result.Stdout, expectedStdout);
+                CaseAssertions.Check(kase.Name + "：stdout", result.Stdout, expectedStdout);
 
                 if (kase.ExpectExit.HasValue)
                 {
-                    TestHarness.CheckTrue(kase.Name + $"：退出码 {kase.ExpectExit.Value}",
+                    CaseAssertions.CheckTrue(kase.Name + $"：退出码 {kase.ExpectExit.Value}",
                         result.ReturnValue is VmI32 n && n.Value == kase.ExpectExit.Value,
                         result.ReturnValue?.ToStandardText() ?? "<null>");
                 }
             }
             catch (Exception exception)
             {
-                TestHarness.CheckTrue(kase.Name, false, exception.ToString());
+                CaseAssertions.CheckTrue(kase.Name, false, exception.ToString());
             }
         }
 
@@ -316,15 +262,15 @@ namespace RigiCompiler.Tests
                 .Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
             if (errors.Count == 0)
             {
-                TestHarness.CheckTrue(kase.Name + "：编译失败（负例）", false,
+                CaseAssertions.CheckTrue(kase.Name + "：编译失败（负例）", false,
                     "编译未报任何错误");
                 return;
             }
-            TestHarness.CheckTrue(kase.Name + "：编译失败（负例）", true);
+            CaseAssertions.CheckTrue(kase.Name + "：编译失败（负例）", true);
             var actual = string.Join("; ", errors.Select(d => $"{d.Phase}: {d.Message}"));
             foreach (var expected in kase.ExpectErrors)
             {
-                TestHarness.CheckTrue(kase.Name + $"：诊断含 [{expected}]",
+                CaseAssertions.CheckTrue(kase.Name + $"：诊断含 [{expected}]",
                     errors.Any(d => d.Message.Contains(expected)), actual);
             }
         }

@@ -23,14 +23,16 @@ mimalloc 静态库（GC Phase 2 起 rigi_rt track 台账的底层分配面，替
 
 ### 2.2 运行
 
+源码测试先构建 solution：全部 `Tests/` 只编入独立 TUnit 项目，编译器的 `test` 命令不会自动构建缺失的测试宿主。编译器与测试宿主分别定位的环境变量和发布门槛见 §2.3。
+
 本节为源码开发命令：`dotnet run help` 与 `dotnet run -- help` 都支持；`--` 用于隔开 SDK 选项与应用参数。下列例子保留分隔符以避免选项冲突。安装后的 NativeAOT 编译器直接执行 `rigic help`，参数中不加 dotnet 的分隔符；模块转交程序 argv 的分隔符仍保留。详见 [安装指南](INSTALLATION.md#1-命令名称与参数分隔符)。
 
 CLI 结构为 `<COMMAND> [--sub-cmd [args...]...]`，顶层 COMMAND 六个：`compile` / `test` / `vm` / `native` / `module` / `help`。裸 `dotnet run` 等价于 `help`。
 
 ```bash
-dotnet run -- test --all                 # CoreCLR 全量（迭代用；提交前验证见 §2.3，不能只跑本命令）
-dotnet run -- test                       # 打印测试套件菜单（编号 + 名称）
-dotnet run -- test --run 1 7             # 按编号运行指定套件（字面量 + 形参列表）
+dotnet run -- test --all                 # 转发独立 TUnit CoreCLR 全量（先构建 solution；提交前见 §2.3）
+dotnet run -- test                       # 转发测试宿主，打印兼容套件菜单（编号 + 名称）
+dotnet run -- test --run 1 7             # 编号兼容选择交给 TUnit（字面量 + 形参列表）
 dotnet run -- compile --file a.rg                    # 编译（语义分析 P1–P3 + 诊断输出；无后端子命令时只到语义）
 dotnet run -- compile --file a.rg --parse-only       # 只解析，AST 以 JSONL 输出到 stdout
 dotnet run -- compile --file a.rg --parse-only --dump-ast ast.jsonl   # AST JSONL 写文件
@@ -134,7 +136,7 @@ cell 身份、BIL 字节与 VM 输出；保留真实多 worker 观测和失败/�
 
 before-publish 每次请求都先执行，再固定源码和声明的 hook 输入；after-publish 每次请求也执行。两阶段的命令、实际宿主、声明输入字节和注入环境均参与键；任意 before-publish 没有声明输入时保守绕缓存。接口/BIL 作为一个 `module.rgi` 配对缓存，损坏会重建，语义失败不发布新条目；成功 receipt 仅在当前模块发布步骤和 after-publish 均成功后原子替换，旧 receipt 保留到该边界。源码仍存在时每次重新计算内容键；源码缺席时只消费自身 `artifact/<profile>/module.rgi` 的已发布产物，校验当前依赖和完整链接闭包，此状态记录为 prebuilt，与内容键 hit 分开。内建标准库信任只来自编译器 resolver，磁盘包及同名普通模块不能自授。
 
-独立 BCL 工具位于 `tools/PerfBaseline`，主项目排除其 C# 文件，二者串行构建。只运行 profile 指定的代表程序和受影响测试；套件通过 `test --inventory` 的注册名动态解析编号。清单完整发现所有套件、可枚举用例、慢门控与 fuzz 种子/预算，旧测试按静态方法组目录枚举，重型组各用独立 worker；同一方法组内的多个关联断言不冒称逐输入迁移，`PassCount` 是实际断言数。通用 ParallelSuiteRunner 支持 `--suite-args list` 纯枚举和 `--suite-args label <精确标签...>`；未知标签整批返回 2，绝不回退全套。Native/E2E 保留现有按名/数值选择；profile 按已发现标签校验，E2E 子串会扩大选择时明确拒绝。Middleware 的 `COMP-003` 组从现有 case 数组派生统一标签列表（`test --run 57 --suite-args COMP-003`），只覆盖对象/runtime 缓存、LLVM 所有权与真实冷/hit/自愈/relink/诊断旁路；精确标签仍用 `--suite-args label <ExactLabel>`。CommandLineParser 的 `PERF-001` 组只执行纯解析及 inventory 契约；Binder/BilEmitter 的已注册定向组可通过 `groups` 选择，不能据此推断整个 suite 都已覆盖。
+独立 BCL 工具位于 `tools/PerfBaseline`，主项目排除其 C# 文件，二者串行构建。只运行 profile 指定的代表程序和受影响测试；套件通过兼容 `test --inventory` 的名称动态解析编号，实际执行由独立 TUnit 宿主承担。清单完整发现所有 provider 动作、慢门控与 fuzz 种子/预算；静态方法组和重型组各用独立 worker，同一方法组内的多个关联断言不冒称逐输入迁移。`CaseAssertions` 的请求 scope 保存实际断言证据，结果中的 assertions 不是框架发现行数。`CaseSelection` 支持 `--suite-args list` 纯枚举和 `--suite-args label <精确标签...>`；未知标签整批返回 2，绝不回退全套。Native/E2E 保留现有按名/数值选择；profile 按已发现标签校验，E2E 子串会扩大选择时明确拒绝。Middleware 的 `COMP-003` 组从现有 case 数组派生统一标签列表（`test --run 57 --suite-args COMP-003`），只覆盖对象/runtime 缓存、LLVM 所有权与真实冷/hit/自愈/relink/诊断旁路；精确标签仍用 `--suite-args label <ExactLabel>`。CommandLineParser 的 `PERF-001` 组只执行纯解析及 inventory 契约；Binder/BilEmitter 的命名定向组映射到同一 provider 的精确标签，不能据此推断整个 suite 都已覆盖。
 
 ```bash
 # Linux 命令均关闭 stdin 并设总看门狗；Windows 外层用 Watch-Command.ps1。
@@ -154,41 +156,76 @@ profile 的 `compiler.fileName/arguments` 指定实际编译器（CoreCLR 可用
 
 制作可分发的完整包、安装到用户目录、配置 PATH、升级及第一次运行见 [NativeAOT 安装指南](INSTALLATION.md)。本节保留项目发布机制与维护验证要求。
 
-Release 配置将编译器发布为 **NativeAOT 可执行文件**（免 .NET 运行时）；libLLVM 原生库及语料/头文件等伴随资产仍须随发布目录分发：
+Release 配置将编译器与独立 TUnit 测试宿主分别发布为 **NativeAOT 可执行文件**（免 .NET 运行时）。生产项目排除全部 `Tests/**/*.cs`，编译器中的 `TestHostForwarder` 只转发兼容测试命令；测试代码、发现和断言只属于测试宿主。各自的 libLLVM 原生库及伴随资产须完整保留，e2e/native 语料由测试项目复制到测试发布目录：
 
 ```bash
 dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64   # 产物：publish/linux-x64/rigic
 dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r linux-x64 -o publish-tests/linux-x64
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r win-x64 -o publish-tests/win-x64
 ```
 
 - **不支持跨 OS 交叉编译**：linux-x64 产物必须在 Linux（如 WSL）上构建；Linux 侧需 `dotnet-sdk-10.0` + `clang` + `zlib1g-dev`。
 - **反射靠两份配置保住**：`ILLink.Roots.xml`（`preserve="all"`，保整程序集类型/成员元数据，供 `Assembly.GetTypes()`、`Activator.CreateInstance`、字段/属性反射使用）+ `JsonSerializerIsReflectionEnabledByDefault=true`（强开 STJ 反射序列化，AOT 下默认禁用）。AstJsonl 序列化/反序列化（`--dump-ast`/`--parse-only`）与 ASTIntegrityValidator 依赖它们，删掉会导致 AOT 产物运行时崩溃或静默丢数据。
+  测试宿主另外使用 `Tests/TUnit/ILLink.TestFixtures.xml` 保留测试专用坏节点的反射成员，继续验证真实类型审计拒绝。
 - **性能注意**：AOT 无 JIT 的运行时优化（去虚拟化/PGO），接口分派等路径可能与 CoreCLR 性能不同；差异须按当前产物与输入测量，fuzz 类套件在 AOT 产物上可能更慢，日常全量测试建议仍用普通构建跑。
-- **CI**：`.github/workflows/ci.yml` 按上述流程在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）双平台分别发布 AOT 产物并用产物跑全量测试（AOT 不支持跨 OS 交叉编译，只能按平台分别构建）。
+- **CI**：`.github/workflows/ci.yml` 在 `windows-latest`（win-x64）与 `ubuntu-latest`（linux-x64，均为 amd64）各使用 16 个独立 runner 分片，每片发布完整编译器及测试宿主。每个 suite 按稳定 ID 的 Ordinal 顺序轮转分配，provider 互斥且全目录只执行一遍；仅片 0 执行全部框架契约与闭合泛型发现。matrix 最多同时运行 8 个 job，每片测试外层 330 分钟、job 上限 360 分钟，留出结果收尾空间；GitHub hosted runner 的单 job 六小时上限不能用更长本地时限替代。最后 `build-and-test` 汇总 job 总是执行，核对两个 RID 全部片的身份、完整预期目录、JSON/TRX 精确覆盖，缺片或失败不能通过。main push 与 PR 触发检查，分支 push 不再重复触发 PR 的整套门禁；同一来源的新运行取消旧运行。AOT 不支持跨 OS 交叉编译，只能按平台分别构建。
 - **验证口径**：提交门禁按 CI 使用 Windows/Linux 双平台 NativeAOT 发布产物执行全量；局部开发验证按受影响范围选择。不能将 CoreCLR 成功等同 AOT 成功。
-- **Linux 侧跑全量的工作目录必须在原生 Linux 文件系统上（如 WSL home 的 ext4），不要在 `/mnt/c`（9p/drvfs）里跑**：e2e 探针目录是相对 CWD 创建的；9p/drvfs 的 `renameat2(NOREPLACE)` 返回 ENOSYS，而 rigi_rt 对「不能提供原子不覆盖保证的宿主/文件系统」**刻意报 Unsupported、绝不回退 rename**（rigi_rt/fs.c 注释），于是 fs_copymove/fs_primitives/accept_dir_management 等用例在 /mnt/c 下必败、在 ext4 下全绿——这是环境限制不是产品缺陷。同理 lstat 对「文件/子路径」在 ext4 报 ENOTDIR（契约 §4.5 保留的宿主差异），9p 报 ENOENT 会让平台分支断言真空通过，失去覆盖意义。做法：`cd ~ && /mnt/c/.../publish/linux-x64/rigic test --all`（语料由输出/发布目录优先定位，与 CWD 无关）。
+- **Linux 侧全量宿主工作目录及 worker 临时根必须位于原生 Linux 文件系统上（如 WSL home 与 `/tmp` 的 ext4），不要把临时根设在 `/mnt/c`（9p/drvfs）**：每个 worker 的 CWD 是自身请求临时根，e2e 探针相对它创建。9p/drvfs 的 `renameat2(NOREPLACE)` 返回 ENOSYS，而 rigi_rt 对「不能提供原子不覆盖保证的宿主/文件系统」**刻意报 Unsupported、绝不回退 rename**（rigi_rt/fs.c 注释），于是 fs_copymove/fs_primitives/accept_dir_management 等用例在 /mnt/c 下必败、在 ext4 下全绿——这是环境限制不是产品缺陷。同理 lstat 对「文件/子路径」在 ext4 报 ENOTDIR（契约 §4.5 保留的宿主差异），9p 报 ENOENT 会让平台分支断言真空通过，失去覆盖意义。可在 home 启动 `/mnt/c/.../publish-tests/linux-x64/RigiCompiler.Tests --compat --all`，默认 `/tmp` 仍需为原生文件系统；语料由测试输出/发布目录定位，与 CWD 无关。
+
+先获取对应 RID 的 libuv/mimalloc 并准备 clang/lld；Windows 模块测试的 `RIGI_AR` 定位步骤见 [安装指南 §6](INSTALLATION.md#6-第一次使用与-native-工具链)。不同全量宿主不共享预算，本机 Windows/WSL 门禁串行运行。以下命令均从真实仓库根开始：
+
+```powershell
+# Windows：编译器与测试宿主分别发布，兼容 test --all 转发后只执行一次 TUnit。
+dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r win-x64 -o publish-tests/win-x64
+$env:RIGI_TEST_RIGIC = (Resolve-Path publish/win-x64/rigic.exe).Path
+$env:RIGI_TEST_HOST = (Resolve-Path publish-tests/win-x64/RigiCompiler.Tests.exe).Path
+$env:RIGI_TEST_CORPUS_ONLY_OUTPUT = '1'
+$env:RIGI_TEST_RESULTS = Join-Path (Get-Location) 'TestResults/win-x64/case-results.json'
+pwsh -File tools/Watch-Command.ps1 -Command $env:RIGI_TEST_RIGIC -ArgumentList 'test --all' -TimeoutSeconds 86400
+```
 
 ```bash
-# Windows
-dotnet publish RigiCompiler.csproj -c Release -r win-x64 -o publish/win-x64
-./publish/win-x64/rigic.exe test --all
-
-# WSL Ubuntu / 其它可用 Linux
+# WSL Ubuntu / 其它可用 Linux：发布在该平台完成，再从原生文件系统启动。
 dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64
-./publish/linux-x64/rigic test --all
+dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r linux-x64 -o publish-tests/linux-x64
+export RIGI_TEST_RIGIC="$(realpath publish/linux-x64/rigic)"
+export RIGI_TEST_HOST="$(realpath publish-tests/linux-x64/RigiCompiler.Tests)"
+export RIGI_TEST_CORPUS_ONLY_OUTPUT=1
+export RIGI_TEST_RESULTS="$(pwd)/TestResults/linux-x64/case-results.json"
+cd "$HOME"
+timeout --signal=INT --kill-after=30s 86400s "$RIGI_TEST_HOST" --compat --all </dev/null
 ```
+
+本机可选择 Native 编译吞吐模式：`RIGI_TEST_NATIVE_CPU_SLOTS` 只接受 `1..4` 的十进制整数，未设置时仍为 4。它只改变 NativeE2E 真并发 profile 在父宿主中的整例 CPU 调度权重；串行 LLVM O2 编译期间可用权重 1 同时推进更多独立用例，Runtime 的 `RIGI_COMPUTE_WORKERS` 仍至少为 4，VM 与 Native 都继续执行真实并发对拍。普通 Native 单核 profile、CompilerParallel、BilVm/VmFs 并发 profile，以及内存 lease、worker GC、截止、种子与慢门控均保持原值。CI 不设置这个选项，沿用默认权重 4。
+
+下面是本机 WSL 的显式配置示例，接在上面的 Linux 发布与产物绝对路径定位之后执行。先确认 WSL 可见 16 个逻辑 CPU、亲和性/cpuset/quota 未收紧，以及物理内存与 swap 合计至少 48 GiB、祖先 cgroup 没有更小的内存或 swap 上限。本机 20 GiB 内存配合 32 GiB swap 已用真实 AOT 容量探针验证：父宿主 `DOTNET_GCHeapHardLimit=C00000000`（裸十六进制 48 GiB）对应预留四分之一后的 36 GiB 调度预算；普通 Native worker 仍是 2 GiB lease、1 GiB GC，JSON 重例保留单独的更大声明。此配置允许资源满足时授予最多 16 个 Native worker，CPU slots 是调度权重，不能保证所有阶段始终占满 CPU；真实 Compute、GC/IO 线程和内存排队仍各自生效。
+
+```bash
+# 本机显式选择；仍只启动一个全量宿主，Windows/WSL 验证继续串行。
+export RIGI_TEST_NATIVE_CPU_SLOTS=1
+export RIGI_JOBS=16
+export DOTNET_GCHeapHardLimit=C00000000
+export TMPDIR=/tmp
+export RIGI_TEST_RESULTS="$(dirname "$RIGI_TEST_HOST")/TestResults/throughput/case-results.json"
+cd "$HOME"
+timeout --signal=INT --kill-after=30s 86400s "$RIGI_TEST_HOST" --compat --all </dev/null
+```
+
+恢复默认权重时取消 `RIGI_TEST_NATIVE_CPU_SLOTS`；`RIGI_JOBS` 与父 GC 限额仍按该次运行的实际机器容量选择。吞吐模式不缩减本机默认 fuzz 预算，也不改变 worker 的四十五/七十五分钟窗口与 fuzz 默认不限时策略。
 
 ---
 
 ## 测试策略
 
-- **测试入口并存**：独立 `Tests/TUnit/` 使用 TUnit source generator 与 MTP；框架依赖仅属于测试项目。`Tests/` 下尚未迁移的静态套件继续由 `TestRunner` 驱动。日常只跑受影响 case；双平台 NativeAOT 全量提交/CI 门禁保持有效。
-- **全量入口（迭代）**：`dotnet run -- test --all` 自动运行全部套件，任意失败返回非零退出码并列出失败套件名。**提交前入口**是 §2.3 的双平台 NativeAOT publish 产物 `test --all`（与 CI 同口径），不是 `dotnet run`。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
-- **统一基建**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等），`Tests/TestHarness.cs` 是唯一的驱动与断言（ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl + Check/CheckTrue/CheckParseError/Summary）。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
+- **唯一测试宿主**：独立 `Tests/TUnit/` 使用 TUnit source generator 与 MTP，并编入全部 `Tests/` provider 与工具。生产项目不含测试代码或框架引用；`rigic test` 只定位宿主并转发，编号、标签与 inventory 兼容保留，不再有旧 harness 全量执行链。日常只跑受影响 case；双平台 NativeAOT 全量提交/CI 门禁保持有效。
+- **全量入口（迭代）**：先 `dotnet build RigiCompiler.sln`，再 `dotnet run -- test --all` 转发 TUnit CoreCLR 全量。**提交前入口**是 §2.3 的双平台 AOT 编译器与测试宿主；`rigic test --all` 与测试宿主 `--compat --all` 进入同一框架全量，任选一次，不串联运行。NativeE2E 跑产物进程时设置 `RIGI_RT_MEMTRACK=1`，泄漏即 exit 1。
+- **统一基建**：`Tests/AstDescribe.cs` 是唯一的 AST 描述器（Expr/Stmt/Block/Decl/Root/Type/Symbol 等）；`CompilerTestTools` 提供无状态 ParseRoot/ParseBlock/ParseWithLayer/ParseFirstDecl 与黄金文本工具；`CaseAssertions` 提供 Check/CheckTrue/CheckParseError/CheckSemanticError 等断言，在每 worker 动作的 AsyncLocal scope 中记录实际证据。`BilTestHarness` 保留 BIL 编译与黄金断言工具，不承担发现或全量调度。禁止在套件里再写私有 Describe*/Format* 副本与计数样板。
 - **断言对象约定**：除查的就是命令行/日志/token 流/层协议行为的套件（Logger、CommandLineParser、LexerFuzz、TokenDisposition）外，一律断言 AST 树产物（AstDescribe 描述串 + 结构断言），不断言控制台输出文本。
 - **AST 结构断言**：表达式类测试除描述串快照外，还应断言结构性事实（Root 是否存在/已填充、Expression 的具体类型、Parent 链、子 Root 填充、无节点共享）——快照不能作为唯一验证方式。
-- **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`TestHarness.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
-- **约定：每新增一个 ParserLayer，必须在 `Tests/` 添加对应测试类，并在 `TestRunner` 注册表注册（`test` 菜单与 `test --run N` 的编号即注册表顺序）。**
+- **独立 Layer 测试**：经 `Parser.Parse(tokens, new TestRootParserLayer(), entryLayer)` 驱动（`CompilerTestTools.ParseWithLayer` 封装）。`TestRootParserLayer` 只接受 EOF——被测 Layer 提前结束或漏消费普通 token 会立即失败，能发现 Layer 边界问题。
+- **新增测试**：每新增一个 ParserLayer，必须在 `Tests/` 添加对应 provider 动作，并纳入 `StaticTestProviders`/`TestSuiteCatalog` 的发现映射；现有 provider 新增动作则扩充它的 Spec。`test` 菜单与 `test --run N` 的编号仅由 `TestSuiteCatalog` 提供兼容，不持有整套执行委托。
 - **fuzz 动态批次超时**：`SemanticsFuzz`/`StressFuzz` 全局索引按小批进入共享 pending，默认**不限时**等待（保留旧口径；caller cancellation 仍终止并排空进程树）；Semantics 需要时限时用 `--suite-args <from> <to> child-timeout-ms=<毫秒>` 显式给出（套件参数不能带 `--` 前缀，会被解析成 test 子命令）。
 - **NativeE2E 定位与按名运行**：`test --run 58 --suite-args` 三选一——①`list`：只打印当前真实索引+Label 清单（不启动编译，无 clang 也可用；**定位/验收一律以此为准，禁止凭记忆猜索引**）；②首参为整数：保持原 `from to` 区间语义（含不完整区间的用法报错）；③其余非空参数：按 Label 子串过滤（OrdinalIgnoreCase Contains，父入口交给隔离 worker、[PASS]/[FAIL] 行自带标签），零匹配退出 2。示例：`--suite-args list`、`--suite-args 545 545`、`--suite-args Parcel 动态访问`。
 - **挂死调试纪律（必须设超时）**：调试可能引入死锁/活锁/进程不退出的改动（调度器、线程、等待-唤醒协议、quiescence 类计数）时，**任何测试运行都必须带超时**，禁止裸跑无限等待：① 优先用单例进程内复现通道（`--suite-args <i> <i>`）逐条验证，先单例绿再跑并行；② 必须跑子进程/产物进程时显式给超时（套件的 `child-timeout-ms`、或 shell 层看门狗 `tools/Watch-Command.ps1`，见下条）；③ 运行被中止后先检查并结束残留的 rigic/dotnet 测试子进程（文件锁会干扰重跑），再继续——`pwsh tools/Watch-Command.ps1 -CleanupOrphans` 一键清扫。
@@ -203,50 +240,62 @@ dotnet publish RigiCompiler.csproj -c Release -r linux-x64 -o publish/linux-x64
 
 ### 独立 TUnit 与隔离 case 协议
 
-`Tests/CaseCatalog.cs` 是稳定 ID、suite/source/group/trait/LegacyRef 与单 input 驱动的唯一机器目录；`test --inventory` 的 `pilotCases` 输出同一映射。Lexer slash/comment、Parser 正负表达式、Semantic wrapper 负例、BIL scalar roundtrip/保留名负例、VM/native hello 逐 input 执行。旧 suite 未纳入该目录的部分继续如实报告既有 suite 或 provider 粒度。
+`Tests/CaseCatalog.cs` 从全部 provider 构造稳定 ID、suite/source/group/trait、标签来源与真实执行粒度的唯一框架目录；兼容 `test --inventory` 的 `frameworkCases` 输出同一映射，并以 `inputCount` 区分发现行与输入数。固定动作 ID 从 suite/精确标签派生，不依赖其他动作的插入或重排；fuzz ID 包含真实全局序号批次。Lexer slash/comment、Parser 正负表达式、Semantic wrapper 负例、BIL scalar roundtrip/保留名负例、VM/native hello 已并入各自 provider，保留原稳定 ID，每动作只发现一次。
 
-TUnit 的 `MethodDataSource` 为每个目录项生成独立发现行，DisplayName 与稳定 ID 相同，Categories 包含 ID、suite、Pilot、group、trait。框架生成的 UID 含数据行序号，不作为持久 ID；精确选择使用稳定 ID category。发现清单可输出 JSON 并核对 displayName/traits：
+`CompilerCaseTests` 的 TUnit `MethodDataSource` 为每个目录项生成独立发现行，DisplayName 与稳定 ID 相同，Categories 包含 ID、suite、CompilerCase、group、trait。框架生成的 UID 含数据行序号，不作为持久 ID；精确选择使用稳定 ID category。发现清单可输出 JSON 并核对 displayName/traits：
 
 ```bash
-dotnet build
+dotnet build RigiCompiler.sln
 dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --list-tests
 # 发布宿主同样支持发现 JSON；CoreCLR 可用 dotnet <测试DLL> --list-tests json。
 # suite 类别选择：
-dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --treenode-filter '/*/*/*/*[Category=Lexer]' --minimum-expected-tests 2
+dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --treenode-filter '/*/*/*/*[Category=LexerFuzz]' --minimum-expected-tests 1
 # 精确稳定 ID + TRX：
 dotnet test --project Tests/TUnit/RigiCompiler.Tests.csproj --no-build --treenode-filter '/*/*/*/*[Category=lexer.slash]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename impacted.trx
 ```
 
-MTP 不能使用 VSTest 的 `--filter`。`--minimum-expected-tests` 是必需的零匹配防护；未知 ID 类别不会回退全套，零匹配返回非零。该固定 MTP 版本不支持 `--zero-tests-policy`。TRX 的测试数与 Harness 断言数分开：一条目录项是一条框架测试，内部可能执行多条断言。
+MTP 不能使用 VSTest 的 `--filter`。直接用 MTP 精确筛选时，`--minimum-expected-tests` 提供零匹配防护；未知 ID 类别不会回退全套。该固定 MTP 版本不支持 `--zero-tests-policy`。TRX 的测试数与内部断言数分开：一条目录项是一条框架测试，内部可能执行多条断言。
 
-`CaseOutcome` 状态为 Pass/Fail/Skip/Cancel，包含 assertions/failures/skipReason/diagnostics；JSON 用 `Utf8JsonWriter`/`JsonDocument` 编解码，带协议版本与 caseId，拒绝零断言 Pass、矛盾计数与无理由 Skip。每 case 重置 Harness/日志并捕获恢复日志状态；Lexer 保留其私有计数适配。异常、非零退出、缺失或矛盾 JSON 均失败。TUnit adapter 将 Fail 转成失败、Skip 转成正式 `Skip.Test(reason)`、Cancel 在 worker 灭树/排空之后调用当前测试 `Execution.Cancel()` 并抛框架 token 的取消异常；MTP/TRX 将取消计入失败，退出非零。
+本机提交全量使用 `--compat --all`：它自动生成本次新鲜 TRX，核对预期 provider ID 与已完成结果 ID 的精确集合（含正式 Skip），并校验 TRX 全部唯一完成行及已声明的框架契约身份，闭合泛型发现必须实际通过。MTP minimum 不计算 Skip，因此全量的 minimum=1 只补充非零防护，不能替代这些完整性校验；不使用过期的固定 pilot 数量门槛。兼容模式参数由编译器 CLI 解析，不能在 `--compat --all` 后追加 `--report-trx` 等 MTP flags。
 
-`CaseWorkerClient` 每请求创建唯一临时根，并让 child TMPDIR/TEMP/TMP 指向该根；结果文件与 stdout/stderr 分开。只执行 `test --worker --case-id <稳定ID> --result-file <路径> --spawned`，禁止旧 runner 二次展开；未知 ID 返回 2。worker 产物默认来自 `typeof(TestRunner).Assembly.Location`，可显式设置 `RIGI_TEST_RIGIC` 为真实 rigic EXE 或 DLL；DLL 使用匹配的 runtimeconfig/deps 经 `dotnet exec` 启动。AOT Location 为空时必须指定 override，不能把 TUnit 宿主当作 rigic。
+CI 测试宿主使用独立 `--ci-shard <index> <count>` 入口，index 从零开始；非法数字、越界或空片返回 2。生产编译器的兼容 parser 不接受该内部入口。本机仍串行各跑一次 Windows/WSL 完整全量，默认 StressFuzz 为 3000 种子；CI 沿用 `GITHUB_ACTIONS=true` 下的 600 种子。分片不拆已有 Lexer/Semantics/Stress seed batch、不缩减预算、不改变慢门控或 worker 的九分钟/四十五分钟/七十五分钟及 fuzz 默认不限时策略。本地外层看门狗使用 24 小时，避免冷 O2 与完整 fuzz 被六小时外层截断。
 
-框架 limiter 采用同一配置的 CPU 容量，真正启动时仍经过 `ResourceBudget.Shared` 的 CPU/内存/exclusive FIFO 授予；它只在当前父进程共享，不同 CLI/TUnit 宿主互不共享，CI 必须串行。`RIGI_JOBS` 是 1..实际有效 CPU 的十进制整数；`RIGI_TEST_MEMORY_MIB` 是 256..父宿主预留后的内存容量，非法/超额明确拒绝。资源探测复用性能工具的实际 cgroup membership/mount 解析并收紧可见祖先限制，还取 Linux affinity/cpuset 边界。
+每片在执行前由同一发布宿主导出完整 `inventory.json`，包含 `CaseCatalog.All` 的所有 `frameworkCases` 和完整 `frameworkContracts`；`CaseCatalog.All` 本身不因分片变化。`shard-manifest.json` 与 journal 的 `ci` 元数据绑定 SHA、RID、run/attempt、目录摘要、片号/片数和 fuzz/慢门控预算。目录摘要按稳定 ID 的 Ordinal 顺序，以 UTF-8 的 `id\tsuite\tinputCount` 行用换行连接后计算 SHA256。最终 [Verify-CiShards.ps1](tools/Verify-CiShards.ps1) 从完整 inventory 重算各片精确预期集合，拒绝跨片重叠、目录缺失、旧身份、取消/失败、重复 TRX 或契约；TRX provider 身份和状态还须与 journal 对应。仅片 0 包含全部 36 契约，闭合泛型结果必须 Passed；其他片不得夹带契约。即使某片失败也上传已有证据，汇总不能把实际结果并集自己当作预期全集。
+
+`CaseResultJournal` 输出 `compilerCaseRows`、`assertions`、`failures` 与逐 ID 的 `cases` 状态/跳过理由/诊断。设置 `RIGI_TEST_RESULTS=<JSON绝对路径>` 时，全量 TRX 放在该 JSON 的同目录；未设置时 TRX 放在测试宿主旁 `TestResults/`，journal 放在当前目录 `TestResults/case-results.json`。发布门禁显式指定结果路径，避免布局差异掩盖证据。
+
+MTP 可以重新启动独立 testhost，CI 的小分片上下文会传给该进程，不能只保存在入口父进程的静态字段。父入口在启动框架前将 journal 路径解析为绝对路径、删除旧 journal，并删除本次 TRX 同名旧文件；child 完成后写结果，父进程再核对新鲜 journal 的唯一 ID、状态与断言计数。父进程没有本地 adapter 结果时不会覆盖 child 的文件；普通本地结果不强绑 GitHub 身份。
+
+`CaseOutcome` 状态为 Pass/Fail/Skip/Cancel，包含 assertions/failures/skipReason/diagnostics；JSON 用 `Utf8JsonWriter`/`JsonDocument` 编解码，带协议版本与 caseId，拒绝零断言 Pass、矛盾计数与无理由 Skip。每 worker 动作创建独立 `CaseAssertions` scope 并捕获/恢复日志状态；Lexer 的实际断言也进入该 scope，不以进程退出码冒称断言通过。异常、非零退出、缺失或矛盾 JSON 均失败。TUnit adapter 将 Fail 转成失败、Skip 转成正式 `Skip.Test(reason)`、Cancel 在 worker 灭树/排空之后调用当前测试 `Execution.Cancel()` 并抛框架 token 的取消异常；MTP/TRX 将取消计入失败，退出非零。
+
+`CaseWorkerClient` 每请求创建唯一临时根，并让 child TMPDIR/TEMP/TMP 指向该根；结果文件与 stdout/stderr 分开。测试宿主自身执行 `--isolated-worker --case-id <稳定ID> --result-file <路径>`，框架启动前分流单动作，worker 禁止嵌套调度；未知 ID 返回 2。worker 默认来自测试程序集 Location（CoreCLR）或当前测试进程路径（AOT），`RIGI_TEST_HOST` 可显式指定同版本测试 EXE/DLL；DLL 使用匹配的 runtimeconfig/deps 经 `dotnet exec` 启动。`RIGI_TEST_RIGIC` 只定位被测编译器 CLI，与 worker 宿主分开；AOT 测试必须显式指定它。`rigic test` 转发时注入当前编译器产物，宿主缺失或显式路径无效返回 2。
+
+框架 limiter 采用同一配置的 CPU 容量，真正启动时仍经过 `ResourceBudget.Shared` 的 CPU/内存/exclusive FIFO 授予；它只在当前父进程共享，不同 CLI/TUnit 宿主互不共享。同一机器上的独立全量宿主必须串行；CI 分片在独立 runner/job 中运行，各自遵守实际资源容量，禁止在一个 runner 同时启动多个宿主逃过预算。`RIGI_JOBS` 是 1..实际有效 CPU 的十进制整数；`RIGI_TEST_MEMORY_MIB` 是 256..父宿主预留后的内存容量，非法/超额明确拒绝。资源探测复用性能工具的实际 cgroup membership/mount 解析并收紧可见祖先限制，还取 Linux affinity/cpuset 边界。
 
 每个 child 分别注入 `DOTNET_PROCESSOR_COUNT`、`RIGI_JOBS`、`RIGI_COMPUTE_WORKERS`、`RIGI_LLD_THREADS` 与 `DOTNET_GCHeapHardLimit`，GC 只占其 lease 内存的一半，给 LLVM/C native heap 留余量；不更改父环境。native 内存权重保守预留，case outcome 的 execution 可记录实际进程组 RSS/CPU 采样，reservation 不是实际 RSS。CPU slots 不等于 OS 总线程数，真并发用例至少四 Compute，即使只有两物理 slots 也保留四线程共享；GC 与懒建 IO 另有线程。
 
-legacy `test --run <编号...>`/All 共用动态跨 suite dispatcher；实际动作与 inventory 来自同一 provider，不反射。轻例小批、native 重例逐 case；Module 中声明 2048MiB 的实际重型 case 各用独立 worker，轻例在重型边界切批，单 worker 截止不因拆批而提高；所有默认套件都进入可枚举目录；新迁移的方法组逐组调度；仅依次调用多个独立测试的聚合方法直接展开为独立动作，有共同状态或完整序列对拍要求的单方法保留其生命周期。LexerFuzz 按原固定种子先生成全部输入，再按稳定全局序号小批调度。私有计数器通过显式适配保留真实断言；显式旧 `legacy/<suite>/suite` ID 仍兼容顺序执行并报告 `suite-exit`。`--suite-args indices <全局序号...>` 选择稀疏 Semantics/Stress，严格校验预算内索引；范围、组、精确标签及旧 Native/E2e 名称选择整体先校验，未知项不回退全套。默认排除 slow gate，显式 label/name 可运行慢例。稳定 pilot ID 保持不变。
+NativeE2E 真并发 profile 的外层权重可由本机 `RIGI_TEST_NATIVE_CPU_SLOTS=1..4` 显式选择，默认 4；Compute 最低四人不跟随权重下降。该设置通过 `CaseSelection.Resources` 与独立 child 环境契约验证，不更改父宿主的总 CPU 容量；具体 WSL 吞吐配置见 §2.3。
 
-完整源码 E2e 与 BilVmStress 每输入独立 worker，避免多次编译或多轮 VM 回归在同一个截止内累加，原循环次数不变。普通 worker 的默认截止为九分钟；包含进程内 whole-program `default<O2>` 与对象发射的 legacy NativeE2E 使用四十五分钟的有限窗口。JSON 写侧对拍的冷编译 LLVM 峰值超出普通 native 预留，单独声明 4096MiB 内存与七十五分钟有限窗口，为共享预算满载时保留余量，其他 native case 不继承此配置。按真实冷编译整套成本及共享预算满载时的执行余量，显式旧 Binder/BilEmitter/Lowerer 完整整组 ID 分别使用六十、七十五、三十分钟；默认入口改为独立方法组，各组使用九分钟窗口。定向组、模块 case 与小 BIL pilot 仍用九分钟；调用方显式 `RunAsync(timeout: ...)` 优先。任务选择、稳定 ID 解码与直接 case 客户端共用同一默认截止策略；fuzz 保留既有默认不限时及显式覆盖。根等待、灭树与排空责任不随窗口改变。CLI 每个任务完成时输出一行进度，最终结果与计数仍按原选择顺序输出。
+兼容 `test --run <编号...>` 只由 `CaseSelection` 映射到 TUnit 数据源选择，不持有执行循环；全量发现与 inventory 来自同一 provider，不反射。普通方法组、Module 动作及 native 重例每动作独立 worker，声明的重型资源与截止不因迁移改变。仅依次调用多个独立测试的聚合方法展开为独立动作，有共同状态或完整序列对拍要求的单方法保留其生命周期。LexerFuzz 按原固定种子先生成全部输入，再按稳定全局序号最多百例成批；Semantics/Stress 最多二十五例成批。所有实际断言进入请求 scope，旧整套 `legacy/<suite>/suite` 执行 ID 已删除。`--suite-args indices <全局序号...>` 选择稀疏 Semantics/Stress，严格校验预算内索引；范围、组、精确标签及 Native/E2e 名称选择整体先校验，未知项不回退全套。全量目录保留 slow gate 发现行并正式 Skip；兼容默认编号选择排除未开启慢例，显式 label/name 可运行它们。
+
+完整源码 E2e 与 BilVmStress 每输入独立 worker，避免多次编译或多轮 VM 回归在同一个截止内累加，原循环次数不变。普通方法组、定向动作、模块 case 与小 BIL 动作的默认截止为九分钟；包含进程内 whole-program `default<O2>` 与对象发射的 NativeE2E 使用四十五分钟的有限窗口。JSON 写侧对拍的冷编译 LLVM 峰值超出普通 native 预留，单独声明 4096MiB 内存与七十五分钟有限窗口，为共享预算满载时保留余量，其他 native case 不继承此配置。调用方显式 `RunAsync(timeout: ...)` 优先；任务选择、稳定 ID 解码与直接 case 客户端共用同一默认截止策略。fuzz 保留既有默认不限时及显式覆盖；框架适配层不再用固定十分钟总截止截断预算排队或重型动作。根等待、灭树与排空责任不随窗口改变，完成/失败状态由 TUnit 与 journal 汇总。
 
 进程隔离使用性能工具同一受管 launcher：Linux `setsid` 建 session/group，负 pgid 灭树；Windows 原子 Job 或挂起归入 Job 后恢复，stdio 仅继承 child 端。根等待与管道排空共用截止；成功也清残留后代，root/drain 完成后只删除本次 TMP 请求根。Linux 无法容纳主动 setsid 逃组；Windows 不能由 Linux 环境冒称实测。case execution 的进程组 RSS/CPU 以 100ms 活体采样，是下界，最后可读 PID 累计 CPU 不是退出后最终计数；其他平台不可得值为 null。
 
 native 链接配置 `RIGI_LLD_THREADS` 仅显式设置时严格接受 1..254，ELF/COFF 都使用 `-Wl,--threads=N`，未设置沿用工具默认；该参数进入 link record，不进入 O2 对象 key。测试 lease 会显式设置链接线程数，因此工具链、lld 和产物运行继承一致的子预算。
 
-协议契约覆盖 Harness/私有 Lexer 失败、显式 Skip、缺失结果的非零退出、超时、开始前与运行中取消，以及 Linux 根早退但后代持有管道。外部失败/TRX 验收可对单 ID 显式设置 `RIGI_TEST_PROBE=fail-harness|fail-lexer|skip|delay|crash`；取消同时设置 `RIGI_TEST_CANCEL_AFTER_MS`。这些门控不改变默认语义覆盖，不进入默认 CI 失败配置。
+协议契约覆盖请求 scope/Lexer 实际断言失败、显式 Skip、缺失结果的非零退出、超时、开始前与运行中取消，以及 Linux 根早退但后代持有管道。外部失败/TRX 验收可对单 ID 显式设置 `RIGI_TEST_PROBE=fail-harness|fail-lexer|skip|delay|crash`；其中 fail-harness 是保留的探针字符串，执行的是新断言 scope。取消同时设置 `RIGI_TEST_CANCEL_AFTER_MS`。这些门控不改变默认语义覆盖，不进入默认 CI 失败配置。
 
-闭合泛型测试使用 `[GenerateGenericTest(typeof(int))]` 静态生成，发布后必须真实发现并执行 Generic 类别：
+闭合泛型测试使用 `[GenerateGenericTest(typeof(int))]` 静态生成，发布全量包含 Generic，并由本次 TRX 身份校验保证真实发现执行；CI 不再额外单跑一次。定向排查可独立筛选：
 
 ```bash
 dotnet publish Tests/TUnit/RigiCompiler.Tests.csproj -c Release -r linux-x64 -o publish-tests/linux-x64
 ./publish-tests/linux-x64/RigiCompiler.Tests --treenode-filter '/*/*/*/*[Category=Generic]' --minimum-expected-tests 1 --report-trx --results-directory TestResults --report-trx-filename generic-aot.trx
 ```
 
-TUnit AOT 宿主需要运行 worker 时指定 `RIGI_TEST_RIGIC`，并保留真实编译器产物的 sidecars；Generic 自身不依赖 worker。编译器程序集沿用既有反射根描述符；框架/测试宿主 AOT 分析与生产 AOT 警告应分别核对。
+TUnit AOT 宿主以自身启动 worker；涉及编译器 CLI 的动作使用 `RIGI_TEST_RIGIC`，并保留 compiler 与 test host 各自完整的 sidecars。Generic 自身不依赖 worker。编译器程序集沿用既有反射根描述符；框架/测试宿主 AOT 分析与生产 AOT 警告应分别核对。
 
-`TestCorpusPaths` 优先 `AppContext.BaseDirectory`；e2e/native 语料、mq 压力源和 C fixture 所需 runtime headers 随输出与 publish 复制。开发时允许源码回退；发布验收设置 `RIGI_TEST_CORPUS_ONLY_OUTPUT=1` 禁止回退，并在独立发布布局/不同 CWD 执行，缺少资产必须失败，不能借 checkout 掩盖漏复制。
+`TestCorpusPaths` 优先测试宿主的 `AppContext.BaseDirectory`；e2e/native 语料由测试项目显式复制，mq 压力源和 C fixture 所需 runtime headers 经项目引用随测试输出与 publish 同行。编译器自己的公开 runtime headers 与压力工具源仍保留其发布用途。开发时允许源码回退；发布验收设置 `RIGI_TEST_CORPUS_ONLY_OUTPUT=1` 禁止回退，并在独立发布布局/不同 CWD 执行，缺少资产必须失败，不能借 checkout 掩盖漏复制。
 
 ### e2e 语料通道（`E2e` 套件）
 
@@ -264,7 +313,7 @@ git 跟踪的端到端语料测试：`.rg` 源文件经进程内全管线（编�
 验证改动（已验证可用）：
 
 ```bash
-dotnet build
+dotnet build RigiCompiler.sln
 dotnet run -- test --all    # 迭代全量；提交前改走 §2.3 双平台 publish 产物
 ```
 
@@ -286,9 +335,9 @@ dotnet run -- test --all    # 迭代全量；提交前改走 §2.3 双平台 pub
 2. 设计状态机（画出状态转换）
 3. 在 `AST/` 对应文件中调整节点表示；确需新结构时添加节点
 4. 优先复用既有 ParserLayer；职责独立且可复用时才在 `Parser/` 新建层（实现 `IParserLayer`，构造函数接收明确施工目标，见 docs/agent_guide/architecture.md §4.7）
-5. 在 `Tests/` 添加测试类，在 `TestRunner` 注册表注册
+5. 在 `Tests/` 添加测试 provider 动作，维护 Spec 与 `StaticTestProviders`/`TestSuiteCatalog` 的发现映射
 6. 在 `RootParserLayer`（或相应父层）接入委托入口
-7. `dotnet build` + `dotnet run -- test --run N`（对应套件）验证
+7. `dotnet build RigiCompiler.sln` + `dotnet run -- test --run N`（兼容选择对应 TUnit provider）验证
 
 ### 中端（P3/P4）新增语法结构的标准流程
 

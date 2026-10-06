@@ -41,7 +41,7 @@ namespace RigiCompiler.Tests
             // catch-table——按本用例条目内容过滤，不再全模块唯一）
             var catchTable = module.Resources.OfType<BilCatchTableResource>()
                 .Single(t => t.Entries.Any(e => e.Render().Contains("core::IOException")));
-            TestHarness.Check("catch-table 元素（stdlib 异常子类保序）",
+            CaseAssertions.Check("catch-table 元素（stdlib 异常子类保序）",
                 string.Join("\n", catchTable.Entries.Select(e => e.Render())),
                 "type(core::IOException) -> blk(try0-catch0)\n" +
                 "type(core::RuntimeException) -> blk(try0-catch1)");
@@ -50,7 +50,7 @@ namespace RigiCompiler.Tests
             // message 是 bootstrap 根字段（不重复声明）
             var validationError = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "ValidationError");
-            TestHarness.Check("ValidationError extends 与成员声明",
+            CaseAssertions.Check("ValidationError extends 与成员声明",
                 validationError.ExtendsType + " / " +
                 string.Join("; ", validationError.Members
                     .OfType<BilSimpleMemberDeclaration>().Select(m => m.Symbol)),
@@ -59,7 +59,7 @@ namespace RigiCompiler.Tests
             // init 体 set.field 引用 bootstrap 根字段（预定义符号表闭合）
             var validationInit = module.Functions.Single(
                 fn => fn.Symbol == "ValidationError$init(text:.string)@.void");
-            TestHarness.CheckTrue("init 体 set.field message（bootstrap 字段）",
+            CaseAssertions.CheckTrue("init 体 set.field message（bootstrap 字段）",
                 validationInit.Blocks.SelectMany(b => b.Instructions)
                     .Any(i => i is SetFieldInstruction setField
                         && setField.Field.Symbol == "core::Exception#message@.string"));
@@ -67,7 +67,7 @@ namespace RigiCompiler.Tests
             // catch 块调用 getMessage：接收者静态类型为 core::IOException，
             // override 遮蔽使 invoke 指向 IOException 的 override（§9.2.1）
             var handle = module.Functions.Single(fn => fn.Symbol == "$handle()@.string");
-            TestHarness.CheckTrue("catch 块调用 getMessage（指向 IOException override）",
+            CaseAssertions.CheckTrue("catch 块调用 getMessage（指向 IOException override）",
                 handle.Blocks.SelectMany(b => b.Instructions)
                     .Any(i => i is InvokeInstruction invoke
                         && invoke.Method.Symbol == "core::IOException$getMessage()@.string"));
@@ -76,7 +76,7 @@ namespace RigiCompiler.Tests
             // 具体实现进符号段，抽象根仅作可解析预定义符号）
             var ioException = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "core::IOException");
-            TestHarness.CheckTrue("IOException 声明 getMessage override",
+            CaseAssertions.CheckTrue("IOException 声明 getMessage override",
                 ioException.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol == "core::IOException$getMessage()@.string"
                     && d.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Override })));
@@ -99,7 +99,7 @@ namespace RigiCompiler.Tests
 
             var resource = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Resource");
-            TestHarness.Check("Resource implements core::IDisposable",
+            CaseAssertions.Check("Resource implements core::IDisposable",
                 string.Join(",", resource.ImplementsTypes), "core::IDisposable");
         }
 
@@ -123,8 +123,8 @@ namespace RigiCompiler.Tests
                 .OfType<InvokeNoResultInstruction>()
                 .Where(i => i.Method.Symbol == "Resource$dispose()@.void")
                 .ToList();
-            TestHarness.CheckTrue("using dispose invoke.noret 数量", disposeInvokes.Count == 2);
-            TestHarness.CheckTrue("using dispose invoke.noret 逆序",
+            CaseAssertions.CheckTrue("using dispose invoke.noret 数量", disposeInvokes.Count == 2);
+            CaseAssertions.CheckTrue("using dispose invoke.noret 逆序",
                 disposeInvokes[0].Arguments.Count == 1 &&
                 disposeInvokes[0].Arguments[0] is BilVariableOperand firstReceiver &&
                 firstReceiver.Name == "b" &&
@@ -143,7 +143,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("using body await 无诊断", awaitUnit);
             BilTestHarness.CheckBilValid("using body await verifier 零错误", awaitModule);
-            TestHarness.CheckTrue("using body await 保留 await",
+            CaseAssertions.CheckTrue("using body await 保留 await",
                 awaitModule.Functions.Single(f => f.Symbol == "$awaitBody()@.void")
                     .Blocks.SelectMany(b => b.Instructions).OfType<AwaitInstruction>().Count() == 1);
 
@@ -157,7 +157,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("using body yield 无诊断", yieldUnit);
             BilTestHarness.CheckBilValid("using body yield verifier 零错误", yieldModule);
-            TestHarness.CheckTrue("using body yield 保留 yield",
+            CaseAssertions.CheckTrue("using body yield 保留 yield",
                 yieldModule.Functions.Single(f => f.Symbol == "$yieldBody()@.void")
                     .Blocks.SelectMany(b => b.Instructions).OfType<YieldInstruction>().Count() == 1);
         }
@@ -179,7 +179,7 @@ namespace RigiCompiler.Tests
             // Task 同名不同元数声明共存（§8.2 generic(...) 子句区分）
             var taskDecls = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Where(t => t.Symbol == "core.coroutine::Task").ToList();
-            TestHarness.CheckTrue("Task 两声明（泛型 generic 子句 + 非泛型）",
+            CaseAssertions.CheckTrue("Task 两声明（泛型 generic 子句 + 非泛型）",
                 taskDecls.Count == 2
                 && taskDecls.Any(t => t.GenericParameters.Count == 1)
                 && taskDecls.Any(t => t.GenericParameters.Count == 0));
@@ -187,7 +187,7 @@ namespace RigiCompiler.Tests
             // async 方法声明带 async 修饰符（§8.4）
             var loadUser = module.LocalSymbols.OfType<BilSimpleMemberDeclaration>()
                 .Single(m => m.Symbol == "$loadUser(id:.i32)@.string");
-            TestHarness.CheckTrue("async 方法声明带 async 修饰符",
+            CaseAssertions.CheckTrue("async 方法声明带 async 修饰符",
                 loadUser.Modifiers.Any(m => m is BilKeywordModifier { Keyword: BilKeyword.Async }));
 
             // main：值位置 invoke 产 Task\<.string\>；async 无结果语句位置发
@@ -195,10 +195,10 @@ namespace RigiCompiler.Tests
             var main = module.Functions.Single(fn => fn.Symbol == "$main()@.i32");
             var invokeSymbols = main.Blocks.SelectMany(b => b.Instructions)
                 .OfType<InvokeInstruction>().Select(i => i.Method.Symbol).ToList();
-            TestHarness.Check("main invoke 序列（loadUser + flushLogs）",
+            CaseAssertions.Check("main invoke 序列（loadUser + flushLogs）",
                 string.Join(",", invokeSymbols),
                 "$loadUser(id:.i32)@.string,$flushLogs()@.void");
-            TestHarness.CheckTrue("main 无 invoke.noret（async 均有 Task 结果）",
+            CaseAssertions.CheckTrue("main 无 invoke.noret（async 均有 Task 结果）",
                 !main.Blocks.SelectMany(b => b.Instructions).Any(i => i is InvokeNoResultInstruction));
         }
 
@@ -213,7 +213,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("await BIL 全管线无诊断", unit);
             BilTestHarness.CheckBilValid("await BIL 验证器零错误", module);
-            TestHarness.CheckTrue("await 发射严格 TASK [RESULT]",
+            CaseAssertions.CheckTrue("await 发射严格 TASK [RESULT]",
                 module.Functions.Single(f => f.Symbol == "$main()@.void").Blocks
                     .SelectMany(b => b.Instructions).OfType<AwaitInstruction>().Count() == 2);
             // MW11c 起 stdlib Mutex.runSynchronously 也含 await 指令——
@@ -222,7 +222,7 @@ namespace RigiCompiler.Tests
             var mainEnd = text.IndexOf("\nfn(", mainStart + 1, StringComparison.Ordinal);
             var mainText = mainEnd < 0 ? text.Substring(mainStart)
                 : text.Substring(mainStart, mainEnd - mainStart);
-            TestHarness.CheckTrue("await 文本含值与无值两形态",
+            CaseAssertions.CheckTrue("await 文本含值与无值两形态",
                 mainText.Contains("await $")
                 && mainText.Split('\n').Count(line => line.StartsWith("        await ")) == 2);
         }
@@ -239,9 +239,9 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("yield BIL 验证器零错误", module);
             var instructions = module.Functions.Single(f => f.Symbol == "$main()@.void")
                 .Blocks.SelectMany(b => b.Instructions).OfType<YieldInstruction>().ToList();
-            TestHarness.CheckTrue("yield 裸/Alarm 两形态", instructions.Count == 2
+            CaseAssertions.CheckTrue("yield 裸/Alarm 两形态", instructions.Count == 2
                 && instructions[0].Alarm == null && instructions[1].Alarm != null);
-            TestHarness.CheckTrue("yield 文本严格形态", text.Contains("yield\n")
+            CaseAssertions.CheckTrue("yield 文本严格形态", text.Contains("yield\n")
                 && text.Contains("yield $") && !text.Contains("yield RESULT"));
 
             // 用户定义 Alarm 子类必须贯通 P3 类型判定、P4 发射与 verifier。

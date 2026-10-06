@@ -31,10 +31,10 @@ namespace RigiCompiler.Tests
 
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.CheckTrue("Service 带 wrapped(Logged) 应用标记",
+            CaseAssertions.CheckTrue("Service 带 wrapped(Logged) 应用标记",
                 service.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "Logged"));
-            TestHarness.CheckTrue("无 .wrapper. 隐藏字段声明",
+            CaseAssertions.CheckTrue("无 .wrapper. 隐藏字段声明",
                 !service.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#.wrapper.")));
 
@@ -130,12 +130,12 @@ namespace RigiCompiler.Tests
                 "ret $.t2\n");
             var outer = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Outer");
-            TestHarness.CheckTrue("Outer 带 wrapped(Inner)",
+            CaseAssertions.CheckTrue("Outer 带 wrapped(Inner)",
                 outer.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "Inner"));
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.CheckTrue("Service 带 wrapped(Outer)",
+            CaseAssertions.CheckTrue("Service 带 wrapped(Outer)",
                 service.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "Outer"));
         }
@@ -207,10 +207,10 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol == "Hero");
             var hp = hero.Members.OfType<BilSimpleMemberDeclaration>()
                 .Single(d => d.Symbol == "Hero#hp@.i32");
-            TestHarness.CheckTrue("字段-Value 应用标记 wrapped(Clamped)",
+            CaseAssertions.CheckTrue("字段-Value 应用标记 wrapped(Clamped)",
                 hp.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "Clamped"));
-            TestHarness.CheckTrue("无 .wrapper. 隐藏字段",
+            CaseAssertions.CheckTrue("无 .wrapper. 隐藏字段",
                 !hero.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#.wrapper.")));
             BilTestHarness.CheckFnShape(
@@ -316,7 +316,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（局部 wrapper place）", module);
             AssertCellSubclassDeclaration(module, "局部 wrapper place",
                 readOnly: false, elementType: ".i32");
-            TestHarness.CheckTrue("局部 cell value 字段带 wrapped(Clamped)",
+            CaseAssertions.CheckTrue("局部 cell value 字段带 wrapped(Clamped)",
                 module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol.StartsWith("..cell.."))
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
@@ -358,19 +358,19 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（静态字段 wrapper place）", module2);
             var holder = module2.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Holder");
-            TestHarness.CheckTrue("静态字段不再发宿主静态字段声明",
+            CaseAssertions.CheckTrue("静态字段不再发宿主静态字段声明",
                 !holder.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#.static.counter@")));
             var companion = module2.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Holder...companion");
-            TestHarness.CheckTrue("companion 带 singleton + shared + compiler-generated",
+            CaseAssertions.CheckTrue("companion 带 singleton + shared + compiler-generated",
                 companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Singleton)
                 && companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Shared)
                 && companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
-            TestHarness.CheckTrue("companion 含 cell 实例字段 + init",
+            CaseAssertions.CheckTrue("companion 含 cell 实例字段 + init",
                 companion.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("#counter@..cell.."))
                 && companion.Members.OfType<BilSimpleMemberDeclaration>()
@@ -413,7 +413,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（wrapped const 局部）", moduleConst);
             AssertCellSubclassDeclaration(moduleConst, "wrapped const 局部",
                 readOnly: true, elementType: ".i32");
-            TestHarness.CheckTrue("const cell value 为 const + wrapped(Clamped)",
+            CaseAssertions.CheckTrue("const cell value 为 const + wrapped(Clamped)",
                 moduleConst.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Where(t => t.Symbol.StartsWith("..cell.."))
                     .SelectMany(t => t.Members.OfType<BilSimpleMemberDeclaration>())
@@ -452,7 +452,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（wrapped 局部 lambda 捕获）", moduleCap);
             AssertLambdaClass(moduleCap, "wrapped 局部捕获", "core::Func<.i32>",
                 hasCaptureField: true, captureTypeFragment: "..cell..");
-            TestHarness.CheckTrue("恰一个 cell 隐藏子类（不套第二层）",
+            CaseAssertions.CheckTrue("恰一个 cell 隐藏子类（不套第二层）",
                 moduleCap.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Count(t => t.Symbol.StartsWith("..cell..")) == 1);
             BilTestHarness.CheckFnShape("wrapped 局部捕获外层（cell 引用实参 + setValue）",
@@ -945,7 +945,7 @@ namespace RigiCompiler.Tests
                 "pub func f(s: Service) {\n" +
                 "    s:Indexed[0].x = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("place[i].field 写（Q6：nullable 成员拒绝）",
+            CaseAssertions.CheckSemanticError("place[i].field 写（Q6：nullable 成员拒绝）",
                 unit7.Diagnostics, "cannot be accessed on nullable type");
 
             // 构造类型引用中间深写：Holder\<Node\>/Node 均为 class → 无写回
@@ -970,7 +970,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（构造类型中间深写）", unit8);
             BilTestHarness.CheckBilValid("验证器零错误（构造类型中间深写）", module8);
-            TestHarness.CheckTrue("构造类型引用中间无 set.wrapper.field 写回",
+            CaseAssertions.CheckTrue("构造类型引用中间无 set.wrapper.field 写回",
                 text8.Contains("set.field") && !text8.Contains("set.wrapper.field"));
 
             // 泛型 wrapper 字段 item:T extends Node：代入后 concrete 或约束 class → 引用
@@ -993,14 +993,14 @@ namespace RigiCompiler.Tests
             {
                 CheckNoErrors("全管线无诊断（泛型参数 extends class 中间）", unit9);
                 BilTestHarness.CheckBilValid("验证器零错误（泛型参数 extends class）", module9);
-                TestHarness.CheckTrue("extends class 中间当引用无写回",
+                CaseAssertions.CheckTrue("extends class 中间当引用无写回",
                     text9.Contains("set.field") && !text9.Contains("set.wrapper.field"));
             }
             else
             {
                 // Entity 泛型应用或 place 类型名形态若拒：class 约束路径由
                 // ClassifyWritebackType 单测语义覆盖，此处不阻断套件
-                TestHarness.CheckTrue(
+                CaseAssertions.CheckTrue(
                     "泛型 Entity 应用形态未放行（class 约束分类代码已落地）", true);
             }
         }
@@ -1114,7 +1114,7 @@ namespace RigiCompiler.Tests
                 "pub func f(s: Service) {\n" +
                 "    s:Logged.sub.x = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("只读值中间深写拒绝", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("只读值中间深写拒绝", unit4.Diagnostics,
                 "Cannot assign to const field");
 
             // 字段-Value place 一层值中间
@@ -1169,7 +1169,7 @@ namespace RigiCompiler.Tests
                 "pub func f(s: Service) {\n" +
                 "    s:Logged.sub.x = 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无 setter 中间深写拒绝", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 setter 中间深写拒绝", unit6.Diagnostics,
                 "has no setter");
 
             // RHS 与 receiver 求值序：宿主字段 getter 先于 RHS 副作用调用
@@ -1197,11 +1197,11 @@ namespace RigiCompiler.Tests
             var sideAt = ops.FindIndex(o => o is "invoke" or "invoke.noret");
             var setLeafAt = ops.IndexOf("set.field");
             var writebackAt = ops.IndexOf("set.wrapper.field");
-            TestHarness.CheckTrue("求值序：get.wrapper 先于 side()",
+            CaseAssertions.CheckTrue("求值序：get.wrapper 先于 side()",
                 getWrapperAt >= 0 && sideAt > getWrapperAt);
-            TestHarness.CheckTrue("求值序：side() 先于叶 set.field",
+            CaseAssertions.CheckTrue("求值序：side() 先于叶 set.field",
                 sideAt >= 0 && setLeafAt > sideAt);
-            TestHarness.CheckTrue("求值序：叶写先于 set.wrapper.field 写回",
+            CaseAssertions.CheckTrue("求值序：叶写先于 set.wrapper.field 写回",
                 setLeafAt >= 0 && writebackAt > setLeafAt);
         }
 
@@ -1479,16 +1479,16 @@ namespace RigiCompiler.Tests
 
             var logged = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Logged");
-            TestHarness.Check("specific proxy 模板声明",
+            CaseAssertions.Check("specific proxy 模板声明",
                 "Method|Logged$$.proxy.doSomething(arg:.i32)@.string|" +
                 "priv,operator(.proxy.doSomething),wrapper-proxy(specific)",
                 RenderMember(logged, "Logged$$.proxy.doSomething(arg:.i32)@.string"));
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.CheckTrue("Service wrapped(Logged<Service>)",
+            CaseAssertions.CheckTrue("Service wrapped(Logged<Service>)",
                 service.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "Logged<Service>"));
-            TestHarness.CheckTrue("无烘焙合成 fn（.proxy.<序>/.wrapped.）",
+            CaseAssertions.CheckTrue("无烘焙合成 fn（.proxy.<序>/.wrapped.）",
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains("$.proxy.0.") || d.Symbol.Contains("$.wrapped.")));
 
@@ -1529,14 +1529,14 @@ namespace RigiCompiler.Tests
 
             var audited = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Audited");
-            TestHarness.Check("wildcard proxy 模板声明",
+            CaseAssertions.Check("wildcard proxy 模板声明",
                 "Method|Audited$$.proxy.*(symbol:.string)@.generic<$.generic.TReturn>|" +
                 "priv,operator(.proxy.*),wrapper-proxy(wildcard)",
                 RenderMember(audited,
                     "Audited$$.proxy.*(symbol:.string)@.generic<$.generic.TReturn>"));
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.CheckTrue("无解包 shim / 特化合成",
+            CaseAssertions.CheckTrue("无解包 shim / 特化合成",
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains(".proxy.unwrap.") || d.Symbol.Contains("$.proxy.0.")));
 
@@ -1565,12 +1565,12 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（specific variadic 模板）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（specific variadic 模板）", module);
             var proxy = module.Functions.Single(f => f.Symbol.Contains(".proxy.sum"));
-            TestHarness.CheckTrue("specific variadic .args 声明值包",
+            CaseAssertions.CheckTrue("specific variadic .args 声明值包",
                 proxy.Args.Any(a => a.Name == ".vargs.nums"));
             var innerInvoke = proxy.Blocks.SelectMany(b => b.Instructions)
                 .OfType<InvokeInstruction>().Single(i =>
                     i.Method.Symbol == BilSpellings.InnerReservedFunction);
-            TestHarness.Check("specific variadic invoke fn(..inner) 整包转发", ".vargs.nums",
+            CaseAssertions.Check("specific variadic invoke fn(..inner) 整包转发", ".vargs.nums",
                 innerInvoke.Arguments.Single().Name);
         }
 
@@ -1593,7 +1593,7 @@ namespace RigiCompiler.Tests
 
             var logged = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Logged");
-            TestHarness.Check("get proxy 模板声明",
+            CaseAssertions.Check("get proxy 模板声明",
                 "Method|Logged$$.proxy.get.name(value:.generic<$.generic.TField>)@" +
                 ".generic<$.generic.TField>|" +
                 "priv,operator(.proxy.get.name),wrapper-proxy(specific)",
@@ -1602,10 +1602,10 @@ namespace RigiCompiler.Tests
                     ".generic<$.generic.TField>"));
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.Check("getter 普通声明（无 wrapper-proxy）",
+            CaseAssertions.Check("getter 普通声明（无 wrapper-proxy）",
                 "Method|Service$.get.name@.string|pub,getter(Service#name@.string)",
                 RenderMember(service, "Service$.get.name@.string"));
-            TestHarness.CheckTrue("无 .wrapped.get / .proxy.0.get 合成",
+            CaseAssertions.CheckTrue("无 .wrapped.get / .proxy.0.get 合成",
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains(".wrapped.get") || d.Symbol.Contains(".proxy.0.get")));
         }
@@ -1631,14 +1631,14 @@ namespace RigiCompiler.Tests
 
             var cell = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..cell.."));
-            TestHarness.CheckTrue("全局字段 cell 是 singleton + shared + compiler-generated",
+            CaseAssertions.CheckTrue("全局字段 cell 是 singleton + shared + compiler-generated",
                 cell.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Singleton)
                 && cell.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Shared)
                 && cell.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
-            TestHarness.CheckTrue("cell 含无参 ..init.wrapper",
+            CaseAssertions.CheckTrue("cell 含无参 ..init.wrapper",
                 cell.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("..init.wrapper()")));
 
@@ -1707,13 +1707,13 @@ namespace RigiCompiler.Tests
 
             var service = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Service");
-            TestHarness.CheckTrue("Service wrapped(W)",
+            CaseAssertions.CheckTrue("Service wrapped(W)",
                 service.Modifiers.OfType<BilWrappedModifier>()
                     .Any(m => m.WrapperTypeRef == "W"));
-            TestHarness.CheckTrue("无 router/降级特化合成",
+            CaseAssertions.CheckTrue("无 router/降级特化合成",
                 !service.Members.OfType<BilSimpleMemberDeclaration>().Any(d =>
                     d.Symbol.Contains("call???") || d.Symbol.Contains(".proxy.0.???")));
-            TestHarness.CheckTrue("降级请求 symbol 资源",
+            CaseAssertions.CheckTrue("降级请求 symbol 资源",
                 module.Resources.OfType<BilScalarResource>().Any(r =>
                     r.Type == BilScalarType.String
                     && r.LiteralText == "\"Service$fetchUserById<.i32,.string>(.i32)@.any\""));
@@ -1842,12 +1842,12 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol == "Service");
             var wraps = service.Modifiers.OfType<BilWrappedModifier>()
                 .Select(m => m.WrapperTypeRef).ToArray();
-            TestHarness.Check("双环 wrapped 序（outer→inner）",
+            CaseAssertions.Check("双环 wrapped 序（outer→inner）",
                 "W1,W2", string.Join(",", wraps));
-            TestHarness.CheckTrue("无双环特化合成",
+            CaseAssertions.CheckTrue("无双环特化合成",
                 !module.Functions.Any(f => f.Symbol.Contains(".proxy.0.???")
                     || f.Symbol.Contains(".proxy.1.???")));
-            TestHarness.CheckTrue("调用点仍 invoke Any.call???",
+            CaseAssertions.CheckTrue("调用点仍 invoke Any.call???",
                 module.Functions.Single(f => f.Symbol.StartsWith("$f("))
                     .Blocks[0].Instructions.OfType<InvokeInstruction>()
                     .Any(i => i.Method.Symbol.StartsWith("core::Any$call???")));
@@ -1859,7 +1859,7 @@ namespace RigiCompiler.Tests
             var (unit, _, _) = BilTestHarness.EmitBilUnit(
                 "pub class Plain { pub init() }\n" +
                 "pub func f(p: Plain) { p.missing() }\n");
-            TestHarness.CheckSemanticError("无 wrapper 不降级", unit.Diagnostics,
+            CaseAssertions.CheckSemanticError("无 wrapper 不降级", unit.Diagnostics,
                 "Undefined member");
         }
 
@@ -1885,11 +1885,11 @@ namespace RigiCompiler.Tests
                     "pub func f(s: SvcImpl): Any { return s.fetch(1) }\n");
                 CheckNoErrors("全管线无诊断（#28③ 直接 implements）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（#28③ 直接 implements）", module);
-                TestHarness.CheckTrue("#28③ 实现者显式 wrapped 标记",
+                CaseAssertions.CheckTrue("#28③ 实现者显式 wrapped 标记",
                     module.LocalSymbols.OfType<BilTypeDeclaration>()
                         .Single(t => t.Symbol == "SvcImpl")
                         .Modifiers.OfType<BilWrappedModifier>().Any(m => m.WrapperTypeRef == "Audited"));
-                TestHarness.CheckTrue("#28③ 调用点 invoke Any.call???",
+                CaseAssertions.CheckTrue("#28③ 调用点 invoke Any.call???",
                     module.Functions.Single(fn => fn.Symbol.StartsWith("$f("))
                         .Blocks[0].Instructions.OfType<InvokeInstruction>()
                         .Any(i => i.Method.Symbol.StartsWith("core::Any$call???")));
@@ -1907,7 +1907,7 @@ namespace RigiCompiler.Tests
                     "pub func f(s: ViaChild): Any { return s.remote() }\n");
                 CheckNoErrors("全管线无诊断（#28③ 传递闭包）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（#28③ 传递闭包）", module);
-                TestHarness.CheckTrue("#28③ 传递闭包 invoke Any.call???",
+                CaseAssertions.CheckTrue("#28③ 传递闭包 invoke Any.call???",
                     module.Functions.Single(fn => fn.Symbol.StartsWith("$f("))
                         .Blocks[0].Instructions.OfType<InvokeInstruction>()
                         .Any(i => i.Method.Symbol.StartsWith("core::Any$call???")));
@@ -1927,7 +1927,7 @@ namespace RigiCompiler.Tests
                     "    pub func known(): i32 { return 1 }\n" +
                     "}\n" +
                     "pub func f(s: SpecImpl) { s.missing() }\n");
-                TestHarness.CheckSemanticError("#28③ 仅 specific 不降级（P4）",
+                CaseAssertions.CheckSemanticError("#28③ 仅 specific 不降级（P4）",
                     unitSpec.Diagnostics, "Undefined member");
             }
         }
@@ -1953,7 +1953,7 @@ namespace RigiCompiler.Tests
                     "pub func f(u: User?, s: Service): User { return u if? s.fetch() }\n");
                 CheckNoErrors("全管线无诊断（if? 降级）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（if? 降级）", module);
-                TestHarness.CheckTrue("if? else 支 cast User",
+                CaseAssertions.CheckTrue("if? else 支 cast User",
                     text.Contains("call???") && text.Contains("cast") && text.Contains("type(User)"));
             }
 
@@ -1967,8 +1967,8 @@ namespace RigiCompiler.Tests
                 var hasCastToException = fail.Blocks[0].Instructions
                     .OfType<CastInstruction>()
                     .Any(c => c.TargetType.TypeRef.Contains("Exception"));
-                TestHarness.CheckTrue("throw 前 cast Exception", hasCastToException);
-                TestHarness.CheckTrue("throw 指令存在",
+                CaseAssertions.CheckTrue("throw 前 cast Exception", hasCastToException);
+                CaseAssertions.CheckTrue("throw 指令存在",
                     fail.Blocks[0].Instructions.OfType<ThrowInstruction>().Any());
             }
 
@@ -1982,7 +1982,7 @@ namespace RigiCompiler.Tests
                     "}\n");
                 CheckNoErrors("全管线无诊断（复合赋值降级）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（复合赋值降级）", module);
-                TestHarness.CheckTrue("复合赋值 RHS cast + add",
+                CaseAssertions.CheckTrue("复合赋值 RHS cast + add",
                     text.Contains("call???") && text.Contains("add") && text.Contains("type(.string)"));
             }
 
@@ -1998,7 +1998,7 @@ namespace RigiCompiler.Tests
                     "pub func f(b: Bag, s: Service) { b[0] = s.fetch() }\n");
                 CheckNoErrors("全管线无诊断（索引写降级）", unit);
                 BilTestHarness.CheckBilValid("验证器零错误（索引写降级）", module);
-                TestHarness.CheckTrue("索引写 cast User + set.array",
+                CaseAssertions.CheckTrue("索引写 cast User + set.array",
                     text.Contains("call???") && text.Contains("set.array")
                     && text.Contains("type(User)"));
             }
@@ -2038,12 +2038,12 @@ namespace RigiCompiler.Tests
                 .Single(t => t.Symbol == "Service");
             var iwDecl = service.Members.OfType<BilSimpleMemberDeclaration>()
                 .Single(d => d.Symbol.Contains("..init.wrapper"));
-            TestHarness.CheckTrue("..init.wrapper 声明 priv + compiler-generated",
+            CaseAssertions.CheckTrue("..init.wrapper 声明 priv + compiler-generated",
                 iwDecl.Modifiers.OfType<BilAccessibilityModifier>()
                     .Any(m => m.Accessibility == BilAccessibility.Private)
                 && iwDecl.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
-            TestHarness.CheckTrue("恰一个 ..init.wrapper 成员",
+            CaseAssertions.CheckTrue("恰一个 ..init.wrapper 成员",
                 service.Members.OfType<BilSimpleMemberDeclaration>()
                     .Count(d => d.Symbol.Contains("..init.wrapper")) == 1);
 
@@ -2071,7 +2071,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（无 wrapper 类型）", module2);
             var plain = module2.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "Plain");
-            TestHarness.CheckTrue("无 wrapper 类型不生成 ..init.wrapper",
+            CaseAssertions.CheckTrue("无 wrapper 类型不生成 ..init.wrapper",
                 !plain.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("..init.wrapper")));
         }
@@ -2094,16 +2094,16 @@ namespace RigiCompiler.Tests
 
             var companion = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.EndsWith("..companion"));
-            TestHarness.CheckTrue("companion 嵌套于宿主（Math...companion）",
+            CaseAssertions.CheckTrue("companion 嵌套于宿主（Math...companion）",
                 companion.Symbol == "Math...companion");
-            TestHarness.CheckTrue("companion 带 singleton + shared + compiler-generated",
+            CaseAssertions.CheckTrue("companion 带 singleton + shared + compiler-generated",
                 companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Singleton)
                 && companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.Shared)
                 && companion.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
-            TestHarness.CheckTrue("companion 含实例方法 square + ..init.wrapper",
+            CaseAssertions.CheckTrue("companion 含实例方法 square + ..init.wrapper",
                 companion.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Kind == BilMemberKind.Method && d.Symbol.Contains("$square("))
                 && companion.Members.OfType<BilSimpleMemberDeclaration>()
@@ -2114,7 +2114,7 @@ namespace RigiCompiler.Tests
             var shellDecl = math.Members.OfType<BilSimpleMemberDeclaration>()
                 .Single(d => d.Kind == BilMemberKind.StaticMethod
                     && d.Symbol.Contains(".square("));
-            TestHarness.CheckTrue("壳体静态方法 compiler-generated",
+            CaseAssertions.CheckTrue("壳体静态方法 compiler-generated",
                 shellDecl.Modifiers.OfType<BilKeywordModifier>()
                     .Any(m => m.Keyword == BilKeyword.CompilerGenerated));
 
@@ -2155,7 +2155,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（多静态 companion）", module2);
             var utilCompanion = module2.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.EndsWith("..companion"));
-            TestHarness.CheckTrue("两静态方法 → 一个 companion 两个实例方法",
+            CaseAssertions.CheckTrue("两静态方法 → 一个 companion 两个实例方法",
                 utilCompanion.Symbol == "Util...companion"
                 && utilCompanion.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("$a("))
@@ -2221,7 +2221,7 @@ namespace RigiCompiler.Tests
 
             var cellType = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol.StartsWith("..cell.."));
-            TestHarness.CheckTrue("cell 有 ..init.wrapper 有参声明",
+            CaseAssertions.CheckTrue("cell 有 ..init.wrapper 有参声明",
                 cellType.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Symbol.Contains("..init.wrapper") && d.Symbol.Contains("w0:")));
 
@@ -2299,12 +2299,12 @@ namespace RigiCompiler.Tests
             // 新字段声明（存储仍是基类槽）
             var aType = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "A");
-            TestHarness.CheckTrue("A 声明 ..init.field.x（priv compiler-generated）",
+            CaseAssertions.CheckTrue("A 声明 ..init.field.x（priv compiler-generated）",
                 RenderMember(aType, "A$..init.field.x()@.void")
                     == "Method|A$..init.field.x()@.void|priv,compiler-generated");
             var bType = module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == "B");
-            TestHarness.CheckTrue("B 不发 override 字段新槽（仅 A#x）",
+            CaseAssertions.CheckTrue("B 不发 override 字段新槽（仅 A#x）",
                 !bType.Members.OfType<BilSimpleMemberDeclaration>()
                     .Any(d => d.Kind == BilMemberKind.Field));
 

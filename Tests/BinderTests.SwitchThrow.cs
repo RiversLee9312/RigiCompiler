@@ -5,7 +5,7 @@ namespace RigiCompiler.Tests
         // ===== switch 语句/表达式（S7d，SYNTAX §7.2）=====
         private static void TestSwitch()
         {
-            TestHarness.Section("P3 Switch");
+            CompilerTestTools.Section("P3 Switch");
 
             // 语句形态：常量值匹配；全分支 return → GuaranteesReturn 升级（无缺返回诊断）
             var (unit, bodies) = BindUnit(
@@ -17,7 +17,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("常量 switch 无诊断", unit);
-            TestHarness.Check("常量 switch 语句形态",
+            CaseAssertions.Check("常量 switch 语句形态",
                 BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [Switch(Param(x,i32), " +
                 "[Case(Int(1,i32), [Return(Int(1,i32))]); Case(Int(2,i32), [Return(Int(2,i32))])], " +
@@ -33,18 +33,18 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("混合 switch 无诊断", unit2);
-            TestHarness.Check("pattern 分支占位绑定",
+            CaseAssertions.Check("pattern 分支占位绑定",
                 BoundDescribe.Body(BodyOf(bodies2, "f")),
                 "Body(f, [], [Switch(Param(x,i32), " +
                 "[Case(Int(1,i32), [Return(Int(1,i32))]); " +
                 "CaseP(Binary(CmpGt, Placeholder(i32), Int(10,i32), bool), [Return(Int(2,i32))])], " +
                 "[Return(Int(0,i32))])])");
             var switchStmt2 = (BoundSwitchStatement)((BoundBlock)BodyOf(bodies2, "f").Body).Statements[0];
-            TestHarness.CheckTrue("IsPattern 分类显式记录",
+            CaseAssertions.CheckTrue("IsPattern 分类显式记录",
                 !switchStmt2.Cases[0].IsPattern && switchStmt2.Cases[1].IsPattern);
             var placeholder2 = (BoundSwitchPlaceholderExpression)
                 ((BoundBinaryExpression)switchStmt2.Cases[1].Match).Left;
-            TestHarness.CheckTrue("占位 Selector 回指引用相等（嵌套消歧）",
+            CaseAssertions.CheckTrue("占位 Selector 回指引用相等（嵌套消歧）",
                 ReferenceEquals(placeholder2.Selector, switchStmt2.Selector));
 
             // 表达式形态：单表达式分支隐式取值，全分支统一产值类型
@@ -57,7 +57,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("switch 表达式无诊断", unit3);
-            TestHarness.Check("switch 表达式（隐式取值）",
+            CaseAssertions.Check("switch 表达式（隐式取值）",
                 BoundDescribe.Body(BodyOf(bodies3, "f")),
                 "Body(f, [], [Return(SwitchExpr(Param(x,i32), " +
                 "[Case(Int(1,i32), ValueBlock(_, i32, implicit, [ExprStmt(Int(10,i32))])); " +
@@ -74,7 +74,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("named switch 表达式无诊断", unit4);
-            TestHarness.Check("named switch 表达式（return@标签）",
+            CaseAssertions.Check("named switch 表达式（return@标签）",
                 BoundDescribe.Body(BodyOf(bodies4, "f")),
                 "Body(f, [y: String], [Return(SwitchExpr(Param(x,i32), " +
                 "[Case(Int(1,i32), ValueBlock(match, String, [ReturnValue(match, Str(\"one\",String))]))], " +
@@ -93,7 +93,7 @@ namespace RigiCompiler.Tests
                 "    } else { 0 }\n" +
                 "}\n");
             CheckNoErrors("值块内 switch 穿透无诊断", unit5);
-            TestHarness.CheckTrue("穿透后产值类型为 i32",
+            CaseAssertions.CheckTrue("穿透后产值类型为 i32",
                 ((BoundIfExpression)((BoundReturnStatement)
                     ((BoundBlock)BodyOf(bodies5, "f").Body).Statements[0]).Value!).Type.Name == "i32");
 
@@ -118,7 +118,7 @@ namespace RigiCompiler.Tests
                 "        default -> { return 0 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("值匹配非常量", unit7.Diagnostics,
+            CaseAssertions.CheckSemanticError("值匹配非常量", unit7.Diagnostics,
                 "switch value-match case requires a compile-time constant");
 
             // 诊断：case 常量类型与 selector 不符
@@ -129,7 +129,7 @@ namespace RigiCompiler.Tests
                 "        default -> { return 0 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("常量类型与 selector 不符", unit8.Diagnostics,
+            CaseAssertions.CheckSemanticError("常量类型与 selector 不符", unit8.Diagnostics,
                 "switch case constant type must equal the selector type (got 'String' and 'i32')");
 
             // 诊断：pattern 结果非 bool
@@ -140,7 +140,7 @@ namespace RigiCompiler.Tests
                 "        default -> { return 0 }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("pattern 非 bool", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("pattern 非 bool", unit9.Diagnostics,
                 "switch pattern case must be bool (got 'i32')");
 
             // 诊断：DA 仅单分支赋值 → 合并后仍未赋值
@@ -153,7 +153,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return y\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("DA：单分支赋值合并后仍报未赋值", unit10.Diagnostics,
+            CaseAssertions.CheckSemanticError("DA：单分支赋值合并后仍报未赋值", unit10.Diagnostics,
                 "Use of unassigned local variable 'y'");
 
             // 诊断：无期望类型时 switch 表达式产值类型严格不一致
@@ -165,7 +165,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return r\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("switch 表达式产值类型不一致", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("switch 表达式产值类型不一致", unit11.Diagnostics,
                 "switch expression branches produce different types ('i32' and 'String')");
 
             TestSwitchExpressionExpectedTypes();
@@ -173,7 +173,7 @@ namespace RigiCompiler.Tests
 
         private static void TestSwitchExpressionExpectedTypes()
         {
-            TestHarness.Section("P3 Switch Expression Expected Types");
+            CompilerTestTools.Section("P3 Switch Expression Expected Types");
 
             const string enumSource =
                 "pub enum struct E {\n" +
@@ -196,7 +196,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("隐式 enum case 有返回语境（switch）", enumUnit);
-            TestHarness.Check("隐式 enum switch 形态",
+            CaseAssertions.Check("隐式 enum switch 形态",
                 BoundDescribe.Body(BodyOf(enumBodies, "f")),
                 "Body(f, [], [Return(SwitchExpr(Int(0,i32), " +
                 "[Case(Int(0,i32), ValueBlock(_, E, implicit, " +
@@ -211,7 +211,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("隐式 null 有可空返回语境（switch）", nullUnit);
-            TestHarness.Check("隐式 null switch 形态",
+            CaseAssertions.Check("隐式 null switch 形态",
                 BoundDescribe.Body(BodyOf(nullBodies, "f")),
                 "Body(f, [], [Return(SwitchExpr(Int(0,i32), " +
                 "[Case(Int(0,i32), ValueBlock(_, String?, implicit, [ExprStmt(Null(String?))]))], " +
@@ -226,7 +226,7 @@ namespace RigiCompiler.Tests
                 "    })\n" +
                 "}\n");
             CheckNoErrors("实参语境传入 switch 隐式分支", argUnit);
-            TestHarness.Check("实参语境 switch 形态",
+            CaseAssertions.Check("实参语境 switch 形态",
                 BoundDescribe.Body(BodyOf(argBodies, "f")),
                 "Body(f, [], [CallStmt(take, [SwitchExpr(Int(0,i32), " +
                 "[Case(Int(0,i32), ValueBlock(_, E, implicit, " +
@@ -250,7 +250,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("公共基类隐式分支（switch）", implicitUnit);
-            TestHarness.Check("公共基类隐式 switch 形态",
+            CaseAssertions.Check("公共基类隐式 switch 形态",
                 BoundDescribe.Body(BodyOf(implicitBodies, "pick")),
                 "Body(pick, [], [Return(SwitchExpr(Param(flag,bool), " +
                 "[Case(Bool(True,bool), ValueBlock(_, Dog, implicit, [ExprStmt(New(Dog, []))]))], " +
@@ -263,7 +263,7 @@ namespace RigiCompiler.Tests
                 "        default -> { new Cat() }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无期望类型 switch 仍严格同型", noExpected.Diagnostics,
+            CaseAssertions.CheckSemanticError("无期望类型 switch 仍严格同型", noExpected.Diagnostics,
                 "switch expression branches produce different types ('Dog' and 'Cat')");
 
             var (incompatible, _) = BindUnit(
@@ -273,7 +273,7 @@ namespace RigiCompiler.Tests
                 "        default -> { \"s\" }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("有期望类型但不兼容报可赋性（switch）",
+            CaseAssertions.CheckSemanticError("有期望类型但不兼容报可赋性（switch）",
                 incompatible.Diagnostics,
                 "switch expression branch type 'String' is not assignable to expected type 'i32'");
         }
@@ -281,7 +281,7 @@ namespace RigiCompiler.Tests
         // ===== throw（S7d，SYNTAX §8；异常根 core.Exception 进 bootstrap）=====
         private static void TestThrow()
         {
-            TestHarness.Section("P3 Throw");
+            CompilerTestTools.Section("P3 Throw");
 
             // throw 终止路径：函数仅 throw 即满足「所有路径显式返回」
             var (unit, bodies) = BindUnitWithStdlib(
@@ -292,10 +292,10 @@ namespace RigiCompiler.Tests
                 "    throw new MyException()\n" +
                 "}\n");
             CheckNoErrors("throw 无诊断", unit);
-            TestHarness.Check("throw 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+            CaseAssertions.Check("throw 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [Throw(New(MyException, []))])");
             var throwStmt = (BoundThrowStatement)((BoundBlock)BodyOf(bodies, "f").Body).Statements[0];
-            TestHarness.CheckTrue("异常表达式定型为用户异常类",
+            CaseAssertions.CheckTrue("异常表达式定型为用户异常类",
                 throwStmt.Exception.Type.Name == "MyException");
 
             // 异常根 core.Exception 已抽象化（用户裁定）：直接抛根本身被拒
@@ -303,7 +303,7 @@ namespace RigiCompiler.Tests
                 "func g() {\n" +
                 "    throw new core.Exception()\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("直接抛 core.Exception 被拒", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("直接抛 core.Exception 被拒", unit2.Diagnostics,
                 "Cannot construct an instance of abstract type 'Exception'");
 
             // 诊断：throw 非异常类型
@@ -311,7 +311,7 @@ namespace RigiCompiler.Tests
                 "func f() {\n" +
                 "    throw 1\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("throw 非异常类型", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("throw 非异常类型", unit3.Diagnostics,
                 "Cannot throw 'i32' (not compatible with 'Exception')");
         }
     }

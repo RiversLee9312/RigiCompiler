@@ -28,16 +28,16 @@ namespace RigiCompiler.Tests
         private static void TestGateRejectsParseError()
         {
             var result = BilGate.Accept("这不是 BIL 文本", "bad.bil");
-            TestHarness.CheckTrue("解析垃圾被拒绝", !result.IsAccepted);
-            TestHarness.CheckTrue("解析错误带文件名", result.Errors.Count > 0
+            CaseAssertions.CheckTrue("解析垃圾被拒绝", !result.IsAccepted);
+            CaseAssertions.CheckTrue("解析错误带文件名", result.Errors.Count > 0
                 && result.Errors[0].Contains("bad.bil"), result.Errors.FirstOrDefault() ?? "");
         }
 
         private static void TestGateRejectsVerifierError()
         {
             var result = BilGate.Accept(UndeclaredVarBil, "undeclared.bil");
-            TestHarness.CheckTrue("验证器违规被拒绝", !result.IsAccepted);
-            TestHarness.CheckTrue("验证错误提及违规变量", result.Errors.Count > 0
+            CaseAssertions.CheckTrue("验证器违规被拒绝", !result.IsAccepted);
+            CaseAssertions.CheckTrue("验证错误提及违规变量", result.Errors.Count > 0
                 && result.Errors[0].Contains("$missing"), result.Errors.FirstOrDefault() ?? "");
         }
 
@@ -82,8 +82,8 @@ namespace RigiCompiler.Tests
         private static void TestGateRejectsBoolBitwise()
         {
             var result = BilGate.Accept(BoolBitwiseBil, "boolbit.bil");
-            TestHarness.CheckTrue("bool bin.and 被门禁拒绝", !result.IsAccepted);
-            TestHarness.CheckTrue("拒绝消息含 opcode 与类型",
+            CaseAssertions.CheckTrue("bool bin.and 被门禁拒绝", !result.IsAccepted);
+            CaseAssertions.CheckTrue("拒绝消息含 opcode 与类型",
                 result.Errors.Any(e => e.Contains("bin.and") && e.Contains(".bool")),
                 result.Errors.FirstOrDefault() ?? "");
         }
@@ -91,17 +91,17 @@ namespace RigiCompiler.Tests
         private static void TestGateAcceptsValidModule()
         {
             var result = BilGate.Accept(MinimalValidBil, "ok.bil");
-            TestHarness.CheckTrue("合法模块放行", result.IsAccepted,
+            CaseAssertions.CheckTrue("合法模块放行", result.IsAccepted,
                 string.Join("; ", result.Errors));
-            TestHarness.CheckTrue("放行模块非空", result.Module != null);
-            TestHarness.CheckTrue("放行模块函数数", result.Module!.Functions.Count == 1);
+            CaseAssertions.CheckTrue("放行模块非空", result.Module != null);
+            CaseAssertions.CheckTrue("放行模块函数数", result.Module!.Functions.Count == 1);
 
             // 编译器真实产物过门禁（复用中端全管线驱动，杜绝手编样例漂移）
             var (_, emittedTextModule, emittedText) = BilTestHarness.EmitBilUnit(
                 "pub func main(): i32 { return 0 }\n");
             emittedText = BilWriter.Write(emittedTextModule);
             var emitted = BilGate.Accept(emittedText, "emitted.bil");
-            TestHarness.CheckTrue("编译器产物过门禁", emitted.IsAccepted,
+            CaseAssertions.CheckTrue("编译器产物过门禁", emitted.IsAccepted,
                 string.Join("; ", emitted.Errors.Take(3)));
         }
 

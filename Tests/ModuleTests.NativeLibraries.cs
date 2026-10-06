@@ -11,7 +11,7 @@ public static partial class ModuleTests
 {
     private static void TestNativeLibraries()
     {
-        if (!OperatingSystem.IsLinux()) { TestHarness.RecordSkip("真实 C archive/dlopen 门禁当前仅 Linux；Windows ABI 另由 CI 验证"); return; }
+        if (!OperatingSystem.IsLinux()) { CaseAssertions.RecordSkip("真实 C archive/dlopen 门禁当前仅 Linux；Windows ABI 另由 CI 验证"); return; }
         var folder = InterfaceProbeFolder(); Directory.CreateDirectory(folder);
         const string source = "namespace cprovider\npriv var count: i32 = 40\npub func add(a: i32, b: i32): i32 { return a + b }\npub func next(delta: i32): i32 { count = count + delta\n return count }\n"
             + "pub func boolean(value: bool): bool { return value }\npub func character(value: char): char { return value }\n"
@@ -24,10 +24,10 @@ public static partial class ModuleTests
         var library = Path.Combine(folder, "libcprovider.a"); var shared = Path.Combine(folder, "libcprovider.so");
         var staticExit = NativeCommand.EmitAndLink(bil, library, null, Path.Combine(folder, "static.ll"), null, null, null, null,
             "module static-library", new(NativeBuildKind.StaticLibrary, exports));
-        TestHarness.CheckTrue("真实defaultO2 PIC对象归档.a", staticExit == 0 && File.Exists(library));
+        CaseAssertions.CheckTrue("真实defaultO2 PIC对象归档.a", staticExit == 0 && File.Exists(library));
         var dynamicExit = NativeCommand.EmitAndLink(bil, shared, null, Path.Combine(folder, "dynamic.ll"), null, null, null, null,
             "module dyn-library", new(NativeBuildKind.DynamicLibrary, exports));
-        TestHarness.CheckTrue("真实defaultO2 PIC runtime+deps链接.so", dynamicExit == 0 && File.Exists(shared));
+        CaseAssertions.CheckTrue("真实defaultO2 PIC runtime+deps链接.so", dynamicExit == 0 && File.Exists(shared));
         var clang = ToolchainResolver.ResolveClang(null)!;
         var declarations = string.Join("\n", exports.Select(e =>
         {
@@ -45,11 +45,11 @@ public static partial class ModuleTests
         var cexit = ExternalProcess.Run(clang, [staticSource, library, uv.StaticLibPath, mi.StaticLibPath, "-lpthread", "-ldl", "-lm", "-fuse-ld=lld", "-o", staticExe],
             out var cout, out var cerr, closeStdin: true);
         File.WriteAllText(Path.Combine(folder, "static-link.log"), cout + cerr); File.WriteAllText(Path.Combine(folder, "static-link.exit"), cexit.ToString());
-        TestHarness.CheckTrue("C宿主直接链接.a与明确外部RT依赖", cexit == 0, cerr);
+        CaseAssertions.CheckTrue("C宿主直接链接.a与明确外部RT依赖", cexit == 0, cerr);
         var environment = new Dictionary<string, string> { ["RIGI_RT_MEMTRACK"] = "1" };
         var run = cexit == 0 ? ExternalProcess.Run(staticExe, [], out cout, out cerr, environment: environment, closeStdin: true) : -1;
         File.WriteAllText(Path.Combine(folder, "static-run.log"), cout + cerr); File.WriteAllText(Path.Combine(folder, "static-run.exit"), run.ToString());
-        TestHarness.CheckTrue("真实C静态调用body+once全局状态+bool/char/窄整数/浮点MEMTRACK", run == 0 && cout.Length == 0 && cerr.Length == 0, cerr);
+        CaseAssertions.CheckTrue("真实C静态调用body+once全局状态+bool/char/窄整数/浮点MEMTRACK", run == 0 && cout.Length == 0 && cerr.Length == 0, cerr);
         var dynamicSource = Path.Combine(folder, "dynamic.c");
         var bindings = string.Join("\n", exports.Select(e =>
         {
@@ -63,10 +63,10 @@ public static partial class ModuleTests
         var dynamicExe = Path.Combine(folder, "dynamic-host");
         cexit = ExternalProcess.Run(clang, [dynamicSource, "-ldl", "-o", dynamicExe], out cout, out cerr, closeStdin: true);
         File.WriteAllText(Path.Combine(folder, "dynamic-link.log"), cout + cerr); File.WriteAllText(Path.Combine(folder, "dynamic-link.exit"), cexit.ToString());
-        TestHarness.CheckTrue("C宿主dlopen/dlsym链接", cexit == 0, cerr);
+        CaseAssertions.CheckTrue("C宿主dlopen/dlsym链接", cexit == 0, cerr);
         run = cexit == 0 && dynamicExit == 0 ? ExternalProcess.Run(dynamicExe, [shared], out cout, out cerr, environment: environment, closeStdin: true) : -1;
         File.WriteAllText(Path.Combine(folder, "dynamic-run.log"), cout + cerr); File.WriteAllText(Path.Combine(folder, "dynamic-run.exit"), run.ToString());
-        TestHarness.CheckTrue("真实DSO body/once状态/scalar ABI与hidden RT且MEMTRACK零", run == 0 && cout.Length == 0 && cerr.Length == 0, cerr);
+        CaseAssertions.CheckTrue("真实DSO body/once状态/scalar ABI与hidden RT且MEMTRACK零", run == 0 && cout.Length == 0 && cerr.Length == 0, cerr);
         File.WriteAllText(Path.Combine(folder, "evidence.json"), new JsonObject { ["staticCompileExit"] = staticExit, ["dynamicCompileExit"] = dynamicExit,
             ["dynamicHostExit"] = run, ["librarySha"] = File.Exists(library) ? RigiCompiler.Middleware.Cache.ArtifactCache.HashFile(library) : null,
             ["sharedSha"] = File.Exists(shared) ? RigiCompiler.Middleware.Cache.ArtifactCache.HashFile(shared) : null,

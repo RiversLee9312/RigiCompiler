@@ -66,18 +66,18 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var spanGate = BilGate.Accept(spanBil, "rawspan.bil");
-            TestHarness.CheckTrue("raw→Span 门禁放行", spanGate.IsAccepted,
+            CaseAssertions.CheckTrue("raw→Span 门禁放行", spanGate.IsAccepted,
                 string.Join("; ", spanGate.Errors));
             var spanContext = new MwContext(spanGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(spanContext);
             using var llvmLease5540 = LlvmHost.Enter();
             using var spanModule = ModuleBuilder.Build(spanContext, spanContext.Mir!);
             var spanLl = spanModule.PrintToString();
-            TestHarness.CheckTrue("raw→Span 字节常量",
+            CaseAssertions.CheckTrue("raw→Span 字节常量",
                 spanLl.Contains("@raw.R_Data") && spanLl.Contains("c\"/\\F23\\1C\""), spanLl);
-            TestHarness.CheckTrue("raw→Span 走 span_alloc",
+            CaseAssertions.CheckTrue("raw→Span 走 span_alloc",
                 spanLl.Contains("call ptr @rigi_span_alloc(ptr"), spanLl);
-            TestHarness.CheckTrue("raw→Span 具化 sheet",
+            CaseAssertions.CheckTrue("raw→Span 具化 sheet",
                 spanLl.Contains("typesheet.core::Span<core::u8>"), spanLl);
 
             // raw.bin → core::SharedSpan<u8>（b0101010101010101 = 0x55 0x55）
@@ -115,18 +115,18 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var sharedGate = BilGate.Accept(sharedBil, "rawshared.bil");
-            TestHarness.CheckTrue("raw→SharedSpan 门禁放行", sharedGate.IsAccepted,
+            CaseAssertions.CheckTrue("raw→SharedSpan 门禁放行", sharedGate.IsAccepted,
                 string.Join("; ", sharedGate.Errors));
             var sharedContext = new MwContext(sharedGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(sharedContext);
             using var llvmLease5588 = LlvmHost.Enter();
             using var sharedModule = ModuleBuilder.Build(sharedContext, sharedContext.Mir!);
             var sharedLl = sharedModule.PrintToString();
-            TestHarness.CheckTrue("raw→SharedSpan 字节常量",
+            CaseAssertions.CheckTrue("raw→SharedSpan 字节常量",
                 sharedLl.Contains("@raw.R_Bits") && sharedLl.Contains("c\"UU\""), sharedLl);
-            TestHarness.CheckTrue("raw→SharedSpan 走 span_alloc",
+            CaseAssertions.CheckTrue("raw→SharedSpan 走 span_alloc",
                 sharedLl.Contains("call ptr @rigi_span_alloc(ptr"), sharedLl);
-            TestHarness.CheckTrue("raw→SharedSpan 具化 sheet FlagShared",
+            CaseAssertions.CheckTrue("raw→SharedSpan 具化 sheet FlagShared",
                 SheetHasFlags(sharedLl, "typesheet.core::SharedSpan<core::u8>", 32, 18),
                 sharedLl);
 
@@ -134,7 +134,7 @@ namespace RigiCompiler.Tests
             var scalarBil = spanBil.Replace("core::Span<.u8> d", ".i32 d")
                 .Replace("rawspan", "rawscalar");
             var scalarGate = BilGate.Accept(scalarBil, "rawscalar.bil");
-            TestHarness.CheckTrue("raw→i32 门禁放行（verifier 跳过严格匹配）",
+            CaseAssertions.CheckTrue("raw→i32 门禁放行（verifier 跳过严格匹配）",
                 scalarGate.IsAccepted, string.Join("; ", scalarGate.Errors));
             var scalarCaught = false;
             try
@@ -148,7 +148,7 @@ namespace RigiCompiler.Tests
             {
                 scalarCaught = ex.Message.Contains("字节缓冲区");
             }
-            TestHarness.CheckTrue("raw→i32 受控拒绝（非字节缓冲区目标）", scalarCaught);
+            CaseAssertions.CheckTrue("raw→i32 受控拒绝（非字节缓冲区目标）", scalarCaught);
 
             // 负例：§19.2 集合资源（array<string>）load 受控拒绝——VM
             // LoadResource 同拒（"不支持的资源形态"），物化语义规范留白
@@ -186,7 +186,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var collGate = BilGate.Accept(collectionBil, "rawcoll.bil");
-            TestHarness.CheckTrue("集合资源 load 门禁放行", collGate.IsAccepted,
+            CaseAssertions.CheckTrue("集合资源 load 门禁放行", collGate.IsAccepted,
                 string.Join("; ", collGate.Errors));
             var collCaught = false;
             try
@@ -200,7 +200,7 @@ namespace RigiCompiler.Tests
             {
                 collCaught = ex.Message.Contains("无 load 物化语义");
             }
-            TestHarness.CheckTrue("集合资源 load 受控拒绝（VM 同拒）", collCaught);
+            CaseAssertions.CheckTrue("集合资源 load 受控拒绝（VM 同拒）", collCaught);
 
             // 负例：switch-table 资源不是可装载的值（§19.4 走 switch 指令
             // 专用通道），load 引用受控拒绝
@@ -210,7 +210,7 @@ namespace RigiCompiler.Tests
                 .Replace("R_Names", "R_Switch")
                 .Replace("rawcoll", "rawtable");
             var tableGate = BilGate.Accept(tableBil, "rawtable.bil");
-            TestHarness.CheckTrue("switch-table load 门禁放行", tableGate.IsAccepted,
+            CaseAssertions.CheckTrue("switch-table load 门禁放行", tableGate.IsAccepted,
                 string.Join("; ", tableGate.Errors));
             var tableCaught = false;
             try
@@ -224,7 +224,7 @@ namespace RigiCompiler.Tests
             {
                 tableCaught = ex.Message.Contains("无 load 物化语义");
             }
-            TestHarness.CheckTrue("switch-table load 受控拒绝（专用通道）", tableCaught);
+            CaseAssertions.CheckTrue("switch-table load 受控拒绝（专用通道）", tableCaught);
         }
 
         // ===== invoke.indirect（§15.3 callable 协议）=====
@@ -239,17 +239,17 @@ namespace RigiCompiler.Tests
                 "}\n");
             lambdaText = BilWriter.Write(lambdaTextModule);
             var lambdaGate = BilGate.Accept(lambdaText, "ind.lambda.bil");
-            TestHarness.CheckTrue("lambda 间接调用门禁放行", lambdaGate.IsAccepted,
+            CaseAssertions.CheckTrue("lambda 间接调用门禁放行", lambdaGate.IsAccepted,
                 string.Join("; ", lambdaGate.Errors));
             var lambdaContext = new MwContext(lambdaGate.Module!);
             var lambdaMir = MirBuilder.Build(lambdaContext);
             var lambdaInst = lambdaMir.Functions
                 .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
                 .OfType<MirInvokeIndirect>().FirstOrDefault();
-            TestHarness.CheckTrue("MIR 含 MirInvokeIndirect", lambdaInst != null);
-            TestHarness.CheckTrue("有结果槽", lambdaInst is { Result: not null });
-            TestHarness.CheckTrue("实参不含 receiver", lambdaInst is { Args.Count: 1 });
-            TestHarness.CheckTrue("静态类型已附带",
+            CaseAssertions.CheckTrue("MIR 含 MirInvokeIndirect", lambdaInst != null);
+            CaseAssertions.CheckTrue("有结果槽", lambdaInst is { Result: not null });
+            CaseAssertions.CheckTrue("实参不含 receiver", lambdaInst is { Args.Count: 1 });
+            CaseAssertions.CheckTrue("静态类型已附带",
                 lambdaInst != null && lambdaInst.CallTargetType.Canonical.Length > 0);
 
             // noret：Action 语句调用 Result=null
@@ -262,13 +262,13 @@ namespace RigiCompiler.Tests
                 "}\n");
             actionText = BilWriter.Write(actionTextModule);
             var actionGate = BilGate.Accept(actionText, "ind.action.bil");
-            TestHarness.CheckTrue("Action noret 门禁放行", actionGate.IsAccepted,
+            CaseAssertions.CheckTrue("Action noret 门禁放行", actionGate.IsAccepted,
                 string.Join("; ", actionGate.Errors));
             var actionMir = MirBuilder.Build(new MwContext(actionGate.Module!));
             var noret = actionMir.Functions
                 .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
                 .OfType<MirInvokeIndirect>().FirstOrDefault();
-            TestHarness.CheckTrue("noret Result=null", noret is { Result: null });
+            CaseAssertions.CheckTrue("noret Result=null", noret is { Result: null });
 
             // 绑定分流：用户类 operator call → IndirectCallBinding.CallOperator
             var (_, userTextModule, userText) = BilTestHarness.EmitBilUnit(
@@ -282,7 +282,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             userText = BilWriter.Write(userTextModule);
             var userGate = BilGate.Accept(userText, "ind.user.bil");
-            TestHarness.CheckTrue("用户 operator call 门禁放行", userGate.IsAccepted,
+            CaseAssertions.CheckTrue("用户 operator call 门禁放行", userGate.IsAccepted,
                 string.Join("; ", userGate.Errors));
             var userContext = new MwContext(userGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(userContext);
@@ -293,17 +293,17 @@ namespace RigiCompiler.Tests
             var binding = ImplBinder.BindIndirectCall(userContext.Symbols,
                 userInst.CallTargetType.Canonical, new[] { "core::i32" }, "core::i32",
                 userContext.Module.Functions);
-            TestHarness.CheckTrue("绑定为 IndirectCallBinding", binding is IndirectCallBinding);
-            TestHarness.CheckTrue("CallOperator 是 Doubler$$call",
+            CaseAssertions.CheckTrue("绑定为 IndirectCallBinding", binding is IndirectCallBinding);
+            CaseAssertions.CheckTrue("CallOperator 是 Doubler$$call",
                 binding.CallOperator.Canonical.Contains("Doubler$$call")
                 && binding.CallOperator.Canonical.Contains(".i32"));
 
             using var llvmLease5763 = LlvmHost.Enter();
             using var userModule = ModuleBuilder.Build(userContext, userMir);
             var ll = userModule.PrintToString();
-            TestHarness.CheckTrue("间接调用经 rigi_vtable_entry",
+            CaseAssertions.CheckTrue("间接调用经 rigi_vtable_entry",
                 ll.Contains("call ptr @rigi_vtable_entry(ptr"), ll);
-            TestHarness.CheckTrue("虚槽常量为 i32 1（槽 0 分发器）",
+            CaseAssertions.CheckTrue("虚槽常量为 i32 1（槽 0 分发器）",
                 ll.Contains("i32 1") && ll.Contains("rigi_vtable_entry"), ll);
 
             // 泛型 $$call：typeid 前缀平铺在实参前部（VM FindCallTarget 尚未
@@ -319,15 +319,15 @@ namespace RigiCompiler.Tests
                 "}\n");
             genText = BilWriter.Write(genTextModule);
             var genGate = BilGate.Accept(genText, "ind.generic.bil");
-            TestHarness.CheckTrue("泛型 $$call 门禁放行", genGate.IsAccepted,
+            CaseAssertions.CheckTrue("泛型 $$call 门禁放行", genGate.IsAccepted,
                 string.Join("; ", genGate.Errors));
             var genContext = new MwContext(genGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(genContext);
             var genInst = genContext.Mir!.Functions
                 .SelectMany(f => f.Blocks).SelectMany(b => b.Instructions)
                 .OfType<MirInvokeIndirect>().FirstOrDefault();
-            TestHarness.CheckTrue("泛型 $$call MIR 含间接调用", genInst != null);
-            TestHarness.CheckTrue("泛型 $$call 实参含 typeid 前缀",
+            CaseAssertions.CheckTrue("泛型 $$call MIR 含间接调用", genInst != null);
+            CaseAssertions.CheckTrue("泛型 $$call 实参含 typeid 前缀",
                 genInst is { Args.Count: 2 });
             var mainFn = genContext.Mir!.Functions.First(f => f.IsEntrypoint);
             var genArgTypes = new List<string>();
@@ -339,11 +339,11 @@ namespace RigiCompiler.Tests
                 genInst.CallTargetType.Canonical, genArgTypes,
                 mainFn.FindLocal(genInst.Result!).Type.Canonical,
                 genContext.Module.Functions);
-            TestHarness.CheckTrue("泛型 $$call 绑定命中 Mapper$$call",
+            CaseAssertions.CheckTrue("泛型 $$call 绑定命中 Mapper$$call",
                 genBind.CallOperator.Canonical.Contains("Mapper$$call"));
             using var llvmLease5805 = LlvmHost.Enter();
             using var genModule = ModuleBuilder.Build(genContext, genContext.Mir!);
-            TestHarness.CheckTrue("泛型 $$call 发射 vtable 入口",
+            CaseAssertions.CheckTrue("泛型 $$call 发射 vtable 入口",
                 genModule.PrintToString().Contains("rigi_vtable_entry"));
         }
 
@@ -359,9 +359,9 @@ namespace RigiCompiler.Tests
                 "    var s = i64_to_string(42L)\n" +
                 "    return 0\n" +
                 "}\n", "ffi.string.bil");
-            TestHarness.CheckTrue("String 返回 fn 类型：void + rigi_string* 首参",
+            CaseAssertions.CheckTrue("String 返回 fn 类型：void + rigi_string* 首参",
                 stringLl.Contains("declare void @rigi_i64_to_string(ptr, i64)"), stringLl);
-            TestHarness.CheckTrue("String 返回调用点 alloca rigi_string",
+            CaseAssertions.CheckTrue("String 返回调用点 alloca rigi_string",
                 stringLl.Contains("alloca { ptr, i64 }"), stringLl);
 
             var u64Ll = EmitLlFromSource(
@@ -372,7 +372,7 @@ namespace RigiCompiler.Tests
                 "    var s = u64_to_string(1UL)\n" +
                 "    return 0\n" +
                 "}\n", "ffi.u64.bil");
-            TestHarness.CheckTrue("u64 面 fn 类型：void + rigi_string* 首参 + i64",
+            CaseAssertions.CheckTrue("u64 面 fn 类型：void + rigi_string* 首参 + i64",
                 u64Ll.Contains("declare void @rigi_u64_to_string(ptr, i64)"), u64Ll);
 
             var anyToStrLl = EmitLlFromSource(
@@ -383,9 +383,9 @@ namespace RigiCompiler.Tests
                 "    var s = any_to_string((42 as Any))\n" +
                 "    return 0\n" +
                 "}\n", "ffi.any_to_string.bil");
-            TestHarness.CheckTrue("any_to_string 面：String out 首参 + Any 槽指针",
+            CaseAssertions.CheckTrue("any_to_string 面：String out 首参 + Any 槽指针",
                 anyToStrLl.Contains("declare void @rigi_any_to_string(ptr, ptr)"), anyToStrLl);
-            TestHarness.CheckTrue("any_to_string 调用形状",
+            CaseAssertions.CheckTrue("any_to_string 调用形状",
                 anyToStrLl.Contains("call void @rigi_any_to_string(ptr"), anyToStrLl);
 
             var f32Ll = EmitLlFromSource(
@@ -396,7 +396,7 @@ namespace RigiCompiler.Tests
                 "    var s = f32_to_string(1.0f)\n" +
                 "    return 0\n" +
                 "}\n", "ffi.f32.bil");
-            TestHarness.CheckTrue("f32 面 fn 类型：void + rigi_string* 首参 + float",
+            CaseAssertions.CheckTrue("f32 面 fn 类型：void + rigi_string* 首参 + float",
                 f32Ll.Contains("declare void @rigi_f32_to_string(ptr, float)"), f32Ll);
 
             var refLl = EmitLlFromSource(
@@ -410,9 +410,9 @@ namespace RigiCompiler.Tests
                 "    var u = make_user()\n" +
                 "    return 0\n" +
                 "}\n", "ffi.ref.bil");
-            TestHarness.CheckTrue("用户引用返回 fn 类型：void + 槽指针首参",
+            CaseAssertions.CheckTrue("用户引用返回 fn 类型：void + 槽指针首参",
                 refLl.Contains("declare void @rigi_make_user(ptr)"), refLl);
-            TestHarness.CheckTrue("用户引用返回调用点 alloca 16B 对齐槽",
+            CaseAssertions.CheckTrue("用户引用返回调用点 alloca 16B 对齐槽",
                 refLl.Contains("alloca { i64, i64 }") && refLl.Contains("align 16"), refLl);
 
             var anyLl = EmitLlFromSource(
@@ -423,7 +423,7 @@ namespace RigiCompiler.Tests
                 "    var s = box_any((1 as Any))\n" +
                 "    return 0\n" +
                 "}\n", "ffi.any.bil");
-            TestHarness.CheckTrue("Any 参数 fn 类型：String out 首参 + Any 槽指针",
+            CaseAssertions.CheckTrue("Any 参数 fn 类型：String out 首参 + Any 槽指针",
                 anyLl.Contains("declare void @rigi_box_any(ptr, ptr)"), anyLl);
 
             var anyRetLl = EmitLlFromSource(
@@ -434,9 +434,9 @@ namespace RigiCompiler.Tests
                 "    var a = make_any()\n" +
                 "    return 0\n" +
                 "}\n", "ffi.anyret.bil");
-            TestHarness.CheckTrue("Any 返回 fn 类型：void + 槽指针首参",
+            CaseAssertions.CheckTrue("Any 返回 fn 类型：void + 槽指针首参",
                 anyRetLl.Contains("declare void @rigi_make_any(ptr)"), anyRetLl);
-            TestHarness.CheckTrue("Any 返回调用点 alloca 16B 对齐槽",
+            CaseAssertions.CheckTrue("Any 返回调用点 alloca 16B 对齐槽",
                 anyRetLl.Contains("alloca { i64, i64 }") && anyRetLl.Contains("align 16"),
                 anyRetLl);
 
@@ -449,9 +449,9 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return abs(-1)\n" +
                 "}\n", "ffi.userlib.bil");
-            TestHarness.CheckTrue("非 rigi_rt 库 fn 声明：C 符号原文无前缀",
+            CaseAssertions.CheckTrue("非 rigi_rt 库 fn 声明：C 符号原文无前缀",
                 libcLl.Contains("declare i32 @abs(i32)"), libcLl);
-            TestHarness.CheckTrue("非 rigi_rt 库调用形状",
+            CaseAssertions.CheckTrue("非 rigi_rt 库调用形状",
                 libcLl.Contains("call i32 @abs(i32"), libcLl);
 
             var userStringLl = EmitLlFromSource(
@@ -462,7 +462,7 @@ namespace RigiCompiler.Tests
                 "    var s = my_echo(\"x\")\n" +
                 "    return 0\n" +
                 "}\n", "ffi.userlib.string.bil");
-            TestHarness.CheckTrue("非 rigi_rt 库 String 面：void + rigi_string* 出入参",
+            CaseAssertions.CheckTrue("非 rigi_rt 库 String 面：void + rigi_string* 出入参",
                 userStringLl.Contains("declare void @my_echo(ptr, ptr)"), userStringLl);
 
             var typeIdLl = EmitLlFromSource(
@@ -474,11 +474,11 @@ namespace RigiCompiler.Tests
                 "    var h = new Holder()\n" +
                 "    return h.tag\\<i32>(1)\n" +
                 "}\n", "ffi.typeid.bil");
-            TestHarness.CheckTrue("typeid ABI：.this 胖引用 → typeid ptr → 普通 i32（§7.2）",
+            CaseAssertions.CheckTrue("typeid ABI：.this 胖引用 → typeid ptr → 普通 i32（§7.2）",
                 typeIdLl.Contains(
                     "define internal i32 @\"Holder$tag(n:.i32)@.i32\"({ i64, i64 } %0, ptr %1, i32 %2)"),
                 typeIdLl);
-            TestHarness.CheckTrue("typeid LLVM 表示 = TypeSheet 指针（getid.type 物化）",
+            CaseAssertions.CheckTrue("typeid LLVM 表示 = TypeSheet 指针（getid.type 物化）",
                 typeIdLl.Contains("store ptr @\"typesheet.core::i32\""), typeIdLl);
         }
 

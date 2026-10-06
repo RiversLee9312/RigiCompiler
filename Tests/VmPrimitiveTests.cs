@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -19,15 +19,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class VmPrimitiveTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmPrimitive", Cases, sectionTitle: "VmPrimitive");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -61,7 +59,7 @@ namespace RigiCompiler.Tests
         private static VmContext NewContext()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(ModuleSource);
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var context = new VmContext(module);
@@ -105,7 +103,7 @@ namespace RigiCompiler.Tests
             {
                 thread.Join();
             }
-            TestHarness.Check("互斥计数完整", counter.ToString(), "20000");
+            CaseAssertions.Check("互斥计数完整", counter.ToString(), "20000");
         }
 
         // ===== sem 交接协议（主 Worker 队列直驱）：入队→park 出队；
@@ -115,10 +113,10 @@ namespace RigiCompiler.Tests
             var dispatch = NewContext().Dispatch;
             dispatch.WorkerEnqueue(Args(0, 42));
             var token = ((VmI64)dispatch.WorkerPark(Args(0))).Value;
-            TestHarness.Check("入队即出队", token.ToString(), "42");
+            CaseAssertions.Check("入队即出队", token.ToString(), "42");
             dispatch.WorkerEnqueue(Args(0, 0));
             token = ((VmI64)dispatch.WorkerPark(Args(0))).Value;
-            TestHarness.Check("唤醒无任务返 0", token.ToString(), "0");
+            CaseAssertions.Check("唤醒无任务返 0", token.ToString(), "0");
             var poster = new Thread(() =>
             {
                 Thread.Sleep(50);
@@ -128,8 +126,8 @@ namespace RigiCompiler.Tests
             var watch = System.Diagnostics.Stopwatch.StartNew();
             token = ((VmI64)dispatch.WorkerPark(Args(0))).Value;
             watch.Stop();
-            TestHarness.Check("park 阻塞后取到任务", token.ToString(), "99");
-            TestHarness.CheckTrue("park 确实阻塞过", watch.ElapsedMilliseconds >= 30,
+            CaseAssertions.Check("park 阻塞后取到任务", token.ToString(), "99");
+            CaseAssertions.CheckTrue("park 确实阻塞过", watch.ElapsedMilliseconds >= 30,
                 watch.ElapsedMilliseconds + "ms");
             poster.Join();
         }
@@ -147,10 +145,10 @@ namespace RigiCompiler.Tests
             {
                 Thread.Sleep(10);
             }
-            TestHarness.CheckTrue("Worker 线程跑了入口 fn（BIL 解释）",
+            CaseAssertions.CheckTrue("Worker 线程跑了入口 fn（BIL 解释）",
                 context.Stdout.Contains("worker-ran"), context.Stdout);
             dispatch.WorkerDestroy(Args(handle));
-            TestHarness.CheckTrue("入口失败清单为空",
+            CaseAssertions.CheckTrue("入口失败清单为空",
                 dispatch.WorkerFailures.IsEmpty,
                 dispatch.WorkerFailures.Count + " 起");
         }
@@ -164,26 +162,26 @@ namespace RigiCompiler.Tests
             var doneSpec = dispatch.RegisterSpec(Fn(context, "$done("),
                 Array.Empty<VmValue>());
             var done = ((VmI64)dispatch.CoroutineCreate(Args(0, doneSpec))).Value;
-            TestHarness.Check("终态段 DONE",
+            CaseAssertions.Check("终态段 DONE",
                 ((VmI64)dispatch.CoroutineResume(Args(done))).Value.ToString(),
                 VmDispatch.ResumeDone.ToString());
             // YIELDED → DONE：裸 yield 重发布后再取回
             var yieldSpec = dispatch.RegisterSpec(Fn(context, "$yielder("),
                 Array.Empty<VmValue>());
             var yielder = ((VmI64)dispatch.CoroutineCreate(Args(0, yieldSpec))).Value;
-            TestHarness.Check("裸 yield 段 YIELDED",
+            CaseAssertions.Check("裸 yield 段 YIELDED",
                 ((VmI64)dispatch.CoroutineResume(Args(yielder))).Value.ToString(),
                 VmDispatch.ResumeYielded.ToString());
-            TestHarness.Check("yield 后再取回 DONE",
+            CaseAssertions.Check("yield 后再取回 DONE",
                 ((VmI64)dispatch.CoroutineResume(Args(yielder))).Value.ToString(),
                 VmDispatch.ResumeDone.ToString());
-            TestHarness.CheckTrue("destroy 终态句柄",
+            CaseAssertions.CheckTrue("destroy 终态句柄",
                 dispatch.CoroutineDestroy(Args(done)) == VmVoid.Instance, "");
             // SUSPENDED：yield sleep 长闹钟挂起
             var suspendSpec = dispatch.RegisterSpec(Fn(context, "$suspender("),
                 Array.Empty<VmValue>());
             var suspender = ((VmI64)dispatch.CoroutineCreate(Args(0, suspendSpec))).Value;
-            TestHarness.Check("yield Alarm 段 SUSPENDED",
+            CaseAssertions.Check("yield Alarm 段 SUSPENDED",
                 ((VmI64)dispatch.CoroutineResume(Args(suspender))).Value.ToString(),
                 VmDispatch.ResumeSuspended.ToString());
         }
@@ -200,11 +198,11 @@ namespace RigiCompiler.Tests
             try
             {
                 dispatch.CoroutineDestroy(Args(handle));
-                TestHarness.CheckTrue("未终态 destroy 应拒绝", false, "未抛错");
+                CaseAssertions.CheckTrue("未终态 destroy 应拒绝", false, "未抛错");
             }
             catch (VmException exception)
             {
-                TestHarness.CheckTrue("未终态 destroy 清晰拒绝",
+                CaseAssertions.CheckTrue("未终态 destroy 清晰拒绝",
                     exception.Message.Contains("未终态"), exception.Message);
             }
         }
@@ -213,12 +211,12 @@ namespace RigiCompiler.Tests
         private static void TestTlsAndTimeNow()
         {
             var dispatch = NewContext().Dispatch;
-            TestHarness.Check("主线程 TLS 上下文 = 0",
+            CaseAssertions.Check("主线程 TLS 上下文 = 0",
                 ((VmI64)dispatch.TlsCurrentContext(Array.Empty<VmValue>())).Value.ToString(), "0");
             var before = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var now = ((VmI64)dispatch.TimeNow(Array.Empty<VmValue>())).Value;
             var after = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            TestHarness.CheckTrue("time_now 在实时钟窗口内",
+            CaseAssertions.CheckTrue("time_now 在实时钟窗口内",
                 now >= before && now <= after + 50,
                 now + " 不在 [" + before + ", " + after + "]");
         }
@@ -239,11 +237,11 @@ namespace RigiCompiler.Tests
             try
             {
                 dispatch.WorkerPark(Args(0));
-                TestHarness.CheckTrue("死锁应显败", false, "park 无限阻塞未诊断");
+                CaseAssertions.CheckTrue("死锁应显败", false, "park 无限阻塞未诊断");
             }
             catch (VmException exception)
             {
-                TestHarness.CheckTrue("死锁诊断抛出",
+                CaseAssertions.CheckTrue("死锁诊断抛出",
                     exception.Message.Contains("死锁"), exception.Message);
             }
         }
@@ -272,7 +270,7 @@ namespace RigiCompiler.Tests
                 var p1 = Path.Combine(dir, "a.bin");
                 File.WriteAllBytes(p1, Encoding.ASCII.GetBytes("ANCHOR-"));
                 var rc = VmDispatch.OpenAppendStream(p1, out var opened);
-                TestHarness.CheckTrue("追加流打开成功",
+                CaseAssertions.CheckTrue("追加流打开成功",
                     rc == 0 && opened != null, "rc=" + rc);
                 using var s1 = opened!;
                 using (var ext = new FileStream(p1, FileMode.Open,
@@ -282,18 +280,18 @@ namespace RigiCompiler.Tests
                     ext.Seek(0, SeekOrigin.End);
                     ext.Write(new byte[] { 0xE1, 0xE2, 0xE3, 0xE4, 0xE5 });
                 }
-                TestHarness.CheckTrue("追加句柄 getLength 实时",
+                CaseAssertions.CheckTrue("追加句柄 getLength 实时",
                     s1.Length == 12, "len=" + s1.Length);
                 var written = VmDispatch.AppendWriteCore(s1,
                     Encoding.ASCII.GetBytes("A1"), 2);
-                TestHarness.CheckTrue("外部增长后追加全量写出", written == 2,
+                CaseAssertions.CheckTrue("外部增长后追加全量写出", written == 2,
                     "n=" + written);
                 s1.Flush(true);   // flush 持久化面对追加专用句柄可用
                 var bytes1 = ReadAllShared(p1);
-                TestHarness.Check("追加落在当时末尾", bytes1.Length.ToString(),
+                CaseAssertions.Check("追加落在当时末尾", bytes1.Length.ToString(),
                     "14");
                 var text1 = Encoding.ASCII.GetString(bytes1);
-                TestHarness.CheckTrue("前缀与外部数据不被覆盖",
+                CaseAssertions.CheckTrue("前缀与外部数据不被覆盖",
                     text1.StartsWith("ANCHOR-") && bytes1[7] == 0xE1
                         && bytes1[11] == 0xE5,
                     text1.Replace("\0", "."));
@@ -310,7 +308,7 @@ namespace RigiCompiler.Tests
                     var pAppendCreated = Path.Combine(dir, "mode_append.bin");
                     var rcMode = VmDispatch.OpenAppendStream(pAppendCreated,
                         out var modeStream);
-                    TestHarness.CheckTrue("权限段追加句柄打开成功",
+                    CaseAssertions.CheckTrue("权限段追加句柄打开成功",
                         rcMode == 0 && modeStream != null, "rc=" + rcMode);
                     using (modeStream!)
                     {
@@ -321,7 +319,7 @@ namespace RigiCompiler.Tests
                         var appendMode =
                             File.GetUnixFileMode(pAppendCreated);
                         var ctrlMode = File.GetUnixFileMode(pCtrl);
-                        TestHarness.Check("追加创建 mode 与普通创建一致（同 umask）",
+                        CaseAssertions.Check("追加创建 mode 与普通创建一致（同 umask）",
                             appendMode.ToString(), ctrlMode.ToString());
                     }
                 }
@@ -334,7 +332,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllBytes(p2, Encoding.ASCII.GetBytes("ANCHOR-"));
                 var rcA = VmDispatch.OpenAppendStream(p2, out var openedA);
                 var rcB = VmDispatch.OpenAppendStream(p2, out var openedB);
-                TestHarness.CheckTrue("双句柄打开成功",
+                CaseAssertions.CheckTrue("双句柄打开成功",
                     rcA == 0 && rcB == 0 && openedA != null && openedB != null,
                     $"A={rcA} B={rcB}");
                 using var sa = openedA!;
@@ -373,9 +371,9 @@ namespace RigiCompiler.Tests
                 threadB.Start();
                 threadA.Join();
                 threadB.Join();
-                TestHarness.CheckTrue("屏障交错无线程异常",
+                CaseAssertions.CheckTrue("屏障交错无线程异常",
                     threadError == null, threadError?.Message ?? "");
-                TestHarness.Check("屏障交错双记录共存无覆盖",
+                CaseAssertions.Check("屏障交错双记录共存无覆盖",
                     Encoding.ASCII.GetString(ReadAllShared(p2)),
                     "ANCHOR-BBBBBBBBAAAA");
 
@@ -386,7 +384,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllBytes(p3, Encoding.ASCII.GetBytes("ANCHOR-"));
                 rcA = VmDispatch.OpenAppendStream(p3, out var opened3a);
                 rcB = VmDispatch.OpenAppendStream(p3, out var opened3b);
-                TestHarness.CheckTrue("并发段双句柄打开成功",
+                CaseAssertions.CheckTrue("并发段双句柄打开成功",
                     rcA == 0 && rcB == 0 && opened3a != null && opened3b != null,
                     $"A={rcA} B={rcB}");
                 using var s3a = opened3a!;
@@ -420,13 +418,13 @@ namespace RigiCompiler.Tests
                 writerB.Start();
                 writerA.Join();
                 writerB.Join();
-                TestHarness.CheckTrue("并发编号记录全部全量写出",
+                CaseAssertions.CheckTrue("并发编号记录全部全量写出",
                     writeErrors == 0, "错误数=" + writeErrors);
                 var final = ReadAllShared(p3);
-                TestHarness.Check("并发记录最终长度", final.Length.ToString(),
+                CaseAssertions.Check("并发记录最终长度", final.Length.ToString(),
                     "55");
                 var finalText = Encoding.ASCII.GetString(final);
-                TestHarness.CheckTrue("既有前缀完好",
+                CaseAssertions.CheckTrue("既有前缀完好",
                     finalText.StartsWith("ANCHOR-"), finalText);
                 for (var t = 0; t < 2; t++)
                 {
@@ -436,7 +434,7 @@ namespace RigiCompiler.Tests
                         var record = tag + i.ToString() + ";";
                         var first = finalText.IndexOf(record,
                             StringComparison.Ordinal);
-                        TestHarness.CheckTrue("记录 " + record + " 恰好一次",
+                        CaseAssertions.CheckTrue("记录 " + record + " 恰好一次",
                             first >= 0 && finalText.IndexOf(record,
                                 first + 1, StringComparison.Ordinal) < 0,
                             "pos=" + first);
@@ -446,7 +444,7 @@ namespace RigiCompiler.Tests
                 // ④ 关闭后句柄释放：全部流已 Dispose，目录可整体删除
                 //（句柄未放漏则文件不再锁定——资源不泄漏钉子）
                 Directory.Delete(dir, true);
-                TestHarness.CheckTrue("关闭后资源释放（目录可清理）",
+                CaseAssertions.CheckTrue("关闭后资源释放（目录可清理）",
                     !Directory.Exists(dir));
             }
             finally

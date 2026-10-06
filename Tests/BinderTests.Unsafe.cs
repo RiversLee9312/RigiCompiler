@@ -4,7 +4,7 @@ namespace RigiCompiler.Tests
     {
         private static void TestUnsafeContexts()
         {
-            TestHarness.Section("unsafe 词法上下文与危险操作");
+            CompilerTestTools.Section("unsafe 词法上下文与危险操作");
             const string danger = "unsafe func danger(): i32 { return 7 }\n";
             foreach (var body in new[]
             {
@@ -33,7 +33,7 @@ namespace RigiCompiler.Tests
             })
             {
                 var result = BindUnit(source);
-                TestHarness.CheckTrue("安全调用拒绝：" + source,
+                CaseAssertions.CheckTrue("安全调用拒绝：" + source,
                     result.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("requires an unsafe context")),
                     string.Join("; ", result.Unit.Diagnostics.Diagnostics.Select(d => d.Message)));
             }
@@ -57,30 +57,30 @@ namespace RigiCompiler.Tests
                 if (!operation.Contains("[0] +=")) CheckNoErrors("unsafe 调用点允许：" + operation,
                     BindUnit(declaration + "\n func f(s: Secret) { unsafe seq { " + operation + " } }").Unit);
                 var rejected = BindUnit(declaration + "\n func f(s: Secret) { " + operation + " }");
-                TestHarness.CheckTrue("unsafe 调用点拒绝：" + operation,
+                CaseAssertions.CheckTrue("unsafe 调用点拒绝：" + operation,
                     rejected.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("requires an unsafe context")),
                     string.Join("; ", rejected.Unit.Diagnostics.Diagnostics.Select(d => d.Message)));
             }
             CheckNoErrors("安全泛型动态构造透传", BindUnit(
                 "func make\\<T>(t: Type\\<T>, x: i32): T { return new t(x) }").Unit);
             var invalid = BindUnit("unsafe var x: i32 = 1");
-            TestHarness.CheckTrue("字段不能声明 unsafe",
+            CaseAssertions.CheckTrue("字段不能声明 unsafe",
                 invalid.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("'unsafe' can only")));
 
             var leak = BindUnit("pub unsafe class Secret { }\npub class Safe { pub var hidden: Secret? = null }");
-            TestHarness.CheckTrue("公开签名拒绝嵌套 unsafe 类型",
+            CaseAssertions.CheckTrue("公开签名拒绝嵌套 unsafe 类型",
                 leak.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("cannot expose unsafe type")));
             var overrideResult = BindUnit("pub open class Base { pub open func f() { } }\n"
                 + "pub class Derived: Base { pub unsafe override func f() { } }");
-            TestHarness.CheckTrue("覆写不能增加 unsafe 要求",
+            CaseAssertions.CheckTrue("覆写不能增加 unsafe 要求",
                 overrideResult.Unit.Diagnostics.Diagnostics.Any(d => d.Message.Contains("unsafe implementation cannot override")));
 
             var trees = BindUnit("func f() { unsafe volatile seq { const x = 1 } }");
             CheckNoErrors("unsafe 三树输入", trees.Unit);
             var bound = BodyOf(trees.Bodies, "f");
-            TestHarness.CheckTrue("Bound 保留 unsafe", BoundDescribe.Block(bound.Body).Contains("SeqVolatileUnsafe"));
+            CaseAssertions.CheckTrue("Bound 保留 unsafe", BoundDescribe.Block(bound.Body).Contains("SeqVolatileUnsafe"));
             var lowered = Lowerer.Lower(trees.Unit, trees.Bodies);
-            TestHarness.CheckTrue("Lowered 保留 unsafe", LoweredDescribe.Block(
+            CaseAssertions.CheckTrue("Lowered 保留 unsafe", LoweredDescribe.Block(
                 lowered.Single(b => b.Method.Name == "f").Body).Contains("SeqVolatileUnsafe"));
         }
     }

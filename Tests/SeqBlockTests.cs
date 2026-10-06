@@ -3,7 +3,7 @@ using System;
 namespace RigiCompiler.Tests
 {
     // Seq 块解析测试（roadmap #11，SYNTAX.md §6）：代码块独立驱动
-    // （TestHarness.ParseBlock），断言 AstDescribe 精确描述串。
+    // （CompilerTestTools.ParseBlock），断言 AstDescribe 精确描述串。
     // 覆盖：简单 seq / volatile / using 资源绑定（单个/多个）/ named 标签 /
     // 组合（volatile + using + named）/ seq 作为表达式（return@_，§6.1 默认标签）/ 错误用例。
     public class SeqBlockTests
@@ -11,7 +11,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 简单 seq 块 =====
         public static void TestSimpleSeq()
         {
-            TestHarness.Section("Testing Simple Seq Blocks");
+            CompilerTestTools.Section("Testing Simple Seq Blocks");
 
             TestBlock("{ seq { var x = 1 } }",
                 "[Seq([var x = Int(1,I32)])]");
@@ -19,23 +19,23 @@ namespace RigiCompiler.Tests
             TestBlock("{ seq { var x = 1\nvar y = 2 } }",
                 "[Seq([var x = Int(1,I32), var y = Int(2,I32)])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. volatile seq =====
         public static void TestVolatileSeq()
         {
-            TestHarness.Section("Testing Volatile Seq");
+            CompilerTestTools.Section("Testing Volatile Seq");
 
             TestBlock("{ volatile seq { operation() } }",
                 "[Seq(volatile, [Path(operation(), [])])]");
 
             foreach (var prefix in new[] { "unsafe volatile", "volatile unsafe" })
             {
-                var block = TestHarness.ParseBlock("{ " + prefix + " seq { operation() } }");
-                TestHarness.Check(prefix, AstDescribe.Block(block),
+                var block = CompilerTestTools.ParseBlock("{ " + prefix + " seq { operation() } }");
+                CaseAssertions.Check(prefix, AstDescribe.Block(block),
                     "[Seq(volatile, unsafe, [Path(operation(), [])])]");
-                TestHarness.CheckTrue(prefix + " 结构与父链",
+                CaseAssertions.CheckTrue(prefix + " 结构与父链",
                     block.Statements[0] is SeqBlockExpressionASTNode
                     { IsUnsafe: true, IsVolatile: true } seq && seq.Parent == block
                     && seq.Body.Parent == seq);
@@ -45,13 +45,13 @@ namespace RigiCompiler.Tests
             TestInvalidBlock("{ unsafe unsafe seq { } }", "Duplicate modifier 'unsafe'");
             TestInvalidBlock("{ volatile volatile seq { } }", "Duplicate modifier 'volatile'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. using 资源绑定 =====
         public static void TestUsingBindings()
         {
-            TestHarness.Section("Testing Using Bindings");
+            CompilerTestTools.Section("Testing Using Bindings");
 
             // 单个 using
             TestBlock("{ seq using(const file = open()) { use(file) } }",
@@ -72,13 +72,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ seq using(const res: Resource = get()) { use(res) } }",
                 "[Seq(using(const res: Resource = Path(get(), [])), [Path(use(Path(res, [])), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. named 标签 =====
         public static void TestNamedLabel()
         {
-            TestHarness.Section("Testing Named Labels");
+            CompilerTestTools.Section("Testing Named Labels");
 
             TestBlock("{ seq named myBlock { compute() } }",
                 "[Seq(named myBlock, [Path(compute(), [])])]");
@@ -86,13 +86,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ seq named outer { seq named inner { work() } } }",
                 "[Seq(named outer, [Seq(named inner, [Path(work(), [])])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 组合 =====
         public static void TestCombinations()
         {
-            TestHarness.Section("Testing Combinations");
+            CompilerTestTools.Section("Testing Combinations");
 
             // volatile + using + named
             TestBlock("{ volatile seq using(const x = init()) named block { process(x) } }",
@@ -111,13 +111,13 @@ namespace RigiCompiler.Tests
                 "named mySeq, " +
                 "[Path(work(Path(a, []), Path(b, [])), [])])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. seq 作为表达式（return@_，§6.1 匿名默认标签）=====
         public static void TestSeqAsExpression()
         {
-            TestHarness.Section("Testing Seq as Expression");
+            CompilerTestTools.Section("Testing Seq as Expression");
 
             // return@_（匿名 seq 的默认标签是 _）
             TestBlock("{ var result = seq { return@_ compute() } }",
@@ -131,13 +131,13 @@ namespace RigiCompiler.Tests
             TestBlock("{ const result = seq { const ac = a * c\nreturn@_ ac } }",
                 "[const result = Seq([const ac = Binary(Path(a, []) * Path(c, [])), Return@_(Path(ac, []))])]");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 错误用例 =====
         public static void TestInvalidCases()
         {
-            TestHarness.Section("Testing Invalid Cases");
+            CompilerTestTools.Section("Testing Invalid Cases");
 
             // volatile 后没有 seq
             TestInvalidBlock("{ volatile { operation() } }",
@@ -155,7 +155,7 @@ namespace RigiCompiler.Tests
             TestInvalidBlock("{ seq named 123block { } }",
                 "Label name cannot start with a digit");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 辅助 =====
@@ -165,24 +165,23 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(source);
-                TestHarness.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(source);
+                CaseAssertions.Check(source.Replace("\n", "\\n"), AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{source.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
         private static void TestInvalidBlock(string source, string expectedError)
         {
-            TestHarness.CheckParseError(source.Replace("\n", "\\n"),
-                () => TestHarness.ParseBlock(source), expectedError);
+            CaseAssertions.CheckParseError(source.Replace("\n", "\\n"),
+                () => CompilerTestTools.ParseBlock(source), expectedError);
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("SeqBlock",
+        internal static TestSuiteData Spec { get; } = new("SeqBlock",
         [
             (nameof(TestSimpleSeq), TestSimpleSeq),
             (nameof(TestVolatileSeq), TestVolatileSeq),

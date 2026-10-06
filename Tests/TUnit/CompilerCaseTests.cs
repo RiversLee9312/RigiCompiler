@@ -5,25 +5,35 @@ namespace RigiCompiler.TUnitTests;
 
 public static class CaseData
 {
-    public static IEnumerable<TestDataRow<string>> All() => CaseCatalog.All.Select(c =>
+    internal static TimeSpan? SelectedTimeout(string id)
+    {
+        var values = Environment.GetEnvironmentVariable("RIGI_TEST_SELECTION_TIMEOUTS")?.Split(';') ?? [];
+        var value = values.FirstOrDefault(item => item.StartsWith(id + "|", StringComparison.Ordinal));
+        return value == null ? null : TimeSpan.FromMilliseconds(double.Parse(value[(id.Length + 1)..], System.Globalization.CultureInfo.InvariantCulture));
+    }
+    private static IEnumerable<CaseDescriptor> SelectedCases() => CiShardSelection.Current is { } shard ? shard.Cases
+        : Environment.GetEnvironmentVariable("RIGI_TEST_SELECTION") is { Length: > 0 } selected
+        ? selected.Split(';').Distinct(StringComparer.Ordinal).Select(id => CaseCatalog.Find(id) ?? throw new ArgumentException("未知选择 ID：" + id))
+        : CaseCatalog.All;
+    public static IEnumerable<TestDataRow<string>> All() => SelectedCases().Select(c =>
         new TestDataRow<string>(c.Id, DisplayName: c.Id,
-            Categories: [c.Id, c.Suite, "Pilot", c.Group, c.Trait]));
+            Categories: [c.Id, c.Suite, "CompilerCase", c.Group, c.Trait]));
 }
 
-public class PilotTests
+public class CompilerCaseTests
 {
     private static readonly CaseWorkerClient Worker = new();
 
     [Test]
     [MethodDataSource(typeof(CaseData), nameof(CaseData.All))]
-    [Timeout(600_000)]
     public async Task Run(string caseId, CancellationToken cancellationToken)
     {
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         // 仅用于外部验收取消的门控；正常运行使用框架传入的 token。
         if (int.TryParse(Environment.GetEnvironmentVariable("RIGI_TEST_CANCEL_AFTER_MS"), out var milliseconds))
             cancellation.CancelAfter(milliseconds);
-        var outcome = await Worker.RunAsync(caseId, cancellation.Token);
+        var outcome = await Worker.RunAsync(caseId, cancellation.Token, CaseData.SelectedTimeout(caseId));
+        CaseResultJournal.Record(outcome);
         switch (outcome.Status)
         {
             case CaseStatus.Pass: return;

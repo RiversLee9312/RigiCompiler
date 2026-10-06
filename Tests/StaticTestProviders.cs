@@ -1,7 +1,7 @@
 namespace RigiCompiler.Tests;
 
 // 明确的方法组引用兼容 NativeAOT；目录与执行共享 provider，禁止反射发现私有方法。
-internal static class LegacySuiteSpecs
+internal static class StaticTestProviders
 {
     internal static IReadOnlyList<string>? GroupLabels(string suite, string group) => suite switch
     {
@@ -11,21 +11,7 @@ internal static class LegacySuiteSpecs
         _ => null,
     };
 
-    // 每个动作进入自己的计数生命周期；异常前的真实断言也必须进入 worker 结果。
-    internal static ParallelSuiteRunner.SuiteSpec Counted(string name,
-        IReadOnlyList<(string Label, Action Run)> cases, Action reset, Func<(int Passed, int Failed)> counts)
-        => new(name, cases.Select(c => (c.Label, (Action)(() =>
-        {
-            reset();
-            try { c.Run(); }
-            finally
-            {
-                var result = counts();
-                TestHarness.AddCounts(result.Passed, result.Failed);
-            }
-        }))).ToArray(), sectionTitle: name);
-
-    internal static ParallelSuiteRunner.SuiteSpec? Find(string name) => name switch
+    internal static TestSuiteData? Find(string name) => name switch
     {
         "Literal" => LiteralParserTests.Spec,
         "TypeReference" => TypeReferenceParserTests.Spec,

@@ -30,9 +30,9 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("CastException 被 catch", cast);
             CheckI32("CastException catch 返回 7", cast, 7);
-            TestHarness.CheckTrue("getMessage 含源类型",
+            CaseAssertions.CheckTrue("getMessage 含源类型",
                 cast.Stdout.Contains("Animal") == true, cast.Stdout);
-            TestHarness.CheckTrue("getMessage 含目标类型",
+            CaseAssertions.CheckTrue("getMessage 含目标类型",
                 cast.Stdout.Contains("Dog") == true, cast.Stdout);
 
             const string service =
@@ -62,7 +62,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("NoSuchMethodException 被 catch", downgrade);
             CheckI32("NoSuchMethodException catch 返回 7", downgrade, 7);
-            TestHarness.CheckTrue("getMessage 含请求 symbol",
+            CaseAssertions.CheckTrue("getMessage 含请求 symbol",
                 downgrade.Stdout.Contains("Service$fetchUserById") == true,
                 downgrade.Stdout);
 
@@ -81,7 +81,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckOk("用户异常 override getMessage 被 catch", custom);
-            TestHarness.Check("多态 getMessage stdout", custom.Stdout, "custom-message\n");
+            CaseAssertions.Check("多态 getMessage stdout", custom.Stdout, "custom-message\n");
             CheckI32("用户异常 catch 返回 7", custom, 7);
         }
 
@@ -105,7 +105,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("i32 除零被 catch", caught);
             CheckI32("除零 catch 返回 7", caught, 7);
-            TestHarness.Check("除零 getMessage stdout", caught.Stdout, "整数除以零\n");
+            CaseAssertions.Check("除零 getMessage stdout", caught.Stdout, "整数除以零\n");
 
             var uncaught = Run(
                 "pub func main(): i32 {\n" +
@@ -113,13 +113,13 @@ namespace RigiCompiler.Tests
                 "    var b: i32 = 0\n" +
                 "    return (a / b)\n" +
                 "}\n");
-            TestHarness.CheckTrue("未捕获除零抛 DividedByZeroException",
+            CaseAssertions.CheckTrue("未捕获除零抛 DividedByZeroException",
                 uncaught.Exception?.ExceptionObject is VmObject divObj
                 && divObj.TypeRef.Contains("DividedByZeroException")
                 && uncaught.Exception.Message.Contains("整数除以零"),
                 uncaught.Exception?.ToString() ?? "<null>");
             // MW9b：顶层未捕获格式对齐 native reporter「{类型全名}: {message}」
-            TestHarness.Check("未捕获除零顶层格式",
+            CaseAssertions.Check("未捕获除零顶层格式",
                 uncaught.Exception?.Message ?? "",
                 "core::DividedByZeroException: 整数除以零");
 
@@ -144,7 +144,7 @@ namespace RigiCompiler.Tests
                 "    return (a / b)\n" +
                 "}\n");
             CheckOk("double 除零不抛", f64);
-            TestHarness.CheckTrue("double 除零得 +Inf",
+            CaseAssertions.CheckTrue("double 除零得 +Inf",
                 f64.ReturnValue is VmF64 inf && double.IsPositiveInfinity(inf.Value),
                 f64.ReturnValue?.ToStandardText() ?? "<null>");
             var nan = Run(
@@ -154,7 +154,7 @@ namespace RigiCompiler.Tests
                 "    return (a / b)\n" +
                 "}\n");
             CheckOk("double 零除零不抛", nan);
-            TestHarness.CheckTrue("double 零除零得 NaN",
+            CaseAssertions.CheckTrue("double 零除零得 NaN",
                 nan.ReturnValue is VmF64 n && double.IsNaN(n.Value),
                 nan.ReturnValue?.ToStandardText() ?? "<null>");
         }
@@ -212,12 +212,12 @@ namespace RigiCompiler.Tests
                 BilOp.Var("a"), BilOp.Var("b"), BilOp.Var("r")));
             uncaughtEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             var uncaught = BilVm.Run(uncaughtModule);
-            TestHarness.CheckTrue("未捕获模零抛 DividedByZeroException",
+            CaseAssertions.CheckTrue("未捕获模零抛 DividedByZeroException",
                 uncaught.Exception?.ExceptionObject is VmObject divObj
                 && divObj.TypeRef.Contains("DividedByZeroException")
                 && uncaught.Exception.Message.Contains("整数除以零"),
                 uncaught.Exception?.ToString() ?? "<null>");
-            TestHarness.Check("未捕获模零顶层格式",
+            CaseAssertions.Check("未捕获模零顶层格式",
                 uncaught.Exception?.Message ?? "",
                 "core::DividedByZeroException: 整数除以零");
 
@@ -234,24 +234,24 @@ namespace RigiCompiler.Tests
             u64Entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             var u64 = BilVm.Run(u64Module);
             CheckOk("u64 取模无异常", u64);
-            TestHarness.CheckTrue("u64 10 % 3 = 1",
+            CaseAssertions.CheckTrue("u64 10 % 3 = 1",
                 u64.ReturnValue is VmU64 u && u.Value == 1UL,
                 u64.ReturnValue?.ToStandardText() ?? "<null>");
 
             // ④ i64 负数操作数：截断取余符号随被除数（-7 % 3 = -1、
             // 7 % -3 = 1，同 C# %）
             CheckOk("i64 -7 % 3 无异常", RunI64Modulo("-7", "3", out var negLeft));
-            TestHarness.CheckTrue("i64 -7 % 3 = -1（符号随被除数）",
+            CaseAssertions.CheckTrue("i64 -7 % 3 = -1（符号随被除数）",
                 negLeft is VmI64 negL && negL.Value == -1,
                 negLeft?.ToStandardText() ?? "<null>");
             CheckOk("i64 7 % -3 无异常", RunI64Modulo("7", "-3", out var negRight));
-            TestHarness.CheckTrue("i64 7 % -3 = 1（符号随被除数）",
+            CaseAssertions.CheckTrue("i64 7 % -3 = 1（符号随被除数）",
                 negRight is VmI64 negR && negR.Value == 1,
                 negRight?.ToStandardText() ?? "<null>");
 
             // ⑤ i64 MIN % -1 = 0（C# long % 天然得 0，无回绕陷阱）
             CheckOk("i64 MIN % -1 无异常", RunI64Modulo("-9223372036854775808", "-1", out var minMod));
-            TestHarness.CheckTrue("i64 MIN % -1 = 0",
+            CaseAssertions.CheckTrue("i64 MIN % -1 = 0",
                 minMod is VmI64 zero && zero.Value == 0,
                 minMod?.ToStandardText() ?? "<null>");
 
@@ -268,7 +268,7 @@ namespace RigiCompiler.Tests
             nanEntry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             var f64Nan = BilVm.Run(nanModule);
             CheckOk("f64 模零不抛", f64Nan);
-            TestHarness.CheckTrue("f64 模零得 NaN",
+            CaseAssertions.CheckTrue("f64 模零得 NaN",
                 f64Nan.ReturnValue is VmF64 nanValue && double.IsNaN(nanValue.Value),
                 f64Nan.ReturnValue?.ToStandardText() ?? "<null>");
 
@@ -285,18 +285,18 @@ namespace RigiCompiler.Tests
             f64Entry.Instructions.Add(new RetInstruction(BilOp.Var("r")));
             var f64 = BilVm.Run(f64Module);
             CheckOk("f64 取模无异常", f64);
-            TestHarness.CheckTrue("f64 7.5 % 2.0 = 1.5",
+            CaseAssertions.CheckTrue("f64 7.5 % 2.0 = 1.5",
                 f64.ReturnValue is VmF64 remainder && remainder.Value == 1.5,
                 f64.ReturnValue?.ToStandardText() ?? "<null>");
 
             // ⑧ mod 拼写往返：BilWriter 文本经 BilReader 回读后 VM 同值
             var u64Written = BilWriter.Write(u64Module);
             var reparsed = BilReader.Read(u64Written);
-            TestHarness.CheckTrue("mod 指令出现在 BIL 文本",
+            CaseAssertions.CheckTrue("mod 指令出现在 BIL 文本",
                 u64Written.Contains("mod "), u64Written);
             var roundtrip = BilVm.Run(reparsed);
             CheckOk("mod 模块回读 VM 运行", roundtrip);
-            TestHarness.CheckTrue("回读后 u64 10 % 3 = 1",
+            CaseAssertions.CheckTrue("回读后 u64 10 % 3 = 1",
                 roundtrip.ReturnValue is VmU64 rtValue && rtValue.Value == 1UL,
                 roundtrip.ReturnValue?.ToStandardText() ?? "<null>");
 
@@ -337,7 +337,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("源码 i32 模零被 catch", srcZero);
             CheckI32("源码模零 catch 返回 7", srcZero, 7);
-            TestHarness.Check("源码模零 getMessage stdout", srcZero.Stdout, "整数除以零\n");
+            CaseAssertions.Check("源码模零 getMessage stdout", srcZero.Stdout, "整数除以零\n");
         }
 
         // mod i64 用例辅助：left % right 的独立手工模块，返回值经 result

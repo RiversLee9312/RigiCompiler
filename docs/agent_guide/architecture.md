@@ -35,7 +35,7 @@ BIL VM 已是仓库的一部分（`Bil/Vm`，行为参考实现）。
 RigiCompiler/
 ├── Program.cs                # 薄入口：命令行解析 → 分发 → 退出码
 ├── RigiCompiler.csproj      # net10.0，Exe，Nullable enable
-├── Tests/TUnit/              # 独立 source-generated TUnit/MTP 项目（不进入生产编译项）
+├── Tests/TUnit/              # 唯一 source-generated TUnit/MTP 宿主，编入全部 Tests/；生产排除测试
 ├── AST/                      # AST 节点定义（按类别分文件）
 │   ├── ASTNode.cs               # AST 节点基类 + RootASTNode
 │   ├── SymbolNodes.cs           # 符号结构（Symbol/SymbolElement/SymbolASTNode）
@@ -88,6 +88,7 @@ RigiCompiler/
 │   ├── CommandLine.cs           # CLI 内核：CommandLineMask（选项自描述元数据）、数据驱动解析器、
 │   │                            #   注册表、帮助文本程序生成
 │   ├── Commands.cs              # CLI 插件：compile/test/vm/help；native 在 Middleware/Cli，module 在 Modules
+│   ├── TestHostForwarder.cs     # test 兼容命令仅转发独立 TUnit 宿主
 │   ├── Frontend.cs              # 每文件独立解析、按输入次序回放日志与错误
 │   ├── CompilerJobs.cs          # indexed worker 调度、共享预算和阶段 join
 │   ├── ResourceBudget.cs        # 严格 FIFO 加权资源授予，测试与编译共用
@@ -511,15 +512,21 @@ RigiCompiler/
 │                                #   + atomic_collections.rg（安全异步 AtomicArray/List/Map 与独立快照）
 │                                #   + messaging.rg（core.messaging：纯 Rigi MessageQueue + 安全 AtomicList/Mutex +
 │                                #   Reader/Receiver/Messenger 高层 API，RUNTIME §27）
-├── Tests/                    # 自研控制台测试（非 xUnit/NUnit，见 development.md 测试策略）
+├── Tests/                    # 全部测试 provider/工具，只编入独立 TUnit 项目
 │   ├── AstDescribe.cs           # 统一 AST 描述器（全部套件共用）
 │   ├── BoundDescribe.cs         # 统一 BoundTree 描述器（P3 套件共用，仿 AstDescribe）
 │   ├── LoweredDescribe.cs       # 统一 LoweredTree 描述器（P4a 套件共用，仿 BoundDescribe）
 │   ├── BilTestHarness.cs        # BIL 测试基建：EmitBilUnit 全管线驱动 +
 │   │                            #   CheckBilValid/CheckBilInvalid 验证器断言 +
 │   │                            #   res 重编号形状黄金 CheckFnShape/CheckResShape
-│   ├── TestHarness.cs           # 统一驱动与断言基建（CheckSemanticError）
-│   ├── TestRunner.cs            # test 命令驱动（套件注册表、菜单打印、按编号运行、退出码）
+│   ├── CompilerTestTools.cs     # 无状态解析、AST 定位与黄金文本工具
+│   ├── CaseAssertions.cs        # 每 worker AsyncLocal scope 记录真实断言（含 CheckSemanticError）
+│   ├── TestSuiteCatalog.cs      # 纯 provider 数据及套件编号/菜单兼容，无整套执行委托
+│   ├── StaticTestProviders.cs   # 显式方法组到 Spec 的发现映射，兼容 NativeAOT
+│   ├── CaseCatalog.cs           # 全 provider/种子批次稳定 ID、真实粒度与动作执行
+│   ├── CaseSelection.cs         # 编号/标签/区间兼容选择与资源/截止纯映射
+│   ├── CaseWorkerClient.cs      # 同测试宿主隔离 worker、请求临时根、灭树与排空
+│   ├── CaseResultJournal.cs     # 逐 ID 结果与内部断言证据，供全量完整性校验
 │   ├── TestRootParserLayer.cs   # 独立 Layer 测试垫底层（只接受 EOF）
 │   ├── TokenDispositionTests.cs # Token 流转协议测试（四种组合）
 │   ├── ASTIntegrityValidatorTests.cs # Validator 直调测试（合法树 + 结构破坏拒绝）
@@ -640,13 +647,17 @@ var map: List\<Map\<String, i32>>        // 嵌套闭合写 >>
 
 `Core/ResourceBudget` 提供不可变 `ResourceRequest`/`ResourceLease` 和严格 FIFO 加权队列。队头无法满足时预留资源，避免大请求被后来的小请求饿死；超过容量立即拒绝，排队取消移除节点并继续推进，lease 幂等释放。CPU 容量取 .NET 有效值、Linux affinity/cpuset/可见祖先 quota 的较小值，内存取 GC 与可见 cgroup 限制的较小值后给父宿主留余量。配置只限制资源授予，不声称限制 OS 总线程数。
 
-`Tests/LegacyDispatcher` 将实际 suite provider 的 case/action 数组转成独立任务或小批次，所有已选 suite 同时进入同一父进程 pending 队列。`TestRunner` 的 All/编号入口共用该调度器；`ParallelSuiteRunner` 只适配旧入口，spawned 中禁止再次派生。旧单块套件只断言其返回失败数的 suite 退出契约，私有计数不冒称可枚举断言。平台/fixture 不可用由显式 `TestHarness.RecordSkip` 进入 typed Skip；部分可用批次保留真实断言和跳过诊断。
+独立 `Tests/TUnit` 宿主是唯一全量执行入口。`TestSuiteCatalog`/`StaticTestProviders` 只提供编号、Spec 与显式动作，`CaseCatalog` 从同一 provider 建立全量框架目录，TUnit 为普通方法组或种子批次生成发现行。`Core/TestHostForwarder` 仅把 `rigic test` 兼容请求转交宿主；`CaseSelection` 只映射编号/标签/区间，不保留旧套件执行循环或整套退出码 worker。每个发现行进入同宿主的隔离 worker，禁止嵌套派生；`CaseWorkers` 仅供协议契约同时提交隔离请求。`CaseAssertions` 每请求 AsyncLocal scope 记录实际断言，平台/fixture 不可用由 `RecordSkip` 进入 typed Skip，部分可用动作保留真实断言和跳过诊断。
 
-完整源码 E2e、多轮 BilVmStress 与 NativeE2E 各输入独立执行。默认截止策略由任务选择和 ID 解码共用，直接 case 客户端复用同一策略；显式调用方覆盖优先。有限重型窗口只覆盖 legacy NativeE2E 的 whole-program O2 和 Binder/BilEmitter/Lowerer 无参数完整整组；完整 BilEmitter 的七十五分钟窗口为共享预算满载时的正常整套成本留余量，其余普通 case 保留轻型截止。完成回调只输出单行进度，最终结果按输入序归并，不能以进度行替代最终结果。
+`RIGI_TEST_RIGIC` 只定位被测编译器 CLI，`RIGI_TEST_HOST` 定位测试 EXE/DLL 与隔离 worker；AOT worker 默认使用当前测试进程，不能把测试宿主当编译器。e2e/native 语料由测试项目显式复制，压力源与 C fixture 头文件随测试输出同行；发布验收关闭源码回退。全量 `--compat --all` 自动生成新鲜 TRX，精确核对全部 provider 完成 ID（含 Skip）、TRX 唯一完成行及已声明框架契约身份，包含闭合泛型实际通过；不能仅用一个 pilot 数量门槛替代完整性。本机每个平台串行跑一次完整 AOT 全量，不再叠加旧全量或额外 Generic 运行。
+
+CI 使用 `CiShardSelection` 的独立 `--ci-shard index count` 入口，各 suite 按稳定 ID 的 Ordinal 顺序轮转给 16 个独立 runner，不拆单动作或 fuzz seed batch，`CaseCatalog.All` 始终完整。`CiShardEvidence` 在执行前导出完整 inventory，并将 SHA/RID/run/attempt、目录摘要和预算写入 manifest/journal；仅片 0 执行全部框架契约。MTP 重启 testhost 时传递小分片上下文，父入口读取本次 child 的新鲜结构化 journal，不能用自己的空字典或旧文件判定。`Verify-CiShards.ps1` 汇总每 RID 的精确全集与互斥性，核对 TRX 身份/状态及契约，缺片或取消/失败不能通过。同一 runner 不并发启动多个宿主；CI 每片外层 330 分钟，本机完整外层 24 小时，内部截止和既有种子预算不变。协议与命令见 [DEVELOPMENT.md](../../DEVELOPMENT.md)。
+
+完整源码 E2e、多轮 BilVmStress 与 NativeE2E 各输入独立执行。默认截止策略由选择和 ID 解码共用，直接 case 客户端复用同一策略；显式调用方覆盖优先。NativeE2E 的进程内 whole-program O2 使用有限重型窗口，JSON 写侧冷编译的独立内存与截止 profile 保留；其余普通方法组保持轻型截止，共享状态的单方法仍保留完整生命周期。已删除的旧完整整套 ID 不再有独立窗口，框架适配不以固定短截止截断排队或重型 worker。完成、失败与跳过由 TUnit 和逐 ID journal 汇总，进度输出不能替代最终证据。
 
 Semantics fuzz 稀疏批次仍按固定种子从全局 0 推进生成前缀，只执行所选序号；Stress 按原全局 i 调用 `Generate(i)`。确定性检查仍按原 i 模 60，默认预算、CI 预算和慢门控不变。LexerFuzz 先按固定种子生成全部输入，再按稳定全局序号以最多 100 例小批进入隔离 worker；目录与执行共用 provider，不能改随机序列或原预算。native/VM 并发 profile 至少保留四 Compute Worker；可在较少 CPU slots 上独占共享，GC/IO 线程不计入 Compute 数。
 
-`tools/PerfBaseline/ProcessIsolation.cs` 是性能工具、case client 与 legacy worker 的共用受管启动实现。Linux 独立 setsid session/group，负 pgid 清理后代；Windows 使用 `CreateProcessW` 与 STARTUPINFOEX 的 Job/stdio 白名单，旧系统回退 CREATE_SUSPENDED→AssignJob→ResumeThread。只有 child 端 stdio 可继承，属性值活到 DeleteAttributeList，挂起期间固定 root 进程句柄，正常结束也杀剩余后代。根等待、管道排空与请求临时根清理按顺序执行。Linux 无法约束主动 setsid 逃组，Windows 实测由可用 Windows/CI 环境承担，Linux 构建不能替代该验证。
+`tools/PerfBaseline/ProcessIsolation.cs` 是性能工具、case client 与同测试宿主 worker 的共用受管启动实现。Linux 独立 setsid session/group，负 pgid 清理后代；Windows 使用 `CreateProcessW` 与 STARTUPINFOEX 的 Job/stdio 白名单，旧系统回退 CREATE_SUSPENDED→AssignJob→ResumeThread。只有 child 端 stdio 可继承，属性值活到 DeleteAttributeList，挂起期间固定 root 进程句柄，正常结束也杀剩余后代。根等待、管道排空与请求临时根清理按顺序执行。Linux 无法约束主动 setsid 逃组，Windows 实测由可用 Windows/CI 环境承担，Linux 构建不能替代该验证。
 
 `RIGI_LLD_THREADS` 显式设置时在 1..254 严格校验，LLVM 20 ELF/COFF 均追加 `-Wl,--threads=N` 并进入真实 link record；不改变 O2 object key，每次请求仍 relink。未设置时沿用 lld 默认。COMP-003 的完整 LLVM lease 与缓存锁顺序保持不变，同进程 LLVM exclusive 不扩展成跨进程静态共享锁。
 
@@ -661,10 +672,10 @@ P2 依赖检查、P3 预合成/global cell 提升/全局初始化、P4b 声明�
 `RIGI_RESOURCE_LEASE_MEMORY_MIB` 标记内部上限，清除父进程测试内存配置，
 不再次扣除外层父宿主预留；GC/实际 cgroup/affinity 上限仍参与取最小值。
 共享预算仅属于当前进程，不能将父 lease 与 child 内部阶段 lease 混同。
-显式旧 DeclarationResolver（P2）/Binder/BilEmitter/Lowerer/SmartCast/StdlibSources
-整组兼容 ID，以及其中支持的旧定向组 ID（解码后 `Indices.Count == 0`），
-声明较重的编译内存 profile：旧测试方法的多个命名局部图可同时存活，预算
-依据该生命周期，而非单个新编译的工作集。单 E2e 编译仍使用自己的 profile；
-二者都经同一共享预算授予，child GC 上限仍是所得 lease 的一半。
+DeclarationResolver（P2）/Binder/BilEmitter/Lowerer/SmartCast/StdlibSources
+中的真实 provider 方法组若包含多个同时存活的命名局部图，其内存 profile
+依据该生命周期，而非单个新编译的工作集。兼容定向组映射为这些已发现动作，
+不回退完整整套 ID。单 E2e 编译仍使用自己的 profile；二者都经同一共享预算
+授予，child GC 上限仍是所得 lease 的一半。
 
 默认入口已按真实方法组枚举调度，不应把整个套件称为不可枚举；默认组与单 E2e 编译使用各自的 profile。

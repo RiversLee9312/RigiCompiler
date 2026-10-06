@@ -40,9 +40,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilVerifierTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilVerifier",
+
+        internal static TestSuiteData Spec { get; } = new("BilVerifier",
         [
             (nameof(TestAbiAndGenericCompatibility), TestAbiAndGenericCompatibility),
             ("hello world", () => Positive("hello world",
@@ -334,6 +334,7 @@ namespace RigiCompiler.Tests
             (nameof(TestBitwiseTypeRestriction), TestBitwiseTypeRestriction),
             (nameof(TestRegionBreakIdBinding), TestRegionBreakIdBinding),
             (nameof(TestEnumStructInstanceFieldInit), TestEnumStructInstanceFieldInit),
+            ("bil.verifier.reserved-this", ReservedThisNegative),
         ], sectionTitle: "BilVerifier", memoryMiB: 2048);
 
         private static void TestAbiAndGenericCompatibility()
@@ -354,13 +355,13 @@ namespace RigiCompiler.Tests
                     abiModule, "固定 ABI 外部描述不能改变");
             }
 
-            TestHarness.CheckTrue("开放泛型不能掩盖不同宿主",
+            CaseAssertions.CheckTrue("开放泛型不能掩盖不同宿主",
                 !BilVerificationContext.TypesCompatible("Box<.generic<$.generic.T>>", "Other<.i32>"));
-            TestHarness.CheckTrue("开放泛型不能掩盖元数差异",
+            CaseAssertions.CheckTrue("开放泛型不能掩盖元数差异",
                 !BilVerificationContext.TypesCompatible("Task<.generic<$.generic.T>>", "Task"));
-            TestHarness.CheckTrue("开放泛型不能掩盖其它实参差异",
+            CaseAssertions.CheckTrue("开放泛型不能掩盖其它实参差异",
                 !BilVerificationContext.TypesCompatible("Pair<.generic<$.generic.T>,.i32>", "Pair<.string,.string>"));
-            TestHarness.CheckTrue("开放泛型只延后占位叶子的检查",
+            CaseAssertions.CheckTrue("开放泛型只延后占位叶子的检查",
                 BilVerificationContext.TypesCompatible("Box<.generic<$.generic.T>>", "Box<.i32>"));
             var inheritance = new BilModule();
             var parent = new BilTypeDeclaration("Parent", BilTypeKind.Class);
@@ -371,9 +372,9 @@ namespace RigiCompiler.Tests
             inheritance.LocalSymbols.Add(parent);
             inheritance.LocalSymbols.Add(child);
             var inheritanceContext = new BilVerificationContext(inheritance);
-            TestHarness.CheckTrue("继承上转按实际类型参数代入",
+            CaseAssertions.CheckTrue("继承上转按实际类型参数代入",
                 inheritanceContext.TypesAssignable("Child<.i32>", "Parent<.i32>"));
-            TestHarness.CheckTrue("继承上转不得擦除不同类型参数",
+            CaseAssertions.CheckTrue("继承上转不得擦除不同类型参数",
                 !inheritanceContext.TypesAssignable("Child<.i32>", "Parent<.string>"));
 
 
@@ -382,7 +383,7 @@ namespace RigiCompiler.Tests
 
         private static void TestInitWrapperAndNewWrapped()
         {
-            TestHarness.Section("BilVerifier M109a wrapper init");
+            CompilerTestTools.Section("BilVerifier M109a wrapper init");
             BilTestHarness.CheckBilValid("..init.wrapper + new.wrapper.entity 正例",
                 InitWrapperModule(includeEntity: true));
             BilTestHarness.CheckBilValid("new.wrapped 正例（有参 ..init.wrapper）",
@@ -419,7 +420,7 @@ namespace RigiCompiler.Tests
 
         private static void TestV3IndirectForms()
         {
-            TestHarness.Section("BilVerifier V3 indirect");
+            CompilerTestTools.Section("BilVerifier V3 indirect");
             BilTestHarness.CheckBilValid("cast.indirect 正例",
                 V3IndirectModule(
                     new CastIndirectInstruction(BilOp.Var("obj"), BilOp.Var("casted"),
@@ -979,10 +980,10 @@ namespace RigiCompiler.Tests
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(label + "：全管线未抛异常", false, ex.ToString());
+                CaseAssertions.CheckTrue(label + "：全管线未抛异常", false, ex.ToString());
                 return;
             }
-            TestHarness.CheckTrue(label + "：全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue(label + "：全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             try
@@ -991,7 +992,7 @@ namespace RigiCompiler.Tests
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(label + "：验证器未抛异常", false, ex.ToString());
+                CaseAssertions.CheckTrue(label + "：验证器未抛异常", false, ex.ToString());
             }
         }
 
@@ -1186,7 +1187,6 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilInvalid("版本号不受支持", m, "不支持的 BIL 版本");
 
             // §21.1：保留名声明为局部变量
-            ReservedThisNegative();
 
             // §21.1：.void 局部变量
             m = MinimalModule(out _, out _);
@@ -1582,7 +1582,7 @@ namespace RigiCompiler.Tests
                 "不属于本模块");
 
             // ===== S11：§12.3 type.is.case 与 §13.3 嵌套字段访问负例 =====
-            // 基线见 RunAll 的 S11Module 正例；负例均在其上改造
+            // 基线见 provider 动作中的 S11Module 正例；负例均在其上改造
 
             // §21.2：is.case 的 case 符号未登记
             m = S11Module(new IsCaseInstruction(BilOp.Var("e"),
@@ -1998,7 +1998,7 @@ namespace RigiCompiler.Tests
             m.Functions[0].Blocks[0].Instructions.Insert(2, new IfInstruction(
                 BilOp.Var("cf"), foreignBlock, null, BilOp.Var("bkf")));
             var cascadeErrors = BilVerifier.Verify(m);
-            TestHarness.CheckTrue("越权块类型错误不级联（越权一条 + 所属 fn 一条）",
+            CaseAssertions.CheckTrue("越权块类型错误不级联（越权一条 + 所属 fn 一条）",
                 cascadeErrors.Count == 2
                 && cascadeErrors.Count(e => e.Message.Contains("不属于当前函数")) == 1
                 && cascadeErrors.Count(e => e.Message.Contains("set.var 两端")) == 1,
@@ -2402,7 +2402,7 @@ namespace RigiCompiler.Tests
         // ===== §16.5 推广：if/call/try 的 breakid 绑定与 token 作用域 =====
         private static void TestRegionBreakIdBinding()
         {
-            TestHarness.Section("BilVerifier §16.5 region breakid（if/call/try）");
+            CompilerTestTools.Section("BilVerifier §16.5 region breakid（if/call/try）");
 
             foreach (var kind in new[] { "if", "call", "try" })
             {
@@ -2487,7 +2487,7 @@ namespace RigiCompiler.Tests
 
         private static void TestAwaitInstructions()
         {
-            TestHarness.Section("BilVerifier await");
+            CompilerTestTools.Section("BilVerifier await");
             BilTestHarness.CheckBilValid("await Task 正例", AwaitModule(
                 "core.coroutine::Task", null, null));
             BilTestHarness.CheckBilValid("await Task<T> 匹配正例", AwaitModule(
@@ -2502,7 +2502,7 @@ namespace RigiCompiler.Tests
 
         private static void TestYieldInstructions()
         {
-            TestHarness.Section("BilVerifier yield");
+            CompilerTestTools.Section("BilVerifier yield");
             BilTestHarness.CheckBilValid("裸 yield 正例", YieldModule(null, false));
             BilTestHarness.CheckBilValid("PollingAlarm 正例", YieldModule(
                 "core.coroutine::PollingAlarm", false));
@@ -2739,7 +2739,7 @@ namespace RigiCompiler.Tests
 
         private static void TestEnumStructInstanceFieldInit()
         {
-            TestHarness.Section("BilVerifier §21.8 enum struct 实例字段");
+            CompilerTestTools.Section("BilVerifier §21.8 enum struct 实例字段");
 
             BilTestHarness.CheckBilValid("init 单路径 set.field",
                 EnumFieldInitModule((module, init, entry) =>

@@ -49,7 +49,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("MessageQueue 冒烟全链", result);
-            TestHarness.Check("MessageQueue 冒烟 stdout 精确",
+            CaseAssertions.Check("MessageQueue 冒烟 stdout 精确",
                 result.Stdout, "7\nhello\n8\n9\nEOS\nok\n");
         }
 
@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
         {
             var result = Run(NativeE2ETests.MessagingLifecycleSource);
             CheckOk("MessageQueue OOP 生命周期", result);
-            TestHarness.Check("MessageQueue 生命周期精确输出", result.Stdout, "mq-lifecycle-ok\n");
+            CaseAssertions.Check("MessageQueue 生命周期精确输出", result.Stdout, "mq-lifecycle-ok\n");
         }
 
         // §9.2/§25 EOS 状态机：Owner 活+0 Sender 不 EOS（挂起后被 post 唤醒）、
@@ -121,7 +121,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("MessageQueue EOS 状态机", result);
-            TestHarness.Check("MessageQueue EOS stdout 精确",
+            CaseAssertions.Check("MessageQueue EOS stdout 精确",
                 result.Stdout,
                 "woken 1\n" +
                 "2\n" +
@@ -181,7 +181,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("MessageQueue broadcast 独立 cursor", result);
-            TestHarness.Check("MessageQueue broadcast stdout 精确",
+            CaseAssertions.Check("MessageQueue broadcast stdout 精确",
                 result.Stdout, "1\n2\n1\n3\n3\n4\nok\n");
         }
 
@@ -242,7 +242,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("MessageQueue 接受点/顺序/单 outstanding", result);
-            TestHarness.Check("MessageQueue 接受点 stdout 精确",
+            CaseAssertions.Check("MessageQueue 接受点 stdout 精确",
                 result.Stdout,
                 "post accepted no reader\n" +
                 "123\n" +
@@ -329,7 +329,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Receiver Executor 路由", result);
-            TestHarness.Check("Receiver Executor stdout 精确",
+            CaseAssertions.Check("Receiver Executor stdout 精确",
                 result.Stdout,
                 "default compute\n" +
                 "set compute\n" +
@@ -398,7 +398,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Receiver/Reader cursor 独立性", result);
-            TestHarness.Check("cursor 独立 stdout 精确",
+            CaseAssertions.Check("cursor 独立 stdout 精确",
                 result.Stdout, "recv got 3\n123\n4\n4\nok\n");
         }
 
@@ -449,7 +449,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Receiver dispose 隔离", result);
-            TestHarness.Check("dispose 隔离 stdout 精确",
+            CaseAssertions.Check("dispose 隔离 stdout 精确",
                 result.Stdout, "1\n2\n2\nEOS\nok\n");
         }
 
@@ -523,7 +523,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Receiver listener 身份", result);
-            TestHarness.Check("listener 身份 stdout 精确",
+            CaseAssertions.Check("listener 身份 stdout 精确",
                 result.Stdout, "both 10\nremoved one\nok\n");
         }
 
@@ -569,7 +569,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("Messenger dispose → EOS 停泵", result);
-            TestHarness.Check("EOS 停泵 stdout 精确",
+            CaseAssertions.Check("EOS 停泵 stdout 精确",
                 result.Stdout, "drained 3\nok\n");
         }
 
@@ -636,7 +636,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("泵上 IO lane 全量投递", result);
-            TestHarness.Check("泵上 IO lane stdout 精确",
+            CaseAssertions.Check("泵上 IO lane stdout 精确",
                 result.Stdout, "delivered 15\nok\n");
         }
         // #回调定时器 回归（VM 字面量钉死）：listener 回调体内含定时器挂起
@@ -649,7 +649,7 @@ namespace RigiCompiler.Tests
         {
             var result = Run(NativeE2ETests.ReceiverListenerTimerResumeSource);
             CheckOk("listener 定时器挂起恢复全量投递", result);
-            TestHarness.Check("listener 定时器挂起恢复 stdout 精确",
+            CaseAssertions.Check("listener 定时器挂起恢复 stdout 精确",
                 result.Stdout, "listener-sleep-ok\n");
         }
     }

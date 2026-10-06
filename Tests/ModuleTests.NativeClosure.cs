@@ -16,13 +16,13 @@ public static partial class ModuleTests
             ("eager singleton构造发布任务", "priv shared singleton class State { pub init() { core.coroutine.sleep(10) } }\npub func exported(): i32 { return 42 }", false)
         })
         {
-            var (artifact, unit) = CompileInterfaceProbe("lifecycle@1.0.0", [TestHarness.ParseRoot(source, "source/lifecycle.rg")], [std]);
+            var (artifact, unit) = CompileInterfaceProbe("lifecycle@1.0.0", [CompilerTestTools.ParseRoot(source, "source/lifecycle.rg")], [std]);
             var linked = ModuleApplicationLinker.Link([std], artifact.ReadBil(), unit.Symbols);
             var canonical = linked.Functions.Single(f => f.Symbol.Contains("$exported(", StringComparison.Ordinal)).Symbol;
             var accepted = true; var diagnostic = "";
             try { MwPipeline.CreateDefault().Run(new MwContext(linked, new(NativeBuildKind.StaticLibrary, [new("exported", canonical)]))); }
             catch (MwNotSupportedException ex) { accepted = false; diagnostic = ex.Message; }
-            TestHarness.CheckTrue("真实库初始化闭包 " + label, allowed ? accepted : !accepted && diagnostic.Contains("调度"), diagnostic);
+            CaseAssertions.CheckTrue("真实库初始化闭包 " + label, allowed ? accepted : !accepted && diagnostic.Contains("调度"), diagnostic);
             var folder = InterfaceProbeFolder(); Directory.CreateDirectory(folder);
             File.WriteAllText(Path.Combine(folder, "source.rg"), source);
             File.WriteAllText(Path.Combine(folder, "input.bil"), RigiCompiler.Bil.BilWriter.Write(linked));
@@ -40,14 +40,14 @@ public static partial class ModuleTests
             ("构造后虚派发目标不唯一", "open class Value { pub init()\n pub func read(): i32 { return 42 } }\npub func exported(): i32 { var value = new Value()\n return value.read() }", "虚派发")
         })
         {
-            var (artifact, unit) = CompileInterfaceProbe("closure@1.0.0", [TestHarness.ParseRoot(source, "source/closure.rg")], [std]);
+            var (artifact, unit) = CompileInterfaceProbe("closure@1.0.0", [CompilerTestTools.ParseRoot(source, "source/closure.rg")], [std]);
             var linked = ModuleApplicationLinker.Link([std], artifact.ReadBil(), unit.Symbols);
             var canonical = linked.Functions.Single(f => f.Symbol.Contains("$exported(", StringComparison.Ordinal)).Symbol;
             var context = new MwContext(linked, new(NativeBuildKind.StaticLibrary, [new("exported", canonical)]));
             var rejected = false; var diagnostic = "";
             try { MwPipeline.CreateDefault().Run(context); }
             catch (MwNotSupportedException ex) { diagnostic = ex.Message; rejected = diagnostic.Contains(hint, StringComparison.Ordinal); }
-            TestHarness.CheckTrue("真实默认pipeline拒绝C闭包 " + label, rejected, diagnostic);
+            CaseAssertions.CheckTrue("真实默认pipeline拒绝C闭包 " + label, rejected, diagnostic);
             var folder = InterfaceProbeFolder(); Directory.CreateDirectory(folder);
             File.WriteAllBytes(Path.Combine(folder, "input.bil"), System.Text.Encoding.UTF8.GetBytes(RigiCompiler.Bil.BilWriter.Write(linked)));
             File.WriteAllText(Path.Combine(folder, "source.rg"), source);

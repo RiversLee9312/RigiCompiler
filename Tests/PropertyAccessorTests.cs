@@ -16,7 +16,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 访问器形态 =====
         public static void TestAccessorForms()
         {
-            TestHarness.Section("Testing Accessor Forms");
+            CompilerTestTools.Section("Testing Accessor Forms");
 
             // 完整形态：修饰符 + (value: _) + 自定义体 + 初始化器
             TestDeclaration(
@@ -52,13 +52,13 @@ namespace RigiCompiler.Tests
                 "var z: i32 { pub get(_: _) { return 1 } priv set(_: _) { log(1) } }",
                 "var z: i32 {pub get(_){}, priv set(_){}}");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 跨行书写（规范示例原样）=====
         public static void TestMultiLine()
         {
-            TestHarness.Section("Testing Multi-Line Accessor Block");
+            CompilerTestTools.Section("Testing Multi-Line Accessor Block");
 
             TestDeclaration(
                 "var width: i32 {\n" +
@@ -76,13 +76,13 @@ namespace RigiCompiler.Tests
                 "var c: i32 {\n    get\n    set\n} = 0",
                 "var c: i32 {get, set} = Int(0,I32)");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 三类定义位置（§9.4）=====
         public static void TestPositions()
         {
-            TestHarness.Section("Testing Accessor Positions");
+            CompilerTestTools.Section("Testing Accessor Positions");
 
             // 类字段（DeclarationParserLayer → VariableDeclarationParserLayer）
             TestNode(
@@ -101,57 +101,57 @@ namespace RigiCompiler.Tests
                 root => ((CallableDeclarationASTNode)root.Declarations[0]).Body!.Statements[0],
                 "var localCounter: i32 {get(value){}, set(value){}} = Int(0,I32)");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Testing Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Testing Error Cases (expect ParserException)");
 
             // 同一块内重复 get
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { get(value: _) { return value } get(value: _) { return value } }",
-                () => TestHarness.ParseRoot("var x: i32 { get(value: _) { return value } get(value: _) { return value } }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { get(value: _) { return value } get(value: _) { return value } }"),
                 "Duplicate 'get' accessor");
 
             // get/set 的 backing field 需求不一致（§9.4 一致性规则）
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { get(value: _) { return value } set(_: _) { log(1) } }",
-                () => TestHarness.ParseRoot("var x: i32 { get(value: _) { return value } set(_: _) { log(1) } }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { get(value: _) { return value } set(_: _) { log(1) } }"),
                 "must agree on whether a backing field is required");
 
             // 空访问器块
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { }",
-                () => TestHarness.ParseRoot("var x: i32 { }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { }"),
                 "at least one 'get' or 'set'");
 
             // 无参数却带体（规范形态：体必须跟在 (value: _) 或 (_: _) 之后）
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { get { return 1 } }",
-                () => TestHarness.ParseRoot("var x: i32 { get { return 1 } }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { get { return 1 } }"),
                 "Expected '(' for accessor parameters");
 
             // 非法参数名（只允许 value 或 _）
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { get(v: _) { return v } }",
-                () => TestHarness.ParseRoot("var x: i32 { get(v: _) { return v } }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { get(v: _) { return v } }"),
                 "Expected 'value' or '_' as accessor parameter");
 
             // 已提交访问器之后的游离修饰符：priv 无 get/set 归属，不得静默吞掉
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { pub get\\n priv\\n }（尾随游离修饰符）",
-                () => TestHarness.ParseRoot("var x: i32 {\n    pub get\n    priv\n}"),
+                () => CompilerTestTools.ParseRoot("var x: i32 {\n    pub get\n    priv\n}"),
                 "Expected 'get' or 'set' after accessor modifier");
 
             // 块内只有修饰符、没有任何 get/set
-            TestHarness.CheckParseError(
+            CaseAssertions.CheckParseError(
                 "var x: i32 { priv }（只有修饰符）",
-                () => TestHarness.ParseRoot("var x: i32 { priv }"),
+                () => CompilerTestTools.ParseRoot("var x: i32 { priv }"),
                 "Expected 'get' or 'set' after accessor modifier");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -167,20 +167,20 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var root = TestHarness.ParseRoot(source);
+                var root = CompilerTestTools.ParseRoot(source);
                 var node = pick(root);
                 if (node is not VariableDeclarationASTNode decl)
                 {
-                    TestHarness.CheckTrue(Label(source), false,
+                    CaseAssertions.CheckTrue(Label(source), false,
                         $"expected VariableDeclarationASTNode, got {node.GetType().Name}");
                     return;
                 }
 
-                TestHarness.Check(Label(source), AstDescribe.VarDecl(decl), expected);
+                CaseAssertions.Check(Label(source), AstDescribe.VarDecl(decl), expected);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(source)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(source)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -188,9 +188,9 @@ namespace RigiCompiler.Tests
         private static string Label(string source) => source.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("PropertyAccessor",
+
+        internal static TestSuiteData Spec { get; } = new("PropertyAccessor",
         [
             (nameof(TestAccessorForms), TestAccessorForms),
             (nameof(TestMultiLine), TestMultiLine),

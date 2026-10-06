@@ -40,30 +40,30 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "box.any.bil");
-            TestHarness.CheckTrue("Box Any 用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("Box Any 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
             var allInsts = context.Mir!.Functions.SelectMany(f => f.Blocks)
                 .SelectMany(b => b.Instructions).ToList();
-            TestHarness.CheckTrue("MIR 含 MirBoxAny", allInsts.OfType<MirBoxAny>().Any());
-            TestHarness.CheckTrue("MIR 含 MirUnboxAny", allInsts.OfType<MirUnboxAny>().Any());
+            CaseAssertions.CheckTrue("MIR 含 MirBoxAny", allInsts.OfType<MirBoxAny>().Any());
+            CaseAssertions.CheckTrue("MIR 含 MirUnboxAny", allInsts.OfType<MirUnboxAny>().Any());
 
             using var llvmLease5971 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue("tag0 pack：or + insertvalue",
+            CaseAssertions.CheckTrue("tag0 pack：or + insertvalue",
                 ll.Contains("or i64") && ll.Contains("insertvalue { i64, i64 }"), ll);
-            TestHarness.CheckTrue("tag1：rigi_malloc + memcpy",
+            CaseAssertions.CheckTrue("tag1：rigi_malloc + memcpy",
                 ll.Contains("call ptr @rigi_malloc(i32")
                 && ll.Contains("call void @llvm.memcpy.p0.p0.i64"), ll);
-            TestHarness.CheckTrue("unbox 类型检查（lshr tag + and sheet）",
+            CaseAssertions.CheckTrue("unbox 类型检查（lshr tag + and sheet）",
                 ll.Contains("lshr i64") && ll.Contains("and i64"), ll);
             // MW9b-G：拆箱不符由 abort 改抛 CastException
-            TestHarness.CheckTrue("unbox 不符抛 CastException",
+            CaseAssertions.CheckTrue("unbox 不符抛 CastException",
                 ll.Contains("call void @rigi_exc_raise(ptr")
                 && ll.Contains("CastException$init(fromType:"), ll);
-            TestHarness.CheckTrue("invalid_cast abort 面已退场",
+            CaseAssertions.CheckTrue("invalid_cast abort 面已退场",
                 !ll.Contains("rigi_abort_invalid_cast"), ll);
 
             var numLl = EmitLlFromSource(
@@ -72,9 +72,9 @@ namespace RigiCompiler.Tests
                 "    var y = x as i64\n" +
                 "    return (y as i32)\n" +
                 "}\n", "cast.num.bil");
-            TestHarness.CheckTrue("数值 widening 发射 sext",
+            CaseAssertions.CheckTrue("数值 widening 发射 sext",
                 numLl.Contains("sext i32"), numLl);
-            TestHarness.CheckTrue("数值 narrowing 发射 trunc",
+            CaseAssertions.CheckTrue("数值 narrowing 发射 trunc",
                 numLl.Contains("trunc i64"), numLl);
 
             var phLl = EmitLlFromSource(
@@ -82,9 +82,9 @@ namespace RigiCompiler.Tests
                 "pub func main(): i32 {\n" +
                 "    return conv\\<i32>(42 as Any)\n" +
                 "}\n", "cast.ph.bil");
-            TestHarness.CheckTrue("占位 cast 调 rigi_try_cast",
+            CaseAssertions.CheckTrue("占位 cast 调 rigi_try_cast",
                 phLl.Contains("call i32 @rigi_try_cast("), phLl);
-            TestHarness.CheckTrue("占位 cast 失败抛 CastException",
+            CaseAssertions.CheckTrue("占位 cast 失败抛 CastException",
                 phLl.Contains("call void @rigi_exc_raise(ptr")
                 && phLl.Contains("CastException$init(fromType:"), phLl);
 
@@ -102,7 +102,7 @@ namespace RigiCompiler.Tests
                 "    var b = a as B\n" +
                 "    return 0\n" +
                 "}\n", "cast.struct.bil");
-            TestHarness.CheckTrue("struct 非恒等抛 CastException",
+            CaseAssertions.CheckTrue("struct 非恒等抛 CastException",
                 stLl.Contains("call void @rigi_exc_raise(ptr")
                 && stLl.Contains("CastException$init(fromType:"), stLl);
         }
@@ -112,7 +112,7 @@ namespace RigiCompiler.Tests
             var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, label);
-            TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue(label + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -131,7 +131,7 @@ namespace RigiCompiler.Tests
         private static void ExpectMwNotSupportedFromBil(string text, string needle, string label)
         {
             var gate = BilGate.Accept(text, label);
-            TestHarness.CheckTrue(label + " 门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue(label + " 门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var caught = false;
             var message = "";
@@ -147,13 +147,13 @@ namespace RigiCompiler.Tests
                 caught = ex.Message.Contains(needle);
                 message = ex.Message;
             }
-            TestHarness.CheckTrue(label, caught, message);
+            CaseAssertions.CheckTrue(label, caught, message);
         }
 
         private static void ExpectGateRejectedFromBil(string text, string needle, string label)
         {
             var gate = BilGate.Accept(text, label);
-            TestHarness.CheckTrue(label, !gate.IsAccepted
+            CaseAssertions.CheckTrue(label, !gate.IsAccepted
                 && gate.Errors.Any(error => error.Contains(needle)), string.Join("; ", gate.Errors));
         }
 
@@ -176,9 +176,9 @@ namespace RigiCompiler.Tests
                 "    return sh.area()\n" +
                 "}\n",
                 "iface.default.bil");
-            TestHarness.CheckTrue("默认方法未抛未实现",
+            CaseAssertions.CheckTrue("默认方法未抛未实现",
                 !ll.Contains("MW4 接口方法未实现"), ll);
-            TestHarness.CheckTrue("vtable 含接口默认方法",
+            CaseAssertions.CheckTrue("vtable 含接口默认方法",
                 ll.Contains("Shape$describe") || ll.Contains("@\"Shape$describe"), ll);
 
             var genLl = EmitLlFromSource(
@@ -196,9 +196,9 @@ namespace RigiCompiler.Tests
                 "    return b.tag()\n" +
                 "}\n",
                 "iface.generic.default.bil");
-            TestHarness.CheckTrue("泛型接口默认方法未抛未实现",
+            CaseAssertions.CheckTrue("泛型接口默认方法未抛未实现",
                 !genLl.Contains("MW4 接口方法未实现"), genLl);
-            TestHarness.CheckTrue("泛型接口默认方法入表",
+            CaseAssertions.CheckTrue("泛型接口默认方法入表",
                 genLl.Contains("IBox$tag") || genLl.Contains("@\"IBox$tag"), genLl);
         }
 
@@ -242,13 +242,13 @@ namespace RigiCompiler.Tests
             var cycleModule = BilReader.Read(cycleBil);
             var cycleCtx = new MwContext(cycleModule);
             var collected = ConstructedTypeCollector.Collect(cycleCtx);
-            TestHarness.CheckTrue("收集含 Box<i32>",
+            CaseAssertions.CheckTrue("收集含 Box<i32>",
                 collected.Contains("Box<core::i32>"));
-            TestHarness.CheckTrue("收集含嵌套 Box<Box<i32>>",
+            CaseAssertions.CheckTrue("收集含嵌套 Box<Box<i32>>",
                 collected.Contains("Box<Box<core::i32>>"));
-            TestHarness.CheckTrue("收集含环上 A<i32>/B<i32>",
+            CaseAssertions.CheckTrue("收集含环上 A<i32>/B<i32>",
                 collected.Contains("A<core::i32>") && collected.Contains("B<core::i32>"));
-            TestHarness.CheckTrue("环保护不重复入表",
+            CaseAssertions.CheckTrue("环保护不重复入表",
                 collected.Count(c => c == "A<core::i32>") == 1);
 
             // 具化计划：隐藏 typeid + 胖值槽 + vtable=模板 fn
@@ -264,40 +264,40 @@ namespace RigiCompiler.Tests
                 "}\n");
             srcText = BilWriter.Write(srcTextModule);
             var gate = BilGate.Accept(srcText, "c2a.bil");
-            TestHarness.CheckTrue("构造类型源门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("构造类型源门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             var closed = ConstructedTypeCollector.Collect(context);
-            TestHarness.CheckTrue("前端路径收集 Box2<i32>",
+            CaseAssertions.CheckTrue("前端路径收集 Box2<i32>",
                 closed.Any(c => c.Contains("Box2") && c.Contains("i32")));
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
             var plan = context.Layout!.Find("Box2<core::i32>");
-            TestHarness.CheckTrue("构造计划已入表", plan != null);
-            TestHarness.CheckTrue("隐藏 typeid 槽@16",
+            CaseAssertions.CheckTrue("构造计划已入表", plan != null);
+            CaseAssertions.CheckTrue("隐藏 typeid 槽@16",
                 plan!.HiddenTypeIdSlots.Count == 1
                 && plan.HiddenTypeIdSlots[0].ParamName == "T"
                 && plan.HiddenTypeIdSlots[0].Offset == 16);
             var vField = FieldOf(plan, "#v@");
-            TestHarness.CheckTrue("字段复用模板 canonical 且为胖值槽",
+            CaseAssertions.CheckTrue("字段复用模板 canonical 且为胖值槽",
                 vField != null && vField.IsReferenceSlot && vField.Offset == 32
                 && vField.Symbol.StartsWith("Box2#"));
-            TestHarness.CheckTrue("Size/refMap（头+typeid+胖槽）",
+            CaseAssertions.CheckTrue("Size/refMap（头+typeid+胖槽）",
                 plan.Size == 48 && plan.RefMap.Length == 1 && plan.RefMap[0] == 1);
-            TestHarness.CheckTrue("vtable 槽=模板 fn",
+            CaseAssertions.CheckTrue("vtable 槽=模板 fn",
                 plan.VTableSlots.Any(s => s.Contains("Box2$get(")));
 
             using var llvmLease6205 = LlvmHost.Enter();
             using var llvm = ModuleBuilder.Build(context, context.Mir!);
             var ll = llvm.PrintToString();
-            TestHarness.CheckTrue("构造 sheet 全局（转义名）",
+            CaseAssertions.CheckTrue("构造 sheet 全局（转义名）",
                 ll.Contains("typesheet.Box2<core::i32>"), ll);
-            TestHarness.CheckTrue("tag2 pack 指向构造 sheet",
+            CaseAssertions.CheckTrue("tag2 pack 指向构造 sheet",
                 ll.Contains("typesheet.Box2<core::i32>")
                 && (ll.Contains("shl i64 2, 56") || ll.Contains("shl i64 2, i64 56")
                     || ll.Contains("or i64")), ll);
-            TestHarness.CheckTrue("new 站 typeid 常量 store",
+            CaseAssertions.CheckTrue("new 站 typeid 常量 store",
                 ll.Contains("typesheet.core::i32") && ll.Contains("store i64"), ll);
-            TestHarness.CheckTrue("prologue 从隐藏字段 load 类级 typeid",
+            CaseAssertions.CheckTrue("prologue 从隐藏字段 load 类级 typeid",
                 ll.Contains("tid.bits") || ll.Contains("load i64"), ll);
 
             // G1：泛型值类型构造（原受控拒绝翻正）——具化计划复用模板
@@ -315,35 +315,35 @@ namespace RigiCompiler.Tests
                 "}\n");
             structText = BilWriter.Write(structTextModule);
             var structGate = BilGate.Accept(structText, "g1.struct.bil");
-            TestHarness.CheckTrue("泛型 struct 源门禁放行", structGate.IsAccepted,
+            CaseAssertions.CheckTrue("泛型 struct 源门禁放行", structGate.IsAccepted,
                 string.Join("; ", structGate.Errors));
             var structContext = new MwContext(structGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(structContext);
             var structPlan = structContext.Layout!.Find("Wrap<core::i32>");
-            TestHarness.CheckTrue("构造 struct 计划已入表", structPlan != null);
-            TestHarness.CheckTrue("构造 struct 计划为 Struct 且无隐藏 typeid 槽",
+            CaseAssertions.CheckTrue("构造 struct 计划已入表", structPlan != null);
+            CaseAssertions.CheckTrue("构造 struct 计划为 Struct 且无隐藏 typeid 槽",
                 structPlan!.Kind == TypeLayoutKind.Struct
                 && structPlan.HiddenTypeIdSlots.Count == 0);
             var structVField = FieldOf(structPlan, "#v@");
-            TestHarness.CheckTrue("构造 struct 字段复用模板 canonical 且为胖值槽",
+            CaseAssertions.CheckTrue("构造 struct 字段复用模板 canonical 且为胖值槽",
                 structVField != null && structVField.IsReferenceSlot
                 && structVField.Offset == 0 && structVField.Symbol.StartsWith("Wrap#"));
-            TestHarness.CheckTrue("构造 struct Size=16（单胖槽）且槽 0 init 分发器",
+            CaseAssertions.CheckTrue("构造 struct Size=16（单胖槽）且槽 0 init 分发器",
                 structPlan.Size == 16 && structPlan.VTableSlots.Count == 1
                 && structPlan.VTableSlots[0] == LayoutEngine.InitDispatchSlot);
 
             using var llvmLease6250 = LlvmHost.Enter();
             using var structLlvm = ModuleBuilder.Build(structContext, structContext.Mir!);
             var structLl = structLlvm.PrintToString();
-            TestHarness.CheckTrue("构造 struct sheet 全局（转义名）",
+            CaseAssertions.CheckTrue("构造 struct sheet 全局（转义名）",
                 structLl.Contains("typesheet.Wrap<core::i32>"), structLl);
             // init 调用：.this 槽指针 + 类级 typeid 常量 + 胖值实参
-            TestHarness.CheckTrue("struct init 调用含类级 typeid 实参（TypeSheet 常量直传）",
+            CaseAssertions.CheckTrue("struct init 调用含类级 typeid 实参（TypeSheet 常量直传）",
                 structLl.Contains(
                     "call void @\"Wrap$init(v:.generic<$.generic.T>)@.void\"(ptr %")
                 && structLl.Contains("typesheet.core::i32"), structLl);
             // get 调用：类级 typeid 实参（擦除 cast 溯源回构造形态）
-            TestHarness.CheckTrue("struct 方法调用含类级 typeid 实参",
+            CaseAssertions.CheckTrue("struct 方法调用含类级 typeid 实参",
                 structLl.Contains(
                     "call void @\"Wrap$get()@.generic<$.generic.T>\"(ptr %")
                 || structLl.Contains(
@@ -396,21 +396,21 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n";
             var enumGate = BilGate.Accept(enumBil, "g1.enum.bil");
-            TestHarness.CheckTrue("构造 enum 手写 BIL 门禁放行", enumGate.IsAccepted,
+            CaseAssertions.CheckTrue("构造 enum 手写 BIL 门禁放行", enumGate.IsAccepted,
                 string.Join("; ", enumGate.Errors));
             var enumContext = new MwContext(enumGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(enumContext);
             var enumPlan = enumContext.Layout!.Find("Choice<core::i32>");
-            TestHarness.CheckTrue("构造 enum 计划已入表（Enum kind + 判别复用模板）",
+            CaseAssertions.CheckTrue("构造 enum 计划已入表（Enum kind + 判别复用模板）",
                 enumPlan != null && enumPlan.Kind == TypeLayoutKind.Enum
                 && enumPlan.EnumCases.Count == 1
                 && enumPlan.EnumCases[0].Discriminant == 0u);
             using var llvmLease6322 = LlvmHost.Enter();
             using var enumLlvm = ModuleBuilder.Build(enumContext, enumContext.Mir!);
             var enumLl = enumLlvm.PrintToString();
-            TestHarness.CheckTrue("构造 enum sheet 全局（转义名）",
+            CaseAssertions.CheckTrue("构造 enum sheet 全局（转义名）",
                 enumLl.Contains("typesheet.Choice<core::i32>"), enumLl);
-            TestHarness.CheckTrue("enum init 调用含类级 typeid 实参（直传）",
+            CaseAssertions.CheckTrue("enum init 调用含类级 typeid 实参（直传）",
                 enumLl.Contains(
                     "@\"Choice$init(tag:.i32,payload:.generic<$.generic.T>)@.void\"(ptr %")
                 && enumLl.Contains("typesheet.core::i32"), enumLl);
@@ -511,13 +511,13 @@ namespace RigiCompiler.Tests
                 "}\n";
             var (_, genericCandidateModule, _) = BilTestHarness.EmitBilUnit(genericCandidateSource);
             var genericCandidateGate = BilGate.Accept(BilWriter.Write(genericCandidateModule), "generic-candidate.bil");
-            TestHarness.CheckTrue("G4 泛型 class 候选源码门禁放行", genericCandidateGate.IsAccepted,
+            CaseAssertions.CheckTrue("G4 泛型 class 候选源码门禁放行", genericCandidateGate.IsAccepted,
                 string.Join("; ", genericCandidateGate.Errors));
             var genericCandidateContext = new MwContext(genericCandidateModule);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(genericCandidateContext);
             using var llvmLease6431 = LlvmHost.Enter();
             using var genericCandidateLlvm = ModuleBuilder.Build(genericCandidateContext, genericCandidateContext.Mir!);
-            TestHarness.CheckTrue("G4 未构造泛型宿主不阻断实际 operator 派发",
+            CaseAssertions.CheckTrue("G4 未构造泛型宿主不阻断实际 operator 派发",
                 genericCandidateLlvm.PrintToString().Contains("typesheet.Num"));
             ExpectMwNotSupportedFromSource(
                 genericCandidateSource.Replace("pub class GBox", "pub rich struct GBox"),
@@ -545,36 +545,36 @@ namespace RigiCompiler.Tests
                 "}\n");
             ifaceSrc = BilWriter.Write(ifaceSrcModule);
             var ifaceGate = BilGate.Accept(ifaceSrc, "c2b.imap.bil");
-            TestHarness.CheckTrue("构造接口源门禁放行", ifaceGate.IsAccepted,
+            CaseAssertions.CheckTrue("构造接口源门禁放行", ifaceGate.IsAccepted,
                 string.Join("; ", ifaceGate.Errors));
             var ifaceCtx = new MwContext(ifaceGate.Module!);
             var collected = ConstructedTypeCollector.Collect(ifaceCtx);
-            TestHarness.CheckTrue("收集含 IBox<i32>",
+            CaseAssertions.CheckTrue("收集含 IBox<i32>",
                 collected.Any(c => c.Contains("IBox") && c.Contains("i32")));
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(ifaceCtx);
             var boxPlan = ifaceCtx.Layout!.Find("Box3<core::i32>");
-            TestHarness.CheckTrue("Box3<i32> 计划已入表", boxPlan != null);
-            TestHarness.CheckTrue("构造接口 iMap 段键与槽基址",
+            CaseAssertions.CheckTrue("Box3<i32> 计划已入表", boxPlan != null);
+            CaseAssertions.CheckTrue("构造接口 iMap 段键与槽基址",
                 boxPlan!.IMap.Count >= 1
                 && boxPlan.IMap.Any(e => e.InterfaceType == "IBox<core::i32>"
                     && e.BaseOffset == 3),
                 boxPlan == null ? "" : string.Join(",", boxPlan.IMap));
-            TestHarness.CheckTrue("iMap 槽序复用本类 get/tag",
+            CaseAssertions.CheckTrue("iMap 槽序复用本类 get/tag",
                 boxPlan!.VTableSlots.Count == 5
                 && boxPlan.VTableSlots[0] == LayoutEngine.InitDispatchSlot
                 && boxPlan.VTableSlots[3] == boxPlan.VTableSlots[1]
                 && boxPlan.VTableSlots[4] == boxPlan.VTableSlots[2]);
             var ifacePlan = ifaceCtx.Layout.Find("IBox<core::i32>");
-            TestHarness.CheckTrue("IBox<i32> 空壳 sheet 计划",
+            CaseAssertions.CheckTrue("IBox<i32> 空壳 sheet 计划",
                 ifacePlan != null
                 && ifacePlan.Kind == TypeLayoutKind.Interface
                 && ifacePlan.VTableSlots.Count == 2);
             using var llvmLease6484 = LlvmHost.Enter();
             using var ifaceLlvm = ModuleBuilder.Build(ifaceCtx, ifaceCtx.Mir!);
             var ifaceLl = ifaceLlvm.PrintToString();
-            TestHarness.CheckTrue("构造接口 sheet 全局",
+            CaseAssertions.CheckTrue("构造接口 sheet 全局",
                 ifaceLl.Contains("typesheet.IBox<core::i32>"), ifaceLl);
-            TestHarness.CheckTrue("imap 引用具化接口 sheet",
+            CaseAssertions.CheckTrue("imap 引用具化接口 sheet",
                 ifaceLl.Contains("typesheet.imap.Box3<core::i32>")
                 && ifaceLl.Contains("typesheet.IBox<core::i32>"), ifaceLl);
 
@@ -595,26 +595,26 @@ namespace RigiCompiler.Tests
                 "}\n");
             virtSrc = BilWriter.Write(virtSrcModule);
             var virtGate = BilGate.Accept(virtSrc, "c2b.virt.bil");
-            TestHarness.CheckTrue("双虚泛型类门禁放行", virtGate.IsAccepted,
+            CaseAssertions.CheckTrue("双虚泛型类门禁放行", virtGate.IsAccepted,
                 string.Join("; ", virtGate.Errors));
             var virtCtx = new MwContext(virtGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(virtCtx);
             var hostPlan = virtCtx.Layout!.Find("PairV<core::i32>");
-            TestHarness.CheckTrue("PairV<i32> 构造计划双虚槽",
+            CaseAssertions.CheckTrue("PairV<i32> 构造计划双虚槽",
                 hostPlan != null && hostPlan.VTableSlots.Count >= 3
                 && hostPlan.VTableSlots[0] == LayoutEngine.InitDispatchSlot
                 && hostPlan.VTableSlots[1].Contains("$foo(")
                 && hostPlan.VTableSlots[2].Contains("$bar("),
                 hostPlan == null ? "" : string.Join(",", hostPlan.VTableSlots));
             var derivedPlan = virtCtx.Layout.Find("PairD<core::i32>");
-            TestHarness.CheckTrue("PairD<i32> override 复用基槽",
+            CaseAssertions.CheckTrue("PairD<i32> override 复用基槽",
                 derivedPlan != null && derivedPlan.VTableSlots.Count >= 3
                 && derivedPlan.VTableSlots[1].Contains("PairD$foo(")
                 && derivedPlan.VTableSlots[2].Contains("PairD$bar("));
             using var llvmLease6525 = LlvmHost.Enter();
             using var virtLlvm = ModuleBuilder.Build(virtCtx, virtCtx.Mir!);
             var virtLl = virtLlvm.PrintToString();
-            TestHarness.CheckTrue("VirtualSlotOf 命中槽 1 与 2",
+            CaseAssertions.CheckTrue("VirtualSlotOf 命中槽 1 与 2",
                 virtLl.Contains("call ptr @rigi_vtable_entry(ptr")
                 && virtLl.Contains("i32 1") && virtLl.Contains("i32 2"), virtLl);
 
@@ -627,7 +627,7 @@ namespace RigiCompiler.Tests
                 "    var d = new Doubler()\n" +
                 "    return d(21)\n" +
                 "}\n", "c2b.op.bil");
-            TestHarness.CheckTrue("operator call 虚槽为 1（槽 0 分发器）",
+            CaseAssertions.CheckTrue("operator call 虚槽为 1（槽 0 分发器）",
                 opLl.Contains("call ptr @rigi_vtable_entry(ptr")
                 && opLl.Contains("i32 1"), opLl);
             var lambdaLl = EmitLlFromSource(
@@ -635,7 +635,7 @@ namespace RigiCompiler.Tests
                 "    var fn = func{(x: i32): i32 -> (x + 1)}\n" +
                 "    return fn(41)\n" +
                 "}\n", "c2b.lambda.bil");
-            TestHarness.CheckTrue("lambda 间接调用虚槽为 1（槽 0 分发器）",
+            CaseAssertions.CheckTrue("lambda 间接调用虚槽为 1（槽 0 分发器）",
                 lambdaLl.Contains("call ptr @rigi_vtable_entry(ptr")
                 && lambdaLl.Contains("i32 1"), lambdaLl);
         }
@@ -653,41 +653,41 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "vargs.bil");
-            TestHarness.CheckTrue("包签名用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("包签名用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             var mir = MirBuilder.Build(context);
 
             var sum = mir.Functions.Single(f => f.Symbol.Canonical == "$sum()@.i32");
-            TestHarness.CheckTrue("vargs 登记为普通参数",
+            CaseAssertions.CheckTrue("vargs 登记为普通参数",
                 sum.Parameters.Count == 1 && sum.Parameters[0].Name == ".vargs.nums");
-            TestHarness.CheckTrue("vargs 槽类型 = Array<Any>",
+            CaseAssertions.CheckTrue("vargs 槽类型 = Array<Any>",
                 TypeLayout.IsArray(sum.Parameters[0].Type)
                 && sum.Parameters[0].Type.Canonical.Contains("Any"));
 
             var show = mir.Functions.Single(f => f.Symbol.Canonical == "$show()@.i32");
-            TestHarness.CheckTrue("kwargs 登记为普通参数",
+            CaseAssertions.CheckTrue("kwargs 登记为普通参数",
                 show.Parameters.Count == 1 && show.Parameters[0].Name == ".kwargs.opts");
-            TestHarness.CheckTrue("kwargs 槽类型 = Array<Pair>",
+            CaseAssertions.CheckTrue("kwargs 槽类型 = Array<Pair>",
                 TypeLayout.IsArray(show.Parameters[0].Type)
                 && show.Parameters[0].Type.Canonical.Contains("Pair"));
 
             var collect = mir.Functions.Single(f => f.Symbol.Canonical == "$collect()@.i32");
-            TestHarness.CheckTrue("泛型包+值包按 §7.2 序",
+            CaseAssertions.CheckTrue("泛型包+值包按 §7.2 序",
                 collect.Parameters.Count == 2
                 && collect.Parameters[0].Name == ".generic.TArgs"
                 && collect.Parameters[1].Name == ".vargs.values");
-            TestHarness.CheckTrue("泛型位置包 TypeRef = array（非 typeid）",
+            CaseAssertions.CheckTrue("泛型位置包 TypeRef = array（非 typeid）",
                 TypeLayout.IsArray(collect.Parameters[0].Type)
                 && !TypeLayout.IsTypeId(collect.Parameters[0].Type));
-            TestHarness.CheckTrue("值包 TypeRef = Array<Any>",
+            CaseAssertions.CheckTrue("值包 TypeRef = Array<Any>",
                 TypeLayout.IsArray(collect.Parameters[1].Type));
 
             var main = mir.Functions.Single(f => f.IsEntrypoint);
             var sumCall = main.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                 .First(c => c.Target.Canonical == "$sum()@.i32");
-            TestHarness.CheckTrue("调用点包为单实参", sumCall.Args.Count == 1);
-            TestHarness.CheckTrue("调用点实参类型 = 包类型",
+            CaseAssertions.CheckTrue("调用点包为单实参", sumCall.Args.Count == 1);
+            CaseAssertions.CheckTrue("调用点实参类型 = 包类型",
                 sumCall.Args[0] is MirLocalOperand packArg
                 && TypeLayout.IsArray(main.FindLocal(packArg.Name).Type));
 
@@ -695,13 +695,13 @@ namespace RigiCompiler.Tests
             using var llvmLease6605 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
-            TestHarness.CheckTrue("Any TypeSheet 供 Pair<,Any> 具化",
+            CaseAssertions.CheckTrue("Any TypeSheet 供 Pair<,Any> 具化",
                 ll.Contains("@\"typesheet.core::Any\""), ll);
-            TestHarness.CheckTrue("sum LLVM 形参 = 胖引用",
+            CaseAssertions.CheckTrue("sum LLVM 形参 = 胖引用",
                 ll.Contains("define internal i32 @\"$sum()@.i32\"({ i64, i64 }"), ll);
-            TestHarness.CheckTrue("show LLVM 形参 = 胖引用",
+            CaseAssertions.CheckTrue("show LLVM 形参 = 胖引用",
                 ll.Contains("define internal i32 @\"$show()@.i32\"({ i64, i64 }"), ll);
-            TestHarness.CheckTrue("collect LLVM 两包均胖引用",
+            CaseAssertions.CheckTrue("collect LLVM 两包均胖引用",
                 ll.Contains("define internal i32 @\"$collect()@.i32\"({ i64, i64 }")
                 && ll.Contains("{ i64, i64 } %0, { i64, i64 } %1)"), ll);
 
@@ -713,20 +713,20 @@ namespace RigiCompiler.Tests
             RewriteWrapForward(fwdModule);
             var fwdText = BilWriter.Write(fwdModule);
             var fwdGate = BilGate.Accept(fwdText, "fwd.bil");
-            TestHarness.CheckTrue("整包转发门禁放行", fwdGate.IsAccepted,
+            CaseAssertions.CheckTrue("整包转发门禁放行", fwdGate.IsAccepted,
                 string.Join("; ", fwdGate.Errors));
             var fwdCtx = new MwContext(fwdGate.Module!);
             var fwdMir = MirBuilder.Build(fwdCtx);
             var wrap = fwdMir.Functions.Single(f => f.Symbol.Canonical == "$wrap()@.i32");
             var fwdCall = wrap.Blocks.SelectMany(b => b.Instructions).OfType<MirCall>()
                 .Single(c => c.Target.Canonical == "$take()@.i32");
-            TestHarness.CheckTrue("整包转发实参 = $.vargs.nums",
+            CaseAssertions.CheckTrue("整包转发实参 = $.vargs.nums",
                 fwdCall.Args.Count == 1
                 && fwdCall.Args[0] is MirLocalOperand { Name: ".vargs.nums" });
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(fwdCtx);
             using var llvmLease6636 = LlvmHost.Enter();
             using var fwdLl = ModuleBuilder.Build(fwdCtx, fwdCtx.Mir!);
-            TestHarness.CheckTrue("整包转发 LLVM 发射",
+            CaseAssertions.CheckTrue("整包转发 LLVM 发射",
                 fwdLl.PrintToString().Contains("@\"$take()@.i32\""),
                 fwdLl.PrintToString());
         }

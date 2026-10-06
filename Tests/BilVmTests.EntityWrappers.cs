@@ -38,7 +38,7 @@ namespace RigiCompiler.Tests
                 "    return s.fetch(21)\n" +
                 "}\n");
             CheckOk("Entity specific 方法 proxy 环绕", result);
-            TestHarness.Check("环绕 stdout 顺序", result.Stdout,
+            CaseAssertions.Check("环绕 stdout 顺序", result.Stdout,
                 "before\n" +
                 "body\n" +
                 "after\n");
@@ -80,9 +80,9 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckOk("Entity wildcard 两方向", result);
             CheckI32("ping 经 inner=42、fetchUserById 被 proxy 路由=99", result, 42099);
-            TestHarness.CheckTrue("wildcard 收到已声明 symbol",
+            CaseAssertions.CheckTrue("wildcard 收到已声明 symbol",
                 result.Stdout.Contains("Service$ping") == true, result.Stdout);
-            TestHarness.CheckTrue("wildcard 收到未声明 symbol",
+            CaseAssertions.CheckTrue("wildcard 收到未声明 symbol",
                 result.Stdout.Contains("Service$fetchUserById") == true, result.Stdout);
         }
 
@@ -193,7 +193,7 @@ namespace RigiCompiler.Tests
         private static void TestEntityGenericCastUnboundDirectModule()
         {
             var result = BilVm.Run(UnboundGenericCastModule());
-            TestHarness.CheckTrue("未绑定 .generic cast 抛 VmException",
+            CaseAssertions.CheckTrue("未绑定 .generic cast 抛 VmException",
                 result.Exception != null
                 && result.Exception.Message.Contains("无法解析泛型占位")
                 && result.Exception.Message.Contains(".generic<$.generic.T>"),

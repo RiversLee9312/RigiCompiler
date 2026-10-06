@@ -14,7 +14,7 @@ public class WorkerContractTests
     {
         // 默认 E2e worker 为 512MiB 总 lease / 256MiB GC，真实跑 stdlib
         // 与两用户文件的完整编译，不能用 --spawned 直跑绕过 child 环境。
-        var task = LegacyDispatcher.Select(TestRunner.GetSuiteNumber("E2e"), ["rich_return_nullable"]).Single();
+        var task = CaseSelection.Select(TestSuiteCatalog.GetNumber("E2e"), ["rich_return_nullable"]).Single();
         var result = await Worker.RunAsync(task.Id, timeout: TimeSpan.FromMinutes(2));
         Check(result.Status == CaseStatus.Pass && result.Execution?.Lease.MemoryMiB == 512,
             "compiler 必须消费已授予子预算：" + result.Diagnostics);
@@ -26,11 +26,11 @@ public class WorkerContractTests
     }
 
     [Test]
-    public async Task HarnessFailure()
+    public async Task ScopedAssertionFailure()
     {
         var result = await Worker.RunAsync("lexer.slash", probe: "fail-harness");
         Check(result.Status == CaseStatus.Fail && result.Assertions == 2 && result.Failures == 1,
-            "Harness 失败必须进入 typed Fail");
+            "scope 失败必须进入 typed Fail");
     }
 
     [Test]
@@ -38,7 +38,7 @@ public class WorkerContractTests
     {
         var result = await Worker.RunAsync("lexer.slash", probe: "fail-lexer");
         Check(result.Status == CaseStatus.Fail && result.Assertions == 1 && result.Failures == 1,
-            "Lexer 私有计数失败必须进入 typed Fail");
+            "Lexer 真实断言失败必须进入 typed Fail");
     }
 
     [Test]
@@ -68,7 +68,8 @@ public class WorkerContractTests
     [Test]
     public async Task ExplicitDeadlineOverridesHeavyDefault()
     {
-        foreach (var id in new[] { "legacy/NativeE2E/557", "legacy/BilEmitter/suite" })
+        foreach (var id in new[] { CaseSelection.Select(TestSuiteCatalog.GetNumber("NativeE2E"), ["label", "JSON 写侧对拍"]).Single().Id,
+            CaseSelection.Select(TestSuiteCatalog.GetNumber("BilEmitter"), ["0", "0"]).Single().Id })
         {
             var result = await Worker.RunAsync(id, timeout: TimeSpan.FromMilliseconds(300), probe: "delay");
             Check(result.Status == CaseStatus.Fail && result.Diagnostics.Contains("超时")
@@ -102,8 +103,10 @@ public class WorkerContractTests
         var pidPath = Path.Combine(root, "child.pid");
         try
         {
-            var result = await Worker.RunAsync("lexer.slash", timeout: TimeSpan.FromSeconds(2), probe: "orphan-pipe:" + pidPath);
+            // 实测 AOT 启动需 3.952662 秒，超过旧 2 秒；有限生命周期探针须留启动余量，仍验证真实灭树。
+            var result = await Worker.RunAsync("lexer.slash", timeout: TimeSpan.FromSeconds(30), probe: "orphan-pipe:" + pidPath);
             Check(result.Status == CaseStatus.Fail && result.Diagnostics.Contains("超时"), "根早退后继承管道必须有界灭树排空");
+            Check(result.Execution?.WallMilliseconds < 40_000, "根早退生命周期必须在有限墙钟期限内完成");
             Check(File.Exists(pidPath), "后台后代必须实际启动");
             var pid = int.Parse(File.ReadAllText(pidPath).Trim());
             var statusPath = $"/proc/{pid}/status";
@@ -122,8 +125,10 @@ public class WorkerContractTests
         var path = Path.Combine(root, "child.pid");
         try
         {
-            var outcome = await Worker.RunAsync("lexer.slash", timeout: TimeSpan.FromSeconds(2), probe: "grandchild-tree:" + path);
+            // 启动、超时和清理共同有界；不得在后代启动前杀根而使真实三层树断言失去覆盖。
+            var outcome = await Worker.RunAsync("lexer.slash", timeout: TimeSpan.FromSeconds(30), probe: "grandchild-tree:" + path);
             Check(outcome.Status == CaseStatus.Fail && outcome.Diagnostics.Contains("超时"), "三层树超时必须失败");
+            Check(outcome.Execution?.WallMilliseconds < 40_000, "三层树生命周期必须在有限墙钟期限内完成");
             foreach (var pidPath in new[] { path, path + ".grandchild" })
             {
                 Check(File.Exists(pidPath), "子/孙进程必须真实启动");

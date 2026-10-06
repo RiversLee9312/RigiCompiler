@@ -3,7 +3,7 @@ using System;
 namespace RigiCompiler.Tests
 {
     // 泛型参数列表解析测试（GenericParametersParserLayer）：独立 Layer 驱动
-    // （TestHarness.ParseWithLayer），断言 AstDescribe.Generics 描述串。
+    // （CompilerTestTools.ParseWithLayer），断言 AstDescribe.Generics 描述串。
     //
     // 覆盖 SYNTAX.md §3.6 的泛型声明语法（\<...> 列表）：
     // 1. 参数声明子句：TElement、多参数、out/in 型变
@@ -16,7 +16,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 参数声明子句 =====
         public static void TestParameters()
         {
-            TestHarness.Section("Testing Generic Parameter Clauses");
+            CompilerTestTools.Section("Testing Generic Parameter Clauses");
 
             TestParse("\\<TElement>", "\\<TElement>");
             TestParse("\\<TInput, TResult>", "\\<TInput, TResult>");
@@ -28,13 +28,13 @@ namespace RigiCompiler.Tests
             TestParse("\\<shared named T...>", "\\<shared named T...>");
             TestParse("\\<shared T with Serializable>", "\\<shared T, T with Serializable>");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 约束子句 =====
         public static void TestConstraints()
         {
-            TestHarness.Section("Testing Generic Constraint Clauses");
+            CompilerTestTools.Section("Testing Generic Constraint Clauses");
 
             TestParse("\\<TItem extends Comparable>",
                 "\\<TItem, TItem extends Comparable>");
@@ -51,13 +51,13 @@ namespace RigiCompiler.Tests
             TestParse("\\<List\\<T> extends Collection\\<T>>",
                 "\\<List<T> extends Collection<T>>");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 可变泛型参数 =====
         public static void TestVariadicParameters()
         {
-            TestHarness.Section("Testing Variadic Generic Parameters");
+            CompilerTestTools.Section("Testing Variadic Generic Parameters");
 
             TestParse("\\<TArgs...>", "\\<TArgs...>");
             TestParse("\\<named TValues...>", "\\<named TValues...>");
@@ -65,51 +65,51 @@ namespace RigiCompiler.Tests
             TestParse("\\<named TValues... with Serializable>",
                 "\\<named TValues..., TValues with Serializable>");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. wrapper canonical 形态 =====
         public static void TestWrapperCanonicalShape()
         {
-            TestHarness.Section("Testing Wrapper Canonical Shape");
+            CompilerTestTools.Section("Testing Wrapper Canonical Shape");
 
             TestParse("\\<named TNamedArgs..., TUnnamedArgs..., TReturn>",
                 "\\<named TNamedArgs..., TUnnamedArgs..., TReturn>");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Testing Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Testing Error Cases (expect ParserException)");
 
-            TestHarness.CheckParseError("<TElement>",
+            CaseAssertions.CheckParseError("<TElement>",
                 () => ParseGenericParams("<TElement>"),
                 "Expected '\\' to start");
-            TestHarness.CheckParseError("\\<shared shared T>",
+            CaseAssertions.CheckParseError("\\<shared shared T>",
                 () => ParseGenericParams("\\<shared shared T>"), "Duplicate 'shared'");
-            TestHarness.CheckParseError("\\<shared out in T>",
+            CaseAssertions.CheckParseError("\\<shared out in T>",
                 () => ParseGenericParams("\\<shared out in T>"), "conflicting variance");
-            TestHarness.CheckParseError("\\<shared class>",
+            CaseAssertions.CheckParseError("\\<shared class>",
                 () => ParseGenericParams("\\<shared class>"), "Expected type parameter name");
-            TestHarness.CheckParseError("\\TElement>",
+            CaseAssertions.CheckParseError("\\TElement>",
                 () => ParseGenericParams("\\TElement>"),
                 "Expected '<' after");
-            TestHarness.CheckParseError("\\<named TValues>",
+            CaseAssertions.CheckParseError("\\<named TValues>",
                 () => ParseGenericParams("\\<named TValues>"),
                 "'named' variadic parameter requires '...'");
-            TestHarness.CheckParseError("\\<TArgs..>",
+            CaseAssertions.CheckParseError("\\<TArgs..>",
                 () => ParseGenericParams("\\<TArgs..>"),
                 "Expected '...' for variadic parameter");
-            TestHarness.CheckParseError("\\<>",
+            CaseAssertions.CheckParseError("\\<>",
                 () => ParseGenericParams("\\<>"),
                 "Expected type parameter");
-            TestHarness.CheckParseError("\\<List\\<String>, T>",
+            CaseAssertions.CheckParseError("\\<List\\<String>, T>",
                 () => ParseGenericParams("\\<List\\<String>, T>"),
                 "must be a plain identifier");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -118,7 +118,7 @@ namespace RigiCompiler.Tests
         private static GenericParameterListASTNode ParseGenericParams(string code)
         {
             var node = new GenericParameterListASTNode(null);
-            TestHarness.ParseWithLayer(new GenericParametersParserLayer(node), code);
+            CompilerTestTools.ParseWithLayer(new GenericParametersParserLayer(node), code);
             return node;
         }
 
@@ -128,18 +128,18 @@ namespace RigiCompiler.Tests
             try
             {
                 var node = ParseGenericParams(code);
-                TestHarness.Check(code, AstDescribe.Generics(node), expectedDesc);
+                CaseAssertions.Check(code, AstDescribe.Generics(node), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code} => 意外异常", false, ex.Message);
             }
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("GenericParameters",
+
+        internal static TestSuiteData Spec { get; } = new("GenericParameters",
         [
             (nameof(TestParameters), TestParameters),
             (nameof(TestConstraints), TestConstraints),

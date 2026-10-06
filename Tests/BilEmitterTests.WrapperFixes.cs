@@ -14,26 +14,6 @@ namespace RigiCompiler.Tests
                     nameof(TestSerializableImplicitDefaultConstruction), nameof(TestWrapperFieldInitializerEmission),
                     nameof(TestGenericWrapperFieldInitializerEmission)];
 
-        public static int RunWithArgs(System.Collections.Generic.IReadOnlyList<string> args)
-        {
-            if (args.Count == 0) return RunAll();
-            if (!TestRunner.IsSpawned) return TestRunner.RunSuite(TestRunner.GetSuiteNumber("BilEmitter"), args);
-            if (args.Count != 1 || !(string.Equals(args[0], "WRAP-001", System.StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(args[0], "WRAP-001-review", System.StringComparison.OrdinalIgnoreCase)))
-            {
-                System.Console.WriteLine("支持的定向测试参数：WRAP-001、WRAP-001-review");
-                return 2;
-            }
-            TestHarness.Reset();
-            TestGenericParameterFieldInitializers();
-            TestForwardDefaultConstructionEmission();
-            TestSerializableImplicitDefaultConstruction();
-            if (args[0].Equals("WRAP-001-review", System.StringComparison.OrdinalIgnoreCase))
-                return TestHarness.Summary("BilEmitter WRAP-001 review");
-            TestWrapperFieldInitializerEmission();
-            TestGenericWrapperFieldInitializerEmission();
-            return TestHarness.Summary("BilEmitter WRAP-001");
-        }
 
         private static void TestSerializableImplicitDefaultConstruction()
         {
@@ -46,7 +26,7 @@ namespace RigiCompiler.Tests
                 CheckNoErrors("序列化隐含零参构造保持合法：" + fields, unit);
                 BilTestHarness.CheckBilValid("普通 new 与 T() 的真实入口签名合法", module);
                 var result = BilVm.Run(module);
-                TestHarness.CheckTrue("普通 new 与 T() 运行期入口可用",
+                CaseAssertions.CheckTrue("普通 new 与 T() 运行期入口可用",
                     result.ReturnValue is VmI32 { Value: 0 } && result.Exception == null);
             }
         }

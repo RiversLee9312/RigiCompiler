@@ -14,7 +14,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 字面量初始化 =====
         public static void TestLiteralInitializers()
         {
-            TestHarness.Section("Literal Initializers");
+            CompilerTestTools.Section("Literal Initializers");
 
             TestExpr("var x = 42", "Int(42,I32)");
             TestExpr("var h = 0xFF", "Int(255,I32,hex)");
@@ -24,49 +24,48 @@ namespace RigiCompiler.Tests
             TestExpr("var s = \"Hello\"", "Str(\"Hello\")");
             TestExpr("var b = true", "Bool(True)");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. 符号引用 =====
         public static void TestSymbolReferences()
         {
-            TestHarness.Section("Symbol References");
+            CompilerTestTools.Section("Symbol References");
 
             TestExpr("var y = x", "Path(x, [])");
             TestExpr("var z = obj.field.sub", "Path(obj, [.field, .sub])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 一元运算符 =====
         public static void TestUnaryExpressions()
         {
-            TestHarness.Section("Unary Expressions");
+            CompilerTestTools.Section("Unary Expressions");
 
             TestExpr("var a = -x", "Unary(- Path(x, []))");
             TestExpr("var b = not flag", "Unary(not Path(flag, []))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. 二元运算符 =====
         public static void TestBinaryExpressions()
         {
-            TestHarness.Section("Binary Expressions");
+            CompilerTestTools.Section("Binary Expressions");
 
-            TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))");
             TestExpr("var rm = a % b", "Binary(Path(a, []) % Path(b, []))");
             TestExpr("var c = a == b", "Binary(Path(a, []) == Path(b, []))");
             TestExpr("var lg = x and y", "Binary(Path(x, []) and Path(y, []))");
             TestExpr("var lo = x or y", "Binary(Path(x, []) or Path(y, []))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. 括号分组 =====
         public static void TestGroupExpressions()
         {
-            TestHarness.Section("Group Expressions");
+            CompilerTestTools.Section("Group Expressions");
 
             TestExpr("var g = (42)", "Group(Int(42,I32))");
             TestExpr("var p = (1 + 2)", "Group(Binary(Int(1,I32) + Int(2,I32)))");
@@ -84,60 +83,58 @@ namespace RigiCompiler.Tests
             TestExpr("var lg5 = a and (b == c)",
                 "Binary(Path(a, []) and Group(Binary(Path(b, []) == Path(c, []))))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 6. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Error Cases (expect ParserException)");
 
             // Rigi 没有运算符优先级：未括号化的多个运算符必须报错
-            TestHarness.CheckParseError("var e1 = 1 + 2 * 3",
-                () => TestHarness.ParseRoot("var e1 = 1 + 2 * 3"), "没有运算符优先级");
             // 括号未闭合
-            TestHarness.CheckParseError("var e2 = (1 + 2",
-                () => TestHarness.ParseRoot("var e2 = (1 + 2"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var e2 = (1 + 2",
+                () => CompilerTestTools.ParseRoot("var e2 = (1 + 2"), "Unexpected end of file");
             // 连续一元运算符未加括号
-            TestHarness.CheckParseError("var e3 = not not x",
-                () => TestHarness.ParseRoot("var e3 = not not x"), "连续的一元运算符");
+            CaseAssertions.CheckParseError("var e3 = not not x",
+                () => CompilerTestTools.ParseRoot("var e3 = not not x"), "连续的一元运算符");
             // 一元与二元混用未加括号
-            TestHarness.CheckParseError("var e4 = -x + y",
-                () => TestHarness.ParseRoot("var e4 = -x + y"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e4 = -x + y",
+                () => CompilerTestTools.ParseRoot("var e4 = -x + y"), "没有运算符优先级");
             // 运算符后缺少右操作数
-            TestHarness.CheckParseError("var e5 = 1 +",
-                () => TestHarness.ParseRoot("var e5 = 1 +"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var e5 = 1 +",
+                () => CompilerTestTools.ParseRoot("var e5 = 1 +"), "Unexpected end of file");
             // and/or 链同样没有优先级（SYNTAX §1.3）：三连/混合必须括号化
-            TestHarness.CheckParseError("var e9 = a and b and c",
-                () => TestHarness.ParseRoot("var e9 = a and b and c"), "没有运算符优先级");
-            TestHarness.CheckParseError("var e10 = a or b or c",
-                () => TestHarness.ParseRoot("var e10 = a or b or c"), "没有运算符优先级");
-            TestHarness.CheckParseError("var e11 = a and b or c",
-                () => TestHarness.ParseRoot("var e11 = a and b or c"), "没有运算符优先级");
-            TestHarness.CheckParseError("var e12 = a or b and c",
-                () => TestHarness.ParseRoot("var e12 = a or b and c"), "没有运算符优先级");
-            TestHarness.CheckParseError("var e13 = a and b == c",
-                () => TestHarness.ParseRoot("var e13 = a and b == c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e9 = a and b and c",
+                () => CompilerTestTools.ParseRoot("var e9 = a and b and c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e10 = a or b or c",
+                () => CompilerTestTools.ParseRoot("var e10 = a or b or c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e11 = a and b or c",
+                () => CompilerTestTools.ParseRoot("var e11 = a and b or c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e12 = a or b and c",
+                () => CompilerTestTools.ParseRoot("var e12 = a or b and c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e13 = a and b == c",
+                () => CompilerTestTools.ParseRoot("var e13 = a and b == c"), "没有运算符优先级");
             // 一元 + 不接受（SYNTAX §13.2 固定运算符表只定义一元 - opposite）
-            TestHarness.CheckParseError("var e6 = +x",
-                () => TestHarness.ParseRoot("var e6 = +x"), "Unexpected token at start of expression");
+            CaseAssertions.CheckParseError("var e6 = +x",
+                () => CompilerTestTools.ParseRoot("var e6 = +x"), "Unexpected token at start of expression");
             // > 系列重组要求 token span 相邻：`a > = b` 夹空白不重组为 >=，
             // = 落入右操作数层按意外 token 报错（>> 同理）
-            TestHarness.CheckParseError("var e7 = a > = b",
-                () => TestHarness.ParseRoot("var e7 = a > = b"), "Unexpected token at start of expression");
-            TestHarness.CheckParseError("var e8 = a > > b",
-                () => TestHarness.ParseRoot("var e8 = a > > b"), "Unexpected token at start of expression");
+            CaseAssertions.CheckParseError("var e7 = a > = b",
+                () => CompilerTestTools.ParseRoot("var e7 = a > = b"), "Unexpected token at start of expression");
+            CaseAssertions.CheckParseError("var e8 = a > > b",
+                () => CompilerTestTools.ParseRoot("var e8 = a > > b"), "Unexpected token at start of expression");
             // 复合赋值 op+= 重组同样要求相邻：`a + = 1` 不重组为 +=
-            TestHarness.CheckParseError("{ a + = 1 }",
-                () => TestHarness.ParseBlock("{ a + = 1 }"), "Unexpected token at start of expression");
+            CaseAssertions.CheckParseError("{ a + = 1 }",
+                () => CompilerTestTools.ParseBlock("{ a + = 1 }"), "Unexpected token at start of expression");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 7. 类型标注 + 初始化 =====
         public static void TestTypedDeclarationsWithInit()
         {
-            TestHarness.Section("Typed Declarations with Initializer");
+            CompilerTestTools.Section("Typed Declarations with Initializer");
 
             TestVarDecl("var x: i32 = 42", "var x: i32 = Int(42,I32)");
             TestVarDecl("const name: String = \"Hi\"", "const name: String = Str(\"Hi\")");
@@ -146,13 +143,13 @@ namespace RigiCompiler.Tests
             // 回归：无初始化时 Initializer 必须为 null
             TestVarDecl("var count: i64", "var count: i64");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 8. 调用表达式 =====
         public static void TestCallExpressions()
         {
-            TestHarness.Section("Call Expressions");
+            CompilerTestTools.Section("Call Expressions");
 
             TestExpr("var v = foo()", "Path(foo(), [])");
             TestExpr("var v = foo(1)", "Path(foo(Int(1,I32)), [])");
@@ -167,13 +164,13 @@ namespace RigiCompiler.Tests
             TestExpr("var v = foo((1 + 2), 3)",
                 "Path(foo(Group(Binary(Int(1,I32) + Int(2,I32))), Int(3,I32)), [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 9. 成员访问与链式 =====
         public static void TestMemberAccessChains()
         {
-            TestHarness.Section("Member Access Chains");
+            CompilerTestTools.Section("Member Access Chains");
 
             // 调用结果上的成员访问
             TestExpr("var v = foo().bar", "Path(foo(), [.bar])");
@@ -188,30 +185,30 @@ namespace RigiCompiler.Tests
             TestExpr("var v = obj?.field if? 0",
                 "Binary(Path(obj, [?.field]) if? Int(0,I32))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 9b. if? 重组与优先级错误（S7f）=====
         public static void TestNullFallbackParsing()
         {
-            TestHarness.Section("Null Fallback Parsing (if?)");
+            CompilerTestTools.Section("Null Fallback Parsing (if?)");
 
             // 无优先级：a if? b if? c 必须加括号（右操作数层禁二元）
-            TestHarness.CheckParseError("a if? b if? c",
-                () => TestHarness.ParseFirstDecl("var v = a if? b if? c"),
+            CaseAssertions.CheckParseError("a if? b if? c",
+                () => CompilerTestTools.ParseFirstDecl("var v = a if? b if? c"),
                 "必须用括号明确运算顺序");
             // 中缀 if 后必须是 ?
-            TestHarness.CheckParseError("a if b",
-                () => TestHarness.ParseFirstDecl("var v = a if b"),
+            CaseAssertions.CheckParseError("a if b",
+                () => CompilerTestTools.ParseFirstDecl("var v = a if b"),
                 "Expected '?' after 'if'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 10. 索引表达式 =====
         public static void TestIndexExpressions()
         {
-            TestHarness.Section("Index Expressions");
+            CompilerTestTools.Section("Index Expressions");
 
             TestExpr("var v = a[0]", "Path(a[Int(0,I32)], [])");
             TestExpr("var v = a[i + 1]", "Path(a[Binary(Path(i, []) + Int(1,I32))], [])");
@@ -220,25 +217,25 @@ namespace RigiCompiler.Tests
             // 调用结果再索引
             TestExpr("var v = foo()[0]", "Path(foo()[Int(0,I32)], [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 11. new 表达式 =====
         public static void TestNewExpressions()
         {
-            TestHarness.Section("New Expressions");
+            CompilerTestTools.Section("New Expressions");
 
             TestExpr("var v = new File(\"./x\")", "New(File, [Str(\"./x\")])");
             TestExpr("var v = new User(id = 42)", "New(User, [id:Int(42,I32)])");
             TestExpr("var v = new List\\<i32>()", "New(List<i32>, [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 12. 泛型调用 =====
         public static void TestGenericCallExpressions()
         {
-            TestHarness.Section("Generic Call Expressions");
+            CompilerTestTools.Section("Generic Call Expressions");
 
             TestExpr("var v = foo\\<i32>(1)", "Path(foo<i32>(Int(1,I32)), [])");
             TestExpr("var v = a.b\\<i32>(x)", "Path(a, [.b<i32>(Path(x, []))])");
@@ -246,34 +243,34 @@ namespace RigiCompiler.Tests
             TestExpr("var v = foo().bar\\<i32>(x)",
                 "Path(foo(), [.bar<i32>(Path(x, []))])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 13. 后缀链错误用例 =====
         public static void TestSuffixErrorCases()
         {
-            TestHarness.Section("Suffix Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Suffix Error Cases (expect ParserException)");
 
             // 调用参数未闭合
-            TestHarness.CheckParseError("var v = foo(1",
-                () => TestHarness.ParseRoot("var v = foo(1"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var v = foo(1",
+                () => CompilerTestTools.ParseRoot("var v = foo(1"), "Unexpected end of file");
             // 索引未闭合
-            TestHarness.CheckParseError("var v = a[1",
-                () => TestHarness.ParseRoot("var v = a[1"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var v = a[1",
+                () => CompilerTestTools.ParseRoot("var v = a[1"), "Unexpected end of file");
             // ? 后缺少 .
-            TestHarness.CheckParseError("var v = a?b",
-                () => TestHarness.ParseRoot("var v = a?b"), "Expected '.' after '?'");
+            CaseAssertions.CheckParseError("var v = a?b",
+                () => CompilerTestTools.ParseRoot("var v = a?b"), "Expected '.' after '?'");
             // 实参前多余逗号
-            TestHarness.CheckParseError("var v = foo(, 1)",
-                () => TestHarness.ParseRoot("var v = foo(, 1)"), "Unexpected ',' before argument");
+            CaseAssertions.CheckParseError("var v = foo(, 1)",
+                () => CompilerTestTools.ParseRoot("var v = foo(, 1)"), "Unexpected ',' before argument");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 14. 类型检查与转换（is/supers/with、as/as?） =====
         public static void TestTypeOperators()
         {
-            TestHarness.Section("Type Operators (is/supers/with, as/as?)");
+            CompilerTestTools.Section("Type Operators (is/supers/with, as/as?)");
 
             TestExpr("var v = obj is String", "Check(Path(obj, []) is String)");
             TestExpr("var v = obj supers Animal", "Check(Path(obj, []) supers Animal)");
@@ -291,31 +288,31 @@ namespace RigiCompiler.Tests
             TestExpr("var v = (obj as String) + x",
                 "Binary(Group(Cast(Path(obj, []) as String)) + Path(x, []))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 15. 类型操作错误用例 =====
         public static void TestTypeOperatorErrorCases()
         {
-            TestHarness.Section("Type Operator Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Type Operator Error Cases (expect ParserException)");
 
             // as 后缺少类型
-            TestHarness.CheckParseError("var e = obj as",
-                () => TestHarness.ParseRoot("var e = obj as"), "Unexpected end of file");
+            CaseAssertions.CheckParseError("var e = obj as",
+                () => CompilerTestTools.ParseRoot("var e = obj as"), "Unexpected end of file");
             // ? 仅是 as 的安全转换标记，不能用于 is
-            TestHarness.CheckParseError("var e = obj is? String",
-                () => TestHarness.ParseRoot("var e = obj is? String"), "Unexpected '?' after type operator");
+            CaseAssertions.CheckParseError("var e = obj is? String",
+                () => CompilerTestTools.ParseRoot("var e = obj is? String"), "Unexpected '?' after type operator");
             // 类型操作后未加括号直接接二元运算符（无优先级规则）
-            TestHarness.CheckParseError("var e = obj as String + x",
-                () => TestHarness.ParseRoot("var e = obj as String + x"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var e = obj as String + x",
+                () => CompilerTestTools.ParseRoot("var e = obj as String + x"), "没有运算符优先级");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 16. 前导点 enum case 引用（SYNTAX §12，P5）=====
         public static void TestEnumCaseReferences()
         {
-            TestHarness.Section("Enum Case References");
+            CompilerTestTools.Section("Enum Case References");
 
             // 固定 case 引用（类型上下文由语义阶段校验，解析期只识别形态）
             TestExpr("var r = .Success", "EnumCase(.Success)");
@@ -326,13 +323,13 @@ namespace RigiCompiler.Tests
             // 注解实参形态（@WrapperTarget(.Entity) 的同构表达式）
             TestExpr("var t = .Entity", "EnumCase(.Entity)");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 17. wrapper 路径访问（SYNTAX §14.1，P5）=====
         public static void TestWrapperAccess()
         {
-            TestHarness.Section("Wrapper Access");
+            CompilerTestTools.Section("Wrapper Access");
 
             // 基本形态：obj:Wrapper
             TestExpr("var w = service:Logged", "Path(service, [:Logged])");
@@ -345,13 +342,13 @@ namespace RigiCompiler.Tests
             TestExpr("var t = service:Logged.level",
                 "Path(service, [:Logged, .level])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 18. 位运算符（SYNTAX §13.2，M31）=====
         public static void TestBitwiseOperators()
         {
-            TestHarness.Section("Bitwise Operators");
+            CompilerTestTools.Section("Bitwise Operators");
 
             // << 由 Lexer 合并；>>、>>> 由运算符状态重组（顺带回归）；& | ^ 为单字符
             TestExpr("var s = (a << 2)", "Group(Binary(Path(a, []) << Int(2,I32)))");
@@ -361,13 +358,13 @@ namespace RigiCompiler.Tests
             TestExpr("var s = (a | b)", "Group(Binary(Path(a, []) | Path(b, [])))");
             TestExpr("var s = (a ^ b)", "Group(Binary(Path(a, []) ^ Path(b, [])))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 19. 续行（SYNTAX §1.1：() / [] 未闭合时换行按空白处理，M31）=====
         public static void TestLineContinuation()
         {
-            TestHarness.Section("Line Continuation Inside Brackets");
+            CompilerTestTools.Section("Line Continuation Inside Brackets");
 
             // 分组内运算符前后都可换行
             TestExprEscaped("var v = (1 +\n2)", "Group(Binary(Int(1,I32) + Int(2,I32)))");
@@ -377,28 +374,28 @@ namespace RigiCompiler.Tests
             // 索引实参表内逗号后续行
             TestExprEscaped("var a = arr[0,\n1]", "Path(arr[Int(0,I32), Int(1,I32)], [])");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 20. M31 错误用例（位运算优先级 / in）=====
         public static void TestM31ErrorCases()
         {
-            TestHarness.Section("M31 Error Cases (expect ParserException)");
+            CompilerTestTools.Section("M31 Error Cases (expect ParserException)");
 
             // 位运算同样遵守「没有运算符优先级」：未括号化的连续位运算必须报错
-            TestHarness.CheckParseError("var s = a & b & c",
-                () => TestHarness.ParseRoot("var s = a & b & c"), "没有运算符优先级");
+            CaseAssertions.CheckParseError("var s = a & b & c",
+                () => CompilerTestTools.ParseRoot("var s = a & b & c"), "没有运算符优先级");
             // in 只属于 for 循环头，不是二元运算符（M31 移除）
-            TestHarness.CheckParseError("var x = a in b",
-                () => TestHarness.ParseRoot("var x = a in b"), "Unexpected token after initializer");
+            CaseAssertions.CheckParseError("var x = a in b",
+                () => CompilerTestTools.ParseRoot("var x = a in b"), "Unexpected token after initializer");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 21. 复合赋值（SYNTAX §13.2）=====
         public static void TestCompoundAssignments()
         {
-            TestHarness.Section("Compound Assignments (§13.2)");
+            CompilerTestTools.Section("Compound Assignments (§13.2)");
 
             // 全集 11 个运算符（语句位置：ExpressionStatement 包装）
             TestBlock("{ a += 1 }", "[CompoundAssign(Path(a, []) += Int(1,I32))]");
@@ -422,34 +419,34 @@ namespace RigiCompiler.Tests
             TestExpr("var s = (a >= b)", "Group(Binary(Path(a, []) >= Path(b, [])))");
 
             // 结构断言：节点类型、Operator 字符串、Target/Value 内容与 Parent 链
-            var block = TestHarness.ParseBlock("{ count += 42 }");
+            var block = CompilerTestTools.ParseBlock("{ count += 42 }");
             var stmt = (ExpressionStatementASTNode)block.Statements[0];
             var compound = (CompoundAssignmentExpressionASTNode)stmt.Expression.Expression;
-            TestHarness.CheckTrue("{ count += 42 }: Operator 为 +", compound.Operator == "+");
-            TestHarness.CheckTrue("{ count += 42 }: Target 已填充且为路径",
+            CaseAssertions.CheckTrue("{ count += 42 }: Operator 为 +", compound.Operator == "+");
+            CaseAssertions.CheckTrue("{ count += 42 }: Target 已填充且为路径",
                 compound.Target.IsAttached &&
                 compound.Target.Expression is PathExpressionASTNode);
-            TestHarness.CheckTrue("{ count += 42 }: Value 已填充且为字面量",
+            CaseAssertions.CheckTrue("{ count += 42 }: Value 已填充且为字面量",
                 compound.Value.IsAttached &&
                 compound.Value.Expression is LiteralExpressionASTNode);
-            TestHarness.CheckTrue("{ count += 42 }: Target/Value Root 的 Parent 指向节点",
+            CaseAssertions.CheckTrue("{ count += 42 }: Target/Value Root 的 Parent 指向节点",
                 ReferenceEquals(compound.Target.Parent, compound) &&
                 ReferenceEquals(compound.Value.Parent, compound));
-            TestHarness.CheckTrue("{ count += 42 }: Target 表达式的 Parent 指向 Target Root",
+            CaseAssertions.CheckTrue("{ count += 42 }: Target 表达式的 Parent 指向 Target Root",
                 ReferenceEquals(compound.Target.Expression.Parent, compound.Target));
 
             // 负例：不属于全集的组合不误判——== 是既有比较，
             // 再遇 = 落入正常二元流程，由右操作数层报意外 token
-            TestHarness.CheckParseError("{ a == = b }",
-                () => TestHarness.ParseBlock("{ a == = b }"), "Unexpected token at start of expression");
+            CaseAssertions.CheckParseError("{ a == = b }",
+                () => CompilerTestTools.ParseBlock("{ a == = b }"), "Unexpected token at start of expression");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 22. is 右侧 enum case（SYNTAX §12.3）=====
         public static void TestIsEnumCase()
         {
-            TestHarness.Section("is with Enum Case (§12.3)");
+            CompilerTestTools.Section("is with Enum Case (§12.3)");
 
             // 正例：is 右侧前导点 enum case（TargetCase 槽，与 TargetType 互斥）
             TestExpr("var v = result is .Failed", "Check(Path(result, []) is EnumCase(.Failed))");
@@ -459,81 +456,81 @@ namespace RigiCompiler.Tests
                 "default -> [Str(\"?\")])");
 
             // 结构断言：双字段互斥、CaseName、Parent 链
-            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var v = result is .Failed");
+            var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var v = result is .Failed");
             var check = (TypeCheckExpressionASTNode)decl.Initializer!.Expression;
-            TestHarness.CheckTrue("result is .Failed: Operator 为 is", check.Operator == "is");
-            TestHarness.CheckTrue("result is .Failed: TargetCase 非空、TargetType 为空（互斥）",
+            CaseAssertions.CheckTrue("result is .Failed: Operator 为 is", check.Operator == "is");
+            CaseAssertions.CheckTrue("result is .Failed: TargetCase 非空、TargetType 为空（互斥）",
                 check.TargetCase != null && check.TargetType == null);
-            TestHarness.CheckTrue("result is .Failed: CaseName",
+            CaseAssertions.CheckTrue("result is .Failed: CaseName",
                 check.TargetCase!.CaseName == "Failed");
-            TestHarness.CheckTrue("result is .Failed: TargetCase.Parent 指向 Check 节点",
+            CaseAssertions.CheckTrue("result is .Failed: TargetCase.Parent 指向 Check 节点",
                 ReferenceEquals(check.TargetCase.Parent, check));
-            TestHarness.CheckTrue("result is .Failed: Object Root 已填充", check.Object.IsAttached);
+            CaseAssertions.CheckTrue("result is .Failed: Object Root 已填充", check.Object.IsAttached);
 
             // 负例：as/supers 右侧必须是类型，遇 . 维持报错
-            TestHarness.CheckParseError("var e = obj as .Failed",
-                () => TestHarness.ParseRoot("var e = obj as .Failed"), "Expected type name");
-            TestHarness.CheckParseError("var e = obj supers .X",
-                () => TestHarness.ParseRoot("var e = obj supers .X"), "Expected type name");
+            CaseAssertions.CheckParseError("var e = obj as .Failed",
+                () => CompilerTestTools.ParseRoot("var e = obj as .Failed"), "Expected type name");
+            CaseAssertions.CheckParseError("var e = obj supers .X",
+                () => CompilerTestTools.ParseRoot("var e = obj supers .X"), "Expected type name");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 23. AST 结构断言（字符串快照之外的结构性校验，AGENTS §5）=====
         public static void TestStructuralAssertions()
         {
-            TestHarness.Section("Structural Assertions");
+            CompilerTestTools.Section("Structural Assertions");
 
             // 用例 1：字面量初始化——Root 存在、已填充、Expression 类型、Parent 链
-            var decl1 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var x = 42");
-            TestHarness.CheckTrue("var x = 42: Initializer Root 存在", decl1.Initializer is not null);
+            var decl1 = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var x = 42");
+            CaseAssertions.CheckTrue("var x = 42: Initializer Root 存在", decl1.Initializer is not null);
             var init1 = decl1.Initializer!;
-            TestHarness.CheckTrue("var x = 42: Root 已填充", init1.IsAttached);
-            TestHarness.CheckTrue("var x = 42: Expression 类型为 LiteralExpression",
+            CaseAssertions.CheckTrue("var x = 42: Root 已填充", init1.IsAttached);
+            CaseAssertions.CheckTrue("var x = 42: Expression 类型为 LiteralExpression",
                 init1.Expression is LiteralExpressionASTNode);
-            TestHarness.CheckTrue("var x = 42: Expression.Parent 指向 Root",
+            CaseAssertions.CheckTrue("var x = 42: Expression.Parent 指向 Root",
                 ReferenceEquals(init1.Expression.Parent, init1));
-            TestHarness.CheckTrue("var x = 42: Root.Parent 指向声明节点",
+            CaseAssertions.CheckTrue("var x = 42: Root.Parent 指向声明节点",
                 ReferenceEquals(init1.Parent, decl1));
-            TestHarness.CheckTrue("var x = 42: 声明的 Parent 是文件 Root", decl1.Parent is RootASTNode);
+            CaseAssertions.CheckTrue("var x = 42: 声明的 Parent 是文件 Root", decl1.Parent is RootASTNode);
 
             // 用例 2：二元 + 分组——子 Root 均已填充、Parent 链正确
-            var decl2 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var m = 1 + (2 * 3)");
+            var decl2 = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var m = 1 + (2 * 3)");
             var bin = (BinaryExpressionASTNode)decl2.Initializer!.Expression;
-            TestHarness.CheckTrue("var m = 1 + (2 * 3): 二元左右 Root 均已填充",
+            CaseAssertions.CheckTrue("var m = 1 + (2 * 3): 二元左右 Root 均已填充",
                 bin.Left.IsAttached && bin.Right.IsAttached);
-            TestHarness.CheckTrue("var m = 1 + (2 * 3): Left 表达式的 Parent 指向 Left Root",
+            CaseAssertions.CheckTrue("var m = 1 + (2 * 3): Left 表达式的 Parent 指向 Left Root",
                 ReferenceEquals(bin.Left.Expression.Parent, bin.Left));
-            TestHarness.CheckTrue("var m = 1 + (2 * 3): Right 表达式的 Parent 指向 Right Root",
+            CaseAssertions.CheckTrue("var m = 1 + (2 * 3): Right 表达式的 Parent 指向 Right Root",
                 ReferenceEquals(bin.Right.Expression.Parent, bin.Right));
             var group = (GroupExpressionASTNode)bin.Right.Expression;
-            TestHarness.CheckTrue("var m = 1 + (2 * 3): 分组 InnerExpression 已填充",
+            CaseAssertions.CheckTrue("var m = 1 + (2 * 3): 分组 InnerExpression 已填充",
                 group.InnerExpression.IsAttached);
-            TestHarness.CheckTrue("var m = 1 + (2 * 3): 分组内表达式的 Parent 指向内层 Root",
+            CaseAssertions.CheckTrue("var m = 1 + (2 * 3): 分组内表达式的 Parent 指向内层 Root",
                 ReferenceEquals(group.InnerExpression.Expression.Parent, group.InnerExpression));
 
             // 用例 3：调用链（M42 路径形态）——首段符号 + Call 后缀，
             // 实参 Value Root 均填充、节点无共享
-            var decl3 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var v = foo(1, name = 2)");
+            var decl3 = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var v = foo(1, name = 2)");
             var call = (PathExpressionASTNode)decl3.Initializer!.Expression;
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 首段符号名 foo", call.Head.Name == "foo");
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 一个 Call 后缀",
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 首段符号名 foo", call.Head.Name == "foo");
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 一个 Call 后缀",
                 call.Head.Suffixes.Count == 1 && call.Head.Suffixes[0].Kind == PathSuffixKind.Call);
             var args = call.Head.Suffixes[0].Arguments;
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 两个实参", args.Count == 2);
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 实参 Value Root 均已填充",
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 两个实参", args.Count == 2);
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 实参 Value Root 均已填充",
                 args[0].Value.IsAttached && args[1].Value.IsAttached);
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 实参表达式不共享节点",
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 实参表达式不共享节点",
                 !ReferenceEquals(args[0].Value.Expression, args[1].Value.Expression));
-            TestHarness.CheckTrue("var v = foo(1, name = 2): 具名实参名",
+            CaseAssertions.CheckTrue("var v = foo(1, name = 2): 具名实参名",
                 args[1].Name == "name");
 
             // 用例 4：无初始化——可选 Root 以 null 表示（禁止「非 null 但为空的 Root」）
-            var decl4 = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var count: i64");
-            TestHarness.CheckTrue("var count: i64: 无初始化时 Initializer 为 null Root",
+            var decl4 = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var count: i64");
+            CaseAssertions.CheckTrue("var count: i64: 无初始化时 Initializer 为 null Root",
                 decl4.Initializer is null);
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // 辅助：解析变量声明并比对初始化表达式的 AST 描述串
@@ -541,12 +538,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(code, AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(code, AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code} => 意外异常", false, ex.Message);
             }
         }
 
@@ -555,12 +552,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var block = TestHarness.ParseBlock(code);
-                TestHarness.Check(code, AstDescribe.Block(block), expectedDesc);
+                var block = CompilerTestTools.ParseBlock(code);
+                CaseAssertions.Check(code, AstDescribe.Block(block), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code} => 意外异常", false, ex.Message);
             }
         }
 
@@ -569,13 +566,13 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(code.Replace("\n", "\\n"),
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(code.Replace("\n", "\\n"),
                     AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code.Replace("\n", "\\n")} => 意外异常", false, ex.Message);
             }
         }
 
@@ -584,18 +581,17 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var node = TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(code, AstDescribe.Decl(node), expectedDesc);
+                var node = CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(code, AstDescribe.Decl(node), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{code} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{code} => 意外异常", false, ex.Message);
             }
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("Expression",
+        internal static TestSuiteData Spec { get; } = new("Expression",
         [
             (nameof(TestLiteralInitializers), TestLiteralInitializers),
             (nameof(TestSymbolReferences), TestSymbolReferences),
@@ -621,6 +617,8 @@ namespace RigiCompiler.Tests
             (nameof(TestCompoundAssignments), TestCompoundAssignments),
             (nameof(TestIsEnumCase), TestIsEnumCase),
             (nameof(TestStructuralAssertions), TestStructuralAssertions),
+            ("parser.add", () => TestExpr("var r = 1 + 2", "Binary(Int(1,I32) + Int(2,I32))")),
+            ("parser.no-precedence", () => CaseAssertions.CheckParseError("var e1 = 1 + 2 * 3", () => CompilerTestTools.ParseRoot("var e1 = 1 + 2 * 3"), "没有运算符优先级")),
         ], sectionTitle: "Expression");
     }
 }

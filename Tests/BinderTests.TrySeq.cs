@@ -5,7 +5,7 @@ namespace RigiCompiler.Tests
         // ===== try-catch-finally（S7e，SYNTAX §8）=====
         private static void TestTry()
         {
-            TestHarness.Section("P3 Try-Catch-Finally");
+            CompilerTestTools.Section("P3 Try-Catch-Finally");
 
             // 基本形态：catch 变量 const，命中即已赋值
             var (unit, bodies) = BindUnitWithStdlib(
@@ -22,11 +22,11 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("try-catch 无诊断", unit);
-            TestHarness.Check("try-catch 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+            CaseAssertions.Check("try-catch 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [e: MyException], [Try([Throw(New(MyException, []))], " +
                 "[Catch(e, MyException, [CallStmt(handle, [Local(e,MyException)])])])])");
             var tryStmt = (BoundTryStatement)((BoundBlock)BodyOf(bodies, "f").Body).Statements[0];
-            TestHarness.CheckTrue("catch 变量 const",
+            CaseAssertions.CheckTrue("catch 变量 const",
                 tryStmt.Catches[0].Variable != null && tryStmt.Catches[0].Variable!.IsConst);
 
             // _: 无变量形态
@@ -46,11 +46,11 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("_: catch 无诊断", unit2);
-            TestHarness.Check("_: catch 形态", BoundDescribe.Body(BodyOf(bodies2, "g")),
+            CaseAssertions.Check("_: catch 形态", BoundDescribe.Body(BodyOf(bodies2, "g")),
                 "Body(g, [], [Try([CallStmt(risky, [])], " +
                 "[Catch(MyException, [CallStmt(log, [])])])])");
             var try2 = (BoundTryStatement)((BoundBlock)BodyOf(bodies2, "g").Body).Statements[0];
-            TestHarness.CheckTrue("_: 无 catch 变量", try2.Catches[0].Variable == null);
+            CaseAssertions.CheckTrue("_: 无 catch 变量", try2.Catches[0].Variable == null);
 
             // finally(e)：e 类型 = Nullable<core.Exception>，const
             var (unit3, bodies3) = BindUnitWithStdlib(
@@ -66,11 +66,11 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("finally(e) 无诊断", unit3);
-            TestHarness.Check("finally(e) 形态", BoundDescribe.Body(BodyOf(bodies3, "h")),
+            CaseAssertions.Check("finally(e) 形态", BoundDescribe.Body(BodyOf(bodies3, "h")),
                 "Body(h, [e: Exception?], [Try([CallStmt(risky, [])], [], " +
                 "Finally(e, [CallStmt(log, [])]))])");
             var try3 = (BoundTryStatement)((BoundBlock)BodyOf(bodies3, "h").Body).Statements[0];
-            TestHarness.CheckTrue("finally 变量类型 Nullable<Exception> 且 const",
+            CaseAssertions.CheckTrue("finally 变量类型 Nullable<Exception> 且 const",
                 try3.FinallyVariable != null && try3.FinallyVariable.IsConst
                 && try3.FinallyVariable.Type!.Name == "Nullable");
 
@@ -81,7 +81,7 @@ namespace RigiCompiler.Tests
                 "    } catch (e: i32) {\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("catch 类型不兼容", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("catch 类型不兼容", unit4.Diagnostics,
                 "catch type must be compatible with 'Exception' (got 'i32')");
 
             // 诊断：catch 变量 const 赋值拒绝
@@ -95,7 +95,7 @@ namespace RigiCompiler.Tests
                 "        e = new MyException()\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("catch 变量只读", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("catch 变量只读", unit5.Diagnostics,
                 "Cannot assign to const 'e'");
 
             // definite assignment：try/catch 交集——仅 try 赋值不够
@@ -111,7 +111,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return x\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("仅 try 赋值报未赋值", unit6.Diagnostics,
+            CaseAssertions.CheckSemanticError("仅 try 赋值报未赋值", unit6.Diagnostics,
                 "Use of unassigned local variable 'x'");
 
             // definite assignment：try 与 catch 都赋值 → 交集成立
@@ -210,7 +210,7 @@ namespace RigiCompiler.Tests
                 "        log()\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("catch 不返回报缺失", unit13.Diagnostics,
+            CaseAssertions.CheckSemanticError("catch 不返回报缺失", unit13.Diagnostics,
                 "Function 'gr4' must return a value on all code paths");
         }
 
@@ -228,7 +228,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("seq 语句无诊断", unit);
-            TestHarness.Check("seq 语句形态", BoundDescribe.Body(BodyOf(bodies, "s")),
+            CaseAssertions.Check("seq 语句形态", BoundDescribe.Body(BodyOf(bodies, "s")),
                 "Body(s, [x: i32], [Seq([Decl(x, i32, = Int(1,i32))])])");
 
             // volatile 语句形态
@@ -241,7 +241,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("volatile seq 无诊断", unit2);
-            TestHarness.Check("volatile seq 形态", BoundDescribe.Body(BodyOf(bodies2, "s2")),
+            CaseAssertions.Check("volatile seq 形态", BoundDescribe.Body(BodyOf(bodies2, "s2")),
                 "Body(s2, [], [SeqVolatile([CallStmt(work, [])])])");
 
             // definite assignment 直通：seq 内赋值对外可见
@@ -275,7 +275,7 @@ namespace RigiCompiler.Tests
                 "func sr3(c: bool): i32 {\n" +
                 "    while (c) { return 7 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("循环唯一路径仍报缺失", unitLoop.Diagnostics,
+            CaseAssertions.CheckSemanticError("循环唯一路径仍报缺失", unitLoop.Diagnostics,
                 "Function 'sr3' must return a value on all code paths");
             var (unitEsc, _) = BindUnitWithStdlib(
                 "func sr4(c: bool): i32 {\n" +
@@ -284,7 +284,7 @@ namespace RigiCompiler.Tests
                 "        return 7\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("return@seq 逃逸不透视", unitEsc.Diagnostics,
+            CaseAssertions.CheckSemanticError("return@seq 逃逸不透视", unitEsc.Diagnostics,
                 "Function 'sr4' must return a value on all code paths");
         }
 
@@ -297,7 +297,7 @@ namespace RigiCompiler.Tests
                 "    return seq { return@_ 42 }\n" +
                 "}\n");
             CheckNoErrors("seq 表达式无诊断", unit4);
-            TestHarness.Check("seq 表达式形态", BoundDescribe.Body(BodyOf(bodies4, "se")),
+            CaseAssertions.Check("seq 表达式形态", BoundDescribe.Body(BodyOf(bodies4, "se")),
                 "Body(se, [], [Return(SeqExpr([], ValueBlock(_, i32, [ReturnValue(_, Int(42,i32))])))])");
 
             // 表达式形态：隐式取值（单表达式语句）
@@ -306,7 +306,7 @@ namespace RigiCompiler.Tests
                 "    return seq { 42 }\n" +
                 "}\n");
             CheckNoErrors("隐式取值无诊断", unit5);
-            TestHarness.Check("隐式取值形态", BoundDescribe.Body(BodyOf(bodies5, "si")),
+            CaseAssertions.Check("隐式取值形态", BoundDescribe.Body(BodyOf(bodies5, "si")),
                 "Body(si, [], [Return(SeqExpr([], ValueBlock(_, i32, implicit, [ExprStmt(Int(42,i32))])))])");
 
             // 表达式形态：named 标签
@@ -315,7 +315,7 @@ namespace RigiCompiler.Tests
                 "    return seq named calc { return@calc 7 }\n" +
                 "}\n");
             CheckNoErrors("named seq 无诊断", unit6);
-            TestHarness.Check("named seq 形态", BoundDescribe.Body(BodyOf(bodies6, "sn")),
+            CaseAssertions.Check("named seq 形态", BoundDescribe.Body(BodyOf(bodies6, "sn")),
                 "Body(sn, [], [Return(SeqExpr([], ValueBlock(calc, i32, [ReturnValue(calc, Int(7,i32))])))])");
 
             // 表达式形态：volatile 置位到值块
@@ -324,7 +324,7 @@ namespace RigiCompiler.Tests
                 "    return volatile seq { 1 }\n" +
                 "}\n");
             CheckNoErrors("volatile seq 表达式无诊断", unit7);
-            TestHarness.Check("volatile 置位", BoundDescribe.Body(BodyOf(bodies7, "sv")),
+            CaseAssertions.Check("volatile 置位", BoundDescribe.Body(BodyOf(bodies7, "sv")),
                 "Body(sv, [], [Return(SeqExpr([], ValueBlock(_, i32, implicit, volatile, " +
                 "[ExprStmt(Int(1,i32))])))])");
 
@@ -338,7 +338,7 @@ namespace RigiCompiler.Tests
                 "func sb2(): i32 {\n" +
                 "    return seq { var x = 1 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
+            CaseAssertions.CheckSemanticError("无产值拒绝", unit9.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
         }
 
@@ -350,7 +350,7 @@ namespace RigiCompiler.Tests
                 "    var x: i32 = seq { 7 }\n" +
                 "}\n");
             CheckNoErrors("var x: i32 = seq { 7 } 无诊断", unitInit);
-            TestHarness.Check("var 初始化隐式取值形态",
+            CaseAssertions.Check("var 初始化隐式取值形态",
                 BoundDescribe.Body(BodyOf(bodiesInit, "siv")),
                 "Body(siv, [x: i32], [Decl(x, i32, = SeqExpr([], ValueBlock(_, i32, implicit, " +
                 "[ExprStmt(Int(7,i32))])))])");
@@ -359,7 +359,7 @@ namespace RigiCompiler.Tests
                 "func sb3() {\n" +
                 "    var x: i32 = seq { var a = 1\n a + 1 }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("多语句无 return@ 仍拒绝", unitFall.Diagnostics,
+            CaseAssertions.CheckSemanticError("多语句无 return@ 仍拒绝", unitFall.Diagnostics,
                 "seq expression must produce a value (at least one path must return@ a value)");
 
             var (seqEnum, seqEnumBodies) = BindUnitWithStdlib(
@@ -374,7 +374,7 @@ namespace RigiCompiler.Tests
                 "    return seq { .A(1) }\n" +
                 "}\n");
             CheckNoErrors("seq 隐式 enum 有返回语境", seqEnum);
-            TestHarness.Check("seq 隐式 enum 形态",
+            CaseAssertions.Check("seq 隐式 enum 形态",
                 BoundDescribe.Body(BodyOf(seqEnumBodies, "f")),
                 "Body(f, [], [Return(SeqExpr([], ValueBlock(_, E, implicit, " +
                 "[ExprStmt(EnumCase(E.A, [Int(1,i32)]))])))])");
@@ -384,7 +384,7 @@ namespace RigiCompiler.Tests
                 "    return seq { null }\n" +
                 "}\n");
             CheckNoErrors("seq 隐式 null 有可空返回语境", seqNull);
-            TestHarness.Check("seq 隐式 null 形态",
+            CaseAssertions.Check("seq 隐式 null 形态",
                 BoundDescribe.Body(BodyOf(seqNullBodies, "f")),
                 "Body(f, [], [Return(SeqExpr([], ValueBlock(_, String?, implicit, " +
                 "[ExprStmt(Null(String?))])))])");
@@ -404,7 +404,7 @@ namespace RigiCompiler.Tests
                 "    seq using(const file = acquire()) { use(file) }\n" +
                 "}\n");
             CheckNoErrors("语句 using 通过", unit10);
-            TestHarness.Check("using 绑定产物", BoundDescribe.Body(
+            CaseAssertions.Check("using 绑定产物", BoundDescribe.Body(
                 BodyOf(bodies10, "su")),
                 "Body(su, [file: UsingResource], [Seq(using(const file, Call(acquire, [], UsingResource), dispose=dispose)[CallStmt(use, [Local(file,UsingResource)])])])");
 
@@ -419,14 +419,14 @@ namespace RigiCompiler.Tests
                 "class ReassignableResource implements core.IDisposable { pub override func dispose() { } }\n" +
                 "func acquireReassignable(): ReassignableResource { return new ReassignableResource() }\n" +
                 "func suReassign() { seq using(var resource = acquireReassignable()) { resource = acquireReassignable() } }\n");
-            TestHarness.CheckSemanticError("var using 资源禁止重赋值", unitUsingReassign.Diagnostics,
+            CaseAssertions.CheckSemanticError("var using 资源禁止重赋值", unitUsingReassign.Diagnostics,
                 "Cannot assign to using resource 'resource'; using resource bindings cannot be reassigned");
 
             var (unitUsingCompoundReassign, _) = BindUnitWithStdlib(
                 "class CompoundResource implements core.IDisposable { pub override func dispose() { } }\n" +
                 "func acquireCompound(): CompoundResource { return new CompoundResource() }\n" +
                 "func suCompound() { seq using(var resource = acquireCompound()) { resource += resource } }\n");
-            TestHarness.CheckSemanticError("var using 资源禁止复合重赋值",
+            CaseAssertions.CheckSemanticError("var using 资源禁止复合重赋值",
                 unitUsingCompoundReassign.Diagnostics,
                 "Cannot assign to using resource 'resource'; using resource bindings cannot be reassigned");
 
@@ -434,13 +434,13 @@ namespace RigiCompiler.Tests
                 "class AsyncResource implements core.IDisposable { pub override async func dispose() { } }\n" +
                 "func acquireAsync(): AsyncResource { return new AsyncResource() }\n" +
                 "func suAsync() { seq using(var resource = acquireAsync()) { } }\n");
-            TestHarness.CheckSemanticError("async dispose using 拒绝", unitAsyncDispose.Diagnostics,
+            CaseAssertions.CheckSemanticError("async dispose using 拒绝", unitAsyncDispose.Diagnostics,
                 "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
 
             var (unitBadResource, _) = BindUnitWithStdlib(
                 "func bad(): i32 { return 1 }\n" +
                 "func sbad() { seq using(var x = bad()) { } }\n");
-            TestHarness.CheckSemanticError("非 IDisposable using 拒绝", unitBadResource.Diagnostics,
+            CaseAssertions.CheckSemanticError("非 IDisposable using 拒绝", unitBadResource.Diagnostics,
                 "must be assignable to 'core.IDisposable'");
         }
 
@@ -453,7 +453,7 @@ namespace RigiCompiler.Tests
                 "func acquire(): Resource { return new Resource() }\n" +
                 "func sexpr(): Resource { return seq using(const r = acquire()) { return@_ r } }\n");
             CheckNoErrors("表达式 using 通过", unitExprUsing);
-            TestHarness.Check("表达式 using 绑定产物", BoundDescribe.Body(
+            CaseAssertions.Check("表达式 using 绑定产物", BoundDescribe.Body(
                 BodyOf(exprBodies, "sexpr")),
                 "Body(sexpr, [r: Resource], [Return(SeqExpr([using(const r, Call(acquire, [], Resource), dispose=dispose)], " +
                 "ValueBlock(_, Resource, [ReturnValue(_, Local(r,Resource))])))])");
@@ -470,14 +470,14 @@ namespace RigiCompiler.Tests
                 "func acquire3(): Resource3 { return new Resource3() }\n" +
                 "func exprReassign(): Resource3 { return seq using(var r = acquire3()) " +
                 "{ r = acquire3()\nreturn@_ r } }\n");
-            TestHarness.CheckSemanticError("表达式 using 资源禁止重赋值", unitExprReassign.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using 资源禁止重赋值", unitExprReassign.Diagnostics,
                 "Cannot assign to using resource 'r'; using resource bindings cannot be reassigned");
 
             var (unitExprAsync, _) = BindUnitWithStdlib(
                 "class AsyncResource2 implements core.IDisposable { pub override async func dispose() { } }\n" +
                 "func acquireAsync2(): AsyncResource2 { return new AsyncResource2() }\n" +
                 "func exprAsync(): AsyncResource2 { return seq using(var r = acquireAsync2()) { return@_ r } }\n");
-            TestHarness.CheckSemanticError("表达式 using async dispose 拒绝", unitExprAsync.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using async dispose 拒绝", unitExprAsync.Diagnostics,
                 "has an unsupported dispose method (dispose must be synchronous, closed, and non-abstract)");
         }
 
@@ -509,7 +509,7 @@ namespace RigiCompiler.Tests
                 "@W class Service { pub init() }\n" +
                 "func exprAny(service: Service): Any { " +
                 "return seq using(var resource = service.fetch()) { return@_ resource } }\n");
-            TestHarness.CheckSemanticError("表达式 using 无类型 Any 仍拒绝", unitExprAny.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using 无类型 Any 仍拒绝", unitExprAny.Diagnostics,
                 "must be assignable to 'core.IDisposable'");
 
             var (unitExprDuplicate, _) = BindUnitWithStdlib(
@@ -518,7 +518,7 @@ namespace RigiCompiler.Tests
                 "func exprDuplicate(): DuplicateResource { return seq " +
                 "using(const resource = acquireDuplicate()) using(var resource = acquireDuplicate()) " +
                 "{ return@_ resource } }\n");
-            TestHarness.CheckSemanticError("表达式 using 重复资源名拒绝", unitExprDuplicate.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using 重复资源名拒绝", unitExprDuplicate.Diagnostics,
                 "Duplicate local variable 'resource'");
 
             var (unitExprParameterDispose, _) = BindUnitWithStdlib(
@@ -527,7 +527,7 @@ namespace RigiCompiler.Tests
                 "func acquireParameterDispose(): ParameterDisposeResource { " +
                 "return new ParameterDisposeResource() }\n" +
                 "func exprParameterDispose() { seq using(var resource = acquireParameterDispose()) { } }\n");
-            TestHarness.CheckSemanticError("表达式 using 带参 dispose 拒绝", unitExprParameterDispose.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using 带参 dispose 拒绝", unitExprParameterDispose.Diagnostics,
                 "has no accessible no-argument dispose method");
 
             var (unitExprOpenDispose, _) = BindUnitWithStdlib(
@@ -535,7 +535,7 @@ namespace RigiCompiler.Tests
                 "pub open override func dispose() { } }\n" +
                 "func acquireOpenDispose(): OpenDisposeResource { return new OpenDisposeResource() }\n" +
                 "func exprOpenDispose() { seq using(var resource = acquireOpenDispose()) { } }\n");
-            TestHarness.CheckSemanticError("表达式 using open dispose 拒绝", unitExprOpenDispose.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using open dispose 拒绝", unitExprOpenDispose.Diagnostics,
                 "has an unsupported dispose method");
 
             var (unitExprAbstractDispose, _) = BindUnitWithStdlib(
@@ -543,7 +543,7 @@ namespace RigiCompiler.Tests
                 "pub abstract override func dispose() }\n" +
                 "func exprAbstractDispose(resource: AbstractDisposeResource) { " +
                 "seq using(var resource2 = resource) { } }\n");
-            TestHarness.CheckSemanticError("表达式 using abstract dispose 拒绝", unitExprAbstractDispose.Diagnostics,
+            CaseAssertions.CheckSemanticError("表达式 using abstract dispose 拒绝", unitExprAbstractDispose.Diagnostics,
                 "has an unsupported dispose method");
         }
 
@@ -558,7 +558,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 2\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("语句 seq 无标签", unit11.Diagnostics,
+            CaseAssertions.CheckSemanticError("语句 seq 无标签", unit11.Diagnostics,
                 "Undefined value block label: '_'");
 
             // 裸 return 不得穿透值块（SYNTAX §6.1 裁决）：值块内（含其嵌套
@@ -568,7 +568,7 @@ namespace RigiCompiler.Tests
                 "    const v: i32 = seq { return 7 }\n" +
                 "    return v\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("裸 return 穿透值块拒绝", unitBareInValue.Diagnostics,
+            CaseAssertions.CheckSemanticError("裸 return 穿透值块拒绝", unitBareInValue.Diagnostics,
                 "Bare 'return' cannot cross a value block boundary");
 
             // 值块内嵌套语句 seq 中的裸 return 同样穿透值块边界，一并拒绝
@@ -577,7 +577,7 @@ namespace RigiCompiler.Tests
                 "    const v: i32 = seq { seq { return 7 }\nreturn@_ 1 }\n" +
                 "    return v\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("值块内嵌套语句块的裸 return 拒绝",
+            CaseAssertions.CheckSemanticError("值块内嵌套语句块的裸 return 拒绝",
                 unitBareNested.Diagnostics,
                 "Bare 'return' cannot cross a value block boundary");
 
@@ -600,7 +600,7 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "}\n");
             CheckNoErrors("seq 穿透无诊断", unit12);
-            TestHarness.Check("seq 穿透形态", BoundDescribe.Body(BodyOf(bodies12, "st")),
+            CaseAssertions.Check("seq 穿透形态", BoundDescribe.Body(BodyOf(bodies12, "st")),
                 "Body(st, [dummy: i32], [Return(SeqExpr([], ValueBlock(_, i32, [Decl(dummy, i32, = Int(0,i32)); Seq([ReturnValue(_, Int(1,i32))])])))])");
 
             // return@ 穿透 try 命中外层值块（try 与全部 catch 终止）
@@ -638,7 +638,7 @@ namespace RigiCompiler.Tests
         // ===== return@语句seq（M61，SYNTAX §6.1：提前结束该块，不携带值）=====
         private static void TestSeqExit()
         {
-            TestHarness.Section("P3 return@statement-seq (M61)");
+            CompilerTestTools.Section("P3 return@statement-seq (M61)");
 
             // 正例：命中即 BoundSeqExitStatement；嵌套块内穿透
             var (unit, bodies) = BindUnitWithStdlib(
@@ -649,14 +649,14 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckNoErrors("无诊断（return@语句seq）", unit);
-            TestHarness.Check("SeqExit 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
+            CaseAssertions.Check("SeqExit 绑定形态", BoundDescribe.Body(BodyOf(bodies, "f")),
                 "Body(f, [], [Seq@outer([If(Binary(CmpGt, Param(x,i32), Int(0,i32), bool), " +
                 "[SeqExit(@outer)])]); Return(Param(x,i32))])");
 
             // 负例：语句 seq 目标必须不携带值
             var (unit2, _) = BindUnitWithStdlib(
                 "func f() {\n    seq named s {\n        return@s 1\n    }\n}\n");
-            TestHarness.CheckSemanticError("语句 seq 不带值", unit2.Diagnostics,
+            CaseAssertions.CheckSemanticError("语句 seq 不带值", unit2.Diagnostics,
                 "return@s cannot carry a value (target is a statement seq)");
 
             // 负例：隔循环拦截（seq 在循环外，return@ 在循环内）
@@ -666,7 +666,7 @@ namespace RigiCompiler.Tests
                 "        while (x > 0) { return@s }\n" +
                 "    }\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("隔循环拒绝", unit3.Diagnostics,
+            CaseAssertions.CheckSemanticError("隔循环拒绝", unit3.Diagnostics,
                 "return@s across a loop boundary not supported yet (S7c)");
 
             // 负例：隔值块拦截（return@seq 在值块内——continuation 无法表达）
@@ -677,13 +677,13 @@ namespace RigiCompiler.Tests
                 "    }\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckSemanticError("隔值块拒绝", unit4.Diagnostics,
+            CaseAssertions.CheckSemanticError("隔值块拒绝", unit4.Diagnostics,
                 "return@s across a value block boundary not supported yet");
 
             // 未 named 的语句 seq 不作目标（`_` 默认标签值块专属）
             var (unit5, _) = BindUnitWithStdlib(
                 "func f() {\n    seq {\n        return@_\n    }\n}\n");
-            TestHarness.CheckSemanticError("匿名语句 seq 非目标", unit5.Diagnostics,
+            CaseAssertions.CheckSemanticError("匿名语句 seq 非目标", unit5.Diagnostics,
                 "Undefined value block label: '_'");
         }
     }

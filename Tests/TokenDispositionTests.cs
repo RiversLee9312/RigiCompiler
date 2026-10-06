@@ -18,8 +18,8 @@ namespace RigiCompiler.Tests
     /// </summary>
     public class TokenDispositionTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
+
+
 
         // 记录型假 Layer：按脚本逐步对 token 作出反应，并记录收到的每个 token 的内容
         private sealed class ScriptLayer : IParserLayer
@@ -128,31 +128,30 @@ namespace RigiCompiler.Tests
                 if (actualParent == wantParent && actualChild == wantChild)
                 {
                     Console.WriteLine($"  [PASS] {name}  parent=[{actualParent}] child=[{actualChild}]");
-                    passCount++;
+                    CaseAssertions.Record(true);
                 }
                 else
                 {
                     Console.WriteLine($"  [FAIL] {name}");
                     Console.WriteLine($"      expected parent=[{wantParent}] child=[{wantChild}]");
                     Console.WriteLine($"      actual   parent=[{actualParent}] child=[{actualChild}]");
-                    failCount++;
+                    CaseAssertions.Record(false);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"  [FAIL] {name}  => unexpected exception: {ex.Message}");
-                failCount++;
+                CaseAssertions.Record(false);
             }
         }
 
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("TokenDisposition",
+        internal static TestSuiteData Spec { get; } = new("TokenDisposition",
         [
             (nameof(TestPushConsume), TestPushConsume),
             (nameof(TestPushReplay), TestPushReplay),
             (nameof(TestPopConsume), TestPopConsume),
             (nameof(TestPopReplay), TestPopReplay),
-        ], () => passCount = failCount = 0, () => (passCount, failCount));
+        ]);
     }
 }

@@ -13,14 +13,14 @@ namespace RigiCompiler.Tests
     /// - CLI 状态还原：CaptureState/RestoreState 把套件内 Reset 破坏的
     ///   --log-to/--verbose 状态还原（追加模式，已写入的日志不丢）。
     /// 每个用例前后用 Logger.Reset() 归位（关闭日志文件、VerboseEnabled 复位）。
-    /// RunAll 整体以 CaptureState 进入、finally RestoreState 退出：本套件在
-    /// 注册表中段，若把 CLI 经 --log-to 打开的日志文件关掉不还，后续套件的
-    /// 日志会静默全部不落盘。
+    /// CaseCatalog 每个 worker 动作以 CaptureState 进入、finally RestoreState
+    /// 退出；动作内部 Reset 不得破坏请求原有的 --log-to/--verbose 状态，
+    /// 恢复后采用追加模式，避免已写日志丢失或后续日志静默不落盘。
     /// </summary>
     public static class LoggerTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
+
+
 
         public static void TestJsonlFileWrite()
         {
@@ -107,7 +107,7 @@ namespace RigiCompiler.Tests
             var captured = new StringWriter();
             try
             {
-                Console.SetError(captured);
+                WorkerConsole.SetError(captured);
 
                 defaultOff = !Logger.VerboseEnabled;
                 Logger.Verbose("Test", "hidden");
@@ -123,7 +123,7 @@ namespace RigiCompiler.Tests
             }
             finally
             {
-                Console.SetError(originalError);
+                WorkerConsole.SetError(originalError);
                 Logger.Reset();
             }
 
@@ -182,7 +182,7 @@ namespace RigiCompiler.Tests
             if (condition)
             {
                 Console.WriteLine($"  [PASS] {name}");
-                passCount++;
+                CaseAssertions.Record(true);
             }
             else
             {
@@ -194,17 +194,17 @@ namespace RigiCompiler.Tests
         {
             Console.WriteLine($"  [FAIL] {name}");
             Console.WriteLine($"      => {message}");
-            failCount++;
+            CaseAssertions.Record(false);
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = LegacySuiteSpecs.Counted("Logger",
+
+        internal static TestSuiteData Spec { get; } = new("Logger",
         [
             (nameof(TestJsonlFileWrite), TestJsonlFileWrite),
             (nameof(TestConsoleGating), TestConsoleGating),
             (nameof(TestCliStateRestore), TestCliStateRestore),
-        ], () => passCount = failCount = 0, () => (passCount, failCount));
+        ]);
     }
 }

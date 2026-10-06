@@ -50,7 +50,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             // 结构性事实：block id 函数内唯一且恰一个 entrypoint（§9.4）
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("恰一个 entrypoint block 且 id 唯一",
+            CaseAssertions.CheckTrue("恰一个 entrypoint block 且 id 唯一",
                 main.Blocks.Count(b => b.Modifiers.Contains(BilBlockModifier.Entrypoint)) == 1
                 && main.Blocks.Select(b => b.Id).Distinct().Count() == main.Blocks.Count);
 
@@ -65,11 +65,11 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("验证器零错误（无 else if）", module2);
             var ifInstruction = module2.Functions.Single(f => f.Symbol == "$main()@.i32").Blocks
                 .SelectMany(b => b.Instructions).Single(i => i is IfInstruction);
-            TestHarness.CheckTrue("无 else 用 none 操作数",
+            CaseAssertions.CheckTrue("无 else 用 none 操作数",
                 ifInstruction.Operands.Count == 4
                 && ifInstruction.Operands[2] is BilNoneOperand
                 && ifInstruction.Operands[1].Render() == "blk(if0-then)");
-            TestHarness.CheckTrue("无 else 不产 else block",
+            CaseAssertions.CheckTrue("无 else 不产 else block",
                 module2.Functions.Single(f => f.Symbol == "$main()@.i32").Blocks
                     .All(b => b.Id != "if0-else"));
         }
@@ -149,7 +149,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（短路发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（短路发射）", module);
-            TestHarness.CheckTrue("无裸 and/or 指令（§11.3 已展开）",
+            CaseAssertions.CheckTrue("无裸 and/or 指令（§11.3 已展开）",
                 module.Functions.Single(f => f.Symbol == "$main()@.i32").Blocks
                     .SelectMany(b => b.Instructions)
                     .All(i => i is not BinaryIntrinsicInstruction bin
@@ -238,7 +238,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             // 结构性事实：.vars 的 .breakid 条目（§9.3 别名投影）
             var mainFn = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue(".vars 含 .breakid 条目",
+            CaseAssertions.CheckTrue(".vars 含 .breakid 条目",
                 mainFn.Vars.Any(v => v.TypeRef == ".breakid" && v.Name == ".b0"));
 
             // do-while → loop.rev（结构断言）
@@ -255,14 +255,14 @@ namespace RigiCompiler.Tests
             var revFn = module2.Functions.Single(f => f.Symbol == "$main()@.i32");
             var revInstruction = revFn.Blocks.SelectMany(b => b.Instructions)
                 .Single(i => i is LoopInstruction { IsRev: true });
-            TestHarness.CheckTrue("loop.rev 五操作数（cond/body/none/judge/breakid）",
+            CaseAssertions.CheckTrue("loop.rev 五操作数（cond/body/none/judge/breakid）",
                 revInstruction.Operands.Count == 5
                 && revInstruction.Operands[0].Render() == "$.s0"
                 && revInstruction.Operands[1].Render() == "blk(loop0-body)"
                 && revInstruction.Operands[2] is BilNoneOperand
                 && revInstruction.Operands[3].Render() == "blk(loop0-judge)"
                 && revInstruction.Operands[4].Render() == "$.b0");
-            TestHarness.CheckTrue("loop.rev 产 body/judge block",
+            CaseAssertions.CheckTrue("loop.rev 产 body/judge block",
                 revFn.Blocks.Any(b => b.Id == "loop0-body")
                 && revFn.Blocks.Any(b => b.Id == "loop0-judge"));
 
@@ -287,15 +287,15 @@ namespace RigiCompiler.Tests
                 .Single(i => i is BreakInstruction);
             var continueInstruction = nestedFn.Blocks.SelectMany(b => b.Instructions)
                 .Single(i => i is ContinueInstruction);
-            TestHarness.CheckTrue("break@outer → $.b0（外层 breakid）",
+            CaseAssertions.CheckTrue("break@outer → $.b0（外层 breakid）",
                 breakInstruction.Operands.Count == 1
                 && breakInstruction.Operands[0].Render() == "$.b0");
-            TestHarness.CheckTrue("continue → $.b1（内层 breakid）",
+            CaseAssertions.CheckTrue("continue → $.b1（内层 breakid）",
                 continueInstruction.Operands.Count == 1
                 && continueInstruction.Operands[0].Render() == "$.b1");
-            TestHarness.CheckTrue(".vars 含三个 .breakid 条目（双循环 + if）",
+            CaseAssertions.CheckTrue(".vars 含三个 .breakid 条目（双循环 + if）",
                 nestedFn.Vars.Count(v => v.TypeRef == ".breakid") == 3);
-            TestHarness.CheckTrue("嵌套循环 block id 递增（loop0/loop1）",
+            CaseAssertions.CheckTrue("嵌套循环 block id 递增（loop0/loop1）",
                 nestedFn.Blocks.Any(b => b.Id == "loop1-body")
                 && nestedFn.Blocks.Any(b => b.Id == "loop1-judge"));
         }
@@ -351,7 +351,7 @@ namespace RigiCompiler.Tests
             // 结构性事实：ext operator fn 的 .args（§7.3 ext receiver 同形态）
             var extFn = module.Functions.Single(f => f.Symbol ==
                 "core::i32$$EnumerateInRange(end:.i32)@core.collections::IEnumerable<.i32>");
-            TestHarness.CheckTrue("ext operator fn 的 .args = [.return, .this(.i32), end]",
+            CaseAssertions.CheckTrue("ext operator fn 的 .args = [.return, .this(.i32), end]",
                 extFn.Args.Count == 3
                 && extFn.Args[1].Name == ".this" && extFn.Args[1].TypeRef == ".i32"
                 && extFn.Args[2].Name == "end");
@@ -376,7 +376,7 @@ namespace RigiCompiler.Tests
             // 表元素只进表不产标量资源；标准库资源会随实现演进，因而这里只
             // 锁定 switch-table 自身的类型与元素，不快照无关资源编号。
             var switchTable = module.Resources.OfType<BilSwitchTableResource>().Single();
-            TestHarness.CheckTrue("资源（switch-table 单行形态）",
+            CaseAssertions.CheckTrue("资源（switch-table 单行形态）",
                 switchTable.SelectorTypeRef == ".i32"
                 && switchTable.Elements.SequenceEqual(new[] { "1", "2" }));
             BilTestHarness.CheckFnShape("switch 多 block 文本", module, "$classify(x:.i32)@.i32",
@@ -401,7 +401,7 @@ namespace RigiCompiler.Tests
             var classifyFn = module.Functions.Single(f => f.Symbol == "$classify(x:.i32)@.i32");
             var switchInstruction = classifyFn.Blocks[0].Instructions
                 .Single(i => i is SwitchInstruction);
-            TestHarness.CheckTrue("switch 五操作数（selector/res/item表/default/breakid）",
+            CaseAssertions.CheckTrue("switch 五操作数（selector/res/item表/default/breakid）",
                 switchInstruction.Operands.Count == 5
                 && switchInstruction.Operands[0] is BilVariableOperand
                 && switchInstruction.Operands[1] is BilResourceOperand
@@ -409,9 +409,9 @@ namespace RigiCompiler.Tests
                 && itemList.Items.Count == 2
                 && switchInstruction.Operands[3] is BilBlockOperand
                 && switchInstruction.Operands[4].Render() == "$.b0");
-            TestHarness.CheckTrue(".vars 含 .breakid 条目",
+            CaseAssertions.CheckTrue(".vars 含 .breakid 条目",
                 classifyFn.Vars.Any(v => v.TypeRef == ".breakid" && v.Name == ".b0"));
-            TestHarness.CheckTrue("item/default 块 id 函数内唯一",
+            CaseAssertions.CheckTrue("item/default 块 id 函数内唯一",
                 classifyFn.Blocks.Select(b => b.Id).Distinct().Count()
                 == classifyFn.Blocks.Count);
 
@@ -433,7 +433,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             CheckNoErrors("全管线无诊断（switch 表去重）", unit2);
             BilTestHarness.CheckBilValid("验证器零错误（switch 表去重）", module2);
-            TestHarness.CheckTrue("case 集相同的两个 switch 共享一张表",
+            CaseAssertions.CheckTrue("case 集相同的两个 switch 共享一张表",
                 module2.Resources.Count(r => r is BilSwitchTableResource) == 1
                 && module2.Functions.SelectMany(f => f.Blocks[0].Instructions)
                     .Where(i => i is SwitchInstruction)
@@ -457,10 +457,10 @@ namespace RigiCompiler.Tests
             CheckNoErrors("全管线无诊断（pattern switch 发射）", unit);
             BilTestHarness.CheckBilValid("验证器零错误（pattern switch 发射）", module);
             var main = module.Functions.Single(f => f.Symbol == "$main()@.i32");
-            TestHarness.CheckTrue("pattern switch 降为 if 链（无 switch 指令）",
+            CaseAssertions.CheckTrue("pattern switch 降为 if 链（无 switch 指令）",
                 main.Blocks.SelectMany(b => b.Instructions).All(i => i is not SwitchInstruction)
                 && main.Blocks.SelectMany(b => b.Instructions).Any(i => i is IfInstruction));
-            TestHarness.CheckTrue("无 switch-table 资源",
+            CaseAssertions.CheckTrue("无 switch-table 资源",
                 module.Resources.All(r => r is not BilSwitchTableResource));
             // selector 物化一次（.s1），pattern 条件引用它而非重复求值；
             // Stage B：if 链外包 seq region（.b0）承载 switch 表达式
@@ -529,11 +529,11 @@ namespace RigiCompiler.Tests
                 "new type(Boom) $.t0 []\n" +
                 "throw $.t0\n");
             var throwInstruction = fail.Blocks[0].Instructions.Single(i => i is ThrowInstruction);
-            TestHarness.CheckTrue("throw 单操作数（§16.9）",
+            CaseAssertions.CheckTrue("throw 单操作数（§16.9）",
                 throwInstruction.Operands.Count == 1
                 && throwInstruction.Operands[0] is BilVariableOperand);
             // throw 是终止指令：entry 块落尾不补 ret（§9.4 补 ret 逻辑只看 ret）
-            TestHarness.CheckTrue("throw 终止后无赘余 ret",
+            CaseAssertions.CheckTrue("throw 终止后无赘余 ret",
                 fail.Blocks[0].Instructions.Last() is ThrowInstruction);
         }
     }

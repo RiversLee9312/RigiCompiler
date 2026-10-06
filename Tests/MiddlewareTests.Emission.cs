@@ -29,37 +29,37 @@ namespace RigiCompiler.Tests
         private static void TestLlGoldenAnchors()
         {
             var gate = BilGate.Accept(HelloConcatBil, "golden.bil");
-            TestHarness.CheckTrue("黄金用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("黄金用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             var mir = MirBuilder.Build(context);
             using var llvmLease2282 = LlvmHost.Enter();
             using var module = ModuleBuilder.Build(context, mir);
-            TestHarness.Check("生成模块与运行时的宿主目标一致", module.Target,
+            CaseAssertions.Check("生成模块与运行时的宿主目标一致", module.Target,
                 LlvmHost.HostTriple);
-            TestHarness.Check("生成模块与 TargetMachine 的布局一致", module.DataLayout,
+            CaseAssertions.Check("生成模块与 TargetMachine 的布局一致", module.DataLayout,
                 LlvmHost.HostDataLayout);
             var ll = module.PrintToString();
 
             // 黄金快照的 MW1 形态：锚定关键行（全文黄金比对随 .ll 快照基建落地）
-            TestHarness.CheckTrue("模块名来自 Metadata", ll.Contains("; ModuleID = 'hello'"), ll);
-            TestHarness.CheckTrue("字符串字面量进内部全局",
+            CaseAssertions.CheckTrue("模块名来自 Metadata", ll.Contains("; ModuleID = 'hello'"), ll);
+            CaseAssertions.CheckTrue("字符串字面量进内部全局",
                 ll.Contains("@str.R_Hello = internal constant { i32, i32, [7 x i8] } { i32 -1, i32 0, [7 x i8] c\"Hello, \""), ll);
-            TestHarness.CheckTrue("字面量 data 指针 = 块+8",
+            CaseAssertions.CheckTrue("字面量 data 指针 = 块+8",
                 ll.Contains("getelementptr inbounds (i8, ptr @str.R_Hello, i64 8)"), ll);
-            TestHarness.CheckTrue("String 槽零初始化",
+            CaseAssertions.CheckTrue("String 槽零初始化",
                 ll.Contains("store { ptr, i64 } zeroinitializer"), ll);
-            TestHarness.CheckTrue("rigi_globals_cleanup 已发射",
+            CaseAssertions.CheckTrue("rigi_globals_cleanup 已发射",
                 ll.Contains("define void @rigi_globals_cleanup()"), ll);
-            TestHarness.CheckTrue("转义换行进字节常量",
+            CaseAssertions.CheckTrue("转义换行进字节常量",
                 ll.Contains("c\"world!\\0A\""), ll);
-            TestHarness.CheckTrue("入口发射为 rigi_entry",
+            CaseAssertions.CheckTrue("入口发射为 rigi_entry",
                 ll.Contains("define i32 @rigi_entry(i32 %0, ptr %1)"), ll);
-            TestHarness.CheckTrue("string + → rigi_string_concat 调用",
+            CaseAssertions.CheckTrue("string + → rigi_string_concat 调用",
                 ll.Contains("call void @rigi_string_concat(ptr"), ll);
-            TestHarness.CheckTrue("native print → rigi_print 声明",
+            CaseAssertions.CheckTrue("native print → rigi_print 声明",
                 ll.Contains("declare void @rigi_print(ptr)"), ll);
-            TestHarness.CheckTrue("返回装载 i32 0",
+            CaseAssertions.CheckTrue("返回装载 i32 0",
                 ll.Contains("ret i32"), ll);
         }
 
@@ -77,7 +77,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "null.bil");
-            TestHarness.CheckTrue("null 用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("null 用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             // MW9a 起发射要求 ExcTarget 已解析（RcInjection 传播垫）：
@@ -88,10 +88,10 @@ namespace RigiCompiler.Tests
             var ll = module.PrintToString();
 
             // null = 胖引用双段零（RUNTIME §3：Nullable 是 Object 子类）
-            TestHarness.CheckTrue("null 资源 → 胖引用零常量",
+            CaseAssertions.CheckTrue("null 资源 → 胖引用零常量",
                 ll.Contains("{ i64, i64 } zeroinitializer"), ll);
             // nullable == → 胖引用双段 extractvalue 各自 icmp 取与
-            TestHarness.CheckTrue("nullable == → 双段恒等比较",
+            CaseAssertions.CheckTrue("nullable == → 双段恒等比较",
                 ll.Contains("extractvalue { i64, i64 }"), ll);
         }
 
@@ -110,7 +110,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "div.bil");
-            TestHarness.CheckTrue("除零用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("除零用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -118,18 +118,18 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            TestHarness.CheckTrue("除零 abort 面已退场",
+            CaseAssertions.CheckTrue("除零 abort 面已退场",
                 !ll.Contains("rigi_abort_divided_by_zero"), ll);
-            TestHarness.CheckTrue("guard 构造 DividedByZeroException",
+            CaseAssertions.CheckTrue("guard 构造 DividedByZeroException",
                 ll.Contains("call ptr @rigi_alloc(")
                 && ll.Contains("DividedByZeroException"), ll);
-            TestHarness.CheckTrue("guard 调零参 init",
+            CaseAssertions.CheckTrue("guard 调零参 init",
                 ll.Contains("DividedByZeroException$init()"), ll);
-            TestHarness.CheckTrue("guard 抛异常走 rigi_exc_raise",
+            CaseAssertions.CheckTrue("guard 抛异常走 rigi_exc_raise",
                 ll.Contains("call void @rigi_exc_raise(ptr"), ll);
-            TestHarness.CheckTrue("有符号 MIN/-1 回绕取负选择",
+            CaseAssertions.CheckTrue("有符号 MIN/-1 回绕取负选择",
                 ll.Contains("sdiv.wrap"), ll);
-            TestHarness.CheckTrue("异常边指向传播垫",
+            CaseAssertions.CheckTrue("异常边指向传播垫",
                 ll.Contains("mw.propagate"), ll);
         }
 
@@ -148,7 +148,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "mod.bil");
-            TestHarness.CheckTrue("取模用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("取模用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             var context = new MwContext(gate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(context);
@@ -156,20 +156,20 @@ namespace RigiCompiler.Tests
             using var module = ModuleBuilder.Build(context, context.Mir!);
             var ll = module.PrintToString();
 
-            TestHarness.CheckTrue("模零 guard 构造 DividedByZeroException",
+            CaseAssertions.CheckTrue("模零 guard 构造 DividedByZeroException",
                 ll.Contains("call ptr @rigi_alloc(")
                 && ll.Contains("DividedByZeroException"), ll);
-            TestHarness.CheckTrue("模零 guard 调零参 init",
+            CaseAssertions.CheckTrue("模零 guard 调零参 init",
                 ll.Contains("DividedByZeroException$init()"), ll);
-            TestHarness.CheckTrue("模零 guard 抛异常走 rigi_exc_raise",
+            CaseAssertions.CheckTrue("模零 guard 抛异常走 rigi_exc_raise",
                 ll.Contains("call void @rigi_exc_raise(ptr"), ll);
-            TestHarness.CheckTrue("有符号取模发射 srem",
+            CaseAssertions.CheckTrue("有符号取模发射 srem",
                 ll.Contains("srem i32"), ll);
-            TestHarness.CheckTrue("MIN/-1 消毒 select（x % ±1 == 0）",
+            CaseAssertions.CheckTrue("MIN/-1 消毒 select（x % ±1 == 0）",
                 ll.Contains("smod.safe") && ll.Contains("smod.wrap"), ll);
-            TestHarness.CheckTrue("取模不引入 MIN/-1 abort 臂",
+            CaseAssertions.CheckTrue("取模不引入 MIN/-1 abort 臂",
                 !ll.Contains("rigi_abort_arithmetic_overflow"), ll);
-            TestHarness.CheckTrue("取模异常边指向传播垫",
+            CaseAssertions.CheckTrue("取模异常边指向传播垫",
                 ll.Contains("mw.propagate"), ll);
 
             // f64 取模：frem 直发（IEEE 754 截断余数），无 guard 无 raise
@@ -182,7 +182,7 @@ namespace RigiCompiler.Tests
                 "}\n");
             text = BilWriter.Write(textModule);
             var floatGate = BilGate.Accept(text, "fmod.bil");
-            TestHarness.CheckTrue("浮点取模用例门禁放行", floatGate.IsAccepted,
+            CaseAssertions.CheckTrue("浮点取模用例门禁放行", floatGate.IsAccepted,
                 string.Join("; ", floatGate.Errors));
             var floatContext = new MwContext(floatGate.Module!);
             RigiCompiler.Middleware.Pipeline.MwPipeline.CreateDefault().Run(floatContext);
@@ -190,12 +190,12 @@ namespace RigiCompiler.Tests
             using var floatModule = ModuleBuilder.Build(floatContext, floatContext.Mir!);
             var floatLl = floatModule.PrintToString();
 
-            TestHarness.CheckTrue("浮点取模发射 frem",
+            CaseAssertions.CheckTrue("浮点取模发射 frem",
                 floatLl.Contains("frem double"), floatLl);
             // stdlib 夹具自身携带异常面（rigi_exc_raise 全模块可见），故以
             // EmitModGuard 特有的 mod.zero 比较命名做负断言（f64 取模无
             // guard；模零得 NaN 由 E2E「浮点取模与模零 NaN」运行期对拍）
-            TestHarness.CheckTrue("浮点取模无模零 guard（模零得 NaN）",
+            CaseAssertions.CheckTrue("浮点取模无模零 guard（模零得 NaN）",
                 !floatLl.Contains("mod.zero"), floatLl);
         }
 
@@ -257,7 +257,7 @@ namespace RigiCompiler.Tests
             var (_, textModule, text) = BilTestHarness.EmitBilUnit(source);
             text = BilWriter.Write(textModule);
             var gate = BilGate.Accept(text, "layout.bil");
-            TestHarness.CheckTrue("布局用例门禁放行", gate.IsAccepted,
+            CaseAssertions.CheckTrue("布局用例门禁放行", gate.IsAccepted,
                 string.Join("; ", gate.Errors));
             return RigiCompiler.Middleware.Layout.LayoutEngine.Build(
                 new MwContext(gate.Module!).Symbols);

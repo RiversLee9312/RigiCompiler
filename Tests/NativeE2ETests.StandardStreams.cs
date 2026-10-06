@@ -27,11 +27,11 @@ namespace RigiCompiler.Tests
                 SerializationGraphCorpus("io_stdstreams_split_utf8"), label);
             var text = BilWriter.Write(module);
             var vm = BilVm.Run(BilReader.Read(text), maxSteps: 20_000_000);
-            TestHarness.CheckTrue(label + "：VM 无异常", vm.Exception == null,
+            CaseAssertions.CheckTrue(label + "：VM 无异常", vm.Exception == null,
                 vm.Exception?.Message ?? "");
-            TestHarness.Check(label + "：VM stdout 精确", vm.Stdout, "前\n中\n后\n");
-            TestHarness.Check(label + "：VM stderr 精确", vm.Stderr, "中\n");
-            TestHarness.CheckTrue(label + "：VM 退出码 0",
+            CaseAssertions.Check(label + "：VM stdout 精确", vm.Stdout, "前\n中\n后\n");
+            CaseAssertions.Check(label + "：VM stderr 精确", vm.Stderr, "中\n");
+            CaseAssertions.CheckTrue(label + "：VM 退出码 0",
                 vm.ReturnValue is VmI32 { Value: 0 });
 
             var dir = Path.Combine(Path.GetTempPath(), $"rigi_e2e_{Guid.NewGuid():N}");
@@ -43,7 +43,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     OperatingSystem.IsWindows() ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0) return;
 
@@ -76,11 +76,11 @@ namespace RigiCompiler.Tests
                 var stderr = stderrBytes.ToArray();
                 // 独立字节常量包含 E4 B8 AD 0A；不能用文本换行归一化
                 // 或同一编码器重建预期而掩盖 CRT 的 LF→CRLF 转写。
-                TestHarness.Check(label + "：native stdout 原始字节", Convert.ToHexString(stdout),
+                CaseAssertions.Check(label + "：native stdout 原始字节", Convert.ToHexString(stdout),
                     "E5898D0AE4B8AD0AE5908E0A");
-                TestHarness.Check(label + "：native stderr 原始字节", Convert.ToHexString(stderr),
+                CaseAssertions.Check(label + "：native stderr 原始字节", Convert.ToHexString(stderr),
                     "E4B8AD0A");
-                TestHarness.CheckTrue(label + "：native 退出码 0", process.ExitCode == 0,
+                CaseAssertions.CheckTrue(label + "：native 退出码 0", process.ExitCode == 0,
                     $"exit={process.ExitCode} stderr={Convert.ToHexString(stderr)}");
             }
             finally
@@ -119,7 +119,7 @@ namespace RigiCompiler.Tests
                 var exePath = Path.Combine(dir,
                     OperatingSystem.IsWindows() ? "case.exe" : "case");
                 var compiled = RunNative("native", "--file", bilPath, "--out", exePath);
-                TestHarness.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
+                CaseAssertions.CheckTrue(label + "：native 编译链接成功", compiled.Code == 0,
                     compiled.Err);
                 if (compiled.Code != 0) return;
 
@@ -148,11 +148,11 @@ namespace RigiCompiler.Tests
                     if (!process.HasExited) process.Kill(entireProcessTree: true);
                     throw new InvalidOperationException(label + "：native 产物执行超时");
                 }
-                TestHarness.Check(label + "：stdin 原字节回显",
+                CaseAssertions.Check(label + "：stdin 原字节回显",
                     Convert.ToHexString(actual.ToArray()), Convert.ToHexString(expected));
-                TestHarness.Check(label + "：stderr 无诊断",
+                CaseAssertions.Check(label + "：stderr 无诊断",
                     Convert.ToHexString(errors.ToArray()), "");
-                TestHarness.CheckTrue(label + "：退出码 0", process.ExitCode == 0,
+                CaseAssertions.CheckTrue(label + "：退出码 0", process.ExitCode == 0,
                     $"exit={process.ExitCode}");
             }
             finally

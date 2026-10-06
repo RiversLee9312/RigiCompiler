@@ -11,9 +11,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class NativeE2EArgsParseTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("NativeE2EArgs",
+
+        internal static TestSuiteData Spec { get; } = new("NativeE2EArgs",
         [
             (nameof(TestListSelector), TestListSelector),
             (nameof(TestRangeSelector), TestRangeSelector),
@@ -27,7 +27,7 @@ namespace RigiCompiler.Tests
         {
             var list = (IReadOnlyList<string>)new string[] { "list" };
             var parsedList = NativeE2ETests.ParseRunArgs(list);
-            TestHarness.CheckTrue("list 判定",
+            CaseAssertions.CheckTrue("list 判定",
                 parsedList.Kind == NativeE2ETests.NativeE2eRunKind.List);
         }
 
@@ -35,7 +35,7 @@ namespace RigiCompiler.Tests
         {
             var range = (IReadOnlyList<string>)new string[] { "5", "7" };
             var parsedRange = NativeE2ETests.ParseRunArgs(range);
-            TestHarness.CheckTrue("区间判定",
+            CaseAssertions.CheckTrue("区间判定",
                 parsedRange.Kind == NativeE2ETests.NativeE2eRunKind.Range
                 && parsedRange.From == 5 && parsedRange.To == 7);
 
@@ -47,7 +47,7 @@ namespace RigiCompiler.Tests
         {
             var single = (IReadOnlyList<string>)new string[] { "5" };
             var parsedSingle = NativeE2ETests.ParseRunArgs(single);
-            TestHarness.CheckTrue("单数字区间转发",
+            CaseAssertions.CheckTrue("单数字区间转发",
                 parsedSingle.Kind == NativeE2ETests.NativeE2eRunKind.Range
                 && parsedSingle.From == 5 && parsedSingle.To == 5);
 
@@ -58,7 +58,7 @@ namespace RigiCompiler.Tests
         {
             var mixed = (IReadOnlyList<string>)new string[] { "5", "abc" };
             var parsedMixed = NativeE2ETests.ParseRunArgs(mixed);
-            TestHarness.CheckTrue("数字开头保持区间转发",
+            CaseAssertions.CheckTrue("数字开头保持区间转发",
                 parsedMixed.Kind == NativeE2ETests.NativeE2eRunKind.Range);
 
             // 空参数：保持原样转发（runner 打印用法并报非 0）。
@@ -68,7 +68,7 @@ namespace RigiCompiler.Tests
         {
             var empty = (IReadOnlyList<string>)Array.Empty<string>();
             var parsedEmpty = NativeE2ETests.ParseRunArgs(empty);
-            TestHarness.CheckTrue("空参数区间转发",
+            CaseAssertions.CheckTrue("空参数区间转发",
                 parsedEmpty.Kind == NativeE2ETests.NativeE2eRunKind.Range);
         }
 
@@ -76,7 +76,7 @@ namespace RigiCompiler.Tests
         {
             var filter = (IReadOnlyList<string>)new string[] { "Parcel", "json-顶层" };
             var parsedFilter = NativeE2ETests.ParseRunArgs(filter);
-            TestHarness.CheckTrue("按名判定与过滤器保留",
+            CaseAssertions.CheckTrue("按名判定与过滤器保留",
                 parsedFilter.Kind == NativeE2ETests.NativeE2eRunKind.NameFilter
                 && parsedFilter.Filters.Count == 2);
 

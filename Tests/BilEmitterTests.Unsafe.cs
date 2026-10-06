@@ -7,7 +7,7 @@ namespace RigiCompiler.Tests
         private static void TestUnsafeProjection()
         {
             TestHandleProjection();
-            TestHarness.Section("unsafe BIL 投影与权限校验");
+            CompilerTestTools.Section("unsafe BIL 投影与权限校验");
             var result = BilTestHarness.EmitBilUnit("unsafe func danger(): i32 { return 7 }\n"
                 + "pub func main(): i32 { unsafe volatile seq {\n"
                 + "if (true) { danger() }\n}\n return 0 }");
@@ -15,10 +15,10 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("unsafe 允许嵌套分支调用", result.Module);
             var main = result.Module.Functions.Single(f => f.Symbol == "$main()@.i32");
             var unsafeBlock = main.Blocks.Single(b => b.Modifiers.Contains(BilBlockModifier.Unsafe));
-            TestHarness.CheckTrue("正交块修饰符都保留", unsafeBlock.Modifiers.Contains(BilBlockModifier.Volatile));
+            CaseAssertions.CheckTrue("正交块修饰符都保留", unsafeBlock.Modifiers.Contains(BilBlockModifier.Volatile));
             var text = BilWriter.Write(result.Module);
             var roundtrip = BilReader.Read(text);
-            TestHarness.Check("unsafe Reader/Writer 往返", BilWriter.Write(roundtrip), text);
+            CaseAssertions.Check("unsafe Reader/Writer 往返", BilWriter.Write(roundtrip), text);
             BilTestHarness.CheckBilValid("往返后仍合法", roundtrip);
 
             foreach (var source in new[]
@@ -56,7 +56,7 @@ namespace RigiCompiler.Tests
 
         private static void TestHandleProjection()
         {
-            TestHarness.Section("Handle 固定 ABI 与 Place 验证边界");
+            CompilerTestTools.Section("Handle 固定 ABI 与 Place 验证边界");
             var result = BilTestHarness.EmitBilUnit("pub func main(): i32 { var n = 1\n"
                 + "unsafe seq using(const p = placeOf n) { const h = p.expose()\n"
                 + "h.asMutable().store(2)\n }\n return 0 }");
@@ -64,15 +64,15 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("Handle 有效能力流", result.Module);
             var declaration = result.Module.LocalSymbols.OfType<BilTypeDeclaration>()
                 .Single(t => t.Symbol == ".handle");
-            TestHarness.CheckTrue(".handle 唯一且无泛型/可枚举字段",
+            CaseAssertions.CheckTrue(".handle 唯一且无泛型/可枚举字段",
                 declaration.GenericParameters.Count == 0 && declaration.Members.Count == 0
                 && !BilWriter.Write(result.Module).Contains(".handle<"));
             foreach (var name in new[] { "core::Handle", "core::MutableHandle" })
             {
                 var facade = result.Module.LocalSymbols.OfType<BilTypeDeclaration>()
                     .Single(t => t.Symbol == name);
-                TestHarness.CheckTrue(name + " 独立具化声明", facade.GenericParameters.Count == 1);
-                TestHarness.CheckTrue(name + " 普通成员体保留",
+                CaseAssertions.CheckTrue(name + " 独立具化声明", facade.GenericParameters.Count == 1);
+                CaseAssertions.CheckTrue(name + " 普通成员体保留",
                     result.Module.Functions.Any(f => f.Symbol.StartsWith(name + "$load(")));
             }
             var roundtrip = BilReader.Read(BilWriter.Write(result.Module));

@@ -4,7 +4,7 @@ using RigiCompiler.PerfBaseline;
 
 namespace RigiCompiler.Tests;
 
-/// <summary>测试客户端与旧调度使用同一父进程预算。</summary>
+/// <summary>所有 TUnit 发现行共享同一父进程预算。</summary>
 public interface ICaseWorkerLeaseProvider
 {
     ValueTask<ResourceLease> AcquireAsync(CaseDescriptor descriptor, CancellationToken cancellationToken);
@@ -21,7 +21,7 @@ public sealed class BoundedCaseWorkerLeases : ICaseWorkerLeaseProvider
     }
     public ValueTask<ResourceLease> AcquireAsync(CaseDescriptor descriptor, CancellationToken cancellationToken)
     {
-        var request = LegacyDispatcher.Resources(descriptor);
+        var request = CaseSelection.Resources(descriptor);
         return budget.AcquireAsync(request with { CpuSlots = Math.Min(budget.Capacity.CpuSlots, request.CpuSlots) }, cancellationToken);
     }
 }
@@ -41,7 +41,7 @@ public sealed class CaseWorkerClient(ICaseWorkerLeaseProvider? leases = null)
         {
             await using var lease = await leases.AcquireAsync(descriptor, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            return await RunIsolatedAsync(caseId, cancellationToken, timeout ?? LegacyDispatcher.TimeoutFor(caseId), probe, lease);
+            return await RunIsolatedAsync(caseId, cancellationToken, timeout ?? CaseSelection.TimeoutFor(caseId), probe, lease);
         }
         catch (OperationCanceledException) { return Cancelled(caseId); }
         catch (Exception ex) { return Failure(caseId, ex.ToString()); }
@@ -50,15 +50,15 @@ public sealed class CaseWorkerClient(ICaseWorkerLeaseProvider? leases = null)
     private static CaseOutcome Failure(string id, string diagnostic) => new(id, CaseStatus.Fail, 1, 1, null, diagnostic);
     private static CaseOutcome Cancelled(string id) => new(id, CaseStatus.Cancel, 0, 0, null, "测试已取消，worker 树已终止并排空");
 
-    [UnconditionalSuppressMessage("SingleFile", "IL3000", Justification = "AOT Location 为空时强制明确指定 RIGI_TEST_RIGIC，不使用测试宿主路径")]
+    [UnconditionalSuppressMessage("SingleFile", "IL3000", Justification = "AOT worker 由当前测试宿主路径定位，编译器由独立变量定位")]
     private static ProcessStartInfo WorkerStart(string caseId, string resultPath, string root, string? probe)
     {
-        var artifact = Environment.GetEnvironmentVariable("RIGI_TEST_RIGIC");
-        if (string.IsNullOrWhiteSpace(artifact)) artifact = typeof(TestRunner).Assembly.Location;
+        var artifact = Environment.GetEnvironmentVariable("RIGI_TEST_HOST");
+        if (string.IsNullOrWhiteSpace(artifact)) artifact = TestArtifacts.Host;
         if (string.IsNullOrWhiteSpace(artifact))
-            throw new InvalidOperationException("AOT 测试宿主必须设置 RIGI_TEST_RIGIC 为实际 rigic 可执行文件或 DLL");
+            throw new InvalidOperationException("无法定位隔离测试宿主");
         artifact = Path.GetFullPath(artifact);
-        if (!File.Exists(artifact)) throw new FileNotFoundException("未找到 rigic worker 产物", artifact);
+        if (!File.Exists(artifact)) throw new FileNotFoundException("未找到测试 worker 宿主", artifact);
         var info = new ProcessStartInfo
         {
             FileName = artifact, UseShellExecute = false,
@@ -70,12 +70,12 @@ public sealed class CaseWorkerClient(ICaseWorkerLeaseProvider? leases = null)
             var runtimeConfig = Path.ChangeExtension(artifact, ".runtimeconfig.json");
             var dependencies = Path.ChangeExtension(artifact, ".deps.json");
             if (!File.Exists(runtimeConfig) || !File.Exists(dependencies))
-                throw new FileNotFoundException("rigic DLL 需要同目录 runtimeconfig/deps");
+                throw new FileNotFoundException("测试宿主 DLL 需要同目录 runtimeconfig/deps");
             info.FileName = "dotnet";
             foreach (var argument in new[] { "exec", "--runtimeconfig", runtimeConfig, "--depsfile", dependencies, artifact })
                 info.ArgumentList.Add(argument);
         }
-        foreach (var argument in new[] { "test", "--worker", "--case-id", caseId, "--result-file", resultPath, "--spawned" })
+        foreach (var argument in new[] { "--isolated-worker", "--case-id", caseId, "--result-file", resultPath })
             info.ArgumentList.Add(argument);
         // 子 fixtures 与 LLVM 临时目录都从请求根派生，不改变 HOME 或用户 cache。
         foreach (var variable in new[] { "TMPDIR", "TEMP", "TMP" }) info.Environment[variable] = root;
@@ -131,7 +131,7 @@ public sealed class CaseWorkerClient(ICaseWorkerLeaseProvider? leases = null)
                 var expectedExit = outcome.Status switch { CaseStatus.Pass or CaseStatus.Skip => 0, CaseStatus.Cancel => 130, _ => 1 };
                 if (process.ExitCode != expectedExit)
                     return Measured(Failure(id, $"worker 状态与退出码矛盾：{outcome.Status}/{process.ExitCode}\n{outcome.Diagnostics}\n{output}"));
-                if (id.StartsWith("legacy/NativeE2E/", StringComparison.Ordinal) && (outcome.Diagnostics + output)
+                if (CaseCatalog.Find(id)?.Suite == "NativeE2E" && (outcome.Diagnostics + output)
                     .Contains("warning: linking two modules of different", StringComparison.OrdinalIgnoreCase))
                     return Measured(Failure(id, "LLVM 模块目标失配警告\n" + outcome.Diagnostics + output));
                 return Measured(outcome with { Diagnostics = outcome.Diagnostics + output });

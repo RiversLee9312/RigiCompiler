@@ -40,7 +40,7 @@ namespace RigiCompiler.Tests
                 "    var n = new t(o)\n" +
                 "    return 0\n" +
                 "}\n");
-            TestHarness.CheckTrue("动态 new 无关类型不得命中 Account init",
+            CaseAssertions.CheckTrue("动态 new 无关类型不得命中 Account init",
                 result.Exception != null,
                 result.Exception?.ToString() ?? "未抛异常");
         }

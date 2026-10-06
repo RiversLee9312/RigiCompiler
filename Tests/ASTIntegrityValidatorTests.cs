@@ -21,7 +21,7 @@ namespace RigiCompiler.Tests
         // 合法小树：声明 + 初始化器 + import carrier + 注解 + 表达式语句 + 范围循环
         public static void TestValidTree()
         {
-            TestHarness.Section("Valid AST (expect pass)");
+            CompilerTestTools.Section("Valid AST (expect pass)");
 
             var root = new RootASTNode();
 
@@ -70,14 +70,14 @@ namespace RigiCompiler.Tests
 
             StampSpans(root);
             ExpectPass("合法小树（声明/import/注解/表达式语句/范围循环）", root);
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 结构破坏 =====
 
         public static void TestInvalidStructures()
         {
-            TestHarness.Section("Invalid AST (expect CompilerInternalException)");
+            CompilerTestTools.Section("Invalid AST (expect CompilerInternalException)");
 
             // 子节点 Parent 指错：TypeAnnotation 的 Parent 应为声明节点
             ExpectThrow("子节点 Parent 指错（TypeAnnotation → Root）", () =>
@@ -124,14 +124,14 @@ namespace RigiCompiler.Tests
                 ASTIntegrityValidator.Validate(root);
             });
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== Span 破坏与类型审计（M28）=====
 
         public static void TestSpanAndAuditViolations()
         {
-            TestHarness.Section("Span & Audit Violations (expect CompilerInternalException)");
+            CompilerTestTools.Section("Span & Audit Violations (expect CompilerInternalException)");
 
             // 子节点缺 Span（root 已盖戳、子节点故意不盖）
             ExpectThrow("子节点缺 Span", () =>
@@ -189,7 +189,7 @@ namespace RigiCompiler.Tests
                 ASTIntegrityValidator.Validate(root);
             });
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试专用坏节点（类型审计用例）=====
@@ -251,17 +251,17 @@ namespace RigiCompiler.Tests
             }
         }
 
-        // 期望 Validate 通过（断言走 TestHarness.CheckTrue）
+        // 期望 Validate 通过（断言走 CaseAssertions.CheckTrue）
         private static void ExpectPass(string name, RootASTNode root)
         {
             try
             {
                 ASTIntegrityValidator.Validate(root);
-                TestHarness.CheckTrue(name, true);
+                CaseAssertions.CheckTrue(name, true);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(name, false, $"expected pass, got {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue(name, false, $"expected pass, got {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -272,22 +272,22 @@ namespace RigiCompiler.Tests
             try
             {
                 build();
-                TestHarness.CheckTrue(name, false, "expected CompilerInternalException, but validation passed");
+                CaseAssertions.CheckTrue(name, false, "expected CompilerInternalException, but validation passed");
             }
             catch (CompilerInternalException ex)
             {
-                TestHarness.CheckTrue($"{name}  (rejected: {ex.Message})", true);
+                CaseAssertions.CheckTrue($"{name}  (rejected: {ex.Message})", true);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue(name, false, $"expected CompilerInternalException, got {ex.GetType().Name}: {ex.Message}");
+                CaseAssertions.CheckTrue(name, false, $"expected CompilerInternalException, got {ex.GetType().Name}: {ex.Message}");
             }
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("ASTIntegrityValidator",
+
+        internal static TestSuiteData Spec { get; } = new("ASTIntegrityValidator",
         [
             (nameof(TestValidTree), TestValidTree),
             (nameof(TestInvalidStructures), TestInvalidStructures),

@@ -23,7 +23,7 @@ namespace RigiCompiler.Tests
         // ===== 1. 嵌套泛型类型引用 =====
         public static void TestNestedGenericTypes()
         {
-            TestHarness.Section("Testing Nested Generic Type References");
+            CompilerTestTools.Section("Testing Nested Generic Type References");
 
             // 单层回归
             TestType("var a: List\\<String>", "List<String>");
@@ -40,13 +40,13 @@ namespace RigiCompiler.Tests
             // 嵌套泛型 + 初始化表达式
             TestDecl("var e: List\\<List\\<i32>> = null", "List<List<i32>>", "Null");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 1.5 泛型与小于号的无歧义共存 =====
         public static void TestGenericVsLessThan()
         {
-            TestHarness.Section("Testing \\< Generics vs < Less-Than");
+            CompilerTestTools.Section("Testing \\< Generics vs < Less-Than");
 
             // < 现在只是小于号（在 \\< 语法下不再歧义）
             TestExpr("var lt = a < b", "Binary(Path(a, []) < Path(b, []))");
@@ -58,13 +58,13 @@ namespace RigiCompiler.Tests
             TestExpr("var gt = foo\\<i32> > x", "Binary(Path(foo<i32>, []) > Path(x, []))");
             TestExpr("var ge = foo\\<i32> >= x", "Binary(Path(foo<i32>, []) >= Path(x, []))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 2. > 系列运算符组合 =====
         public static void TestCombinedOperators()
         {
-            TestHarness.Section("Testing Combined > Operators");
+            CompilerTestTools.Section("Testing Combined > Operators");
 
             // >= 由 > 和 = 组合
             TestExpr("var r = a >= b", "Binary(Path(a, []) >= Path(b, []))");
@@ -73,109 +73,109 @@ namespace RigiCompiler.Tests
             // >>> 由三个 > 组合
             TestExpr("var t = (a >>> 2)", "Group(Binary(Path(a, []) >>> Int(2,I32)))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 3. 回归：其他比较运算符不受影响 =====
         public static void TestRegressionOperators()
         {
-            TestHarness.Section("Testing Operator Regression");
+            CompilerTestTools.Section("Testing Operator Regression");
 
             TestExpr("var g = a > b", "Binary(Path(a, []) > Path(b, []))");
             TestExpr("var l = a <= b", "Binary(Path(a, []) <= Path(b, []))");
             TestExpr("var e = a == b", "Binary(Path(a, []) == Path(b, []))");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 4. 错误用例 =====
         public static void TestErrorCases()
         {
-            TestHarness.Section("Testing Error Cases (expect ParserException)");
+            CompilerTestTools.Section("Testing Error Cases (expect ParserException)");
 
             // 移位与比较混用，违反"无运算符优先级"
-            TestHarness.CheckParseError("var x = (a >> b >= c)",
-                () => TestHarness.ParseRoot("var x = (a >> b >= c)"),
+            CaseAssertions.CheckParseError("var x = (a >> b >= c)",
+                () => CompilerTestTools.ParseRoot("var x = (a >> b >= c)"),
                 "没有运算符优先级");
             // 非法运算符组合
-            TestHarness.CheckParseError("var y = (a >== b)",
-                () => TestHarness.ParseRoot("var y = (a >== b)"),
+            CaseAssertions.CheckParseError("var y = (a >== b)",
+                () => CompilerTestTools.ParseRoot("var y = (a >== b)"),
                 "Unexpected token at start of expression");
             // 旧语法：裸 < 不再是泛型开启符（\\< 才是）
-            TestHarness.CheckParseError("var old: List<String>",
-                () => TestHarness.ParseRoot("var old: List<String>"),
+            CaseAssertions.CheckParseError("var old: List<String>",
+                () => CompilerTestTools.ParseRoot("var old: List<String>"),
                 "Expected '=' or line break after type annotation");
             // \ 后必须紧跟 <
-            TestHarness.CheckParseError("var w = a \\ b",
-                () => TestHarness.ParseRoot("var w = a \\ b"),
+            CaseAssertions.CheckParseError("var w = a \\ b",
+                () => CompilerTestTools.ParseRoot("var w = a \\ b"),
                 "Expected '<' after '\\'");
 
             // 全管线负例：类型引用位置多一个 `>`
-            TestHarness.CheckParseError("var x: List\\<i32>> = null",
-                () => TestHarness.ParseRoot("var x: List\\<i32>> = null"),
+            CaseAssertions.CheckParseError("var x: List\\<i32>> = null",
+                () => CompilerTestTools.ParseRoot("var x: List\\<i32>> = null"),
                 "Expected '=' or line break after type annotation");
             // 全管线负例：类型引用位置闭括号写成 `\>`
-            TestHarness.CheckParseError("var x: List\\<i32\\> = null",
-                () => TestHarness.ParseRoot("var x: List\\<i32\\> = null"),
+            CaseAssertions.CheckParseError("var x: List\\<i32\\> = null",
+                () => CompilerTestTools.ParseRoot("var x: List\\<i32\\> = null"),
                 "close with '>', not '\\>'");
             // 全管线负例：表达式泛型调用多一个 `>`（不得静默解析为比较）
-            TestHarness.CheckParseError("var x = foo\\<i32>>(1)",
-                () => TestHarness.ParseRoot("var x = foo\\<i32>>(1)"),
+            CaseAssertions.CheckParseError("var x = foo\\<i32>>(1)",
+                () => CompilerTestTools.ParseRoot("var x = foo\\<i32>>(1)"),
                 "Unexpected extra '>' after generic argument list");
             // 全管线负例：表达式泛型调用闭括号写成 `\>`
-            TestHarness.CheckParseError("var x = foo\\<i32\\>(1)",
-                () => TestHarness.ParseRoot("var x = foo\\<i32\\>(1)"),
+            CaseAssertions.CheckParseError("var x = foo\\<i32\\>(1)",
+                () => CompilerTestTools.ParseRoot("var x = foo\\<i32\\>(1)"),
                 "close with '>', not '\\>'");
             // 全管线负例：约束位置多一个 `>`
-            TestHarness.CheckParseError("class A\\<T extends List\\<i32>>> {}",
-                () => TestHarness.ParseRoot("class A\\<T extends List\\<i32>>> {}"),
+            CaseAssertions.CheckParseError("class A\\<T extends List\\<i32>>> {}",
+                () => CompilerTestTools.ParseRoot("class A\\<T extends List\\<i32>>> {}"),
                 "Unexpected token after type name");
             // 约束位置闭括号写成 `\>`
-            TestHarness.CheckParseError("class A\\<T extends List\\<i32\\>> {}",
-                () => TestHarness.ParseRoot("class A\\<T extends List\\<i32\\>> {}"),
+            CaseAssertions.CheckParseError("class A\\<T extends List\\<i32\\>> {}",
+                () => CompilerTestTools.ParseRoot("class A\\<T extends List\\<i32\\>> {}"),
                 "close with '>', not '\\>'");
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 5. AST 结构断言（AGENTS §5：快照不作为唯一验证方式）=====
         public static void TestStructuralAssertions()
         {
-            TestHarness.Section("Structural Assertions");
+            CompilerTestTools.Section("Structural Assertions");
 
             // 类型侧：嵌套泛型结构
-            var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(
+            var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(
                 "var e: List\\<List\\<i32>> = null");
-            TestHarness.CheckTrue("TypeAnnotation 存在", decl.TypeAnnotation != null);
-            TestHarness.CheckTrue("TypeAnnotation 的 Parent 是声明节点",
+            CaseAssertions.CheckTrue("TypeAnnotation 存在", decl.TypeAnnotation != null);
+            CaseAssertions.CheckTrue("TypeAnnotation 的 Parent 是声明节点",
                 ReferenceEquals(decl.TypeAnnotation!.Parent, decl));
             var outerElem = decl.TypeAnnotation!.TypeSymbol.symbol.elements[0];
-            TestHarness.CheckTrue("外层类型名是 List", outerElem.name == "List");
-            TestHarness.CheckTrue("外层泛型实参数为 1", outerElem.generics.Count == 1);
+            CaseAssertions.CheckTrue("外层类型名是 List", outerElem.name == "List");
+            CaseAssertions.CheckTrue("外层泛型实参数为 1", outerElem.generics.Count == 1);
             var innerElem = outerElem.generics[0].TypeSymbol.symbol.elements[0];
-            TestHarness.CheckTrue("内层类型名是 List", innerElem.name == "List");
-            TestHarness.CheckTrue("内层泛型实参是 i32",
+            CaseAssertions.CheckTrue("内层类型名是 List", innerElem.name == "List");
+            CaseAssertions.CheckTrue("内层泛型实参是 i32",
                 innerElem.generics.Count == 1 &&
                 innerElem.generics[0].TypeSymbol.symbol.elements[0].name == "i32");
-            TestHarness.CheckTrue("Initializer Root 存在且已填充",
+            CaseAssertions.CheckTrue("Initializer Root 存在且已填充",
                 decl.Initializer != null && decl.Initializer.IsAttached);
 
             // 表达式侧：>= 重组为单个二元运算
-            var cmp = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl("var r = a >= b");
-            TestHarness.CheckTrue("内容表达式是 BinaryExpression",
+            var cmp = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl("var r = a >= b");
+            CaseAssertions.CheckTrue("内容表达式是 BinaryExpression",
                 cmp.Initializer!.Expression is BinaryExpressionASTNode);
             var bin = (BinaryExpressionASTNode)cmp.Initializer.Expression;
-            TestHarness.CheckTrue("运算符重组为 >=", bin.Operator == ">=");
-            TestHarness.CheckTrue("Left/Right Root 均已 Attach",
+            CaseAssertions.CheckTrue("运算符重组为 >=", bin.Operator == ">=");
+            CaseAssertions.CheckTrue("Left/Right Root 均已 Attach",
                 bin.Left.IsAttached && bin.Right.IsAttached);
-            TestHarness.CheckTrue("Left Root 的 Parent 是二元节点",
+            CaseAssertions.CheckTrue("Left Root 的 Parent 是二元节点",
                 ReferenceEquals(bin.Left.Parent, bin));
-            TestHarness.CheckTrue("Right Root 的 Parent 是二元节点",
+            CaseAssertions.CheckTrue("Right Root 的 Parent 是二元节点",
                 ReferenceEquals(bin.Right.Parent, bin));
-            TestHarness.CheckTrue("二元节点挂在 Initializer Root 下",
+            CaseAssertions.CheckTrue("二元节点挂在 Initializer Root 下",
                 ReferenceEquals(bin.Parent, cmp.Initializer));
 
-            TestHarness.Blank();
+            CompilerTestTools.Blank();
         }
 
         // ===== 测试辅助 =====
@@ -185,14 +185,14 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
                 string actual = decl.TypeAnnotation != null
                     ? AstDescribe.Type(decl.TypeAnnotation) : "<null>";
-                TestHarness.Check(Label(code), actual, expectedType);
+                CaseAssertions.Check(Label(code), actual, expectedType);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -201,12 +201,12 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
-                TestHarness.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
+                CaseAssertions.Check(Label(code), AstDescribe.Expr(decl.Initializer!.Expression), expectedDesc);
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -215,16 +215,16 @@ namespace RigiCompiler.Tests
         {
             try
             {
-                var decl = (VariableDeclarationASTNode)TestHarness.ParseFirstDecl(code);
+                var decl = (VariableDeclarationASTNode)CompilerTestTools.ParseFirstDecl(code);
                 string type = decl.TypeAnnotation != null
                     ? AstDescribe.Type(decl.TypeAnnotation) : "<null>";
                 string init = decl.Initializer != null
                     ? AstDescribe.Expr(decl.Initializer.Expression) : "<null>";
-                TestHarness.Check(Label(code), $"{type} = {init}", $"{expectedType} = {expectedInit}");
+                CaseAssertions.Check(Label(code), $"{type} = {init}", $"{expectedType} = {expectedInit}");
             }
             catch (Exception ex)
             {
-                TestHarness.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
+                CaseAssertions.CheckTrue($"{Label(code)} => 意外异常", false, ex.Message);
             }
         }
 
@@ -232,9 +232,9 @@ namespace RigiCompiler.Tests
         private static string Label(string code) => code.Replace("\n", "\\n");
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("GenericParsing",
+
+        internal static TestSuiteData Spec { get; } = new("GenericParsing",
         [
             (nameof(TestNestedGenericTypes), TestNestedGenericTypes),
             (nameof(TestGenericVsLessThan), TestGenericVsLessThan),

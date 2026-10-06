@@ -16,15 +16,14 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class LexerFuzzTests
     {
-        private static int passCount = 0;
-        private static int failCount = 0;
 
-        // 单 input 驱动沿用本套件自己的计数器，供静态目录适配。
-        internal static (int Assertions, int Failures) RunTokenCase(string code, string expected)
+
+
+        // 协议失败探针复用真实 token 断言；计数属于当前隔离请求。
+        internal static void RunTokenCase(string code, string expected)
         {
-            passCount = failCount = 0;
+
             ExpectTokens(code, expected);
-            return (passCount + failCount, failCount);
         }
 
         // ===== 1. 固定用例：精确 token 序列 =====
@@ -34,7 +33,6 @@ namespace RigiCompiler.Tests
             Console.WriteLine("=== Testing Fixed Lexer Cases (slash/comment/EOF) ===");
 
             // 除法（M25 前直接报 "Incorrect comment block or line start"）
-            ExpectTokens("a / b", "W(a) N(/) W(b) EOF");
             ExpectTokens("a/b", "W(a) N(/) W(b) EOF");
             ExpectTokens("a / b / c", "W(a) N(/) W(b) N(/) W(c) EOF");
             // 除法赋值（M31 起不再合并：复合赋值拆成两个 token，将来由 Parser 重组）
@@ -47,7 +45,6 @@ namespace RigiCompiler.Tests
             // 块注释
             ExpectTokens("/* block */a", "C( block ) W(a) EOF");
             // 块注释跨行：按行分段，换行以 LineBreakToken 入流（M31）
-            ExpectTokens("/* multi\nline */a", "C( multi) LB C(line ) W(a) EOF");
             // 块注释不吞字符：孤 * 与反斜杠都保留在内容里（M31 修复）
             ExpectTokens("/* a*b */", "C( a*b ) EOF");
             ExpectTokens("/* 2 * 3 */", "C( 2 * 3 ) EOF");
@@ -172,7 +169,7 @@ namespace RigiCompiler.Tests
                     }
                 }
                 Console.WriteLine($"  [PASS] {DescribeSource(code)}  => {actualDesc}（范围精确）");
-                passCount++;
+                CaseAssertions.Record(true);
             }
             catch (Exception ex)
             {
@@ -205,35 +202,6 @@ namespace RigiCompiler.Tests
             "var q = a / b\n"
         };
 
-        public static void TestRandomFuzz()
-        {
-            Console.WriteLine("=== Testing Random Fuzz (seeded, 6000 cases) ===");
-
-            var rng = new Random(20260726);
-            int failedBefore = failCount;
-
-            // verbose 日志默认关闭，fuzz 循环无需屏蔽控制台
-            // 2a. 纯随机字符流 ×2500
-            for (int i = 0; i < 2500; i++)
-            {
-                FuzzOne(RandomFromPool(rng, CharPool, 200), "纯随机");
-            }
-            // 2b. 结构化片段拼接 ×2500
-            for (int i = 0; i < 2500; i++)
-            {
-                FuzzOne(RandomFromFragments(rng), "结构化");
-            }
-            // 2c. 合法源码变异 ×1000
-            for (int i = 0; i < 1000; i++)
-            {
-                FuzzOne(Mutate(rng, ValidSeeds[rng.Next(ValidSeeds.Length)]), "变异");
-            }
-
-            int fuzzCases = 2500 + 2500 + 1000;
-            int fuzzFailures = failCount - failedBefore;
-            Console.WriteLine($"  fuzz 汇总：{fuzzCases - fuzzFailures} passed, {fuzzFailures} failed");
-            Console.WriteLine();
-        }
 
         // 单个 fuzz 用例：不崩（只允许 LexerException）+ 不变量校验
         private static void FuzzOne(string source, string category)
@@ -244,30 +212,29 @@ namespace RigiCompiler.Tests
                 string? problem = CheckInvariants(tokens);
                 if (problem != null)
                 {
-                    failCount++;
+                    CaseAssertions.Record(false);
                     ReportFuzzFailure(source, category, problem);
                 }
-                else passCount++;
+                else CaseAssertions.Record(true);
             }
             catch (LexerException)
             {
                 // 非法输入的合法拒绝
-                passCount++;
+                CaseAssertions.Record(true);
             }
             catch (Exception ex)
             {
-                failCount++;
+                CaseAssertions.Record(false);
                 ReportFuzzFailure(source, category,
                     $"非 LexerException 异常: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        // fuzz 失败详情先缓冲到静态列表，RunAll 末尾统一输出前 10 条，避免刷屏
-        private static readonly List<string> fuzzFailureLog = new();
+        // 每个失败立即写入当前 worker 的诊断流，父框架保留完整输入与失败原因。
 
         private static void ReportFuzzFailure(string source, string category, string problem)
         {
-            fuzzFailureLog.Add(
+            Console.WriteLine(
                 $"  [FAIL] ({category}) {DescribeSource(source)}\n      => {problem}");
         }
 
@@ -370,7 +337,7 @@ namespace RigiCompiler.Tests
                 if (block.Statements.Count == expectedCount)
                 {
                     Console.WriteLine($"  [PASS] {name}");
-                    passCount++;
+                    CaseAssertions.Record(true);
                 }
                 else
                 {
@@ -410,7 +377,7 @@ namespace RigiCompiler.Tests
                 if (actual == expected)
                 {
                     Console.WriteLine($"  [PASS] {DescribeSource(code)}  => {actual}");
-                    passCount++;
+                    CaseAssertions.Record(true);
                 }
                 else
                 {
@@ -433,7 +400,7 @@ namespace RigiCompiler.Tests
             catch (LexerException)
             {
                 Console.WriteLine($"  [PASS] {DescribeSource(code)}  (rejected)");
-                passCount++;
+                CaseAssertions.Record(true);
             }
             catch (Exception ex)
             {
@@ -450,7 +417,7 @@ namespace RigiCompiler.Tests
         {
             Console.WriteLine($"  [FAIL] {DescribeSource(code)}");
             Console.WriteLine($"      => {message}");
-            failCount++;
+            CaseAssertions.Record(false);
         }
 
         // 快照分类真值全 BMP 锁定：任何 .NET 升级变化必须连同数据/文档
@@ -473,7 +440,7 @@ namespace RigiCompiler.Tests
             var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(states));
             if (firstMismatch < 0 && sha ==
                 "16E9C532ABEE5ECF8BDA353626CAC146AA9F32CE0E3958EE677B1A58ADD14A98")
-                passCount++;
+                CaseAssertions.Record(true);
             else
                 Fail("BMP-category-snapshot", $"首次差异 U+{firstMismatch:X4}, SHA256={sha}");
 
@@ -484,15 +451,15 @@ namespace RigiCompiler.Tests
                 !Keywords.IsIdentifierStart("𐐀a") &&
                 !IdentifierCharacters.IsLetterOrDigit('\uD801') &&
                 !IdentifierCharacters.IsLetterOrDigit('\uDC00'))
-                passCount++;
+                CaseAssertions.Record(true);
             else
                 Fail("identifier-head", "字母/Nd/代理元首位分类不一致");
         }
 
         // ===== 入口 =====
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = BuildSpec();
+
+        internal static TestSuiteData Spec { get; } = BuildSpec();
 
         // 先按原 RNG 消耗顺序生成全部输入，再按稳定全局序号分派；
         // worker 调度顺序不能改变 seed、2500/2500/1000 配额或实际源码。
@@ -505,7 +472,7 @@ namespace RigiCompiler.Tests
             for (int i = 0; i < 1000; i++) inputs.Add((Mutate(rng, ValidSeeds[rng.Next(ValidSeeds.Length)]), "变异"));
             return inputs;
         }
-        private static ParallelSuiteRunner.SuiteSpec BuildSpec()
+        private static TestSuiteData BuildSpec()
         {
             var cases = new List<(string Label, Action Run)>
             {
@@ -522,9 +489,10 @@ namespace RigiCompiler.Tests
                 var input = inputs[i];
                 cases.Add(($"fuzz-{i:D4}-{input.Category}", () => FuzzOne(input.Source, input.Category)));
             }
-            return LegacySuiteSpecs.Counted("LexerFuzz", cases,
-                () => { passCount = failCount = 0; fuzzFailureLog.Clear(); },
-                () => { foreach (var line in fuzzFailureLog.Take(10)) Console.WriteLine(line); return (passCount, failCount); });
+            // 抽出的 pilot 动作追加在末尾，既有 5 个固定组和 6000 seed 的数字索引不变。
+            cases.Add(("lexer.slash", () => ExpectTokens("a / b", "W(a) N(/) W(b) EOF")));
+            cases.Add(("lexer.multiline-comment", () => ExpectTokens("/* multi\nline */a", "C( multi) LB C(line ) W(a) EOF")));
+            return new TestSuiteData("LexerFuzz", cases);
         }
     }
 }

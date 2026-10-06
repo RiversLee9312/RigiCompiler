@@ -7,9 +7,9 @@ namespace RigiCompiler.Tests;
 /// <summary>只验证旁路、异常、进程隔离与选择契约；不启动全量测试。</summary>
 public static class PerformanceMetricsTests
 {
-    public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-    internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("PerformanceMetrics",
+
+    internal static TestSuiteData Spec { get; } = new("PerformanceMetrics",
     [
         (nameof(TestRunnerSelection), () => WithDirectory(TestRunnerSelection)),
         (nameof(TestTelemetryContract), () => WithDirectory(TestTelemetryContract)),
@@ -29,26 +29,12 @@ public static class PerformanceMetricsTests
 
     private static void TestRunnerSelection(string directory)
     {
-        int calls = 0;
-        var spec = new ParallelSuiteRunner.SuiteSpec("MetricsProbe", new[] { ("known", (Action)(() => calls++)) });
-        var oldOut = Console.Out;
-        var oldError = Console.Error;
-        using var captured = new StringWriter();
-        int listed, unknown, selected;
-        bool untouched;
-        try
-        {
-            Console.SetOut(captured); Console.SetError(captured);
-            listed = ParallelSuiteRunner.RunWithArgs(spec, ["list"]);
-            unknown = ParallelSuiteRunner.RunWithArgs(spec, ["label", "known", "unknown"]);
-            untouched = calls == 0;
-            selected = ParallelSuiteRunner.RunWithArgs(spec, ["label", "known"]);
-        }
-        finally { Console.SetOut(oldOut); Console.SetError(oldError); }
-        // runner 自带 Reset，先验证选择再启动其余断言。
-        TestHarness.Reset();
-        TestHarness.CheckTrue("list 纯枚举 / 未知 label 返回2 / 精确 label 执行", listed == 0 && unknown == 2 && selected == 0 && calls == 1 && untouched);
-
+        var labels = new[] { "known" };
+        var selected = CaseSelection.SelectLabels(labels, ["known"]);
+        bool rejected = false;
+        try { CaseSelection.SelectLabels(labels, ["known", "unknown"]); }
+        catch (ArgumentException) { rejected = true; }
+        CaseAssertions.CheckTrue("纯选择 / 未知 label 整批拒绝 / 精确 label 不执行动作", rejected && selected.SequenceEqual(labels));
     }
 
     private static void TestTelemetryContract(string directory)
@@ -56,9 +42,7 @@ public static class PerformanceMetricsTests
         var source = Path.Combine(directory, "valid.rg");
         File.WriteAllText(source, "pub func main(): i32 { return 0 }\n");
         var metricDirectory = Path.Combine(directory, "metrics");
-        var executable = Environment.ProcessPath!;
-        var prefix = Path.GetFileNameWithoutExtension(executable) == "dotnet"
-            ? new[] { Environment.GetCommandLineArgs()[0] } : Array.Empty<string>();
+        var (executable, prefix) = TestArtifacts.CompilerCommand;
         var arguments = prefix.Concat(new[] { "compile", "--file", source, "--parse-only" }).ToArray();
         var disabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = "" };
         var enabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = metricDirectory };
@@ -66,11 +50,11 @@ public static class PerformanceMetricsTests
             environment: disabled, timeoutMilliseconds: 30_000, closeStdin: true);
         int second = ExternalProcess.Run(executable, arguments, out var profiledStdout, out var profiledStderr,
             environment: enabled, timeoutMilliseconds: 30_000, closeStdin: true);
-        TestHarness.CheckTrue("opt-in 不改变 stdout/stderr/退出码", first == 0 && second == 0 && stdout == profiledStdout && stderr == profiledStderr);
+        CaseAssertions.CheckTrue("opt-in 不改变 stdout/stderr/退出码", first == 0 && second == 0 && stdout == profiledStdout && stderr == profiledStderr);
         ExternalProcess.Run(executable, arguments, out _, out _, environment: enabled,
             timeoutMilliseconds: 30_000, closeStdin: true);
         var files = Directory.GetFiles(metricDirectory, "metrics-*.jsonl");
-        TestHarness.CheckTrue("两个进程写不同 JSONL 文件", files.Length == 2 && files.Distinct().Count() == 2);
+        CaseAssertions.CheckTrue("两个进程写不同 JSONL 文件", files.Length == 2 && files.Distinct().Count() == 2);
         var processIds = new HashSet<int>();
         var scopeProcessIds = new HashSet<int>();
         var workerProcessIds = new HashSet<int>();
@@ -111,7 +95,7 @@ public static class PerformanceMetricsTests
                     break;
             }
         }
-        TestHarness.CheckTrue("JSONL 资源字段及进程 ID", validFields && processIds.Count == 2
+        CaseAssertions.CheckTrue("JSONL 资源字段及进程 ID", validFields && processIds.Count == 2
             && scopeProcessIds.SetEquals(processIds) && workerProcessIds.SetEquals(processIds));
 
     }
@@ -121,9 +105,7 @@ public static class PerformanceMetricsTests
         var source = Path.Combine(directory, "valid.rg");
         File.WriteAllText(source, "pub func main(): i32 { return 0 }\n");
         var metricDirectory = Path.Combine(directory, "metrics");
-        var executable = Environment.ProcessPath!;
-        var prefix = Path.GetFileNameWithoutExtension(executable) == "dotnet"
-            ? new[] { Environment.GetCommandLineArgs()[0] } : Array.Empty<string>();
+        var (executable, prefix) = TestArtifacts.CompilerCommand;
         var arguments = prefix.Concat(new[] { "compile", "--file", source, "--parse-only" }).ToArray();
         var disabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = "" };
         var enabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = metricDirectory };
@@ -134,7 +116,7 @@ public static class PerformanceMetricsTests
             .Select(line => JsonDocument.Parse(line)).ToArray();
         try
         {
-            TestHarness.CheckTrue("异常和非零命令都闭合 failed scope", failed != 0 && failedRows.Any(d =>
+            CaseAssertions.CheckTrue("异常和非零命令都闭合 failed scope", failed != 0 && failedRows.Any(d =>
                 d.RootElement.GetProperty("phase").GetString() == "frontend.parser" && d.RootElement.GetProperty("status").GetString() == "failed")
                 && failedRows.Any(d => d.RootElement.GetProperty("phase").GetString() == "cli.command" && d.RootElement.GetProperty("status").GetString() == "failed"));
         }
@@ -147,9 +129,7 @@ public static class PerformanceMetricsTests
         var source = Path.Combine(directory, "valid.rg");
         File.WriteAllText(source, "pub func main(): i32 { return 0 }\n");
         var metricDirectory = Path.Combine(directory, "metrics");
-        var executable = Environment.ProcessPath!;
-        var prefix = Path.GetFileNameWithoutExtension(executable) == "dotnet"
-            ? new[] { Environment.GetCommandLineArgs()[0] } : Array.Empty<string>();
+        var (executable, prefix) = TestArtifacts.CompilerCommand;
         var arguments = prefix.Concat(new[] { "compile", "--file", source, "--parse-only" }).ToArray();
         var disabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = "" };
         var enabled = new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = metricDirectory };
@@ -159,19 +139,19 @@ public static class PerformanceMetricsTests
         int invalidDirectory = ExternalProcess.Run(executable, arguments, out var fallbackStdout, out var fallbackStderr,
             environment: new Dictionary<string, string> { ["RIGI_PROFILE_DIR"] = source },
             timeoutMilliseconds: 30_000, closeStdin: true);
-        TestHarness.CheckTrue("不可写遥测目录不改变输出", invalidDirectory == 0 && fallbackStdout == stdout && fallbackStderr == stderr);
+        CaseAssertions.CheckTrue("不可写遥测目录不改变输出", invalidDirectory == 0 && fallbackStdout == stdout && fallbackStderr == stderr);
 
     }
 
     private static void TestExternalTimeout(string directory)
     {
-        if (!OperatingSystem.IsLinux()) { TestHarness.RecordSkip("Linux 进程超时专项"); return; }
+        if (!OperatingSystem.IsLinux()) { CaseAssertions.RecordSkip("Linux 进程超时专项"); return; }
         if (OperatingSystem.IsLinux())
         {
             bool threw = false;
             try { ExternalProcess.Run("/bin/sh", ["-c", "sleep 10"], out _, out _, timeoutMilliseconds: 50, closeStdin: true, parentPhase: "test.timeout-parent"); }
             catch (InvalidOperationException) { threw = true; }
-            TestHarness.CheckTrue("ExternalProcess 超时抛受控失败", threw);
+            CaseAssertions.CheckTrue("ExternalProcess 超时抛受控失败", threw);
         }
 
     }
@@ -182,9 +162,9 @@ public static class PerformanceMetricsTests
         try
         {
             Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", directory);
-            TestHarness.CheckTrue("runtime-cache 私有根覆盖", RigiRtBuilder.GetCacheRoot() == Path.Combine(directory, "runtime-cache"));
+            CaseAssertions.CheckTrue("runtime-cache 私有根覆盖", RigiRtBuilder.GetCacheRoot() == Path.Combine(directory, "runtime-cache"));
             Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", null);
-            TestHarness.CheckTrue("runtime-cache 默认路径兼容", RigiRtBuilder.GetCacheRoot() == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rigi", "runtime-cache"));
+            CaseAssertions.CheckTrue("runtime-cache 默认路径兼容", RigiRtBuilder.GetCacheRoot() == Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rigi", "runtime-cache"));
         }
         finally { Environment.SetEnvironmentVariable("RIGI_CACHE_ROOT", oldRoot); }
     }

@@ -15,9 +15,9 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class BilWriterTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec { get; } = new("BilWriter",
+
+        internal static TestSuiteData Spec { get; } = new("BilWriter",
         [
             (nameof(TestCompleteGolden), TestCompleteGolden),
             (nameof(TestWrapperGolden), TestWrapperGolden),
@@ -71,7 +71,7 @@ namespace RigiCompiler.Tests
             main.Blocks.Add(entry);
             module.Functions.Add(main);
 
-            TestHarness.Check("§20 完整黄金示例", BilWriter.Write(module), Lines(
+            CaseAssertions.Check("§20 完整黄金示例", BilWriter.Write(module), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -117,7 +117,7 @@ namespace RigiCompiler.Tests
             BilTestHarness.CheckBilValid("§20 完整示例验证器零错误", module);
 
             // ===== Origin 调试链占位（ARCHITECTURE §6.3：反序列化/手工构造恒为 null）=====
-            TestHarness.CheckTrue("Origin 默认 null", entry.Instructions[0].Origin == null);
+            CaseAssertions.CheckTrue("Origin 默认 null", entry.Instructions[0].Origin == null);
 
         }
 
@@ -148,7 +148,7 @@ namespace RigiCompiler.Tests
                 modifiersOnNextLine: true));
             wrapperModule.LocalSymbols.Add(logged);
 
-            TestHarness.Check("§20 wrapper 应用标记与 proxy 模板示例", BilWriter.Write(wrapperModule), Lines(
+            CaseAssertions.Check("§20 wrapper 应用标记与 proxy 模板示例", BilWriter.Write(wrapperModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -203,7 +203,7 @@ namespace RigiCompiler.Tests
                     new BilCatchEntry(BilOp.Type("core::RuntimeException"), new BilBlock("catchRuntime")),
                 }));
 
-            TestHarness.Check("§19 资源全形态", BilWriter.Write(resModule), Lines(
+            CaseAssertions.Check("§19 资源全形态", BilWriter.Write(resModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -259,7 +259,7 @@ namespace RigiCompiler.Tests
             hintMain.Blocks.Add(hintEntry);
             hintModule.Functions.Add(hintMain);
 
-            TestHarness.Check("§18 hint 指令", BilWriter.Write(hintModule), Lines(
+            CaseAssertions.Check("§18 hint 指令", BilWriter.Write(hintModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -314,7 +314,7 @@ namespace RigiCompiler.Tests
                 new[] { new BilCaseParameter("errorCode", ".i32") }, discriminantResource: "R_FailedCase"));
             declModule.LocalSymbols.Add(result);
 
-            TestHarness.Check("§8.2/§8.5 声明形态", BilWriter.Write(declModule), Lines(
+            CaseAssertions.Check("§8.2/§8.5 声明形态", BilWriter.Write(declModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -454,7 +454,7 @@ namespace RigiCompiler.Tests
             fn.Blocks.Add(body);
             instModule.Functions.Add(fn);
 
-            TestHarness.Check("§10–§16 指令形态抽样", BilWriter.Write(instModule), Lines(
+            CaseAssertions.Check("§10–§16 指令形态抽样", BilWriter.Write(instModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",
@@ -577,7 +577,7 @@ namespace RigiCompiler.Tests
                     new BilKeywordModifier(BilKeyword.Entrypoint),
                 }));
 
-            TestHarness.Check("§8.4.1 段内裸成员声明", BilWriter.Write(globalModule), Lines(
+            CaseAssertions.Check("§8.4.1 段内裸成员声明", BilWriter.Write(globalModule), Lines(
                 "BIL \"1.1\"",
                 "",
                 "Metadata {",

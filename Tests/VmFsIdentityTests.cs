@@ -28,15 +28,13 @@ namespace RigiCompiler.Tests
     /// </summary>
     public static class VmFsIdentityTests
     {
-        public static int RunAll() => ParallelSuiteRunner.RunAll(Spec);
 
-        public static int RunWithArgs(IReadOnlyList<string> args) =>
-            ParallelSuiteRunner.RunWithArgs(Spec, args);
+
 
         internal static IEnumerable<TestInventory.Case> InventoryCases =>
             Spec.Cases.Select((entry, index) => new TestInventory.Case(index, entry.Label));
 
-        internal static ParallelSuiteRunner.SuiteSpec Spec => new(
+        internal static TestSuiteData Spec => new(
             "VmFsIdentity", Cases, sectionTitle: "VmFsIdentity");
 
         private static readonly (string Label, Action Run)[] Cases =
@@ -61,7 +59,7 @@ namespace RigiCompiler.Tests
         private static VmDispatch NewDispatch()
         {
             var (unit, module, _) = BilTestHarness.EmitBilUnit(ModuleSource);
-            TestHarness.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
+            CaseAssertions.CheckTrue("全管线无诊断", !unit.Diagnostics.HasErrors,
                 string.Join("; ", unit.Diagnostics.Diagnostics.Select(
                     d => $"{d.Phase}: {d.Message}")));
             var context = new VmContext(module);
@@ -89,7 +87,7 @@ namespace RigiCompiler.Tests
             {
                 new VmString(path), new VmI32(0x1), new VmI32(0), outSpan,
             })).Value;
-            TestHarness.CheckTrue("fs_open 成功", rc == 0, "rc=" + rc);
+            CaseAssertions.CheckTrue("fs_open 成功", rc == 0, "rc=" + rc);
             long token = 0;
             for (var i = 7; i >= 0; i--)
             {
@@ -121,8 +119,8 @@ namespace RigiCompiler.Tests
             long a, long b, bool wantSame)
         {
             var (rc, same) = SameFile(dispatch, a, b);
-            TestHarness.CheckTrue(name + "（rc==0）", rc == 0, "rc=" + rc);
-            TestHarness.CheckTrue(name, same == wantSame,
+            CaseAssertions.CheckTrue(name + "（rc==0）", rc == 0, "rc=" + rc);
+            CaseAssertions.CheckTrue(name, same == wantSame,
                 "same=" + same + " want=" + wantSame);
         }
 
@@ -133,7 +131,7 @@ namespace RigiCompiler.Tests
         private static void TestFsOpenRegularOnly()
         {
             if (!OperatingSystem.IsLinux() || RuntimeInformation.ProcessArchitecture
-                != Architecture.X64) { TestHarness.RecordSkip("SKIP Linux x64-only regular fixture"); return; }
+                != Architecture.X64) { CaseAssertions.RecordSkip("SKIP Linux x64-only regular fixture"); return; }
             var dispatch = NewDispatch();
             var root = NewRoot();
             try
@@ -141,7 +139,7 @@ namespace RigiCompiler.Tests
                 var fifo = Path.Combine(root, "pipe");
                 if (MkFifo(fifo, 0x180) != 0)
                 {
-                    TestHarness.CheckTrue("mkfifo fixture", false,
+                    CaseAssertions.CheckTrue("mkfifo fixture", false,
                         "errno=" + Marshal.GetLastWin32Error());
                     return;
                 }
@@ -155,7 +153,7 @@ namespace RigiCompiler.Tests
                     {
                         new VmString(fifo), new VmI32(flags), new VmI32(0x1B6), output,
                     })).Value;
-                    TestHarness.CheckTrue("FIFO 无对端 " + label + " WrongType",
+                    CaseAssertions.CheckTrue("FIFO 无对端 " + label + " WrongType",
                         rc == -1002, "rc=" + rc);
                 }
                 // AF_UNIX pathname socket 读/写/追加 open 均可返回 ENXIO，
@@ -178,7 +176,7 @@ namespace RigiCompiler.Tests
                             new VmString(socketPath), new VmI32(flags),
                             new VmI32(0x1B6), output,
                         })).Value;
-                        TestHarness.CheckTrue("socket pathname " + label + " WrongType",
+                        CaseAssertions.CheckTrue("socket pathname " + label + " WrongType",
                             rc == -1002, "rc=" + rc);
                     }
                 }
@@ -192,7 +190,7 @@ namespace RigiCompiler.Tests
                 {
                     new VmString(root), new VmI32(1), new VmI32(0), output,
                 })).Value;
-                TestHarness.CheckTrue("真实目录仍 IsDirectory",
+                CaseAssertions.CheckTrue("真实目录仍 IsDirectory",
                     directoryRc == -21, "rc=" + directoryRc);
             }
             finally
@@ -256,7 +254,7 @@ namespace RigiCompiler.Tests
                 File.WriteAllBytes(target, new byte[] { 5, 6, 7, 8 });
                 if (!TryCreateHardLink(alias, target, out var fixtureError))
                 {
-                    TestHarness.RecordSkip("  SKIP TestHardlinkAliasSameIdentity"
+                    CaseAssertions.RecordSkip("  SKIP TestHardlinkAliasSameIdentity"
                         + "：硬链接 fixture 不可用（"
                         + (fixtureError ?? "无错误消息") + "）");
                     return;
@@ -295,7 +293,7 @@ namespace RigiCompiler.Tests
                     }
                     else
                     {
-                        TestHarness.CheckTrue("跨子目录硬链接 fixture 成功",
+                        CaseAssertions.CheckTrue("跨子目录硬链接 fixture 成功",
                             false, subError ?? "fixture 失败但未返回错误消息");
                     }
                 }
@@ -361,7 +359,7 @@ namespace RigiCompiler.Tests
                     {
                         threwInvalid = true;
                     }
-                    TestHarness.CheckTrue("无效 token 报异常不放行",
+                    CaseAssertions.CheckTrue("无效 token 报异常不放行",
                         threwInvalid, "未抛 VmException");
 
                     // ② 已释放 token 再查：同样必须异常（native_rc release
@@ -377,7 +375,7 @@ namespace RigiCompiler.Tests
                     {
                         releasedThrew = true;
                     }
-                    TestHarness.CheckTrue("已释放 token 再查报异常不放行",
+                    CaseAssertions.CheckTrue("已释放 token 再查报异常不放行",
                         releasedThrew, "未抛 VmException");
                 }
                 finally { Release(dispatch, t); }
@@ -399,12 +397,12 @@ namespace RigiCompiler.Tests
         private static void TestAbiLayoutAssertions()
         {
             // —— Windows：FsFileTime / FsByHandleInfo ——
-            TestHarness.CheckTrue("FsFileTime 大小=8",
+            CaseAssertions.CheckTrue("FsFileTime 大小=8",
                 Marshal.SizeOf<VmDispatch.FsFileTime>() == 8,
                 "got=" + Marshal.SizeOf<VmDispatch.FsFileTime>());
             CheckOffset<VmDispatch.FsFileTime>("LowDateTime", 0);
             CheckOffset<VmDispatch.FsFileTime>("HighDateTime", 4);
-            TestHarness.CheckTrue("FsByHandleInfo 大小=52",
+            CaseAssertions.CheckTrue("FsByHandleInfo 大小=52",
                 Marshal.SizeOf<VmDispatch.FsByHandleInfo>() == 52,
                 "got=" + Marshal.SizeOf<VmDispatch.FsByHandleInfo>());
             CheckOffset<VmDispatch.FsByHandleInfo>("FileAttributes", 0);
@@ -419,7 +417,7 @@ namespace RigiCompiler.Tests
             CheckOffset<VmDispatch.FsByHandleInfo>("FileIndexLow", 48);
 
             // —— Linux：FsLinuxX64Stat（glibc x86_64 struct stat）——
-            TestHarness.CheckTrue("FsLinuxX64Stat 大小=144",
+            CaseAssertions.CheckTrue("FsLinuxX64Stat 大小=144",
                 Marshal.SizeOf<VmDispatch.FsLinuxX64Stat>() == 144,
                 "got=" + Marshal.SizeOf<VmDispatch.FsLinuxX64Stat>());
             CheckOffset<VmDispatch.FsLinuxX64Stat>("Dev", 0);
@@ -442,7 +440,7 @@ namespace RigiCompiler.Tests
             CheckOffset<VmDispatch.FsLinuxX64Stat>("Reserved0", 120);
             CheckOffset<VmDispatch.FsLinuxX64Stat>("Reserved1", 128);
             CheckOffset<VmDispatch.FsLinuxX64Stat>("Reserved2", 136);
-            TestHarness.CheckTrue("FsLinuxX64Statx 大小=256",
+            CaseAssertions.CheckTrue("FsLinuxX64Statx 大小=256",
                 Marshal.SizeOf<VmDispatch.FsLinuxX64Statx>() == 256);
             CheckOffset<VmDispatch.FsLinuxX64Statx>("Mask", 0);
             CheckOffset<VmDispatch.FsLinuxX64Statx>("Ino", 32);
@@ -456,7 +454,7 @@ namespace RigiCompiler.Tests
             where T : struct
         {
             var got = (int)Marshal.OffsetOf<T>(field);
-            TestHarness.CheckTrue(typeof(T).Name + "." + field
+            CaseAssertions.CheckTrue(typeof(T).Name + "." + field
                 + " 偏移=" + want, got == want, "got=" + got);
         }
 

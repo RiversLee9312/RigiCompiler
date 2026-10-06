@@ -51,9 +51,9 @@ public static partial class ModuleTests
                 result.Modules.All(m => m.CacheStatus == "hit"));
         }
         var cold = Sample("cold");
-        TestHarness.CheckTrue("production完整Std/provider/app冷编译三模块且真实全guard VM0", cold.Compiles == 3 && cold.Okay);
+        CaseAssertions.CheckTrue("production完整Std/provider/app冷编译三模块且真实全guard VM0", cold.Compiles == 3 && cold.Okay);
         var warm = Enumerable.Range(1, 3).Select(i => Sample("warm-" + i)).ToArray();
-        TestHarness.CheckTrue("production模块warm3全compile0/各自hit/完整GP wrapper Serializable协程VM0字节等价",
+        CaseAssertions.CheckTrue("production模块warm3全compile0/各自hit/完整GP wrapper Serializable协程VM0字节等价",
             warm.All(w => w.Compiles == 0 && w.Hits && w.Okay && w.LinkedHash == cold.LinkedHash && w.ArtifactHashes.SequenceEqual(cold.ArtifactHashes)));
         // 移走 provider 真源码，再改变 consumer 输入，确保是消费者自身真实 P1–P4 而非 app hit。
         Directory.Move(Path.Combine(provider, "source"), Path.Combine(folder, "removed-provider-source"));
@@ -63,12 +63,12 @@ public static partial class ModuleTests
         var dependency = modules.Single(m => m!["moduleId"]!.GetValue<string>() == "late-provider@1.0.0")!;
         var standard = modules.Single(m => m!["moduleId"]!.GetValue<string>() == "stdlib@1.0.0")!;
         var own = modules.Single(m => m!["moduleId"]!.GetValue<string>() == "late-app@1.0.0")!;
-        TestHarness.CheckTrue("production缺源provider compile0/AST0/prebuilt且Std hit，consumer真实own AST编译",
+        CaseAssertions.CheckTrue("production缺源provider compile0/AST0/prebuilt且Std hit，consumer真实own AST编译",
             !dependency["compiled"]!.GetValue<bool>() && dependency["ownSources"]!.GetValue<int>() == 0
             && dependency["status"]!.GetValue<string>() == "prebuilt" && !standard["compiled"]!.GetValue<bool>()
             && standard["status"]!.GetValue<string>() == "hit" && own["compiled"]!.GetValue<bool>()
             && own["ownSources"]!.GetValue<int>() == 1 && removed.Compiles == 1);
-        TestHarness.CheckTrue("缺provider AST consumer所有运行guard VM0且固定Native输入与冷/热BIL等价",
+        CaseAssertions.CheckTrue("缺provider AST consumer所有运行guard VM0且固定Native输入与冷/热BIL等价",
             removed.Okay && removed.LinkedHash == cold.LinkedHash && removed.ArtifactHashes.SequenceEqual(cold.ArtifactHashes));
         var times = warm.Select(w => w.Evidence["elapsedMs"]!.GetValue<double>()).Order().ToArray();
         File.WriteAllText(Path.Combine(folder, "module-cache-performance.json"), new JsonObject

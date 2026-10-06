@@ -34,7 +34,7 @@ namespace RigiCompiler.Tests
                 "    return 0\n" +
                 "}\n");
             CheckOk("String.length", result);
-            TestHarness.Check("length/characterCount stdout", result.Stdout,
+            CaseAssertions.Check("length/characterCount stdout", result.Stdout,
                 "5\n11\n8\n15\n5\n18\n5\n8\n2\n");
             CheckI32("main 返回 0", result, 0);
         }
@@ -177,7 +177,7 @@ namespace RigiCompiler.Tests
                 "    return x\n" +
                 "}\n");
             CheckOk("局部 wrapper+访问器外置序", result);
-            TestHarness.Check("局部写读打印序", result.Stdout,
+            CaseAssertions.Check("局部写读打印序", result.Stdout,
                 "wrapper.set\nuser.set\nwrapper.set\nuser.set\nuser.get\nwrapper.get\n");
             CheckI32("局部 5→15→30 读 60→61", result, 61);
         }

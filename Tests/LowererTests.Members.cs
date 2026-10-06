@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace RigiCompiler.Tests
@@ -19,14 +19,14 @@ namespace RigiCompiler.Tests
                 "func call(c: Counter): i32 { return c.add(2) }\n" +
                 "func read(c: Counter): i32 { return c.value }\n");
             CheckNoErrors("无诊断（实例成员降级）", unit);
-            TestHarness.Check("裸名实例字段降级（this 隐式）",
+            CaseAssertions.Check("裸名实例字段降级（this 隐式）",
                 LoweredDescribe.Body(BodyOf(lowered, "add")),
                 "Body(add, [], [Return(Binary(Add, " +
                 "InstField(value, This(Counter), i32), Param(n,i32), i32))])");
-            TestHarness.Check("实例调用降级",
+            CaseAssertions.Check("实例调用降级",
                 LoweredDescribe.Body(BodyOf(lowered, "call")),
                 "Body(call, [], [Return(InstCall(add, Param(c,Counter), [Int(2,i32)], i32))])");
-            TestHarness.Check("实例字段访问降级",
+            CaseAssertions.Check("实例字段访问降级",
                 LoweredDescribe.Body(BodyOf(lowered, "read")),
                 "Body(read, [], [Return(InstField(value, Param(c,Counter), i32))])");
 
@@ -34,7 +34,7 @@ namespace RigiCompiler.Tests
             var counterType = unit.Symbols.GlobalNamespace.Types.Single(t => t.Name == "Counter");
             var callReturn = (LoweredReturnStatement)BodyOf(lowered, "call").Body.Statements[0];
             var instCall = (LoweredInstanceCallExpression)callReturn.Value!;
-            TestHarness.CheckTrue("实例调用方法符号引用相等 + Type 自带",
+            CaseAssertions.CheckTrue("实例调用方法符号引用相等 + Type 自带",
                 ReferenceEquals(instCall.Method,
                     counterType.Methods.Single(m => m.Name == "add"))
                 && ReferenceEquals(instCall.Type, unit.Symbols.Bootstrap.Int32));
@@ -53,14 +53,14 @@ namespace RigiCompiler.Tests
                 "func write(b: Bag) { b[0] = 42 }\n" +
                 "func bump(b: Bag) { b[1] = ((b[1] if? 0) + 2) }\n");
             CheckNoErrors("无诊断（索引降级）", unit);
-            TestHarness.Check("索引读降级（Q6：Type = i32?）",
+            CaseAssertions.Check("索引读降级（Q6：Type = i32?）",
                 LoweredDescribe.Body(BodyOf(lowered, "read")),
                 "Body(read, [], [Return(Index(Param(b,Bag), Param(i,i32), i32?))])");
-            TestHarness.Check("索引写降级",
+            CaseAssertions.Check("索引写降级",
                 LoweredDescribe.Body(BodyOf(lowered, "write")),
                 "Body(write, [], [Assign(Index(Param(b,Bag), Int(0,i32), i32), Int(42,i32))])");
             // 索引显式读改写回（Q6 后 a[i] op= 读侧为 T?，由显式形态替代）
-            TestHarness.Check("索引显式读改写回降级",
+            CaseAssertions.Check("索引显式读改写回降级",
                 LoweredDescribe.Body(BodyOf(lowered, "bump")),
                 "Body(bump, [.s0: i32?, .s1: i32, .b0: .breakid], " +
                 "[Assign(Local(.s0,i32?), Index(Param(b,Bag), Int(1,i32), i32?)); " +
@@ -76,14 +76,14 @@ namespace RigiCompiler.Tests
                 bound.Single(b => b.Method.Name == "read").Body.Statements[0]).Value!;
             var loweredRead = (LoweredIndexExpression)((LoweredReturnStatement)
                 BodyOf(lowered, "read").Body.Statements[0]).Value!;
-            TestHarness.CheckTrue("索引读 Origin 回指 + Type 透传",
+            CaseAssertions.CheckTrue("索引读 Origin 回指 + Type 透传",
                 ReferenceEquals(loweredRead.Origin, boundRead)
                 && ReferenceEquals(loweredRead.Type, boundRead.Type));
             var boundWrite = (BoundIndexExpression)((BoundAssignmentStatement)
                 bound.Single(b => b.Method.Name == "write").Body.Statements[0]).Target;
             var loweredWrite = (LoweredIndexExpression)((LoweredAssignmentStatement)
                 BodyOf(lowered, "write").Body.Statements[0]).Target;
-            TestHarness.CheckTrue("索引写 Origin 回指 + 目标形态共用",
+            CaseAssertions.CheckTrue("索引写 Origin 回指 + 目标形态共用",
                 ReferenceEquals(loweredWrite.Origin, boundWrite)
                 && ReferenceEquals(loweredWrite.Type, boundWrite.Type));
         }
